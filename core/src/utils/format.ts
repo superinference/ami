@@ -32,7 +32,7 @@ export function formatFileSize(bytes: number): string {
 export type RelativeTimeStyle = 'narrow' | 'short' | 'long';
 
 /** Options for {@link formatRelativeTime} / {@link formatRelativeTimeAgo}
- *  (parity with Claude Code's `RelativeTimeOptions`, utils/format.ts). */
+ *  (parity with the reference's `RelativeTimeOptions`, utils/format.ts). */
 export interface RelativeTimeOptions {
   /** @default 'narrow' */
   style?: RelativeTimeStyle;
@@ -56,7 +56,7 @@ const RELATIVE_TIME_INTERVALS = [
 
 /** Memoized `Intl.RelativeTimeFormat` instances — constructing one per call is
  *  measurably expensive, and the (style, numeric) space is tiny. Parity with
- *  Claude Code's cached `getRelativeTimeFormat` (utils/intl.ts). */
+ *  the reference's cached `getRelativeTimeFormat` (utils/intl.ts). */
 const relativeTimeFormatCache = new Map<string, Intl.RelativeTimeFormat>();
 function getRelativeTimeFormat(
   style: 'short' | 'long' | 'narrow',
@@ -73,7 +73,7 @@ function getRelativeTimeFormat(
 
 /**
  * Format `date` relative to `now` (default: the current time) using an
- * interval-table algorithm. Parity with Claude Code's `formatRelativeTime`
+ * interval-table algorithm. Parity with the reference's `formatRelativeTime`
  * (utils/format.ts) + its localized `Intl.RelativeTimeFormat` wrapper
  * (utils/intl.ts): the largest interval whose magnitude the gap meets or exceeds
  * selects the unit (truncating toward zero), so a 90-minute gap renders as the
@@ -125,7 +125,7 @@ export function formatRelativeTime(
  * {@link formatRelativeTime} specialized for a PAST timestamp: forces
  * `numeric: 'always'` for past dates so the output is a definite "X units ago"
  * rather than a localized "yesterday", while a future date falls through to the
- * caller's options unchanged. Parity with Claude Code's `formatRelativeTimeAgo`
+ * caller's options unchanged. Parity with the reference's `formatRelativeTimeAgo`
  * (utils/format.ts).
  */
 export function formatRelativeTimeAgo(
@@ -141,7 +141,7 @@ export function formatRelativeTimeAgo(
 
 /** Input schema for {@link formatLogMetadata}: the two required facts every
  *  session/log row has (when it was modified and how many messages it holds)
- *  plus a set of optional enrichments. Mirrors Claude Code's `formatLogMetadata`
+ *  plus a set of optional enrichments. Mirrors the reference's `formatLogMetadata`
  *  argument (utils/format.ts). */
 export interface LogMetadata {
   modified: Date;
@@ -158,7 +158,7 @@ export interface LogMetadata {
 /**
  * Compose a one-line, `' · '`-joined metadata summary for a session/log listing
  * row — the relative-modified-time, then branch, then size-or-message-count,
- * then any of `#tag`, `@agent`, `repo#pr`. Parity with Claude Code's
+ * then any of `#tag`, `@agent`, `repo#pr`. Parity with the reference's
  * `formatLogMetadata` (utils/format.ts): exactly the same field precedence and
  * joiners, so AMI's resume/history surfaces read identically.
  *

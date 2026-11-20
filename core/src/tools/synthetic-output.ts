@@ -24,7 +24,7 @@ export type JsonSchema = {
  * shipper, the Agent SDK transport) would cut the payload mid-string and
  * silently drop it. Replacing them with their `\uXXXX` escapes keeps the output
  * parse-identical while making it unbreakable by line-terminator-aware
- * receivers. Mirrors Claude's `ndjsonSafeStringify`.
+ * receivers. Mirrors the reference's `ndjsonSafeStringify`.
  */
 export function ndjsonSafeStringify(value: unknown, space?: number): string {
   const serialized = JSON.stringify(value, null, space);
@@ -42,7 +42,7 @@ function typeOf(value: unknown): string {
  * Minimal, dependency-free JSON-schema validator covering the common subset the
  * model is asked to produce (type, properties, required, items, enum, const,
  * additionalProperties, min/maxItems). Returns a list of human-readable
- * mismatch messages ([] when valid). Mirrors Claude's Ajv-backed validation of
+ * mismatch messages ([] when valid). Mirrors the reference's Ajv-backed validation of
  * SyntheticOutputTool output without pulling in a new dependency.
  */
 export function validateAgainstSchema(data: unknown, schema: JsonSchema, pathPrefix = 'data'): string[] {
@@ -116,7 +116,7 @@ const KNOWN_TYPES = new Set(['string', 'number', 'integer', 'boolean', 'object',
  * when the schema is usable. A structurally broken schema (e.g. a typo'd `type`,
  * `properties` that is not an object) must be rejected BEFORE it is used —
  * otherwise `validateAgainstSchema` would silently accept any output against it,
- * voiding the structured-output guarantee. Mirrors Claude's `ajv.validateSchema`
+ * voiding the structured-output guarantee. Mirrors the reference's `ajv.validateSchema`
  * gate in `createSyntheticOutputTool`.
  */
 export function validateSchemaShape(schema: unknown, path = 'schema'): string | null {
@@ -197,7 +197,7 @@ export type CreateSyntheticOutputResult = { tool: ToolDefinition } | { error: st
  * Identity-keyed cache of compiled schema-bound tools. A workflow that calls the
  * agent with the SAME schema object reference many times (30-80×) reuses the one
  * validated/bound tool instead of re-walking well-formedness on every call.
- * Keyed by object identity (WeakMap) exactly as Claude's `toolCache`.
+ * Keyed by object identity (WeakMap) exactly as the reference's `toolCache`.
  */
 const toolCache = new WeakMap<object, CreateSyntheticOutputResult>();
 
@@ -209,7 +209,7 @@ const toolCache = new WeakMap<object, CreateSyntheticOutputResult>();
  * lists every per-path mismatch, or the serialized output on success. Returns
  * `{ error }` (never a tool) when the supplied schema is itself malformed.
  *
- * Mirrors Claude's `createSyntheticOutputTool`: a per-schema tool whose call
+ * Mirrors the reference's `createSyntheticOutputTool`: a per-schema tool whose call
  * validates-then-returns, with the compiled result memoized by schema identity.
  */
 export function createSyntheticOutputTool(jsonSchema: Record<string, unknown>): CreateSyntheticOutputResult {
@@ -251,7 +251,7 @@ export const VERIFICATION_OUTPUT_TOOL_NAME = 'verification_output';
 /**
  * Instructional prompt wording for the verification-result tool. A verification
  * (stop/plan) hook must return a single pass/fail verdict with exactly one call,
- * so the tool is framed to force that — mirroring Claude Code's
+ * so the tool is framed to force that — mirroring the reference's
  * `createStructuredOutputTool().prompt()` ("Use this tool to return your
  * verification result. You MUST call this tool exactly once at the end of your
  * response."). Kept as one exported constant so the hook path and the tool share
@@ -264,7 +264,7 @@ export const VERIFICATION_OUTPUT_PROMPT =
  * Canonical `{ ok, reason }` verification schema (the single source of the verdict
  * contract shared by the verification tool and the AI-hook verdict parser): `ok`
  * is a required boolean, `reason` an optional string explaining a failure, and no
- * other properties are allowed. Mirrors Claude Code's `hookResponseSchema` /
+ * other properties are allowed. Mirrors the reference's `hookResponseSchema` /
  * `createStructuredOutputTool` `inputJSONSchema` ({ ok, reason, required:['ok'],
  * additionalProperties:false }).
  */
@@ -288,7 +288,7 @@ export const VERIFICATION_OUTPUT_SCHEMA: Record<string, unknown> = {
  *
  * It delegates to {@link createSyntheticOutputTool} (reusing its validate-then-
  * serialize `execute`, size cap and identity cache — no duplicated logic) and only
- * overrides the model-facing `name`/`description`/`searchHint`. Mirrors Claude
+ * overrides the model-facing `name`/`description`/`searchHint`. Mirrors the reference
  * Code's `createStructuredOutputTool`, which clones `SyntheticOutputTool` and
  * overrides its `prompt()` with the verification wording plus the `{ ok, reason }`
  * schema.
@@ -332,12 +332,12 @@ export const syntheticOutputTool: ToolDefinition = {
     'You MUST call this tool exactly once at the end of your response when structured output is requested.',
   // Discovery synonyms for `tool_search` (terms NOT already in the name/description)
   // so a deferred/forgotten structured-output capability is findable by intent.
-  // Parity: Claude's `SyntheticOutputTool.searchHint`.
+  // Parity: the reference's `SyntheticOutputTool.searchHint`.
   searchHint: 'return the final response as structured JSON',
   // Cap the serialized result the SAME way the tool's own serializer does, so the
   // engine's generic spill-to-disk path (tool-executor) honors the identical
   // boundary instead of the larger engine-global default. Single source of the cap
-  // is {@link MAX_RESULT_SIZE_CHARS}. Parity: Claude's per-tool `maxResultSizeChars`.
+  // is {@link MAX_RESULT_SIZE_CHARS}. Parity: the reference's per-tool `maxResultSizeChars`.
   maxResultSizeChars: MAX_RESULT_SIZE_CHARS,
   inputSchema: {
     type: 'object',

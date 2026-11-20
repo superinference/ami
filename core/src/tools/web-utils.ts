@@ -31,7 +31,7 @@ export function isLoopbackHost(host: string): boolean {
 /**
  * Allowed-alternative affordance appended to SSRF block messages so a caller who
  * hits the guard learns the permitted shape without reading docs — the same
- * self-correction clause Claude Code closes its ssrfError with
+ * self-correction clause the reference closes its ssrfError with
  * (`utils/hooks/ssrfGuard.ts` ssrfError L287). Single canonical string so the web
  * tool messages AND the HTTP-hook block message (`hooks.ts`
  * `formatHttpHookBlockedMessage`) agree on one wording. ADDITIVE.
@@ -75,7 +75,7 @@ export function urlHasUserinfo(parsed: URL): boolean {
  * the `::ffff:a.b.c.d` form. Returns null when the address is not a well-formed
  * 8-group IPv6 literal, so callers can safely fall through to other checks.
  *
- * Mirrors Claude Code's ssrfGuard expansion (utils/hooks/ssrfGuard.ts) so an
+ * Mirrors the reference's ssrfGuard expansion (utils/hooks/ssrfGuard.ts) so an
  * IPv4-mapped metadata address written in hex/compressed/expanded form is
  * normalized to the same octets as its dotted-decimal twin.
  */
@@ -176,7 +176,7 @@ export function isPrivateIP(ip: string): boolean {
   // AWS/GCP/Azure metadata
   if (ip === '169.254.169.254') return true;
   // IPv6 private ranges (only meaningful for colon-form addresses; a v4 literal
-  // can never start with the hex letters below). Mirrors Claude Code's
+  // can never start with the hex letters below). Mirrors the reference's
   // ssrfGuard isBlockedV6 ranges so the WHOLE link-local / unique-local space is
   // caught, not just the fe80:/fc00: string prefixes.
   if (ip.includes(':')) {
@@ -231,7 +231,7 @@ export function isBlockedRedirectTarget(url: string): boolean {
  *    different port can pivot an approved fetch onto a different (e.g. internal,
  *    admin, debug) service listening on the SAME host.
  *
- * Mirrors the protocol/port arms of Claude Code's `isPermittedRedirect`
+ * Mirrors the protocol/port arms of the reference's `isPermittedRedirect`
  * (`WebFetchTool/utils.ts`), which refuses any redirect whose protocol or port
  * differs from the original (within its same-origin follow policy). Ports are
  * compared on their raw `URL.port` (so an explicit non-default port differs from
@@ -317,7 +317,7 @@ export async function validateUrlSafety(
   // search-domain suffix, typically expands to a privileged internal host — so it
   // is an SSRF surface that must be refused pre-DNS. IP literals (v4 dotted or v6
   // colon-form) and, under allowLoopback, loopback names are exempt. Mirrors
-  // Claude Code's validateURL publicly-resolvable filter (WebFetchTool/utils.ts
+  // the reference's validateURL publicly-resolvable filter (WebFetchTool/utils.ts
   // parts.length < 2). ADDITIVE — normal multi-label public hosts are unaffected.
   if (
     !isValidIP(hostname) &&
@@ -465,7 +465,7 @@ export function stripHtml(html: string): string {
 
   // Preserve anchor link targets as Markdown [text](href) BEFORE the catch-all
   // tag strip below — otherwise every <a href> URL is discarded and the model
-  // receives link text with no citable destination. Mirrors Claude Code's
+  // receives link text with no citable destination. Mirrors the reference's
   // turndown HTML→Markdown conversion, which keeps link targets
   // (WebFetchTool/utils.ts). The href value may be single/double/unquoted; the
   // anchor text (which can hold nested inline tags) is captured and those inner
@@ -508,14 +508,14 @@ export function stripHtml(html: string): string {
 }
 
 // Identify the agent so site operators can recognize/allowlist the traffic
-// (Claude Code's identify-yourself policy). Override with SUPERINFERENCE_WEB_USER_AGENT
+// (the reference's identify-yourself policy). Override with SUPERINFERENCE_WEB_USER_AGENT
 // (e.g. a browser UA) for sites that require it. Read at call time so the env var
 // takes effect regardless of import order and is unit-testable.
 //
 // The product token embeds the REAL build version from the single-source
 // `AMI_VERSION` macro (core/src/version.ts), not a hardcoded "1.0" — so the
 // traffic AMI emits is attributable to the exact release and a version bump
-// flows through here automatically (parity with Claude's
+// flows through here automatically (parity with the reference's
 // `claude-code/${MACRO.VERSION}` single-source User-Agent). ADDITIVE.
 export const DEFAULT_WEB_USER_AGENT = `SuperInference-AMI/${AMI_VERSION} (+https://superinference.org)`;
 export function getUserAgent(): string {
@@ -576,7 +576,7 @@ export function isMetadataEndpoint(url: string): boolean {
  * fundamentally different failure from an origin's own `403 Forbidden` (the origin
  * was never reached), so it must be surfaced distinctly: the fix is to allow-list
  * the domain in the egress policy, not to change the request. Header name/value
- * mirror Claude Code's egress-proxy contract (`WebFetchTool/utils.ts`). ADDITIVE.
+ * mirror the reference's egress-proxy contract (`WebFetchTool/utils.ts`). ADDITIVE.
  */
 export const EGRESS_PROXY_ERROR_HEADER = 'x-proxy-error';
 export const EGRESS_PROXY_BLOCKED_VALUE = 'blocked-by-allowlist';
@@ -585,7 +585,7 @@ export const EGRESS_PROXY_BLOCKED_VALUE = 'blocked-by-allowlist';
  * Raised when the egress proxy refused the fetch (403 + the blocked-by-allowlist
  * marker above) rather than the origin returning a 403. Carries the blocked
  * `domain` so a consumer can tell the user exactly what to allow-list. Mirrors
- * Claude Code's `EgressBlockedError`.
+ * the reference's `EgressBlockedError`.
  */
 export class EgressBlockedError extends Error {
   constructor(public readonly domain: string) {
@@ -646,14 +646,14 @@ function httpGetInternal(
   timeoutMs: number,
   // The original redirect ceiling (constant across the recursion) — reported in
   // the "Too many redirects" error so the consumer sees the hop limit that was
-  // reached (parity with Claude's `Too many redirects (exceeded ${MAX_REDIRECTS})`).
+  // reached (parity with the reference's `Too many redirects (exceeded ${MAX_REDIRECTS})`).
   maxRedirects: number,
   resolvedIP?: string,
   raw?: boolean,
   // Status code of the FIRST redirect hop followed on the way to the final
   // response (e.g. 301/302/307/308). Carried through the recursion so a caller
   // that detects a cross-origin redirect can report the actual redirect status +
-  // reason phrase (parity with Claude's redirect-status message) instead of the
+  // reason phrase (parity with the reference's redirect-status message) instead of the
   // final 200. Undefined when no redirect was followed.
   firstRedirectStatus?: number,
 ): Promise<{ body: string; bodyBuffer?: Buffer; statusCode: number; contentType: string; finalUrl: string; truncated?: boolean; headers: http.IncomingHttpHeaders; redirectStatusCode?: number }> {
@@ -830,14 +830,14 @@ function httpGetInternal(
 
 /**
  * Exponential-backoff delays (ms) for transient HTTP GET failures: 5 total
- * attempts (1 initial + 4 retries). Mirrors Claude Code's teleport retry schedule
+ * attempts (1 initial + 4 retries). Mirrors the reference's teleport retry schedule
  * (TELEPORT_RETRY_DELAYS = 2s, 4s, 8s, 16s).
  */
 export const DEFAULT_HTTP_RETRY_DELAYS_MS: readonly number[] = [2000, 4000, 8000, 16000];
 
 /**
  * Classify a thrown fetch error as a TRANSIENT network error worth retrying.
- * Parity with Claude Code's `isTransientNetworkError`: retry on no-response
+ * Parity with the reference's `isTransientNetworkError`: retry on no-response
  * network failures (connection refused/reset, DNS, socket timeout) but NOT on
  * deterministic, non-transient conditions — an aborted/deadline signal, an SSRF
  * "Blocked:" refusal, an unparseable URL, or a redirect loop. (5xx server
@@ -876,7 +876,7 @@ function delay(ms: number, signal: AbortSignal): Promise<void> {
 
 /**
  * `httpGet` with automatic exponential-backoff retry for TRANSIENT failures
- * (no-response network errors and 5xx server responses), parity with Claude
+ * (no-response network errors and 5xx server responses), parity with the reference
  * Code's `axiosGetWithRetry`. Non-transient outcomes (4xx, SSRF blocks, abort,
  * bad URL) return/throw immediately — they are never retried. A cancelled/aborted
  * signal stops the backoff at once. ADDITIVE: a single successful first attempt

@@ -10,7 +10,7 @@ import { notebookEditTool } from './notebook-edit';
 import { taskTool } from './task';
 
 /**
- * REPL (code-interpreter) tool — parity with Claude Code's `REPLTool`
+ * REPL (code-interpreter) tool — parity with the reference's `REPLTool`
  * (`src/tools/REPLTool/`). Lets the model orchestrate MANY primitive tool
  * invocations programmatically inside ONE sandboxed code block (loops,
  * conditionals, intermediate variables) instead of emitting a separate
@@ -19,7 +19,7 @@ import { taskTool } from './task';
  * (and therefore the same per-tool security/sandbox guards) as a direct call.
  *
  * AMI superset divergence (labelled): REPL mode is OPT-IN here (default OFF)
- * rather than Claude's ant-default-on, because the primitives it exposes run
+ * rather than the reference's ant-default-on, because the primitives it exposes run
  * inside the VM without re-prompting — so it is gated behind an explicit
  * operator env flag. Everything else mirrors the reference: the curated
  * primitive-tool set, the "hide the primitives from direct tool-calling when
@@ -62,7 +62,7 @@ let _primitiveTools: readonly ToolDefinition[] | undefined;
  * module-eval time would hit "Cannot access before initialization" (TDZ).
  * Deferring to call time avoids it. Built from an explicit ordered literal
  * rather than the full registry so the search tools (grep/glob) are always
- * present — matching Claude's deliberate `getAllBaseTools()` bypass.
+ * present — matching the reference's deliberate `getAllBaseTools()` bypass.
  */
 export function getReplPrimitiveTools(): readonly ToolDefinition[] {
   return (_primitiveTools ??= [
@@ -81,7 +81,7 @@ let _replOnlyNames: ReadonlySet<string> | undefined;
 /**
  * Names of the tools that are REPL-only when REPL mode is enabled. Derived from
  * {@link getReplPrimitiveTools} (single source of truth, so the two can never
- * drift) and memoized. Mirrors Claude's `REPL_ONLY_TOOLS` set.
+ * drift) and memoized. Mirrors the reference's `REPL_ONLY_TOOLS` set.
  */
 export function getReplOnlyToolNames(): ReadonlySet<string> {
   return (_replOnlyNames ??= new Set(getReplPrimitiveTools().map((t) => t.name)));
@@ -92,7 +92,7 @@ export function getReplOnlyToolNames(): ReadonlySet<string> {
  * in the pool, strip the REPL-only primitive tools so the model is forced to
  * orchestrate them through the REPL VM. When REPL mode is off, or the REPL tool
  * is not in the pool, the list is returned unchanged. Mirrors the
- * `isReplModeEnabled() && replEnabled` branch of Claude's `getTools`.
+ * `isReplModeEnabled() && replEnabled` branch of the reference's `getTools`.
  */
 export function filterReplOnlyTools<T extends { name: string }>(
   tools: readonly T[],

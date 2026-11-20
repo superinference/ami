@@ -1,7 +1,7 @@
 /**
  * LSP health-poll state machine.
  *
- * Mirrors Claude Code's `useLspInitializationNotification` polling loop
+ * Mirrors the reference's `useLspInitializationNotification` polling loop
  * (hooks/notifs/useLspInitializationNotification.tsx): on a fixed interval it
  * re-checks the client's initialization status so a language server that enters
  * an error state AFTER a successful launch is still caught, dedupes each error
@@ -20,7 +20,7 @@ import type { LspInitializationStatus, LspServerStatus } from './client';
 import { logError } from '../logger';
 
 /**
- * Health-poll interval in milliseconds. Parity with Claude Code's
+ * Health-poll interval in milliseconds. Parity with the reference's
  * `LSP_POLL_INTERVAL_MS = 5000` driving `useInterval(poll, shouldPoll ? … : null)`.
  */
 export const LSP_POLL_INTERVAL_MS = 5000;
@@ -36,14 +36,14 @@ export interface LspHealthError {
  * The user-facing diagnostic command an LSP failure toast points the user at.
  * AMI surfaces LSP health failures through the `/doctor` diagnostic surface
  * (health errors route to the shared logger ring `/doctor` reads), so the
- * affordance hint references it — the AMI analogue of Claude Code's
+ * affordance hint references it — the AMI analogue of the reference's
  * `· /plugin for details` hint on its LSP-failure notification.
  */
 export const LSP_HEALTH_HINT = '/doctor for details';
 
 /**
  * Format an {@link LspHealthError} into the user-facing failure toast surfaced in
- * the TUI. Mirrors Claude Code's `useLspInitializationNotification` notification
+ * the TUI. Mirrors the reference's `useLspInitializationNotification` notification
  * (`<Text color="error">LSP for {displayName} failed</Text>` +
  * `<Text dimColor> · /plugin for details</Text>`): a bare `plugin:` prefix is
  * stripped from the source so a plugin-contributed server shows a clean name, and
@@ -61,7 +61,7 @@ export function formatLspHealthError(error: LspHealthError): { message: string; 
 /**
  * Classify one poll tick against the client's current initialization status and
  * per-server statuses, returning the errors observed right now and whether
- * polling should STOP. The branch structure mirrors Claude's `poll()` exactly:
+ * polling should STOP. The branch structure mirrors the reference's `poll()` exactly:
  *  - `failed`                     → report the manager error AND stop (terminal);
  *  - `pending` / `not-started`    → nothing to report, keep polling (initializing);
  *  - otherwise (success)          → scan servers for `error` states, keep polling.

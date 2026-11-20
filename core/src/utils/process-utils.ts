@@ -4,7 +4,7 @@ import {
   collectAncestorPids,
 } from './shell';
 
-// Platform-agnostic `ps`-style process-introspection helpers (parity with Claude
+// Platform-agnostic `ps`-style process-introspection helpers (parity with the reference
 // Code's genericProcessUtils.ts). These complement the ancestor/descendant PID
 // walks already in shell.ts (collectAncestorPids / collectProcessTree) by adding
 // the two capabilities that walk COMMAND LINES and DIRECT CHILDREN of an
@@ -20,7 +20,7 @@ import {
 
 /**
  * Hard timeout (ms) for a single-pid command lookup and for direct-child
- * enumeration — parity with Claude Code's getProcessCommand/getChildPids 1000ms
+ * enumeration — parity with the reference's getProcessCommand/getChildPids 1000ms
  * cap, so a hung `ps`/`wmic` can never stall the caller.
  */
 export const PROCESS_COMMAND_TIMEOUT_MS = 1000;
@@ -34,7 +34,7 @@ const WMIC_COMMANDLINE_PREFIX = 'CommandLine=';
  * Get the command-line string for a single PID, or `null` when it cannot be
  * determined (process gone, non-zero exit, timeout, or an invalid pid).
  *
- * Parity with Claude Code's getProcessCommand (genericProcessUtils.ts:L94-L107):
+ * Parity with the reference's getProcessCommand (genericProcessUtils.ts:L94-L107):
  * POSIX reads `ps -o command= -p <pid>`; Windows reads
  * `wmic process where processid=<pid> get CommandLine /value` (the `/value` form
  * prints a single `CommandLine=<value>` record that survives command lines
@@ -81,7 +81,7 @@ export function getProcessCommand(pid: string | number): string | null {
  * Enumerate the DIRECT child PIDs of `pid` (its immediate children only, not the
  * whole descendant tree — use {@link collectProcessTree} for that).
  *
- * Parity with Claude Code's getChildPids (genericProcessUtils.ts:L163-L184),
+ * Parity with the reference's getChildPids (genericProcessUtils.ts:L163-L184),
  * which runs `pgrep -P <pid>` / a Win32 ParentProcessId query. AMI instead reuses
  * the canonical {@link readParentPidMap} process-table reader (child → parent) and
  * filters it for entries whose parent is `pid` — a single table read shared with
@@ -101,7 +101,7 @@ export function collectChildPids(pid: string | number): number[] {
 
 /**
  * Collect the command lines for `pid` and each of its ancestors, nearest first —
- * parity with Claude Code's getAncestorCommandsAsync (genericProcessUtils.ts:
+ * parity with the reference's getAncestorCommandsAsync (genericProcessUtils.ts:
  * L115-L156). The returned array starts with `pid`'s own command and then each
  * ancestor's, capped at `maxDepth` entries total (the start pid counts as the
  * first), with pids whose command cannot be read skipped (parity with the

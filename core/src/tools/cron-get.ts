@@ -9,7 +9,7 @@ const ALLOWED_KEYS = new Set(['id', 'name']);
 /**
  * cron_get — fetch ONE scheduled job's full, untruncated detail by id.
  *
- * PARITY (additive): Claude's RemoteTrigger exposes a `get` action
+ * PARITY (additive): the reference's RemoteTrigger exposes a `get` action
  * (GET /v1/code/triggers/{id}, prompt.ts:L10) to retrieve a single trigger's full
  * detail by id. AMI previously only had cron_list, whose per-job prompt is clipped
  * to ~100 chars — there was no id-parameterized way for the model to read a single

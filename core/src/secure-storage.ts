@@ -1,7 +1,7 @@
 // ===========================================================================
 // Secure storage — reusable OS-native secret-vault BUILDING BLOCKS (core layer).
 //
-// Claude Code protects secrets at rest behind a platform-aware vault
+// the reference protects secrets at rest behind a platform-aware vault
 // (`utils/secureStorage/*`): a `SecureStorage` interface, a macOS Keychain
 // backend, a plaintext-file fallback, a `createFallbackStorage` composition, and
 // a `getSecureStorage()` platform selector whose Linux arm is an explicit
@@ -35,7 +35,7 @@ import { spawnSync } from 'child_process';
 // ---------------------------------------------------------------------------
 
 /**
- * Result of a {@link SecureStorage} write (Claude-parity with the secure-storage
+ * Result of a {@link SecureStorage} write (the reference-parity with the secure-storage
  * `update()` contract): a write NEVER throws — it reports `success` and, on a
  * degraded-but-persisted path, a non-fatal `warning` the caller should surface.
  */
@@ -59,7 +59,7 @@ export interface SecureStorage<T> {
   delete(): boolean;
   /**
    * Explicitly drop any in-memory read cache so the NEXT {@link read} re-fetches
-   * from the backing store (Claude-parity with `clearLegacyApiKeyPrefetch()`).
+   * from the backing store (the reference-parity with `clearLegacyApiKeyPrefetch()`).
    *
    * In-process {@link update}/{@link delete} already keep the cache coherent, but a
    * credential can also be rotated OUT OF BAND — another process re-writes the
@@ -174,7 +174,7 @@ export interface LibsecretStorageOptions<T> {
 
 /**
  * Linux libsecret backend driven by the `secret-tool` CLI (Secret Service API;
- * GNOME Keyring / KWallet). Closes Claude Code's `// TODO: add libsecret support
+ * GNOME Keyring / KWallet). Closes the reference's `// TODO: add libsecret support
  * for Linux`. Design mirrors AMI's macOS keychain backend:
  *
  * - **read** — `secret-tool lookup service <s> account <a>`; a hit (exit 0 with

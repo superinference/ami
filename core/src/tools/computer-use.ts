@@ -2,9 +2,9 @@
  * Computer-use GUI-automation tool (screenshot / mouse / keyboard / clipboard /
  * app-control) and its platform-independent algorithmic core.
  *
- * PARITY (additive) with Claude Code's macOS computer-use subsystem
+ * PARITY (additive) with the reference's macOS computer-use subsystem
  * (`src/utils/computerUse/{executor,gates,hostAdapter,inputLoader,mcpServer}.ts`).
- * Claude's implementation binds two Anthropic-proprietary native modules
+ * the reference's implementation binds two Anthropic-proprietary native modules
  * (`@ant/computer-use-input` — Rust/enigo mouse+keyboard; `@ant/computer-use-swift`
  * — SCContentFilter screenshots / NSWorkspace / TCC) that do NOT ship with AMI.
  *
@@ -17,15 +17,15 @@
  * I/O is supplied by a host that registers a backend via
  * {@link setComputerUseInputProvider}; absent one (every non-macOS host, and macOS
  * hosts without the native backend installed) the loader fails fast with a clear,
- * actionable platform-unavailability message — exactly mirroring Claude's
+ * actionable platform-unavailability message — exactly mirroring the reference's
  * `requireComputerUseInput()` / `createCliExecutor` non-darwin guards.
  *
  * The tool is OFF by default (opt-in via {@link COMPUTER_USE_ENV}); when disabled
- * it is dropped from the advertised pool at registration (parity: Claude's
+ * it is dropped from the advertised pool at registration (parity: the reference's
  * `adapter.isDisabled() ? { tools: [] }` ListTools gate), so the default tool set
  * is unchanged.
  *
- * Vendor gating that Claude layers on top (growthbook flag, subscription tier,
+ * Vendor gating that the reference layers on top (growthbook flag, subscription tier,
  * ant-bypass env vars) is intentionally OUT of scope — AMI gates purely on the
  * opt-in env flag and the platform/backend availability.
  */
@@ -37,11 +37,11 @@ import { errorMessage } from '../credential-guard';
 
 // ── Config knobs + coordinate mode (parity: gates.ts) ────────────────────────
 
-/** How model-supplied coordinates are interpreted. Parity: Claude's `CoordinateMode`. */
+/** How model-supplied coordinates are interpreted. Parity: the reference's `CoordinateMode`. */
 export type CoordinateMode = 'pixels' | 'normalized';
 
 /**
- * Behavioral sub-gates for the computer-use capability. Parity: Claude's
+ * Behavioral sub-gates for the computer-use capability. Parity: the reference's
  * `CuSubGates` (gates.ts DEFAULTS, minus `enabled`/`coordinateMode`).
  */
 export interface ComputerUseSubGates {
@@ -66,9 +66,9 @@ export interface ComputerUseConfig extends ComputerUseSubGates {
 }
 
 /**
- * Typed defaults. Parity: Claude's gates.ts `DEFAULTS`. A partial config spreads
+ * Typed defaults. Parity: the reference's gates.ts `DEFAULTS`. A partial config spreads
  * OVER these so e.g. `{ enabled: true }` alone inherits every other field (parity:
- * Claude's `{ ...DEFAULTS, ...getDynamicConfig(...) }` partial-over-defaults merge).
+ * the reference's `{ ...DEFAULTS, ...getDynamicConfig(...) }` partial-over-defaults merge).
  */
 export const DEFAULT_COMPUTER_USE_CONFIG: ComputerUseConfig = {
   enabled: false,
@@ -109,7 +109,7 @@ export function resetComputerUseCoordinateMode(): void {
 /** Opt-in env var enabling the computer-use tool. OFF by default. Accepts `1`/`true`. */
 export const COMPUTER_USE_ENV = 'AMI_COMPUTER_USE';
 
-/** Whether the computer-use tool is enabled (parity: Claude's `adapter.isDisabled()` inverse). */
+/** Whether the computer-use tool is enabled (parity: the reference's `adapter.isDisabled()` inverse). */
 export function isComputerUseEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   const raw = env[COMPUTER_USE_ENV];
   if (raw === undefined) return false;
@@ -143,7 +143,7 @@ export const APP_ENUM_TIMEOUT_MS = 1_000;
 /**
  * API image-resize bounds. The screenshot path pre-sizes the capture to within
  * these so the API transcoder's early-return fires (no server-side resize, so
- * coordinate scaling stays coherent). Parity: Claude's `API_RESIZE_PARAMS`
+ * coordinate scaling stays coherent). Parity: the reference's `API_RESIZE_PARAMS`
  * (values are AMI's — the shape/intent is the parity target, not the proprietary
  * numbers).
  */
@@ -160,7 +160,7 @@ export const API_RESIZE_PARAMS: ResizeParams = {
 
 /**
  * Scale a physical (w,h) down to fit within `params` while preserving aspect
- * ratio; never upscales. Parity: Claude's `targetImageSize`. Returns integer dims.
+ * ratio; never upscales. Parity: the reference's `targetImageSize`. Returns integer dims.
  */
 export function targetImageSize(
   physW: number,
@@ -281,7 +281,7 @@ export function withoutTerminal(
 /**
  * Run `fn()` bounded by {@link RUN_LOOP_TIMEOUT_MS} (or `timeoutMs`) and the
  * provided abort signal, so a wedged native call can never hang the turn. Parity:
- * Claude's `drainRunLoop` (a bounded run-loop pump with a 30s ceiling wrapping
+ * the reference's `drainRunLoop` (a bounded run-loop pump with a 30s ceiling wrapping
  * each native call) — AMI has no CFRunLoop, so this is the abort/timeout boundary
  * only, implemented on the canonical {@link withTimeout}.
  */
@@ -348,7 +348,7 @@ export function resetComputerUseInput(): void {
  * narrows the discriminated union on `isSupported` so callers get a bare provider.
  * AMI ships NO native backend, so absent an injected one this fails fast with a
  * clear, actionable message that names the current platform — the parity-faithful
- * analog of Claude's non-darwin/`!isSupported` throws.
+ * analog of the reference's non-darwin/`!isSupported` throws.
  */
 export function requireComputerUseInput(): ComputerUseInputProvider {
   if (cachedInput) return cachedInput;
@@ -369,7 +369,7 @@ export function requireComputerUseInput(): ComputerUseInputProvider {
 
 // ── Clipboard backend (parity: executor.ts pbcopy/pbpaste L70-88) ────────────
 
-/** Read/write the system clipboard. Parity: Claude's pbpaste/pbcopy executor pair. */
+/** Read/write the system clipboard. Parity: the reference's pbpaste/pbcopy executor pair. */
 export interface ClipboardProvider {
   read(): Promise<string>;
   write(text: string): Promise<void>;
@@ -553,7 +553,7 @@ export interface DisplayGeometry {
 }
 
 /**
- * The computer-use executor surface. Parity: Claude's `ComputerExecutor` (the
+ * The computer-use executor surface. Parity: the reference's `ComputerExecutor` (the
  * subset AMI ports — platform-independent orchestration over the native backend).
  */
 export interface ComputerUseExecutor {
@@ -790,7 +790,7 @@ export function resetComputerUseExecutor(): void {
 /** Model/UI-facing name of the computer-use tool (snake_case per AMI convention). */
 export const COMPUTER_USE_TOOL_NAME = 'computer_use';
 
-/** The actions the tool dispatches. Parity: Claude's computer-use tool action set. */
+/** The actions the tool dispatches. Parity: the reference's computer-use tool action set. */
 export const COMPUTER_USE_ACTIONS = [
   'cursor_position',
   'mouse_move',

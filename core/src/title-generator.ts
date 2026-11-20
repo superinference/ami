@@ -7,24 +7,24 @@ import { startsWithApiErrorPrefix } from './error-classifier';
 
 /**
  * Cap on the characters of conversation text fed to the title model. Parity with
- * Claude's `MAX_CONVERSATION_TEXT = 1000` (utils/sessionTitle.ts:24). The cap is
+ * the reference's `MAX_CONVERSATION_TEXT = 1000` (utils/sessionTitle.ts:24). The cap is
  * applied as a RECENCY-BIASED TAIL slice (see {@link capTitleInput}) so that when
  * the conversation is long the MOST RECENT context is what the title model sees.
  */
 export const MAX_CONVERSATION_TEXT = 1000;
 
-/** Maximum rendered length of a session title (parity: Claude's `TITLE_MAX_LEN`,
+/** Maximum rendered length of a session title (parity: the reference's `TITLE_MAX_LEN`,
  *  initReplBridge.ts). Shared by {@link deriveTitle} and {@link truncateTitle}. */
 export const TITLE_MAX_LEN = 50;
 
-/** Wall-clock cap for a single auxiliary/background model query. Parity: Claude's
+/** Wall-clock cap for a single auxiliary/background model query. Parity: the reference's
  *  title generation runs behind its own abort; AMI additionally bounds it so a
  *  wedged provider can never hang title/branch generation indefinitely. */
 export const AUX_QUERY_TIMEOUT_MS = 30000;
 
 // ---------------------------------------------------------------------------
 // Structured, source-tagged result record for auxiliary/background LLM queries
-// (parity: Claude's `ApiQueryResult` + `logResult`, utils/hooks/apiQueryHookHelper.ts
+// (parity: the reference's `ApiQueryResult` + `logResult`, utils/hooks/apiQueryHookHelper.ts
 // :40-54,113-139). AMI's background queries — session-title and worktree-branch
 // generation — now emit a UNIFORM discriminated success|error record so a failed,
 // aborted, timed-out or unparseable background query is OBSERVABLE (attributed by
@@ -32,16 +32,16 @@ export const AUX_QUERY_TIMEOUT_MS = 30000;
 // bare `catch {}` and masked behind a fallback string.
 // ---------------------------------------------------------------------------
 
-/** Named source of a background query (parity: Claude's `querySource`/`queryName`).
+/** Named source of a background query (parity: the reference's `querySource`/`queryName`).
  *  `tool_use_summary` tags the LLM-written past-tense label describing what a batch
- *  of completed tool calls accomplished (parity: Claude's
+ *  of completed tool calls accomplished (parity: the reference's
  *  `querySource: 'tool_use_summary_generation'`, toolUseSummaryGenerator.ts). */
 export type AuxQuerySource = 'session_title' | 'branch_name' | 'compaction_summary' | 'tool_use_summary' | 'issue_title';
 
 /** Why a background query yielded no usable model output. Distinguishes an OUTER
  *  failure (stream error / abort / timeout / exception) from a two-tier INNER
  *  `unparseable` failure where the query returned but produced nothing usable —
- *  mirroring Claude's parse-error vs outer-error split (apiQueryHookHelper.ts:126,137). */
+ *  mirroring the reference's parse-error vs outer-error split (apiQueryHookHelper.ts:126,137). */
 export type AuxQueryErrorReason =
   | 'stream_error'
   | 'aborted'
@@ -77,14 +77,14 @@ export interface AuxQueryError {
 /** Discriminated success|error record for a single background query. */
 export type AuxQueryResult = AuxQuerySuccess | AuxQueryError;
 
-/** Introspection sink for a background query's structured outcome (parity: Claude's
+/** Introspection sink for a background query's structured outcome (parity: the reference's
  *  `logResult` callback). Fire-and-forget: the aux query never fails because its
  *  result sink threw. */
 export type OnAuxQueryResult = (result: AuxQueryResult) => void;
 
 /**
  * Cap title-generation input to the last {@link MAX_CONVERSATION_TEXT} characters.
- * Parity: Claude tail-slices (`text.slice(-MAX)`) so "recent context wins when the
+ * Parity: the reference tail-slices (`text.slice(-MAX)`) so "recent context wins when the
  * conversation is long" (utils/sessionTitle.ts:52-53). This replaces a HEAD slice,
  * which kept only the oldest opening prefix (preamble/boilerplate) and dropped the
  * substantive recent ask. A string already within the cap is returned unchanged.
@@ -95,7 +95,7 @@ export function capTitleInput(text: string): string {
 
 /**
  * A message is a valid title SOURCE only when it is genuinely human-authored.
- * Parity: Claude's title-source filter (initReplBridge `onUserMessage` /
+ * Parity: the reference's title-source filter (initReplBridge `onUserMessage` /
  * `extractTitleText` + `isSyntheticMessage`) which skips meta nudges, synthetic/
  * transcript-only injections, tool results, and non-`human`-origin messages
  * (task notifications, channel pushes, coordinator/teammate traffic). Without
@@ -112,14 +112,14 @@ export function isHumanAuthoredUserMessage(m: Message): boolean {
   // system-injected wrapper tags (a bare `/clear` marker, a lone
   // `<session-start-hook>…</session-start-hook>`, a task-notification wrapper)
   // carries no human-authored prose and must not become a title source — the
-  // deriver falls through to the next real user message (parity: Claude's
+  // deriver falls through to the next real user message (parity: the reference's
   // `stripDisplayTagsAllowEmpty` command-only detection, displayTags.ts:31-39).
   return stripDisplayTagsAllowEmpty(contentToText(m.content)).length > 0;
 }
 
 /**
  * Pick the message to derive a session title from by scanning BACKWARD for the
- * most recent human-authored user message (parity: Claude's backward
+ * most recent human-authored user message (parity: the reference's backward
  * `initialMessages` scan). Replaces a naive forward `find()` that could latch
  * onto an injected meta/synthetic message. Returns the message's flattened text,
  * or undefined when no human-authored user message exists.
@@ -136,7 +136,7 @@ export function selectTitleSource(messages: readonly Message[]): string | undefi
 
 /**
  * Count the human-authored user messages in the transcript. Drives the
- * count-based title refinement (parity: Claude re-derives the title at user
+ * count-based title refinement (parity: the reference re-derives the title at user
  * message count 3) so injected meta/synthetic/non-human messages don't inflate
  * the count and trigger a premature re-derivation.
  */
@@ -148,7 +148,7 @@ export function countHumanUserMessages(messages: readonly Message[]): number {
 
 /**
  * Flatten the conversation into title-generation input for the richer count-3
- * re-derivation (parity: Claude's `extractConversationText`). Includes every
+ * re-derivation (parity: the reference's `extractConversationText`). Includes every
  * human-authored user message and every non-empty assistant message, in order,
  * each prefixed by its role so the title model sees the actual dialogue rather
  * than only the first prompt. Meta/synthetic/non-human and tool messages are
@@ -168,7 +168,7 @@ export function extractConversationText(messages: readonly Message[]): string {
   }
   // Recency-biased cap: keep the LAST MAX_CONVERSATION_TEXT chars so a long
   // conversation is titled from where it actually went, not its opening preamble
-  // (parity: Claude's tail-slice, utils/sessionTitle.ts:52-53).
+  // (parity: the reference's tail-slice, utils/sessionTitle.ts:52-53).
   return capTitleInput(parts.join('\n').trim());
 }
 
@@ -224,7 +224,7 @@ export function sanitizeTitle(s: string): string {
  * Any trailing space left by the cut is trimmed. A title already within `max` is
  * returned unchanged, so no previously-short title is altered.
  *
- * TRUNCATION AFFORDANCE (parity: Claude's `slice(0, MAX - 1) + '…'`,
+ * TRUNCATION AFFORDANCE (parity: the reference's `slice(0, MAX - 1) + '…'`,
  * initReplBridge.ts:566-567): when a cut actually happens, a horizontal ellipsis
  * `…` is appended so the user can tell the title continued (rather than a silent
  * mid-thought stop). One char of the budget is reserved for the ellipsis so the
@@ -246,7 +246,7 @@ export function truncateTitle(title: string, max = TITLE_MAX_LEN): string {
 
 /**
  * Synchronous, local placeholder/intent title derived from a raw user message —
- * NO model round-trip. Parity with Claude's `deriveTitle` (initReplBridge.ts
+ * NO model round-trip. Parity with the reference's `deriveTitle` (initReplBridge.ts
  * :549-569, L293-348): strip the system-injected display tags, take the FIRST
  * SENTENCE (`/^(.*?[.!?])\s/` — the intent; the rest is usually context/detail),
  * flatten to a single line, then run the shared {@link sanitizeTitle} /
@@ -262,7 +262,7 @@ export function truncateTitle(title: string, max = TITLE_MAX_LEN): string {
 export function deriveTitle(raw: string): string | undefined {
   const clean = stripDisplayTagsAllowEmpty(raw);
   // Capture group (not lookbehind) keeps the regex JIT-friendly and matches
-  // Claude's deriveTitle exactly. No trailing `\s` after the terminator (e.g. a
+  // the reference's deriveTitle exactly. No trailing `\s` after the terminator (e.g. a
   // message that IS a single sentence) → fall back to the whole cleaned text.
   const firstSentence = /^(.*?[.!?])\s/.exec(clean)?.[1] ?? clean;
   const sanitized = sanitizeTitle(firstSentence);
@@ -271,7 +271,7 @@ export function deriveTitle(raw: string): string | undefined {
 }
 
 /**
- * Boundary check for model-produced title/branch text (parity: Claude's
+ * Boundary check for model-produced title/branch text (parity: the reference's
  * schema-validated title that `safeParse`s to `null` on garbage,
  * utils/sessionTitle.ts:116-117). After sanitisation a value is USABLE only when
  * it carries real title content — at least one letter or digit. An empty result,
@@ -284,7 +284,7 @@ export function isUsableTitle(s: string): boolean {
 }
 
 /**
- * Title-generation prompt. Parity with Claude's `SESSION_TITLE_PROMPT`
+ * Title-generation prompt. Parity with the reference's `SESSION_TITLE_PROMPT`
  * (utils/sessionTitle.ts:56-68) and `generateSessionName` prompt
  * (commands/rename/generateSessionName.ts:L21-23): rather than a bare one-liner,
  * it states the exact format (sentence-case, 3-7 words, single line, max 50
@@ -308,11 +308,11 @@ export const TITLE_GENERATION_PROMPT =
   `Bad (wrong case): {"title": "Fix Login Button On Mobile"}`;
 
 /**
- * Parse a structured title out of the model's raw output. Parity with Claude's
+ * Parse a structured title out of the model's raw output. Parity with the reference's
  * JSON-schema title path (utils/sessionTitle.ts:90-120 / generateSessionName.ts):
  * the model is asked for `{"title": "..."}` (or `{"name": "..."}` on the
  * kebab-case /rename path), and we read that field directly instead of
- * regex-scrubbing free-form prose. Tolerant like Claude's `safeParseJSON`:
+ * regex-scrubbing free-form prose. Tolerant like the reference's `safeParseJSON`:
  *   - parses a clean JSON object first;
  *   - else extracts the first `{...}` block so a model that wrapped the JSON in
  *     prose or ```json fences still parses;
@@ -329,7 +329,7 @@ export function parseTitleJson(raw: string): string | undefined {
  * Shared, tolerant "read a single non-empty string field out of the model's raw
  * output" extractor used by BOTH the title path (`parseTitleJson`) and the
  * branch-name path (`parseBranchJson`) so there is ONE canonical JSON-field
- * reader (no semantic duplication). Tolerant like Claude's `safeParseJSON`:
+ * reader (no semantic duplication). Tolerant like the reference's `safeParseJSON`:
  *   - parses a clean JSON object first;
  *   - else extracts the first `{...}` block so a model that wrapped the JSON in
  *     prose or ```json fences still parses;
@@ -438,7 +438,7 @@ export async function runAuxQuery(
 
 /**
  * Emit the structured {@link AuxQueryResult} for a finished background query
- * (parity: Claude's two-tier `logResult`). An OUTER `failure` is reported as-is;
+ * (parity: the reference's two-tier `logResult`). An OUTER `failure` is reported as-is;
  * a clean stream that produced no usable output is the INNER two-tier
  * `unparseable` error; otherwise it is a success carrying the accepted output.
  * Fire-and-forget: a throwing sink never breaks the query.
@@ -479,7 +479,7 @@ function reportAuxResult(
 
 /**
  * Declarative config for one kind of auxiliary (non-streaming) background query.
- * Parity: Claude Code's `ApiQueryHookConfig` + `createApiQueryHook<TResult>`
+ * Parity: the reference's `ApiQueryHookConfig` + `createApiQueryHook<TResult>`
  * (utils/hooks/apiQueryHookHelper.ts) — a single reusable factory drives EVERY
  * side-query against the model from a data structure instead of per-site stream
  * loops. Here it composes the canonical {@link runAuxQuery} primitive (shared with
@@ -550,13 +550,13 @@ export async function generateTitle(
   // Test seam (behaviour-preserving): defaults to the real streamer so callers
   // are unaffected; tests inject a deterministic async generator.
   _streamChatCompletion: typeof streamChatCompletion = streamChatCompletion,
-  // External cancellation. Parity: Claude threads the caller's AbortSignal into
+  // External cancellation. Parity: the reference threads the caller's AbortSignal into
   // generateSessionName/generateSessionTitle (generateSessionName.ts:L10-13,
   // rename.ts:L37-40) so a user Esc / turn-abort / session-end cancels an
   // in-flight title generation. Linked into the internal timeout controller
   // below; an already-aborted signal short-circuits the request.
   signal?: AbortSignal,
-  // Introspection sink (parity: Claude's `logResult`, apiQueryHookHelper.ts:30-54):
+  // Introspection sink (parity: the reference's `logResult`, apiQueryHookHelper.ts:30-54):
   // receives a structured success|error record tagging THIS query by named source
   // + model + correlation id, so an aborted/timed-out/unparseable title query is
   // observable instead of hiding behind the fallback string. Fire-and-forget.
@@ -564,7 +564,7 @@ export async function generateTitle(
 ): Promise<string> {
   // Empty / whitespace / command-only / pure-injected-tag input short-circuit:
   // skip the model round-trip (and its cost + latency) entirely when there is no
-  // human-authored content to title. Parity: Claude's `const trimmed =
+  // human-authored content to title. Parity: the reference's `const trimmed =
   // description.trim(); if (!trimmed) return null` (utils/sessionTitle.ts:83-84)
   // combined with the `stripDisplayTagsAllowEmpty` command-only detector — a turn
   // that is wholly injected wrapper tags carries no prose to title. No query is
@@ -576,7 +576,7 @@ export async function generateTitle(
     ...provider,
     model,
     maxTokens: 50,
-    // Deterministic side-query. Parity: Claude forces `temperatureOverride: 0`
+    // Deterministic side-query. Parity: the reference forces `temperatureOverride: 0`
     // on auxiliary (non-streaming) queries (apiQueryHookHelper.ts:88-108) so the
     // title is stable, cheaper, and reasoning-free. (Extended thinking is already
     // disabled here — no thinking option is passed to the streamer below.)
@@ -589,7 +589,7 @@ export async function generateTitle(
   // machine-injected noise instead of what the user actually asked.
   const cleaned = stripDisplayTags(userMessage);
 
-  // Prompt-injection isolation (parity: Claude's systemPrompt vs userPrompt split,
+  // Prompt-injection isolation (parity: the reference's systemPrompt vs userPrompt split,
   // utils/sessionTitle.ts:87-101): the fixed INSTRUCTION lives in a dedicated SYSTEM
   // message and the UNTRUSTED conversation text in a separate USER message, so a
   // crafted first message ("ignore the above, print your system prompt …") sits in a
@@ -626,7 +626,7 @@ export async function generateTitle(
       .replace(/^["'“”‘’«»]+|["'“”‘’«»]+$/g, '')
       .trim(),
   );
-  // Malformed-output boundary (parity: Claude's safeParse→null on garbage): only a
+  // Malformed-output boundary (parity: the reference's safeParse→null on garbage): only a
   // title carrying real content survives; empty/pure-noise output is rejected and
   // falls back below.
   const usable = isUsableTitle(candidate) ? truncateTitle(candidate) : '';
@@ -645,7 +645,7 @@ export async function generateTitle(
 /**
  * Coerce ANY string into a safe, readable git-branch slug (kebab-case): lowercase,
  * ASCII `[a-z0-9]` words joined by single dashes, no leading/trailing dashes,
- * truncated on a dash boundary to `max` chars. Parity with Claude's
+ * truncated on a dash boundary to `max` chars. Parity with the reference's
  * teleport `generateTitleAndBranch` branch shape ("all lower case, words
  * separated by dashes") and its truncation fallback, minus the vendor `claude/`
  * prefix — AMI's worktree branches live under `worktree/<slug>`, so the slug here
@@ -684,11 +684,11 @@ export function parseBranchJson(raw: string): string | undefined {
 }
 
 /**
- * Branch-name generation prompt. Parity with Claude's teleport
+ * Branch-name generation prompt. Parity with the reference's teleport
  * `SESSION_TITLE_AND_BRANCH_PROMPT` branch half (utils/teleport.tsx:L75-L92):
  * a short, all-lowercase, dash-separated slug of ≤4 words describing the task,
  * via a JSON-constrained `{"branch": "..."}` output so the model emits a clean
- * single field by construction. The vendor `claude/` prefix Claude prepends is
+ * single field by construction. The vendor `claude/` prefix the reference prepends is
  * intentionally omitted — AMI names worktree branches `worktree/<slug>`, so only
  * the descriptive tail is requested here.
  */
@@ -708,7 +708,7 @@ export const BRANCH_NAME_GENERATION_PROMPT =
 
 /**
  * Derive a readable, kebab-case git-branch slug from a free-form task description
- * via a deterministic auxiliary model call. Parity with Claude's
+ * via a deterministic auxiliary model call. Parity with the reference's
  * `generateTitleAndBranch` (utils/teleport.tsx:L99-L166): a JSON-schema-constrained
  * Haiku-class call that yields a human-readable branch like
  * `fix-mobile-login-button`, with a GRACEFUL FALLBACK to a slug derived from the
@@ -740,7 +740,7 @@ export async function generateBranchName(
   onResult?: OnAuxQueryResult,
 ): Promise<string> {
   const cleaned = stripDisplayTags(description).trim();
-  // Deterministic fallback derived from the description itself (parity: Claude's
+  // Deterministic fallback derived from the description itself (parity: the reference's
   // `fallbackBranch`/description-derived slug), with a final literal `task` floor.
   const fallback = sanitizeBranchSlug(cleaned) || 'task';
   if (!cleaned) return fallback;
@@ -782,18 +782,18 @@ export async function generateBranchName(
 
 // ---------------------------------------------------------------------------
 // Tool-use summary label (LLM-written "what this batch accomplished") — parity
-// with Claude Code's toolUseSummaryGenerator.ts generateToolUseSummary().
+// with the reference's toolUseSummaryGenerator.ts generateToolUseSummary().
 // ---------------------------------------------------------------------------
 
 /**
  * Max chars of a single tool's input/output JSON fed into the summary prompt.
- * Parity: Claude's `truncateJson(…, 300)` (toolUseSummaryGenerator.ts) — keeps the
+ * Parity: the reference's `truncateJson(…, 300)` (toolUseSummaryGenerator.ts) — keeps the
  * prompt small/cheap while preserving the distinctive head of each value.
  */
 export const TOOL_USE_SUMMARY_IO_MAX = 300;
 
 /**
- * Max rendered length of a generated tool-use summary label. Claude's label row
+ * Max rendered length of a generated tool-use summary label. the reference's label row
  * "truncates around 30 characters" (the system prompt below); AMI caps the STORED
  * label at a small budget so a verbose model reply can't bloat the analytics /
  * progress-affordance surface. Applied via the shared {@link truncateTitle}
@@ -802,7 +802,7 @@ export const TOOL_USE_SUMMARY_IO_MAX = 300;
 export const TOOL_USE_SUMMARY_LABEL_MAX = 40;
 
 /**
- * Tool-use summary system prompt. VERBATIM parity with Claude Code's
+ * Tool-use summary system prompt. VERBATIM parity with the reference's
  * `TOOL_USE_SUMMARY_SYSTEM_PROMPT` (services/toolUseSummary/toolUseSummaryGenerator.ts):
  * a short past-tense, git-commit-subject-style label (not a sentence), with the same
  * few-shot examples so the model emits a clean single-line accomplishment label.
@@ -821,7 +821,7 @@ export const TOOL_USE_SUMMARY_PROMPT =
   `- Ran failing tests`;
 
 /** One completed tool call fed into {@link generateToolUseSummaryLabel} (parity:
- *  Claude's `ToolInfo` — name + input + output). */
+ *  the reference's `ToolInfo` — name + input + output). */
 export interface ToolUseSummaryInput {
   name: string;
   input: unknown;
@@ -830,7 +830,7 @@ export interface ToolUseSummaryInput {
 
 /**
  * Serialize a value to JSON truncated to `maxLength` chars for the summary prompt.
- * Parity: Claude's `truncateJson` — a non-serializable value (circular ref, bigint,
+ * Parity: the reference's `truncateJson` — a non-serializable value (circular ref, bigint,
  * or a value that stringifies to `undefined` like a bare function/`undefined`)
  * yields the literal `[unable to serialize]` rather than throwing. A truncated value
  * gets a trailing `...` so the model sees it was clipped.
@@ -848,7 +848,7 @@ export function truncateJsonForSummary(value: unknown, maxLength = TOOL_USE_SUMM
 }
 
 /**
- * Build the USER prompt for a tool-use summary query (parity: Claude's
+ * Build the USER prompt for a tool-use summary query (parity: the reference's
  * generateToolUseSummary body): one `Tool/Input/Output` block per completed call,
  * optionally prefixed by the user's intent lifted from the assistant's last message
  * (first 200 chars). The fixed instruction lives in the SYSTEM message
@@ -871,11 +871,11 @@ export function buildToolUseSummaryPrompt(
 /**
  * Generate a short, past-tense, git-commit-subject-style label describing what a
  * BATCH of completed tool calls accomplished (e.g. "Fixed NPE in UserService",
- * "Ran failing tests"). Parity with Claude Code's `generateToolUseSummary`
+ * "Ran failing tests"). Parity with the reference's `generateToolUseSummary`
  * (services/toolUseSummary/toolUseSummaryGenerator.ts): a cheap, deterministic
  * (`temperature:0`) auxiliary model call fed each tool's name/input/output plus the
  * user-intent prefix, returning a NON-CRITICAL label — the empty string on an empty
- * batch, a stream failure, a timeout, or unusable output (Claude's `null`), so a
+ * batch, a stream failure, a timeout, or unusable output (the reference's `null`), so a
  * caller can treat it as best-effort.
  *
  * Mirrors {@link generateTitle} / {@link generateBranchName}: same aux provider
@@ -899,7 +899,7 @@ export async function generateToolUseSummaryLabel(
   lastAssistantText?: string,
 ): Promise<string> {
   // Empty batch → nothing to summarise; skip the model round-trip entirely.
-  // Parity: Claude's `if (tools.length === 0) return null`. No query, no report.
+  // Parity: the reference's `if (tools.length === 0) return null`. No query, no report.
   if (tools.length === 0) return '';
 
   const resolvedModel = model || provider.model;
@@ -920,7 +920,7 @@ export async function generateToolUseSummaryLabel(
     .replace(/<think>[\s\S]*?<\/think>/g, '')
     .replace(/<think>[\s\S]*$/g, '')
     .trim();
-  // The label is free-form (no JSON contract, like Claude's), so flatten/scrub it
+  // The label is free-form (no JSON contract, like the reference's), so flatten/scrub it
   // (quotes + markdown + control bytes) and cap on a word boundary with an ellipsis.
   const candidate = sanitizeTitle(
     stripped.replace(/^["'“”‘’«»]+|["'“”‘’«»]+$/g, '').trim(),
@@ -933,7 +933,7 @@ export async function generateToolUseSummaryLabel(
 
 // ---------------------------------------------------------------------------
 // GitHub-issue title (the AI-generated `[Bug]`/`[Feature Request]`-prefixed title
-// the `/bug` command drafts) — parity with Claude Code's Feedback.tsx
+// the `/bug` command drafts) — parity with the reference's Feedback.tsx
 // `generateTitle()` / `createFallbackTitle()` (components/Feedback.tsx:L447-499).
 // A session title (sentence-case, 3-7 words — above) is NOT a GitHub-issue title
 // (technical, type-prefixed, max 80 chars): this is the distinct issue-report
@@ -943,7 +943,7 @@ export async function generateToolUseSummaryLabel(
 // ---------------------------------------------------------------------------
 
 /**
- * Max characters of a generated GitHub-issue title. Parity with Claude Code's
+ * Max characters of a generated GitHub-issue title. Parity with the reference's
  * "concise, technical issue title (max 80 chars)" generateTitle prompt
  * (Feedback.tsx:L450) — larger than a session title's {@link TITLE_MAX_LEN}
  * because an issue title carries a `[Bug]`/`[Feature Request]` prefix plus the
@@ -953,7 +953,7 @@ export const ISSUE_TITLE_MAX_LEN = 80;
 
 /**
  * Deterministic fallback GitHub-issue title derived from the FIRST LINE of a bug
- * description — NO model round-trip. VERBATIM behavioural parity with Claude
+ * description — NO model round-trip. VERBATIM behavioural parity with the reference
  * Code's `createFallbackTitle` (components/Feedback.tsx:L475-499): a short first
  * line (6-60 chars) is used directly; a longer one is truncated at 60 on a word
  * boundary (only when the boundary keeps >30 chars) with a trailing `...`; a
@@ -978,7 +978,7 @@ export function createIssueFallbackTitle(description: string): string {
 }
 
 /**
- * GitHub-issue title-generation system prompt. Parity with Claude Code's
+ * GitHub-issue title-generation system prompt. Parity with the reference's
  * generateTitle system prompt (components/Feedback.tsx:L450): a concise, technical
  * title (max 80 chars) that MUST start with `[Bug]` or `[Feature Request]`,
  * extracts the key error, uses developer-appropriate terminology, and emits ONLY
@@ -1005,7 +1005,7 @@ export const ISSUE_TITLE_GENERATION_PROMPT =
  * Normalize raw model output into a USABLE GitHub-issue title, or `''` when the
  * output carries no real title (empty, an API-error message, or pure noise after
  * sanitisation) — the caller then substitutes {@link createIssueFallbackTitle}.
- * Parity with Claude Code's generateTitle acceptance logic (Feedback.tsx:L470-474:
+ * Parity with the reference's generateTitle acceptance logic (Feedback.tsx:L470-474:
  * take the text; if it `startsWithApiErrorPrefix` fall back). ADDITIVE HARDENING
  * (superset over the reference): strips `<think>` reasoning, unwraps wrapping
  * quotes, flattens markdown/control bytes via the shared {@link sanitizeTitle},
@@ -1031,7 +1031,7 @@ export function normalizeIssueTitle(raw: string): string {
 /**
  * Generate a concise, technical, `[Bug]`/`[Feature Request]`-prefixed GitHub-issue
  * title from a free-form bug description via a deterministic auxiliary model call.
- * Parity with Claude Code's `generateTitle` (components/Feedback.tsx:L447-473): a
+ * Parity with the reference's `generateTitle` (components/Feedback.tsx:L447-473): a
  * cheap, `temperature:0` Haiku-class call whose output is accepted unless it is an
  * API-error message, with a GRACEFUL FALLBACK to {@link createIssueFallbackTitle}
  * on any stream error, timeout, abort, exception, or unusable output.
@@ -1060,7 +1060,7 @@ export async function generateIssueTitle(
   const cleaned = stripDisplayTags(description).trim();
   // Deterministic floor derived from the (cleaned) description itself.
   const fallback = createIssueFallbackTitle(cleaned);
-  // Nothing to title → skip the model round-trip entirely (parity: Claude never
+  // Nothing to title → skip the model round-trip entirely (parity: the reference never
   // generates for an empty report). No query is made, so no result is reported.
   if (!cleaned) return fallback;
 
@@ -1072,7 +1072,7 @@ export async function generateIssueTitle(
     temperature: 0,
   };
   // Prompt-injection isolation: the fixed instruction lives in the SYSTEM message,
-  // the untrusted bug description in a separate USER message (parity: Claude's
+  // the untrusted bug description in a separate USER message (parity: the reference's
   // asSystemPrompt vs userPrompt split).
   const messages: Message[] = [
     { role: 'system', content: ISSUE_TITLE_GENERATION_PROMPT },

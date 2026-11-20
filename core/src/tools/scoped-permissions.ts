@@ -5,7 +5,7 @@ import * as path from 'node:path';
  * ceiling the agent can never exceed, applied BEFORE and INDEPENDENT of the ambient
  * permission mode (so it holds even under `auto-allow` / `bypassPermissions`).
  *
- * Parity with Claude Code's `createAutoMemCanUseTool` (the per-tool-call predicate
+ * Parity with the reference's `createAutoMemCanUseTool` (the per-tool-call predicate
  * `services/extractMemories/extractMemories.ts` wires into `runForkedAgent` for
  * autoDream / extractMemories): it allows Read/Grep/Glob unrestricted, allows Bash
  * ONLY for read-only commands, allows Edit/Write ONLY for paths inside a confined

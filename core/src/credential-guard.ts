@@ -44,7 +44,7 @@ const SECRET_RULES: SecretRule[] = [
       /sk-(?:proj|svcacct|admin)-(?:[A-Za-z0-9_-]{74}|[A-Za-z0-9_-]{58})T3BlbkFJ(?:[A-Za-z0-9_-]{74}|[A-Za-z0-9_-]{58})/g,
   },
   // OpenAI standard (non-scoped) user API key — the `sk-<20>T3BlbkFJ<20>` form.
-  // Its mandatory `T3BlbkFJ` infix is the structural anchor gitleaks/Claude Code
+  // Its mandatory `T3BlbkFJ` infix is the structural anchor gitleaks/the reference
   // rely on (the second alternative of the `openai-api-key` rule) for high-
   // confidence OpenAI detection. Precedes the generic `openai_key` rule so a
   // modern user key is typed by its structure; the generic rule is retained as
@@ -137,7 +137,7 @@ const CREDENTIAL_PATTERNS = COMPILED_RULES.map(r => r.re);
 export const REDACT_PLACEHOLDER = '[REDACTED]';
 
 // Words whose canonical capitalization differs from naive Title Case, mirroring
-// Claude's ruleIdToLabel special-case table so brand/acronym casing renders
+// the reference's ruleIdToLabel special-case table so brand/acronym casing renders
 // correctly in UI/introspection surfaces.
 const LABEL_SPECIAL_CASE: Record<string, string> = {
   aws: 'AWS', gcp: 'GCP', api: 'API', pat: 'PAT', ad: 'AD', tf: 'TF',
@@ -193,7 +193,7 @@ export function isHighEntropySecret(token: string): boolean {
 // value class deliberately excludes quotes/whitespace so a trailing quote is left
 // intact. Unlike the old pattern this accepts short values (no `{16,}` floor) so
 // a short/opaque token under a secret-named key is caught (see redaction tiers).
-// `session[_-]?ingress[_-]?token` and `environment[_-]?secret` mirror Claude
+// `session[_-]?ingress[_-]?token` and `environment[_-]?secret` mirror the reference
 // Code's debug `SECRET_FIELD_NAMES` (bridge/debugUtils.ts) — compound field names
 // whose secret word is prefixed, so the bare `token`/`secret` alternatives (which
 // the leading lookbehind anchors to a word boundary) never match them.
@@ -217,7 +217,7 @@ const ENV_SECRET_ASSIGN_RE =
 
 // Field names that are UNCONDITIONALLY secret: the assigned value is redacted
 // regardless of length or entropy (a short/opaque session token must not leak just
-// because it is low-entropy). `authorization` is included here (matching Claude's
+// because it is low-entropy). `authorization` is included here (matching the reference's
 // unconditional `authorization` header redaction) — a raw Authorization value is a
 // credential whatever its entropy. The weaker `*_key` family (api_key/access_key)
 // keeps the entropy gate below, since those names also appear with non-secret
@@ -227,7 +227,7 @@ const UNCONDITIONAL_SECRET_KEY =
   /^(?:password|passwd|secret|token|session[_-]?ingress[_-]?token|environment[_-]?secret|access[_-]?token|auth[_-]?token|authorization|client[_-]?secret|private[_-]?key|credential)$/i;
 
 // Explicit HTTP-header secrets whose value is redacted UNCONDITIONALLY (regardless
-// of length/entropy), mirroring Claude's dedicated `x-api-key` header rule. Kept
+// of length/entropy), mirroring the reference's dedicated `x-api-key` header rule. Kept
 // separate from the generic `api[_-]?key` key (which stays entropy-gated, since a
 // bare `api_key=placeholder` is often not a secret) so only the unambiguous
 // `x-api-key` HEADER form bypasses the entropy gate. Group 1 = header name, 2 =

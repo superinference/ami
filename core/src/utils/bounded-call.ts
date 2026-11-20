@@ -18,7 +18,7 @@
  *      runs `onRelease` and clears the timer — an acquired resource (pump refcount,
  *      lock, handle) never leaks even on a construction throw.
  *
- * This is the generalization of Claude Code's computer-use `drainRunLoop(fn)`
+ * This is the generalization of the reference's computer-use `drainRunLoop(fn)`
  * wrapper (`utils/computerUse/drainRunLoop.ts`): its refcounted CFRunLoop pump is
  * expressed as the optional {@link BoundedCallOptions.onAcquire}/`onRelease`
  * lifecycle hooks, so ANY caller that must hold a resource for exactly the duration

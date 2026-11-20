@@ -1,7 +1,7 @@
 /**
  * Auto heap-dump guard.
  *
- * PARITY (additive): Claude Code's `heapDumpService` captures a V8 heap snapshot the
+ * PARITY (additive): the reference's `heapDumpService` captures a V8 heap snapshot the
  * first time process RSS crosses a high-water threshold (its `auto-1.5GB` trigger) so a
  * leaking long-running session leaves a post-mortem artifact to analyse — not just a log
  * line. AMI previously had NO memory-warning path at all; this is the building block that
@@ -10,7 +10,7 @@
  * The guard is a self-contained core primitive (no engine/UI dependency): every side
  * effect (reading RSS, writing the snapshot, naming the file, the clock) is injectable so
  * it is fully deterministic under test, and it fires AT MOST ONCE per instance (matching
- * Claude's one-shot capture — repeatedly snapshotting a process that is already over the
+ * the reference's one-shot capture — repeatedly snapshotting a process that is already over the
  * line would only make the pressure worse).
  */
 import { writeHeapSnapshot } from 'node:v8';

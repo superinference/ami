@@ -7,7 +7,7 @@ import { validateConfigJson, stripJsoncComments } from './config';
  * True when the project config at `cwd` exists but fails JSON validation. A
  * corrupt config means its retention/cleanup settings (maxAgeDays etc.) cannot
  * be trusted, so destructive worktree cleanup must be skipped — mirroring
- * Claude's settings-error short-circuit before a reap (utils/cleanup.ts). When
+ * the reference's settings-error short-circuit before a reap (utils/cleanup.ts). When
  * no config exists, cleanup proceeds with the built-in defaults.
  */
 function isProjectConfigInvalid(cwd: string): boolean {
@@ -392,7 +392,7 @@ export function isSafeRefName(ref: string): boolean {
 
 /**
  * Memoization cache for {@link resolveGitDir}, keyed by the absolute start path
- * (parity: Claude's `resolveGitDirCache`, utils/git/gitFilesystem.ts). Every
+ * (parity: the reference's `resolveGitDirCache`, utils/git/gitFilesystem.ts). Every
  * downstream subprocess-free git reader (branch/HEAD) goes through the one
  * memoized resolver so a worktree/submodule `.git`-file is parsed at most once
  * per path.
@@ -434,7 +434,7 @@ function computeGitDir(startPath: string): string | null {
 /**
  * Resolve the REAL git directory for `startPath`, transparently handling the
  * worktree/submodule case where `.git` is a FILE containing `gitdir: <path>`
- * rather than a directory (parity: Claude's `resolveGitDir`,
+ * rather than a directory (parity: the reference's `resolveGitDir`,
  * utils/git/gitFilesystem.ts:L28-L76). Returns the directory a reader should
  * join `HEAD`/refs onto, or `null` when `startPath` is not a git repo / the
  * pointer is stale/unreadable. Memoized per absolute start path.
@@ -456,7 +456,7 @@ export function resolveGitDir(startPath: string): string | null {
 /**
  * Read the current branch name for the repo at `cwd` WITHOUT a git subprocess,
  * correctly in a linked worktree where `.git` is a `gitdir:` pointer file
- * (parity: Claude's filesystem git-HEAD reader). Resolves the real git dir via
+ * (parity: the reference's filesystem git-HEAD reader). Resolves the real git dir via
  * {@link resolveGitDir} before reading `HEAD`, so an agent/task running inside a
  * `.ami/worktrees/` worktree records its actual branch instead of an empty
  * string. Returns `''` on a detached HEAD, a non-repo, or any read failure.
@@ -466,7 +466,7 @@ export function resolveGitDir(startPath: string): string | null {
  * the journal's `gitBranch` field and the cross-agent spend-by-branch view. A
  * tampered HEAD (`ref: refs/heads/$(…)`, control chars, `..` traversal) must not
  * propagate, so the extracted ref is run through {@link isSafeRefName} and a
- * name that fails the allowlist reads as `''` — parity with Claude's filesystem
+ * name that fails the allowlist reads as `''` — parity with the reference's filesystem
  * git reader, which validates every ref it reads from disk (gitFilesystem.ts).
  */
 export function readGitBranchFromDisk(cwd: string): string {
@@ -480,7 +480,7 @@ export function readGitBranchFromDisk(cwd: string): string {
  * holds a bare commit SHA — during a rebase/bisect, `checkout --detach`, or a
  * CI checkout of a tag/commit), or none (not a repo / unreadable / tampered).
  *
- * Parity: Claude's `readGitHead` distinguishes branch vs detached and returns the
+ * Parity: the reference's `readGitHead` distinguishes branch vs detached and returns the
  * raw SHA for a detached HEAD (`{type:'detached', sha}`), so git context is not
  * lost for detached sessions; AMI's {@link readGitBranchFromDisk} alone collapses
  * every non-branch HEAD to '' (gitFilesystem.ts L149-183).
@@ -492,7 +492,7 @@ export type GitHeadInfo =
 
 /**
  * Read the current git HEAD at `cwd` WITHOUT a git subprocess, distinguishing a
- * branch from a detached HEAD (parity: Claude's filesystem `readGitHead`). The
+ * branch from a detached HEAD (parity: the reference's filesystem `readGitHead`). The
  * branch name is validated through {@link isSafeRefName} (defense-in-depth: `.git/HEAD`
  * is attacker-controlled in a cloned repo); a bare commit SHA (sha1 = 40, sha256 = 64
  * lowercase-hex) is recognized as a detached HEAD and returned verbatim. Anything
@@ -524,7 +524,7 @@ export function readGitHeadFromDisk(cwd: string): GitHeadInfo {
  * the branch name when on a branch, `HEAD@<short-sha>` (12-char prefix) when the
  * HEAD is detached, or '' when the path is not a repo / unreadable. Lets the
  * reference journal and the cross-agent spend-by-branch view record real git
- * context for a detached session instead of a blank branch (parity: Claude's
+ * context for a detached session instead of a blank branch (parity: the reference's
  * computeBranch/computeHead degrading to the SHA rather than the empty string).
  */
 export function readGitHeadLabelFromDisk(cwd: string): string {
@@ -578,7 +578,7 @@ interface WorktreeSession {
   createdAt: string;
   /**
    * Name of the detached tmux session bound to this worktree, when the worktree
-   * was created with the tmux affordance enabled (parity: Claude's
+   * was created with the tmux affordance enabled (parity: the reference's
    * WorktreeSession.tmuxSessionName, utils/worktree.ts:L149). Lets exit_worktree
    * surface the `tmux attach -t <name>` reattach command on keep and tear the
    * session down (killTmuxSession) on a destructive remove so a removed/kept
@@ -587,7 +587,7 @@ interface WorktreeSession {
   tmuxSessionName?: string;
   /**
    * True when git sparse-checkout was applied to this worktree via
-   * `settings.worktree.sparsePaths` (parity: Claude's
+   * `settings.worktree.sparsePaths` (parity: the reference's
    * WorktreeSession.usedSparsePaths, utils/worktree.ts:L152-153). Persisted so a
    * resume/introspection path knows the working tree is intentionally a partial
    * checkout rather than a broken/empty one.
@@ -625,7 +625,7 @@ export function worktreeBranchName(slug: string): string {
 
 /**
  * Derive a deterministic tmux session name for a worktree from the repo root and
- * the worktree branch (parity: Claude's `generateTmuxSessionName`,
+ * the worktree branch (parity: the reference's `generateTmuxSessionName`,
  * utils/worktree.ts:L171-179). The repo path is basename'd (only the final dir
  * component is used, never the full path) and every `/` or `.` in `<repo>_<branch>`
  * is replaced with `_`, because tmux rejects `.` and `:` in session names and a
@@ -664,7 +664,7 @@ export const _tmuxHooks = {
 
 /**
  * Spawn a DETACHED tmux session named `sessionName`, rooted at `worktreePath`, so
- * a worktree owns a reattachable background terminal session (parity: Claude's
+ * a worktree owns a reattachable background terminal session (parity: the reference's
  * `createTmuxSessionForWorktree`, utils/worktree.ts:L673-690). Returns
  * `{ created: true }` on success, or `{ created: false, error }` when tmux is not
  * installed or the session could not be started — the caller surfaces the failure
@@ -676,7 +676,7 @@ export function createTmuxSessionForWorktree(sessionName: string, worktreePath: 
 }
 
 /**
- * Kill the tmux session `sessionName` (parity: Claude's `killTmuxSession`,
+ * Kill the tmux session `sessionName` (parity: the reference's `killTmuxSession`,
  * utils/worktree.ts:L693-700). Returns true when the session was killed. Used on a
  * destructive worktree exit so removing a worktree never orphans its background
  * tmux session. Best-effort: a missing session / absent tmux returns false
@@ -688,7 +688,7 @@ export function killTmuxSession(sessionName: string): boolean {
 
 /**
  * Parse a pull-request reference into its PR number, or `null` when the string is
- * not a recognized PR reference (parity with Claude's `parsePRReference`,
+ * not a recognized PR reference (parity with the reference's `parsePRReference`,
  * utils/worktree.ts). Accepts two shapes:
  *   - a GitHub-style PR URL `https://<host>/owner/repo/pull/<N>` (host-agnostic,
  *     with an optional trailing slash / query / hash) — the `/pull/N` path shape is
@@ -777,14 +777,14 @@ export function createWorktreeSession(cwd: string, name: string, opts: { signal?
 }
 
 /**
- * True when the working tree at `worktreePath` has no changes (parity: Claude's
+ * True when the working tree at `worktreePath` has no changes (parity: the reference's
  * central `getIsClean`, utils/git.ts:L356-L367). The ONE canonical cleanliness
  * helper so every callsite shares the same hardened read instead of re-spelling
  * `git status --porcelain`:
  *   - `--no-optional-locks` — a read-only status never takes git's optional index
  *     lock, so it cannot contend with a concurrent git operation in the tree.
  *   - `ignoreUntracked` appends `--untracked-files=no` (git's `-uno`) so a tree
- *     whose ONLY changes are untracked files reads as clean — the knob Claude's
+ *     whose ONLY changes are untracked files reads as clean — the knob the reference's
  *     `getIsClean({ ignoreUntracked })` exposes, which AMI previously lacked.
  * Fail-closed: a git failure returns `false` (an unverifiable tree is treated as
  * dirty), matching the never-act-on-uncertainty contract used across this module.
@@ -822,7 +822,7 @@ export function countWorktreeChanges(
     // below over-counts whenever the base branch itself has unpushed/local-only
     // commits — it attributes those pre-existing base commits to the worktree,
     // so exit_worktree would refuse `remove` on a worktree that contains no new
-    // work. Claude parity: WorktreeExitDialog counts
+    // work. the reference parity: WorktreeExitDialog counts
     // `git rev-list --count <originalHeadCommit>..HEAD`. A malformed or
     // unreachable base is ignored (fall through to the remote-based count).
     if (opts.baseCommit && isValidGitSha(opts.baseCommit)) {
@@ -858,7 +858,7 @@ export function countWorktreeChanges(
 /**
  * Enumerate the dirty files in a worktree, split into tracked modifications and
  * untracked files, so a destructive-op warning can show the user the CONCRETE
- * paths at risk before they confirm (parity with Claude's merge of
+ * paths at risk before they confirm (parity with the reference's merge of
  * getFileStatus().tracked and .untracked, components/TeleportStash.tsx:L18-L19).
  *
  * Parses `git --no-optional-locks status --porcelain`: a `??` XY status code
@@ -898,8 +898,8 @@ export function getWorktreeFileStatus(
 
 /**
  * Prefix of the default stash message used when {@link stashToCleanState} is
- * called with no explicit `message`. Parity with Claude's timestamped auto-stash
- * default (`Claude Code auto-stash - <ISO>`), re-branded to AMI; exported so a
+ * called with no explicit `message`. Parity with the reference's timestamped auto-stash
+ * default (`the reference auto-stash - <ISO>`), re-branded to AMI; exported so a
  * caller / test can recognise an auto-generated stash entry by prefix.
  */
 export const AUTO_STASH_MESSAGE_PREFIX = 'AMI auto-stash';
@@ -907,17 +907,17 @@ export const AUTO_STASH_MESSAGE_PREFIX = 'AMI auto-stash';
 /**
  * Stash a worktree's uncommitted changes (tracked modifications AND untracked
  * files, via `git stash push -u`) to a clean working state, preserving them
- * RECOVERABLY instead of discarding them. Mirrors Claude's `stashToCleanState`
+ * RECOVERABLY instead of discarding them. Mirrors the reference's `stashToCleanState`
  * (components/TeleportStash.tsx): the non-destructive alternative offered before a
  * git operation that would otherwise clobber a dirty tree.
  *
- * `message` is OPTIONAL (parity with Claude's `stashToCleanState(message?)`): when
+ * `message` is OPTIONAL (parity with the reference's `stashToCleanState(message?)`): when
  * omitted (or empty), a timestamped default `${AUTO_STASH_MESSAGE_PREFIX} - <ISO>`
  * is used so an auto-stash always lands with an identifiable, time-ordered label a
  * user can find later in `git stash list`.
  *
  * Untracked-file safety: `git stash push -u` includes untracked files IN the stash,
- * so they are preserved and recoverable — equivalent protection to Claude's
+ * so they are preserved and recoverable — equivalent protection to the reference's
  * "stage untracked files before stashing" step, without leaving them staged in the
  * index after a later `git stash pop`.
  *
@@ -952,7 +952,7 @@ export function stashToCleanState(worktreePath: string, message?: string): boole
  * Outcome of a stale-worktree sweep. `cleaned` lists the worktrees removed;
  * `failed` accounts for every removal that was ATTEMPTED (age/change gates
  * passed) but errored — the name plus the error message — instead of swallowing
- * it into a bare `catch {}`. Parity with Claude's structured CleanupResult
+ * it into a bare `catch {}`. Parity with the reference's structured CleanupResult
  * (utils/cleanup.ts) so a repeatedly-failing removal (permission/lock) is
  * observable rather than silently invisible.
  */
@@ -963,7 +963,7 @@ export interface WorktreeCleanupResult {
 
 /**
  * One day in milliseconds — the default throttle interval for recurring
- * background cleanup (parity: Claude's `ONE_DAY_MS` marker-file throttle,
+ * background cleanup (parity: the reference's `ONE_DAY_MS` marker-file throttle,
  * utils/cleanup.ts). Exported so a caller can reason about the same window.
  */
 export const ONE_DAY_MS = 24 * 60 * 60 * 1000;
@@ -977,7 +977,7 @@ const CLEANUP_MARKER = '.last-cleanup';
  *     marker file, so a long-lived / repeatedly-shutdown session does not
  *     re-walk + re-prune every worktree on every invocation.
  *   - `retentionCount` keeps the N most-recently-modified worktrees regardless
- *     of age (parity: Claude's keep-newest-N retention knob,
+ *     of age (parity: the reference's keep-newest-N retention knob,
  *     `NPM_CACHE_RETENTION_COUNT`), so the freshest worktrees are never reclaimed
  *     by a pure age cutoff even once they cross the threshold.
  */
@@ -1081,7 +1081,7 @@ export function cleanupStaleWorktrees(
  * it never reclaims a same-session worktree created via `enter_worktree` because
  * that worktree is always fresh (mtime < the age cutoff) and a throttled sweep
  * may skip entirely. So a worktree entered in a session that is then interrupted
- * (SIGTERM/SIGHUP/orphan-TTY) leaks until it is 30 days old. Claude destroys each
+ * (SIGTERM/SIGHUP/orphan-TTY) leaks until it is 30 days old. the reference destroys each
  * session-created worktree immediately on shutdown regardless of age
  * (utils/swarm/teamHelpers.ts cleanupSession → destroyWorktree); this is AMI's
  * equivalent for the interactive `enter_worktree` session.
@@ -1138,7 +1138,7 @@ export function bumpWorktreeMtime(worktreePath: string): void {
   } catch { /* best effort */ }
 }
 
-/** Default staleness window for a clone's last fetch — 7 days, matching Claude's
+/** Default staleness window for a clone's last fetch — 7 days, matching the reference's
  *  STALE_FETCH_WARN_MS (utils/deepLink/banner.ts:L22). */
 export const STALE_FETCH_WARN_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -1156,7 +1156,7 @@ function mtimeOrUndefined(p: string): number | undefined {
  * `FETCH_HEAD`. Because `FETCH_HEAD` is PER-WORKTREE, this reads it from BOTH the
  * worktree's own git dir and the resolved common (main repo) git dir and returns
  * whichever is NEWER — so a fetch run in the main checkout is still seen from a
- * linked worktree and vice-versa (parity with Claude's readLastFetchTime
+ * linked worktree and vice-versa (parity with the reference's readLastFetchTime
  * worktree/common-dir newer-of-two fallback, utils/deepLink/banner.ts:L94-L101).
  * Returns undefined when the repo has NEVER fetched (no `FETCH_HEAD` in either
  * location) or `cwd` is not a git repo.
@@ -1245,7 +1245,7 @@ function errnoCodeOf(err: unknown): string {
  *
  * Returns the list of human-readable WARNINGS for dirs that failed with an
  * UNEXPECTED error, so the caller can surface them instead of leaving a silent
- * failure (parity with Claude's symlinkDirectories, utils/worktree.ts:L109-L136).
+ * failure (parity with the reference's symlinkDirectories, utils/worktree.ts:L109-L136).
  * Benign cases are NOT warnings: ENOENT (source missing) and EEXIST (target
  * already present) are expected races and stay silent; any other errno
  * (EACCES/EPERM permission denied, ENOSYS on a filesystem that forbids symlinks)
@@ -1280,7 +1280,7 @@ export function symlinkLargeDirectories(sourceCwd: string, worktreePath: string,
  * Each line in the file is a relative path (a file or a directory). Lines
  * starting with `#` are comments; empty lines are skipped.
  *
- * Parity with Claude's copyWorktreeIncludeFiles (utils/worktree.ts): a file is
+ * Parity with the reference's copyWorktreeIncludeFiles (utils/worktree.ts): a file is
  * only carried over when it is BOTH named in `.worktreeinclude` AND GITIGNORED
  * (untracked-and-ignored). `.worktreeinclude` is for local, gitignored artifacts
  * (`.env`, caches, build outputs) — a git-TRACKED file is already present in the
@@ -1429,7 +1429,7 @@ export function validateWorktreeGitFile(worktreePath: string): { valid: boolean;
 
 /**
  * Anti-hijack trust-chain validation for a linked worktree, mirroring git's own
- * `.git` file → `gitdir:` → `commondir` structure and Claude's
+ * `.git` file → `gitdir:` → `commondir` structure and the reference's
  * resolveCanonicalRoot hardening (utils/git.ts).
  *
  * The `.git` file, its admin-dir `commondir`, and the `gitdir` back-link are all

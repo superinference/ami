@@ -1,5 +1,5 @@
 /**
- * Combined AbortSignal helper — parity with Claude Code's
+ * Combined AbortSignal helper — parity with the reference's
  * `createCombinedAbortSignal` (utils/combinedAbortSignal.ts).
  *
  * Combines a primary `signal` with an optional second signal (`signalB`) and/or
@@ -13,7 +13,7 @@
  * freed immediately instead of lingering until it would have fired.
  *
  * This is a DISTINCT capability from {@link ../../../../common/src/child-abort-signal}
- * — Claude itself ships the two as separate files. The child helper derives a
+ * — the reference itself ships the two as separate files. The child helper derives a
  * NON-propagating, WeakRef-GC-safe child controller (`abort()` + `cleanup()`);
  * this helper derives a plain combined signal that simply mirrors its sources,
  * with no back-propagation guarantee and no explicit `abort()`. Core call sites

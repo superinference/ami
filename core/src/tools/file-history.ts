@@ -4,7 +4,7 @@ import * as path from 'path';
 /**
  * Maximum number of pre-edit snapshots kept per file. Older `.bak` snapshots
  * beyond this are pruned so a long editing session cannot grow the history dir
- * without bound. Parity: Claude Code's pre-edit file-history recovery buffer.
+ * without bound. Parity: the reference's pre-edit file-history recovery buffer.
  */
 export const FILE_HISTORY_MAX_SNAPSHOTS = 20;
 

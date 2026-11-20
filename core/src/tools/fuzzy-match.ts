@@ -28,7 +28,7 @@ export type StrategyName = (typeof STRATEGY_NAMES)[number];
  * like `<function_results>` or a `\n\nHuman:` turn marker. When such a sanitized
  * form arrives as `old_string`, an exact match fails against the raw file bytes.
  * Desanitizing the match string (and re-applying the SAME substitutions to
- * `new_string`) recovers the edit. Mirrors Claude Code's DESANITIZATIONS.
+ * `new_string`) recovers the edit. Mirrors the reference's DESANITIZATIONS.
  */
 export const DESANITIZATIONS: ReadonlyArray<readonly [string, string]> = [
   ['<fnr>', '<function_results>'],
@@ -56,7 +56,7 @@ export function desanitizeMatchString(s: string): string {
  * Error surfaced when an edit locates its target but produces byte-identical
  * content — a no-op that normalization/reindent/quote-restyling erased (e.g.
  * replacing `‘b’` with `'b'` when the file's curly typography is preserved, or a
- * reindent that reproduces the region verbatim). Claude Code rejects such edits
+ * reindent that reproduces the region verbatim). the reference rejects such edits
  * with its post-apply identity check; AMI surfaces the same so a no-op is never
  * reported as a successful edit. Consumers compare `error === NOOP_EDIT_ERROR`
  * rather than matching the message text.
@@ -414,7 +414,7 @@ const RIGHT_SINGLE_CURLY = '\u2019';
  * at the start of the string, or the preceding character is whitespace, an
  * opening bracket, or an em/en dash. Everything else is a closing context.
  *
- * This is a per-character context test (mirroring Claude Code's `isOpeningContext`)
+ * This is a per-character context test (mirroring the reference's `isOpeningContext`)
  * \u2014 it stays correct even when earlier quotes were skipped, unlike an even/odd
  * running-parity counter which mis-flips every quote after a skipped/contraction
  * apostrophe or a bracket-opened quote.

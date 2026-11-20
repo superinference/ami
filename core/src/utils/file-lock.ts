@@ -39,7 +39,7 @@ import {
  * over underneath the holder.
  *
  * This is the ONE lock primitive; do not hand-roll another (dedup rule). The
- * retry budget mirrors Claude Code's swarm lock sizing (retries×backoff tuned
+ * retry budget mirrors the reference's swarm lock sizing (retries×backoff tuned
  * for ~10 concurrent writers each doing a short readdir+read+write section).
  */
 export interface FileLockOptions {
@@ -346,7 +346,7 @@ export interface FileLockSyncOptions {
    * taken over by another process (deleted, or now records a different PID) while
    * the synchronous critical section ran — i.e. the section exceeded `staleMs` and a
    * waiter judged this holder stale and stole the lock, so mutual exclusion was no
-   * longer guaranteed. Parity: Claude Code's `saveConfigWithLock` installs an
+   * longer guaranteed. Parity: the reference's `saveConfigWithLock` installs an
    * `onCompromised` handler that DOWNGRADES a stolen lock to a log instead of letting
    * the default handler throw an unhandled exception. Callback errors are swallowed.
    */
@@ -365,7 +365,7 @@ export interface FileLockSyncOptions {
  * mid-section heartbeat (nothing else runs on this thread to refresh the mtime); a
  * section longer than `staleMs` can therefore be judged stale by a waiter and have its
  * lock stolen. That exact case is detected on release and reported via `onCompromised`
- * (parity: Claude's stolen-lock → log, not throw). Returns whatever `fn` returns.
+ * (parity: the reference's stolen-lock → log, not throw). Returns whatever `fn` returns.
  */
 export function withFileLockSync<T>(
   target: string,

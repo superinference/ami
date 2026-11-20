@@ -1,11 +1,11 @@
 /**
- * Background memory-consolidation primitives (parity: Claude Code's
+ * Background memory-consolidation primitives (parity: the reference's
  * `services/autoDream/` — `autoDream.ts`, `consolidationLock.ts`,
  * `consolidationPrompt.ts`).
  *
  * A consolidation ("dream") pass is a reflective sweep over the auto-memory
  * directory that merges recent signal into durable, well-organized memories.
- * Claude gates how often it fires behind two scheduling knobs and records the
+ * the reference gates how often it fires behind two scheduling knobs and records the
  * last run in a single dual-purpose lock file whose filesystem **mtime encodes
  * the last-consolidated timestamp** and whose body holds the holder PID — so one
  * `stat()` per turn answers "when did we last consolidate?" and a crash can
@@ -26,7 +26,7 @@ import { plural } from './tools/tool-utils';
 
 /**
  * Namespaced, human-readable debug sink for consolidation diagnostics (parity:
- * Claude Code's `[autoDream]` {@link logForDebugging} lines in
+ * the reference's `[autoDream]` {@link logForDebugging} lines in
  * `consolidationLock.ts`). Each call explains WHY a consolidation was skipped or
  * delayed so an operator can trace scheduling decisions. The default routes to
  * the shared logger under the `autoDream` component, so every line is emitted as
@@ -41,7 +41,7 @@ export const CONSOLIDATION_DEBUG_COMPONENT = 'autoDream';
 /** Default debug sink — emits each line through the shared logger, namespaced. */
 const defaultDebug: ConsolidationDebug = (message) => log(CONSOLIDATION_DEBUG_COMPONENT, message);
 
-/** Scheduling knobs for background memory consolidation (parity: Claude's
+/** Scheduling knobs for background memory consolidation (parity: the reference's
  *  `AutoDreamConfig` — `minHours` / `minSessions`). */
 export interface AutoDreamConfig {
   /** Minimum hours since the last consolidation before another may fire. */
@@ -50,7 +50,7 @@ export interface AutoDreamConfig {
   minSessions: number;
 }
 
-/** Defaults mirroring Claude Code's `DEFAULTS` record. */
+/** Defaults mirroring the reference's `DEFAULTS` record. */
 export const AUTO_DREAM_DEFAULTS: AutoDreamConfig = {
   minHours: 24,
   minSessions: 5,
@@ -58,7 +58,7 @@ export const AUTO_DREAM_DEFAULTS: AutoDreamConfig = {
 
 /**
  * Resolve an {@link AutoDreamConfig} from an untrusted raw value (e.g. a remote
- * feature-flag payload or a settings blob), applying Claude Code's defensive
+ * feature-flag payload or a settings blob), applying the reference's defensive
  * per-field validation: a field is used only when it is a finite positive
  * number, otherwise the default is substituted. A stale / wrong-type value can
  * therefore never corrupt scheduling.
@@ -77,7 +77,7 @@ export function resolveAutoDreamConfig(raw: unknown): AutoDreamConfig {
 const LOCK_FILE = '.consolidate-lock';
 
 /** A held lock is considered stale past this even if its PID is live (guards
- *  against PID reuse after a hard crash). Mirrors Claude's `HOLDER_STALE_MS`. */
+ *  against PID reuse after a hard crash). Mirrors the reference's `HOLDER_STALE_MS`. */
 const HOLDER_STALE_MS = 60 * 60 * 1000;
 
 const MS_PER_HOUR = 60 * 60 * 1000;
@@ -228,7 +228,7 @@ export interface ConsolidationGate {
 }
 
 /**
- * Decide whether a background consolidation should fire now. Mirrors Claude's
+ * Decide whether a background consolidation should fire now. Mirrors the reference's
  * two-gate rule: enough HOURS must have elapsed since the last run AND enough
  * SESSIONS must have accumulated. Config is resolved defensively so a bad remote
  * value can't force (or suppress) a run.
@@ -250,7 +250,7 @@ export function isConsolidationDue(opts: {
 
 /**
  * How often the (more expensive) per-turn SESSION scan may run while the cheap
- * time-gate keeps passing. Mirrors Claude Code's `SESSION_SCAN_INTERVAL_MS`
+ * time-gate keeps passing. Mirrors the reference's `SESSION_SCAN_INTERVAL_MS`
  * (10 min). Rationale: the lock's mtime only advances once a consolidation
  * actually fires, so when the time-gate opens but the session-gate does NOT, the
  * time-gate keeps opening on EVERY subsequent turn — and without a throttle the
@@ -299,7 +299,7 @@ export interface ConsolidationScheduler {
 
 /**
  * Create a stateful consolidation scheduler that guards the expensive session
- * scan behind a throttle/backoff (parity: Claude Code's `autoDream` runner, whose
+ * scan behind a throttle/backoff (parity: the reference's `autoDream` runner, whose
  * closure-scoped `lastSessionScanAt` + `SESSION_SCAN_INTERVAL_MS` stop it from
  * re-scanning the transcript directory on every turn once the time-gate is
  * perpetually open).
@@ -364,7 +364,7 @@ export function createConsolidationScheduler(opts: {
 
 /**
  * Build the consolidation ("dream") prompt pointed at a memory root and a
- * transcript directory. Parity with Claude Code's `buildConsolidationPrompt`,
+ * transcript directory. Parity with the reference's `buildConsolidationPrompt`,
  * including the optional `extra` additional-context slot. Reuses the single-source
  * entrypoint filename + line cap from {@link ./memory} so the index discipline
  * never drifts.
@@ -420,7 +420,7 @@ Return a brief summary of what you consolidated, updated, or pruned. If nothing 
 
 /**
  * Discriminator for the spawnable background memory-consolidation task type
- * (parity: Claude Code's `TaskType` 'dream' entry in `tasks.ts` and
+ * (parity: the reference's `TaskType` 'dream' entry in `tasks.ts` and
  * `DreamTaskState.type` in `DreamTask.ts`). AMI's `task` tool `mode` enum
  * (explore/general/fork) covers interactive delegation; `'dream'` is the distinct
  * NON-interactive, background consolidation run, carried as a typed descriptor
@@ -430,10 +430,10 @@ export const CONSOLIDATION_TASK_TYPE = 'dream' as const;
 
 /**
  * Typed parameters driving one background memory-consolidation ("dream") run —
- * the core-layer analog of Claude Code's `registerDreamTask` opts /
+ * the core-layer analog of the reference's `registerDreamTask` opts /
  * `DreamTaskState`. Bundles the three run parameters so a
  * consumer surfacing the run (footer pill, task dialog, `/dream`) carries the
- * same state Claude does:
+ * same state the reference does:
  *
  * - `sessionsReviewing` — how many prior sessions this pass is consolidating
  *   (recorded for display / diagnostics; never negative, always an integer).
@@ -452,7 +452,7 @@ export interface ConsolidationRunParams {
   abortController: AbortController;
   /**
    * Live progress of the run — a user-facing introspection surface (parity:
-   * Claude Code's `DreamTaskState`: a ticking elapsed timer, a
+   * the reference's `DreamTaskState`: a ticking elapsed timer, a
    * `reviewing N sessions · M files touched` summary, a running/completed/error
    * status, and a per-turn transcript with tool counts). Created running by
    * {@link beginConsolidationRun}; mutate it with {@link recordConsolidationTurn} /
@@ -462,12 +462,12 @@ export interface ConsolidationRunParams {
   progress: ConsolidationProgress;
 }
 
-/** Lifecycle state of a consolidation run (parity: Claude's DreamTask status). */
+/** Lifecycle state of a consolidation run (parity: the reference's DreamTask status). */
 export type ConsolidationStatus = 'running' | 'completed' | 'error';
 
 /**
  * One assistant turn of a consolidation run, as surfaced in the live transcript
- * (parity: Claude's `DreamTaskState.turns` rendered by `DreamDetailDialog` with a
+ * (parity: the reference's `DreamTaskState.turns` rendered by `DreamDetailDialog` with a
  * per-turn tool count). `summary` is a short human label; `toolCount` is the
  * number of tool calls the turn issued (clamped to a non-negative integer).
  */
@@ -481,7 +481,7 @@ export interface ConsolidationTurn {
 /**
  * Live, mutable progress of a background consolidation ("dream") run — the core
  * building block behind the progress/introspection surface a frontend renders
- * (parity: Claude Code's `DreamTaskState`). Holds the start time (for a ticking
+ * (parity: the reference's `DreamTaskState`). Holds the start time (for a ticking
  * elapsed timer), the count of sessions under review, the set of files the pass
  * has touched, a running per-turn transcript, and a status that moves
  * `running` → `completed` | `error` exactly once.
@@ -539,7 +539,7 @@ export function recordConsolidationTurn(
 
 /**
  * Record that the run touched `absPath`. De-duplicates (first-seen order
- * preserved) so the `M files touched` count matches Claude's `filesTouched`
+ * preserved) so the `M files touched` count matches the reference's `filesTouched`
  * set semantics. Returns `true` when the path was newly added, `false` when it
  * was already present.
  */
@@ -595,9 +595,9 @@ export function consolidationElapsedMs(
 
 /**
  * Render the one-line progress summary a frontend shows beneath the title
- * (parity: Claude's `{elapsed} · reviewing N sessions{· M files touched}` in
+ * (parity: the reference's `{elapsed} · reviewing N sessions{· M files touched}` in
  * `DreamDetailDialog`). The files clause is omitted when nothing has been
- * touched yet (Claude renders it only when `filesTouched.length > 0`). Elapsed
+ * touched yet (the reference renders it only when `filesTouched.length > 0`). Elapsed
  * is formatted via the shared {@link formatDuration}; counts are pluralized via
  * the shared {@link plural} helper — no bespoke re-implementation.
  */
@@ -643,7 +643,7 @@ export function consolidationProgressSnapshot(
 }
 
 /**
- * Type guard for a consolidation ("dream") run descriptor (parity: Claude's
+ * Type guard for a consolidation ("dream") run descriptor (parity: the reference's
  * `isDreamTask`). Lets a dispatcher distinguish a background consolidation run
  * from other spawnable work without a structural check at each call site.
  */
@@ -658,7 +658,7 @@ export function isDreamTask(task: unknown): task is ConsolidationRunParams {
 
 /**
  * Acquire the consolidation lock and, on success, return a typed
- * {@link ConsolidationRunParams} describing the run (parity: Claude's
+ * {@link ConsolidationRunParams} describing the run (parity: the reference's
  * acquire-then-`registerDreamTask`). Returns `null` when the lock is held by a
  * live, fresh holder (a diagnostic is emitted by {@link tryAcquireConsolidationLock}),
  * so a caller never double-launches a consolidation. An {@link AbortController}
@@ -686,7 +686,7 @@ export function beginConsolidationRun(opts: {
 
 /**
  * Cancel an in-flight consolidation run and rewind the lock to its pre-acquire
- * state (parity: Claude's dream-task kill, which aborts the agent then rolls the
+ * state (parity: the reference's dream-task kill, which aborts the agent then rolls the
  * lock mtime back via the same path as a fork-failure). Idempotent: aborting an
  * already-aborted controller is a no-op. The run's live {@link ConsolidationProgress}
  * is sealed as an error ("aborted") so a surface watching it reflects the stop

@@ -15,7 +15,7 @@ export interface GatedMemoryEntry {
 /**
  * Freshness readout for the gate's memory consolidation (the `persistTo()` write
  * that promotes critic-approved entries into the MemoryManager). Mirrors the
- * state Claude Code surfaces from its consolidation lock + MemoryFileSelector
+ * state the reference surfaces from its consolidation lock + MemoryFileSelector
  * status row: whether consolidation has ever run, how long ago, and how many
  * approved entries are waiting for the next write. AMI consolidation is
  * synchronous, so there is no persistent `running` phase — the state is `never`
@@ -32,7 +32,7 @@ export interface ConsolidationStatus {
   /**
    * Message of the most recent `persistTo()` persistence failure (I/O error
    * raised by `MemoryManager.saveMemory`), or null when the last write succeeded
-   * or none has run. Surfaced for diagnostics — parity with Claude Code's
+   * or none has run. Surfaced for diagnostics — parity with the reference's
    * `logForDebugging(...Failed to…)` memory-persistence error path.
    */
   lastError: string | null;
@@ -63,7 +63,7 @@ function truncResult(text: string, max: number): string {
 export const MAX_ENTRIES = 100;
 export const MAX_CONTEXT_CHARS = 8000;
 export const MAX_PERSIST_CHARS = 8000;
-// Line caps mirror Claude Code's memdir MAX_ENTRYPOINT_LINES: a block that stays
+// Line caps mirror the reference's memdir MAX_ENTRYPOINT_LINES: a block that stays
 // under the char budget can still be excessively many lines (many short entries),
 // so a separate line boundary cap fires first on a line boundary.
 export const MAX_CONTEXT_LINES = 200;
@@ -72,7 +72,7 @@ export const MAX_PERSIST_LINES = 200;
 export const PER_ENTRY_CONTEXT_CHARS = 500;
 export const PER_ENTRY_PERSIST_CHARS = 200;
 // Entries older than this (in days) get an inline staleness caveat when emitted —
-// parity with Claude Code's memoryFreshnessText. Gate entries are session-scoped
+// parity with the reference's memoryFreshnessText. Gate entries are session-scoped
 // and usually fresh, so the default threshold rarely fires.
 export const STALENESS_DAYS = 7;
 
@@ -118,7 +118,7 @@ function capAggregate(text: string, max: number): string {
 
 // Cap `text` to `max` lines on a line boundary, appending a sentinel naming how
 // many lines were dropped. Runs BEFORE capAggregate so the char cap operates on
-// the already line-bounded text — mirroring Claude Code's line-then-byte order.
+// the already line-bounded text — mirroring the reference's line-then-byte order.
 function capLines(text: string, max: number): string {
   const lines = text.split('\n');
   if (lines.length <= max) return text;
@@ -131,7 +131,7 @@ export class MemoryGate {
   private entries: GatedMemoryEntry[] = [];
   // Epoch ms of the last persistTo() consolidation, or null until the first one.
   // Surfaced through getConsolidationStatus()/getLastConsolidatedAt() so a readout
-  // can show consolidation freshness (parity with Claude's readLastConsolidatedAt).
+  // can show consolidation freshness (parity with the reference's readLastConsolidatedAt).
   private lastConsolidatedAt: number | null = null;
   // Message of the last persistTo() I/O failure, or null on success/never-run.
   private lastPersistError: string | null = null;
@@ -213,7 +213,7 @@ export class MemoryGate {
 
   // Entries sorted by criticScore (descending) and sliced to the emit budget, so
   // the most relevant approved observations are surfaced first and a hard cap
-  // bounds how many are emitted — parity with Claude Code's relevance-ranked,
+  // bounds how many are emitted — parity with the reference's relevance-ranked,
   // top-N budgeted memory selection. Stable: ties keep insertion order.
   private rankedForEmit(): GatedMemoryEntry[] {
     return this.entries
@@ -277,7 +277,7 @@ export class MemoryGate {
   }
 
   /**
-   * Freshness readout for memory consolidation — parity with Claude's
+   * Freshness readout for memory consolidation — parity with the reference's
    * consolidation-lock mtime read + MemoryFileSelector status row. Exposes the
    * last-consolidation timestamp (parity: readLastConsolidatedAt) alongside the
    * derived state/relative string and the last persistence error. `now` is

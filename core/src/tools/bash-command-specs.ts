@@ -14,17 +14,17 @@
  * the two consumers share a single source of truth and cannot drift.
  *
  * The {@link CommandSpec} / {@link CommandSpecArgument} / {@link CommandSpecOption}
- * vocabulary mirrors Claude Code's bash command-spec model
+ * vocabulary mirrors the reference's bash command-spec model
  * (src/utils/bash/registry.ts + src/utils/bash/specs/*): `isCommand`,
  * `isVariadic`, `isOptional`, `isModule`, `isScript`, `isDangerous` on an
  * argument; `name` / `args` / `isRequired` on an option. AMI's specs are a
  * SUPERSET — e.g. the `timeout` spec carries AMI's richer `-k`/`-s` value
- * options that Claude's spec omits — because AMI's wrapper-unwrapping needs
+ * options that the reference's spec omits — because AMI's wrapper-unwrapping needs
  * them; never a subset.
  */
 
 /**
- * A positional argument of a command spec. Mirrors Claude Code's `Argument`
+ * A positional argument of a command spec. Mirrors the reference's `Argument`
  * (src/utils/bash/registry.ts): the flags describe what the token means so a
  * consumer can reason about it structurally instead of by command-specific
  * regex.
@@ -47,7 +47,7 @@ export interface CommandSpecArgument {
 }
 
 /**
- * An option (flag) of a command spec. Mirrors Claude Code's `Option`. When
+ * An option (flag) of a command spec. Mirrors the reference's `Option`. When
  * {@link args} is present the option consumes a following token as its value —
  * the key arity fact {@link buildWrapperValueFlagPattern} derives from.
  */
@@ -61,7 +61,7 @@ export interface CommandSpecOption {
 }
 
 /**
- * A declarative model of one command's arguments and options. Mirrors Claude
+ * A declarative model of one command's arguments and options. Mirrors the reference
  * Code's `CommandSpec`.
  */
 export interface CommandSpec {
@@ -77,9 +77,9 @@ export interface CommandSpec {
  * and whose option arity it must know — `srun` (SLURM launcher) plus the
  * value-flag-bearing `timeout` / `stdbuf` / `nice` / `env`. `nohup` is a pure
  * command-wrapper with no options; `time` carries only the value-less `-p`.
- * `sleep` / `alias` / `pyright` round out Claude Code's spec catalog
+ * `sleep` / `alias` / `pyright` round out the reference's spec catalog
  * (src/utils/bash/specs/*) so the declarative model is a superset of the
- * reference, not a subset. Authored faithfully to Claude Code's specs where they
+ * reference, not a subset. Authored faithfully to the reference's specs where they
  * overlap, extended where AMI needs more (see `timeout`).
  */
 export const COMMAND_SPECS: readonly CommandSpec[] = [
@@ -95,7 +95,7 @@ export const COMMAND_SPECS: readonly CommandSpec[] = [
   {
     name: 'timeout',
     description: 'Run a command with a time limit',
-    // AMI superset: Claude's timeout spec has no options; AMI's wrapper-unwrapping
+    // AMI superset: the reference's timeout spec has no options; AMI's wrapper-unwrapping
     // must know `-k`/`--kill-after` and `-s`/`--signal` take a following operand.
     options: [
       { name: ['-k', '--kill-after'], description: 'Send KILL after this delay', args: { name: 'duration' } },
@@ -201,13 +201,13 @@ export const COMMAND_SPECS: readonly CommandSpec[] = [
       isOptional: true,
     },
   },
-  // Interpreters. These declare the structured per-argument attributes Claude's
+  // Interpreters. These declare the structured per-argument attributes the reference's
   // fig specs carry (`isModule` on `python -m <module>`, `isCommand`+`isDangerous`
   // on an inline-code flag like `python -c <code>` / `node -e <code>`, and an
   // `isScript` positional) so the prefix extractor ({@link buildSpecPrefix}) can
   // FOLD a module name into a canonical prefix (`python -m http.server`) while
   // STOPPING at inline code — the code must never become part of a grantable
-  // prefix. Mirrors Claude Code's python `-c` break + `-m`/isModule inclusion
+  // prefix. Mirrors the reference's python `-c` break + `-m`/isModule inclusion
   // (src/utils/shell/specPrefix.ts L103-119, L229-236).
   {
     name: 'python',
@@ -271,7 +271,7 @@ function specOptionArgs(opt: CommandSpecOption | undefined): CommandSpecArgument
 /**
  * How many words a scoped prefix extends to for a command, DRIVEN BY the
  * structured per-argument attributes its spec declares — the parity analogue of
- * Claude Code's `calculateDepth` (src/utils/shell/specPrefix.ts L139-209), minus
+ * the reference's `calculateDepth` (src/utils/shell/specPrefix.ts L139-209), minus
  * the fig/DEPTH_RULES table (AMI's subcommand-CLI depth lives in permissions.ts's
  * `BASH_COMMAND_SPECS`; this consumes the attribute model those CLIs lack).
  *
@@ -311,7 +311,7 @@ export function calculateSpecDepth(args: string[], spec: CommandSpec): number {
  * URL-shaped token ends the prefix (a filename / URL must never leak into a
  * grantable rule) EXCEPT a module name that immediately follows a module flag
  * (`python -m http.server` — the dotted module looks file-shaped but belongs in
- * the prefix). Mirrors Claude's `shouldStopAtArg` (specPrefix.ts L211-241).
+ * the prefix). Mirrors the reference's `shouldStopAtArg` (specPrefix.ts L211-241).
  */
 function shouldStopAtSpecArg(arg: string, priorArgs: string[], spec: CommandSpec): boolean {
   if (arg.startsWith('-')) return true;
@@ -334,7 +334,7 @@ function shouldStopAtSpecArg(arg: string, priorArgs: string[], spec: CommandSpec
  * (`python -m http.server`), STOPS at an inline-code flag so the code is never
  * part of a grantable prefix (`python -c '<code>'` → `python`), and stops at a
  * file/URL operand. Depth is bounded by {@link calculateSpecDepth}. Pure over
- * `(string, string[], CommandSpec)`. Mirrors Claude's `buildPrefix`
+ * `(string, string[], CommandSpec)`. Mirrors the reference's `buildPrefix`
  * (src/utils/shell/specPrefix.ts L88-137).
  */
 export function buildSpecPrefix(command: string, args: string[], spec: CommandSpec): string {

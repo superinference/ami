@@ -128,7 +128,7 @@ export class KeychainReadTimeoutError extends Error {
   }
 }
 
-/** Default keychain timeout (ms) — mirrors Claude Code's keychain read cap. */
+/** Default keychain timeout (ms) — mirrors the reference's keychain read cap. */
 export const DEFAULT_KEYCHAIN_TIMEOUT_MS = 10_000;
 
 const defaultSecretSpawn: SecretSpawnFn = (command, args, timeoutMs) =>

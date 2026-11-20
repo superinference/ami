@@ -82,7 +82,7 @@ interface CentralEntry {
 
 /**
  * Whether an in-archive path is safe to extract: relative, no absolute root,
- * no `..` traversal segment. Parity with Claude Code's `isPathSafe`.
+ * no `..` traversal segment. Parity with the reference's `isPathSafe`.
  */
 export function isArchivePathSafe(filePath: string): boolean {
   if (typeof filePath !== 'string' || filePath.length === 0) return false;

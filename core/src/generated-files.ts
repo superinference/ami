@@ -4,7 +4,7 @@
 // A Linguist-style classifier that decides whether a repo-relative path is a
 // generated or vendored file (lockfiles, minified/bundled assets, TypeScript
 // declaration files, protobuf/gRPC/Swagger/OpenAPI output, build/vendor dirs,
-// etc.). Mirrors Claude Code's `utils/generatedFiles.ts` so these files can be
+// etc.). Mirrors the reference's `utils/generatedFiles.ts` so these files can be
 // excluded from workspace indexing — their symbols are machine-generated noise
 // that pollute the symbol index and the summary injected into the system prompt.
 //

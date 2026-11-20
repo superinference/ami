@@ -56,7 +56,7 @@ const MAX_IN_MEMORY_EVENTS = 1000;
 
 /**
  * Default in-memory event TTL (1h) applied when age-eviction is enabled via a truthy
- * non-numeric `AMI_ANALYTICS_EVENT_TTL_MS`. Mirrors Claude's SPAN_TTL_MS orphan sweep:
+ * non-numeric `AMI_ANALYTICS_EVENT_TTL_MS`. Mirrors the reference's SPAN_TTL_MS orphan sweep:
  * bounds retained events by AGE, complementing the {@link MAX_IN_MEMORY_EVENTS} count cap.
  */
 export const DEFAULT_IN_MEMORY_EVENT_TTL_MS = 60 * 60 * 1000;
@@ -90,7 +90,7 @@ const TOOL_NAME_KEYS = new Set(['tool', 'toolname', 'tool_name', 'name']);
  * Keys whose VALUE is a raw filesystem path — replaced on egress with a truncated
  * SHA-256 so a self-hosted collector can still correlate/dedup by file (same path →
  * same hash) without the path itself (which can embed project names, usernames, PII)
- * ever leaving the machine. Mirrors Claude's fileOperationAnalytics hashFilePath.
+ * ever leaving the machine. Mirrors the reference's fileOperationAnalytics hashFilePath.
  */
 const PATH_KEYS = new Set(['file_path', 'filepath', 'path', 'filename', 'file', 'cwd', 'dir', 'directory']);
 /** Keys carrying raw user/model prose (prompts, messages) — redacted unless user-prompt logging is opted in. */
@@ -111,7 +111,7 @@ function toolDetailsEnabled(env: NodeJS.ProcessEnv): boolean {
 
 /**
  * Whether raw tool input/output CONTENT may be exported — an explicit opt-in via
- * `OTEL_LOG_TOOL_CONTENT` (mirrors Claude's isToolContentLoggingEnabled). Distinct
+ * `OTEL_LOG_TOOL_CONTENT` (mirrors the reference's isToolContentLoggingEnabled). Distinct
  * from tool-DETAILS (which only unlocks the structured tool-input serializer) and
  * from user-prompt logging (which unlocks prompts/messages).
  */
@@ -119,7 +119,7 @@ export function isToolContentLoggingEnabled(env: NodeJS.ProcessEnv = process.env
   return isEnvTruthy(env.OTEL_LOG_TOOL_CONTENT);
 }
 
-// Tunable bounds for telemetry tool-input serialization (mirror Claude's metadata.ts).
+// Tunable bounds for telemetry tool-input serialization (mirror the reference's metadata.ts).
 /** Strings longer than this (chars) are clipped in bounded tool-input serialization. */
 export const TOOL_INPUT_STRING_TRUNCATE_AT = 512;
 /** Clipped tool-input strings keep this many leading chars (+ a length marker). */
@@ -136,7 +136,7 @@ export const TOOL_INPUT_MAX_DEPTH = 2;
  * enters telemetry: long strings are clipped (keeping a `[N chars]` marker), arrays
  * and objects are capped at {@link TOOL_INPUT_MAX_COLLECTION_ITEMS} entries (with an
  * overflow marker), nesting is bounded at {@link TOOL_INPUT_MAX_DEPTH}, and internal
- * marker keys (`_*`) are stripped. Mirrors Claude's `truncateToolInputValue` —
+ * marker keys (`_*`) are stripped. Mirrors the reference's `truncateToolInputValue` —
  * defends against pathological (huge / deep / wide) payloads.
  */
 export function truncateToolInputValue(value: unknown, depth = 0): unknown {
@@ -171,7 +171,7 @@ export function truncateToolInputValue(value: unknown, depth = 0): unknown {
  * returning undefined unless tool-detail logging is enabled (OTEL_LOG_TOOL_DETAILS /
  * AMI_LOG_TOOL_DETAILS). The value is first bounded-serialized via
  * {@link truncateToolInputValue} then hard-capped at {@link TOOL_INPUT_MAX_JSON_CHARS}.
- * Mirrors Claude's `extractToolInputForTelemetry`.
+ * Mirrors the reference's `extractToolInputForTelemetry`.
  */
 export function extractToolInputForTelemetry(input: unknown, env: NodeJS.ProcessEnv = process.env): string | undefined {
   if (!toolDetailsEnabled(env)) return undefined;
@@ -203,7 +203,7 @@ export const MAX_FILE_EXTENSION_LENGTH = 10;
 /**
  * Reduce a file path to just its extension for analytics (never log the raw path —
  * it can embed project names / usernames / PII). Returns '' for a path with no
- * extension and 'other' for an implausibly long extension (mirrors Claude's
+ * extension and 'other' for an implausibly long extension (mirrors the reference's
  * getFileExtensionForAnalytics).
  */
 export function getFileExtensionForAnalytics(filePath: string): string {
@@ -228,7 +228,7 @@ const FILE_COMMANDS = new Set([
  * Extract the set of distinct file extensions referenced by file-oriented commands
  * in a bash string — file-TYPE usage telemetry without logging raw paths. Walks
  * tokens, and after a known file command collects extensions of subsequent
- * non-flag arguments until the next command boundary (mirrors Claude's
+ * non-flag arguments until the next command boundary (mirrors the reference's
  * getFileExtensionsFromBashCommand).
  */
 export function getFileExtensionsFromBashCommand(command: string): string[] {
@@ -257,12 +257,12 @@ export function sanitizeAgentName(name: string, builtins: ReadonlySet<string>): 
   return builtins.has(name) ? name : 'user-defined';
 }
 
-/** Length (hex chars) of a privacy-preserving file-path hash (matches Claude's 16). */
+/** Length (hex chars) of a privacy-preserving file-path hash (matches the reference's 16). */
 export const FILE_PATH_HASH_LEN = 16;
 /**
  * Max content bytes hashed by {@link hashFileContent} — above this the content is
  * not hashed (returns undefined) to avoid memory blow-ups on huge/base64 blobs
- * (mirrors Claude's MAX_CONTENT_HASH_SIZE = 100KB).
+ * (mirrors the reference's MAX_CONTENT_HASH_SIZE = 100KB).
  */
 export const MAX_CONTENT_HASH_SIZE = 100 * 1024;
 
@@ -271,7 +271,7 @@ export const MAX_CONTENT_HASH_SIZE = 100 * 1024;
  * ({@link FILE_PATH_HASH_LEN}-char) SHA-256 so the same path always maps to the same
  * token (enabling per-file correlation/dedup downstream) while the raw path — which
  * can embed usernames, project names, or other PII — never leaves the machine.
- * Mirrors Claude's `hashFilePath`.
+ * Mirrors the reference's `hashFilePath`.
  */
 export function hashFilePath(filePath: string): string {
   return crypto.createHash('sha256').update(filePath).digest('hex').slice(0, FILE_PATH_HASH_LEN);
@@ -280,7 +280,7 @@ export function hashFilePath(filePath: string): string {
 /**
  * Full (64-char) SHA-256 of file CONTENT for change-detection/dedup analytics, or
  * undefined when the content exceeds {@link MAX_CONTENT_HASH_SIZE} (size-guarded to
- * avoid hashing huge/base64 blobs). Mirrors Claude's `hashFileContent`.
+ * avoid hashing huge/base64 blobs). Mirrors the reference's `hashFileContent`.
  */
 export function hashFileContent(content: string): string | undefined {
   if (content.length > MAX_CONTENT_HASH_SIZE) return undefined;
@@ -329,7 +329,7 @@ export interface SanitizeOpts {
 
 /**
  * Compile-time brand marking a metadata record that has passed the canonical
- * analytics redaction / data-minimization pass — AMI's counterpart of Claude's
+ * analytics redaction / data-minimization pass — AMI's counterpart of the reference's
  * `AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS` guard. The brand is
  * produced ONLY by {@link sanitizeAnalyticsData} (the single redactor) or the
  * explicit {@link markAnalyticsSafe} escape hatch, and the telemetry egress sink
@@ -344,7 +344,7 @@ export type AnalyticsSafeMetadata = Record<string, unknown> & { readonly [ANALYT
  * Brand a metadata record as analytics-safe WITHOUT running the redaction pass —
  * the escape hatch for data the caller has already verified contains no code, file
  * paths, or secrets (e.g. a fixed-vocabulary enum such as a slash-command source).
- * Mirrors Claude's `value as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS`
+ * Mirrors the reference's `value as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS`
  * cast at trusted call sites. Prefer {@link sanitizeAnalyticsData} whenever the
  * data derives from user or tool input.
  */
@@ -375,7 +375,7 @@ export function sanitizeAnalyticsData(data: Record<string, unknown>, opts: Sanit
   const logToolDetails = opts.logToolDetails ?? toolDetailsEnabled(env);
   // Derive the low-cardinality `file_language` dimension for code-editing-tool events
   // from the RAW path BEFORE the path is hashed below — so segmentation by language is
-  // possible without the path ever leaving the machine (Claude permissionLogging parity).
+  // possible without the path ever leaving the machine (the reference permissionLogging parity).
   data = deriveCodeEditLanguage(data);
   const out: Record<string, unknown> = {};
   const redactToLength = (key: string, value: unknown): void => {
@@ -413,7 +413,7 @@ export function sanitizeAnalyticsData(data: Record<string, unknown>, opts: Sanit
     }
     out[key] = sanitizeAnalyticsValue(value, 0);
   }
-  // Cardinality-reduction normalization (Claude datadog.ts parity), applied just
+  // Cardinality-reduction normalization (the reference datadog.ts parity), applied just
   // before egress: a raw `model` id gets a bounded `model_family` companion dimension
   // (AMI keeps the raw id for self-hosted fidelity — additive superset), and a `version`
   // field is dev-truncated to base+date (stripping per-build timestamp/sha noise).
@@ -436,7 +436,7 @@ export function shouldSampleEvent(sampleRate: number, rand: () => number = Math.
 /**
  * Resolve the effective 0..1 sample rate for one event type from a per-type rate
  * map, falling back to `fallback` (the tracker-wide default) when the type has no
- * entry or carries an out-of-range/non-finite value (mirrors Claude's
+ * entry or carries an out-of-range/non-finite value (mirrors the reference's
  * EventSamplingConfig validation — bad values are treated as "no per-type rate").
  */
 export function resolveSampleRate(
@@ -464,7 +464,7 @@ export function trySerialize(value: unknown): string | null {
 }
 
 // ---------------------------------------------------------------------------
-// Beta detailed content tracing toggle (Claude-Code parity)
+// Beta detailed content tracing toggle (the reference parity)
 // ---------------------------------------------------------------------------
 
 /** Resolved detailed-content-tracing configuration. */
@@ -476,11 +476,11 @@ export interface BetaTracingConfig {
 }
 
 /**
- * Resolve the detailed-content-tracing toggle: Claude gates full-content tracing on
+ * Resolve the detailed-content-tracing toggle: the reference gates full-content tracing on
  * an explicit boolean (`ENABLE_BETA_TRACING_DETAILED`, via isEnvTruthy) AND a
  * dedicated endpoint (`BETA_TRACING_ENDPOINT`) — detailed tracing is enabled only
  * when both are present, so a stray flag with no endpoint stays off (and vice-versa).
- * Mirrors Claude's `isBetaTracingEnabled` base gate.
+ * Mirrors the reference's `isBetaTracingEnabled` base gate.
  */
 export function resolveBetaTracingConfig(env: NodeJS.ProcessEnv = process.env): BetaTracingConfig {
   const endpoint = env.BETA_TRACING_ENDPOINT?.trim() || null;
@@ -489,7 +489,7 @@ export function resolveBetaTracingConfig(env: NodeJS.ProcessEnv = process.env): 
 }
 
 // ---------------------------------------------------------------------------
-// Egress allowlist (Claude-Code datadog.ts parity): a double gate limiting WHICH
+// Egress allowlist (the reference datadog.ts parity): a double gate limiting WHICH
 // event names and WHICH data fields are allowed to leave the machine.
 // ---------------------------------------------------------------------------
 
@@ -510,7 +510,7 @@ function toSet(v: ReadonlySet<string> | readonly string[] | undefined): Readonly
  * Apply an egress allowlist to one event just before it leaves the machine. Returns
  * null when the event TYPE is not on the event allowlist (drop it entirely); else
  * returns the data filtered to the FIELD allowlist (unlisted fields removed). An
- * unset axis means "no restriction on that axis". Mirrors Claude's datadog.ts
+ * unset axis means "no restriction on that axis". Mirrors the reference's datadog.ts
  * DATADOG_ALLOWED_EVENTS (event-name gate) + TAG_FIELDS (field gate) double control.
  */
 export function filterEventForEgress(
@@ -543,7 +543,7 @@ export interface LocalOnlyFieldMatcher {
 /**
  * Copy-on-write strip of local-only fields from a payload destined for off-machine
  * export: returns the SAME reference when no field matches (the common case — no
- * allocation), else a shallow clone with the matching keys removed. Mirrors Claude's
+ * allocation), else a shallow clone with the matching keys removed. Mirrors the reference's
  * `stripProtoFields` copy-on-write optimization — the privileged/local sinks keep the
  * full payload, only the general-access (OTLP) copy is minimized.
  */
@@ -584,7 +584,7 @@ export function resolveLocalOnlyFields(
 }
 
 // ---------------------------------------------------------------------------
-// Per-sink killswitch (Claude-Code sinkKillswitch.ts parity): disable an individual
+// Per-sink killswitch (the reference sinkKillswitch.ts parity): disable an individual
 // analytics sink (in-memory / on-disk JSONL / off-machine OTLP) at runtime without
 // tearing the tracker down. Fail-OPEN: an unset/malformed entry leaves the sink ON
 // and only a strict `=== true` disables it.
@@ -619,7 +619,7 @@ export function resolveKilledSinks(
 }
 
 // ---------------------------------------------------------------------------
-// Hash-based content deduplication (Claude-Code betaSessionTracing.ts parity):
+// Hash-based content deduplication (the reference betaSessionTracing.ts parity):
 // large/repeated content (system prompts, tool schemas) is logged in full only the
 // first time its SHA-256 is seen; thereafter only a compact stand-in is emitted.
 // ---------------------------------------------------------------------------
@@ -634,7 +634,7 @@ export const DEDUP_PREVIEW_LEN = 500;
  * value is emitted the FIRST time its 12-char SHA-256 prefix is seen; every later
  * occurrence of the same content is collapsed to a `<key>` preview plus `<key>_hash`
  * and `<key>_length` — so large repeated bodies cost one full log per unique hash
- * per session, not one per event. Mirrors Claude's `seenHashes` dedup. Reset per
+ * per session, not one per event. Mirrors the reference's `seenHashes` dedup. Reset per
  * session via {@link reset}.
  */
 export class TelemetryContentDedup {
@@ -681,7 +681,7 @@ export class TelemetryContentDedup {
 }
 
 // ---------------------------------------------------------------------------
-// otelHeadersHelper (Claude-Code auth.ts parity): OTLP auth headers produced
+// otelHeadersHelper (the reference auth.ts parity): OTLP auth headers produced
 // dynamically by running a user-configured command, debounced-cached.
 // ---------------------------------------------------------------------------
 
@@ -710,10 +710,10 @@ export const OTEL_HEADERS_HELPER_ENV_VARS = [
 /**
  * Resolve the otelHeadersHelper COMMAND from the environment: the AMI-native
  * `AMI_OTEL_HEADERS_HELPER` first, then the Claude-compatible
- * `CLAUDE_CODE_OTEL_HEADERS_HELPER` (parity: Claude's `otelHeadersHelper` setting).
+ * `CLAUDE_CODE_OTEL_HEADERS_HELPER` (parity: the reference's `otelHeadersHelper` setting).
  * Returns `undefined` when neither is set or the value is blank. Sourcing the command
  * from the operator-controlled environment — rather than a cloned repo's project/local
- * settings — is the AMI-native equivalent of Claude's trust gate: an env var cannot be
+ * settings — is the AMI-native equivalent of the reference's trust gate: an env var cannot be
  * injected by an untrusted workspace, so there is no "execute before trust" exposure.
  */
 export function resolveOtelHeadersHelperCommand(env: NodeJS.ProcessEnv = process.env): string | undefined {
@@ -734,7 +734,7 @@ export interface OtelHeadersHelperDeps {
 
 /**
  * Validate that `parsed` is a JSON object of string→string header pairs (throwing
- * the same actionable errors Claude's getOtelHeadersFromHelper does). Exported so a
+ * the same actionable errors the reference's getOtelHeadersFromHelper does). Exported so a
  * direct caller can reuse the validation without the caching wrapper.
  */
 export function validateOtelHeaders(parsed: unknown): Record<string, string> {
@@ -754,7 +754,7 @@ export function validateOtelHeaders(parsed: unknown): Record<string, string> {
  * JSON object of string→string header pairs (enterprise OTLP backends often need a
  * freshly-minted bearer token). The parsed result is cached and reused until the
  * debounce window ({@link resolveOtelHeadersDebounceMs}, default 29 min) elapses, so
- * the (potentially expensive) auth call is not made per export. Mirrors Claude's
+ * the (potentially expensive) auth call is not made per export. Mirrors the reference's
  * `getOtelHeadersFromHelper`. The command runner is injected for testability; the
  * default runs it with a 30s timeout.
  */
@@ -791,7 +791,7 @@ export class OtelHeadersHelper {
 }
 
 // ---------------------------------------------------------------------------
-// Bounded graceful shutdown drain (Claude-Code HybridTransport.ts parity).
+// Bounded graceful shutdown drain (the reference HybridTransport.ts parity).
 // ---------------------------------------------------------------------------
 
 /** Default best-effort drain window (ms) given to queued telemetry on close. */
@@ -799,13 +799,13 @@ export const CLOSE_GRACE_MS = 3000;
 
 /**
  * Await the first of `promise` (settled, success OR failure) or a `ms` timeout —
- * so a best-effort drain cannot block shutdown beyond `ms`. Mirrors Claude's
+ * so a best-effort drain cannot block shutdown beyond `ms`. Mirrors the reference's
  * `Promise.race([flush(), timeout(CLOSE_GRACE_MS)])` graceful-close bound. The sleep
  * is injectable for deterministic tests.
  *
  * The default grace sleep is the shared {@link sleep} with `{ unref: true }` so the
  * LOSING arm (the grace timer, when the flush wins the race) never keeps the event
- * loop alive — parity with Claude's `sleep(500, undefined, { unref: true })` grace
+ * loop alive — parity with the reference's `sleep(500, undefined, { unref: true })` grace
  * race before exit (bridgeMain.ts). Telemetry drain is strictly best-effort: a
  * pending grace timer must never delay process shutdown.
  */
@@ -818,7 +818,7 @@ export async function raceWithTimeout(
 }
 
 // ---------------------------------------------------------------------------
-// OTEL exporter / protocol / cadence configuration knobs (Claude-Code parity)
+// OTEL exporter / protocol / cadence configuration knobs (the reference parity)
 // ---------------------------------------------------------------------------
 
 /** OTLP wire protocols AMI recognizes (only `http/json` is actually emitted). */
@@ -830,7 +830,7 @@ export type OtlpProtocol = (typeof OTLP_PROTOCOLS)[number];
  * spec the literal `none` means "no automatically configured exporter for this
  * signal", so `none` tokens are filtered out (a bare `none` yields `[]` → disabled).
  * Blanks are dropped. An unset/empty value yields `[]` so the caller can apply its
- * own default. Mirrors Claude's parseExporterTypes.
+ * own default. Mirrors the reference's parseExporterTypes.
  */
 export function parseExporterTypes(value: string | undefined): string[] {
   return (value || '')
@@ -844,7 +844,7 @@ export function parseExporterTypes(value: string | undefined): string[] {
  * Resolve the OTLP wire protocol for one signal, honoring the per-signal
  * `OTEL_EXPORTER_OTLP_{SIGNAL}_PROTOCOL` knob then the generic
  * `OTEL_EXPORTER_OTLP_PROTOCOL`, defaulting to `http/json` when unset. Throws on an
- * unrecognized value (mirrors Claude's switch default). Case/whitespace-insensitive.
+ * unrecognized value (mirrors the reference's switch default). Case/whitespace-insensitive.
  */
 export function resolveOtlpProtocol(
   env: NodeJS.ProcessEnv,
@@ -860,7 +860,7 @@ export function resolveOtlpProtocol(
 /**
  * Whether telemetry EGRESS (OTLP POST / console dump) must be suppressed because
  * this is a test run. Defaults to on under `NODE_ENV==='test'` (so a test harness
- * never ships real telemetry — mirrors Claude's logOTelEvent NODE_ENV guard); an
+ * never ships real telemetry — mirrors the reference's logOTelEvent NODE_ENV guard); an
  * explicit `AMI_TELEMETRY_ALLOW_IN_TEST` opts back in. Local in-memory/disk records
  * are unaffected — only off-machine/stdout egress is gated.
  */
@@ -885,7 +885,7 @@ const EXPORT_INTERVAL_ENV_KEYS: Record<'logs' | 'metrics' | 'traces', string> = 
 /**
  * Resolve the export flush interval (ms) for a signal from its env knob, falling
  * back to {@link DEFAULT_EXPORT_INTERVALS} for an unset / non-positive / unparseable
- * value. Lets an operator tune export cadence per signal (Claude parity).
+ * value. Lets an operator tune export cadence per signal (the reference parity).
  */
 export function resolveExportIntervalMs(
   signal: 'logs' | 'metrics' | 'traces',
@@ -903,7 +903,7 @@ export const DEFAULT_FLUSH_TIMEOUT_MS = 5000;
  * Resolve the overall flush/shutdown budget (ms) the OTLP drain may block for,
  * from `AMI_OTEL_FLUSH_TIMEOUT_MS`, defaulting to {@link DEFAULT_FLUSH_TIMEOUT_MS}.
  * A literal `0` is honored (meaning "no time to flush"); a non-finite/negative
- * value falls back to the default (mirrors Claude's CLAUDE_CODE_OTEL_FLUSH_TIMEOUT_MS).
+ * value falls back to the default (mirrors the reference's CLAUDE_CODE_OTEL_FLUSH_TIMEOUT_MS).
  */
 export function resolveFlushTimeoutMs(env: NodeJS.ProcessEnv): number {
   const raw = env.AMI_OTEL_FLUSH_TIMEOUT_MS;
@@ -914,7 +914,7 @@ export function resolveFlushTimeoutMs(env: NodeJS.ProcessEnv): number {
 /**
  * Default shutdown-drain budget (ms) the graceful close may block for. AMI keeps its
  * own deliberate {@link CLOSE_GRACE_MS} value as the default (additive superset — a
- * knob is ADDED, AMI's default is not regressed to Claude's 2000ms).
+ * knob is ADDED, AMI's default is not regressed to the reference's 2000ms).
  */
 export const DEFAULT_SHUTDOWN_TIMEOUT_MS = CLOSE_GRACE_MS;
 
@@ -924,7 +924,7 @@ export const DEFAULT_SHUTDOWN_TIMEOUT_MS = CLOSE_GRACE_MS;
  * {@link DEFAULT_SHUTDOWN_TIMEOUT_MS}. This is SEPARATE from the per-flush budget
  * ({@link resolveFlushTimeoutMs}): shutdown bounds how long the FINAL close drain may
  * block on a slow collector, independent of the in-session flush bound (mirrors
- * Claude's distinct shutdown-vs-flush timeout knobs). A literal `0` is honored (do not
+ * the reference's distinct shutdown-vs-flush timeout knobs). A literal `0` is honored (do not
  * block on close); a non-finite/negative value falls back to the default.
  */
 export function resolveShutdownTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
@@ -936,7 +936,7 @@ export function resolveShutdownTimeoutMs(env: NodeJS.ProcessEnv = process.env): 
 /**
  * Actionable, numbered remediation shown when the OTLP flush exceeds its budget —
  * so a user pointing AMI at an unreachable/slow collector gets a self-correcting
- * hint instead of silence (mirrors Claude's flush-timeout guidance; AGENTS.md
+ * hint instead of silence (mirrors the reference's flush-timeout guidance; AGENTS.md
  * requires failures to surface a remedy).
  */
 export function formatFlushTimeoutGuidance(timeoutMs: number): string {
@@ -966,7 +966,7 @@ const JETBRAINS_IDES = [
  * raw terminal path — just a stable low-cardinality name), so a self-hosted
  * dashboard can segment usage by terminal. Returns null when nothing identifiable
  * is present (so the `terminal.type` attribute is attached only when resolved).
- * Mirrors Claude Code's detectTerminal fallbacks, env-driven for testability.
+ * Mirrors the reference's detectTerminal fallbacks, env-driven for testability.
  */
 export function detectTerminalType(
   env: NodeJS.ProcessEnv = process.env,
@@ -1009,7 +1009,7 @@ export const HOST_PLATFORM_OVERRIDES = ['win32', 'darwin', 'linux'] as const;
  * Host platform reported in telemetry. `AMI_HOST_PLATFORM` (win32|darwin|linux)
  * overrides the detected `process.platform` — essential for AMI's Docker-sandboxed
  * mode, where process.platform reports the container OS but the real host differs
- * (mirrors Claude's getHostPlatformForAnalytics / CLAUDE_CODE_HOST_PLATFORM knob).
+ * (mirrors the reference's getHostPlatformForAnalytics / CLAUDE_CODE_HOST_PLATFORM knob).
  */
 export function getHostPlatformForAnalytics(
   env: NodeJS.ProcessEnv = process.env,
@@ -1028,7 +1028,7 @@ export function getHostPlatformForAnalytics(
  * string), then classifies the generation via the shared {@link detectWslVersion}
  * kernel classifier (single source of truth, reused — no duplicate WSL logic). A
  * marker present with an untagged kernel assumes WSL2 (the modern default), matching
- * bash-sandbox's `currentWslVersion`. Mirrors Claude's instrumentation.ts WSL
+ * bash-sandbox's `currentWslVersion`. Mirrors the reference's instrumentation.ts WSL
  * resource special-case (`wsl.version`).
  */
 export function detectWslForAnalytics(
@@ -1077,7 +1077,7 @@ export interface ProcessMetrics {
   cpuPercent?: number;
   /** The cgroup/container memory ceiling in bytes (`process.constrainedMemory()`), when the
    *  process runs under a constraint (>0). Undefined when unconstrained or unsupported — so a
-   *  container's memory headroom is observable alongside `rss` (parity: Claude's
+   *  container's memory headroom is observable alongside `rss` (parity: the reference's
    *  buildProcessMetrics `constrainedMemory`). */
   constrainedMemory?: number;
 }
@@ -1098,7 +1098,7 @@ export interface ProcessMetricsDeps {
  * the PREVIOUS sample — the first sample has no `cpuPercent` (no baseline yet). State
  * is per-instance (not module-global) so independent trackers don't corrupt each
  * other's deltas. Best-effort: a reader that throws yields `undefined`. Mirrors
- * Claude's buildProcessMetrics (metadata.ts) CPU%-delta pattern.
+ * the reference's buildProcessMetrics (metadata.ts) CPU%-delta pattern.
  */
 export class ProcessMetricsSampler {
   private _prevCpu: NodeJS.CpuUsage | null = null;
@@ -1175,7 +1175,7 @@ const CI_CONTEXT_VARS: Record<string, string> = {
 /**
  * Capture CI context when running under GitHub Actions (gated on GITHUB_ACTIONS):
  * actor / repository / owner (+ their ids). Returns null outside CI so the
- * dimensions are attached only when meaningful. Mirrors Claude's
+ * dimensions are attached only when meaningful. Mirrors the reference's
  * githubActionsMetadata capture; provider-neutral (no Anthropic coupling).
  */
 export function getCiContext(env: NodeJS.ProcessEnv = process.env): Record<string, string> | null {
@@ -1191,7 +1191,7 @@ export function getCiContext(env: NodeJS.ProcessEnv = process.env): Record<strin
 /**
  * Whether the process is running in a Continuous-Integration environment — the canonical
  * `CI` env knob read through {@link isEnvTruthy} so `1`/`true`/`yes` all count and an
- * explicit `0`/`false` does not (parity: Claude Code's `env.isCI = isEnvTruthy(process.env.CI)`).
+ * explicit `0`/`false` does not (parity: the reference's `env.isCI = isEnvTruthy(process.env.CI)`).
  * AGENTS.md's build scripts already *assume* CI-awareness (`CI=true skips local-only steps`);
  * this makes the flag a first-class, testable read instead of scattered ad-hoc `process.env.CI`
  * checks. `env` is injectable so callers/tests pass a fixed environment.
@@ -1212,7 +1212,7 @@ export interface DeploymentEnvDeps {
 
 /**
  * Classify the runtime deployment environment from its env knobs + container markers,
- * returning a canonical lower-case name (parity: Claude Code's `detectDeploymentEnvironment`,
+ * returning a canonical lower-case name (parity: the reference's `detectDeploymentEnvironment`,
  * utils/env.ts). The precedence is fixed — most specific first — so e.g. GitHub Actions is
  * reported as `github-actions` rather than the generic `ci`, and a cloud dev container
  * (`codespaces`/`gitpod`/`replit`) wins over the orchestration/`docker` fallback:
@@ -1283,7 +1283,7 @@ export function detectDeploymentEnvironment(
 }
 
 // ---------------------------------------------------------------------------
-// Local git identity (Claude-Code utils/user.ts getGitEmail parity): the
+// Local git identity (the reference utils/user.ts getGitEmail parity): the
 // git-configured `user.email` is a purely local, vendor-neutral identity signal
 // (useful for per-user usage attribution and co-authorship checks). It is resolved
 // by spawning `git config --get user.email` (reject-free: stdout trimmed, undefined
@@ -1298,7 +1298,7 @@ const _gitEmailCache = new Map<string, string | undefined>();
 /**
  * Resolve the git-configured `user.email` for `cwd` via `git config --get user.email`,
  * trimmed; undefined when git is absent, the dir is not a repo, or no email is set
- * (reject-free, like Claude's memoized getGitEmail). Memoized per cwd. The command
+ * (reject-free, like the reference's memoized getGitEmail). Memoized per cwd. The command
  * runner is injectable for deterministic tests; the default runs git with stderr
  * silenced so a non-repo dir produces no console noise.
  */
@@ -1327,7 +1327,7 @@ export const USER_ID_FILE = 'telemetry-user-id';
  * self-hosted collector can correlate activity across sessions without AMI ever
  * sending any real identity. When `dir` is given the id is persisted to
  * `<dir>/telemetry-user-id` (0o600); when it is absent, or persistence fails, an
- * ephemeral per-process id is returned. Mirrors Claude's getOrCreateUserID.
+ * ephemeral per-process id is returned. Mirrors the reference's getOrCreateUserID.
  */
 export function getOrCreateUserId(dir?: string): string {
   const genId = () => crypto.randomBytes(32).toString('hex');
@@ -1351,7 +1351,7 @@ export const NUM_USER_BUCKETS = 30;
 /**
  * Map a user id into one of `numBuckets` buckets via SHA-256 so unique users can
  * be estimated by counting distinct buckets WITHOUT exporting the raw id — privacy
- * plus bounded cardinality (mirrors Claude's getUserBucket, NUM_USER_BUCKETS=30).
+ * plus bounded cardinality (mirrors the reference's getUserBucket, NUM_USER_BUCKETS=30).
  */
 export function getUserBucket(userId: string, numBuckets: number = NUM_USER_BUCKETS): number {
   const n = Number.isFinite(numBuckets) && numBuckets >= 1 ? Math.floor(numBuckets) : NUM_USER_BUCKETS;
@@ -1362,7 +1362,7 @@ export function getUserBucket(userId: string, numBuckets: number = NUM_USER_BUCK
 /**
  * Derive a low-cardinality `Nxx` range from an HTTP status (100..599), else
  * undefined — so a numeric status is exported as a bounded dimension instead of
- * one series per code (mirrors Claude's http_status_range).
+ * one series per code (mirrors the reference's http_status_range).
  */
 export function bucketHttpStatus(status: number | string | undefined | null): string | undefined {
   if (status === undefined || status === null || status === '') return undefined;
@@ -1385,7 +1385,7 @@ export function deriveHttpStatusFields(data: Record<string, unknown>): Record<st
 }
 
 // ---------------------------------------------------------------------------
-// Attribute cardinality-reduction normalization (Claude-Code datadog.ts parity):
+// Attribute cardinality-reduction normalization (the reference datadog.ts parity):
 // before an event leaves the machine, high-cardinality identifiers are collapsed
 // to a bounded vocabulary so a self-hosted collector's tag/series count stays
 // finite (mirrors datadog.ts L196-217 model→known-or-'other' + dev-version trunc).
@@ -1393,7 +1393,7 @@ export function deriveHttpStatusFields(data: Record<string, unknown>): Record<st
 
 /**
  * Low-cardinality model FAMILY vocabulary kept verbatim in analytics; any model id
- * not matching one of these collapses to 'other' (mirrors Claude's model→known-cost
+ * not matching one of these collapses to 'other' (mirrors the reference's model→known-cost
  * -set-or-'other' reduction). Provider-neutral — no vendor coupling.
  */
 export const KNOWN_ANALYTICS_MODEL_FAMILIES = [
@@ -1405,7 +1405,7 @@ export const KNOWN_ANALYTICS_MODEL_FAMILIES = [
  * Collapse a raw model id to its low-cardinality FAMILY (`opus`, `gpt`, …) or
  * 'other' when it matches no known family — a bounded telemetry dimension that
  * can't explode a collector's series count as new model ids ship. A trailing
- * Anthropic `[1m]` long-context marker is stripped first (Claude parity). Empty
+ * Anthropic `[1m]` long-context marker is stripped first (the reference parity). Empty
  * input passes through unchanged. Match is longest-family-first so `gpt-4o` does
  * not shadow `o4`/`o1`/`o3` when those tokens appear.
  */
@@ -1428,24 +1428,24 @@ const DEV_VERSION_RE = /^(\d+\.\d+\.\d+-dev\.\d{8})\.t\d+\.sha[a-f0-9]+$/i;
  * timestamp + commit sha that would otherwise make every build a unique tag — e.g.
  * `2.0.53-dev.20251124.t173302.sha526cc6a` → `2.0.53-dev.20251124`. A release
  * version (or any string not matching the dev pattern) is returned unchanged.
- * Mirrors Claude's datadog.ts version-truncation cardinality reduction.
+ * Mirrors the reference's datadog.ts version-truncation cardinality reduction.
  */
 export function truncateDevVersion(version: string): string {
   return version.replace(DEV_VERSION_RE, '$1');
 }
 
 // ---------------------------------------------------------------------------
-// Code-editing-tool language segmentation (Claude-Code permissionLogging.ts parity):
+// Code-editing-tool language segmentation (the reference permissionLogging.ts parity):
 // for code-editing tools (Edit/Write/NotebookEdit → AMI file_edit/notebook_edit) the
 // target file's programming LANGUAGE is derived from its extension and attached as a
 // low-cardinality dimension, so edit telemetry can be segmented by language without
 // ever exporting the raw path. Mirrors buildCodeEditToolAttributes (L41-65).
 // ---------------------------------------------------------------------------
 
-/** Tool names treated as code-editing (AMI canonical + Claude-Code aliases). */
+/** Tool names treated as code-editing (AMI canonical + the reference aliases). */
 export const CODE_EDITING_TOOLS: ReadonlySet<string> = new Set([
   'file_edit', 'notebook_edit',          // AMI canonical
-  'Edit', 'Write', 'MultiEdit', 'NotebookEdit', // Claude-Code names
+  'Edit', 'Write', 'MultiEdit', 'NotebookEdit', // the reference names
 ]);
 
 /** Whether a tool name is a code-editing tool (edit/write/notebook family). */
@@ -1456,7 +1456,7 @@ export function isCodeEditingTool(toolName: string): boolean {
 /**
  * Static file-extension → programming-language map for analytics segmentation.
  * Bounded + provider-neutral (no highlight.js dependency); an unmapped/absent
- * extension yields 'unknown' (matching Claude's getLanguageName fallback), keeping
+ * extension yields 'unknown' (matching the reference's getLanguageName fallback), keeping
  * the `file_language` dimension's cardinality finite.
  */
 const EXTENSION_LANGUAGE: Record<string, string> = {
@@ -1479,7 +1479,7 @@ const EXTENSION_LANGUAGE: Record<string, string> = {
  * Resolve the programming language of a file for analytics from its extension,
  * returning 'unknown' when there is no (mapped) extension — a bounded dimension that
  * never leaks the raw path. Reuses {@link getFileExtensionForAnalytics} so the same
- * extension-parsing rules apply. Mirrors Claude's getLanguageName (telemetry use).
+ * extension-parsing rules apply. Mirrors the reference's getLanguageName (telemetry use).
  */
 export function getLanguageForAnalytics(filePath: string): string {
   const ext = getFileExtensionForAnalytics(filePath);
@@ -1492,7 +1492,7 @@ export function getLanguageForAnalytics(filePath: string): string {
  * file path (via a path field), attach a low-cardinality `file_language` dimension
  * derived from the path's extension — WITHOUT consuming the raw path (which is still
  * hashed downstream). Returns the original object when no transform applies (not a
- * code-edit tool, no path, or `file_language` already present). Mirrors Claude's
+ * code-edit tool, no path, or `file_language` already present). Mirrors the reference's
  * buildCodeEditToolAttributes language enrichment.
  */
 export function deriveCodeEditLanguage(data: Record<string, unknown>): Record<string, unknown> {
@@ -1509,11 +1509,11 @@ export function deriveCodeEditLanguage(data: Record<string, unknown>): Record<st
 }
 
 // ---------------------------------------------------------------------------
-// Invocation-source vocabulary (Claude-Code workloadContext.ts parity): a fixed,
+// Invocation-source vocabulary (the reference workloadContext.ts parity): a fixed,
 // low-cardinality set of source tags so the usage view / analytics can segment a
 // turn by what triggered it. AMI already has interactive/detached + a per-turn
 // source field; the `cron` value lets a scheduler-fired turn be distinguished
-// from an interactive/detached one (Claude's WORKLOAD_CRON).
+// from an interactive/detached one (the reference's WORKLOAD_CRON).
 // ---------------------------------------------------------------------------
 
 /**
@@ -1524,7 +1524,7 @@ export function deriveCodeEditLanguage(data: Record<string, unknown>): Record<st
 export const ANALYTICS_SOURCE_CRON = WORKLOAD_CRON;
 
 // ---------------------------------------------------------------------------
-// Structured file-operation analytics event (Claude-Code fileOperationAnalytics.ts
+// Structured file-operation analytics event (the reference fileOperationAnalytics.ts
 // parity): a typed read/write/edit record carrying an operation + tool enum, a
 // privacy-preserving truncated path hash, and (size-guarded) a full content hash,
 // so file activity becomes a queryable structured analytics record without the raw
@@ -1534,7 +1534,7 @@ export const ANALYTICS_SOURCE_CRON = WORKLOAD_CRON;
 
 /** The file operation being recorded. */
 export type FileOperationKind = 'read' | 'write' | 'edit';
-/** AMI canonical file-tool names (vs Claude's FileReadTool/FileWriteTool/FileEditTool). */
+/** AMI canonical file-tool names (vs the reference's FileReadTool/FileWriteTool/FileEditTool). */
 export type FileOperationTool = 'file_read' | 'file_write' | 'file_edit';
 
 /** Inputs for a structured file-operation analytics event. */
@@ -1555,7 +1555,7 @@ export interface FileOperationParams {
  * full `content_hash` (only when content is present and not too large — the
  * {@link hashFileContent} size guard returns undefined above {@link MAX_CONTENT_HASH_SIZE},
  * preventing memory blow-ups on base64 blobs), and an optional create/update `type`.
- * Mirrors Claude's logFileOperation metadata shape.
+ * Mirrors the reference's logFileOperation metadata shape.
  */
 export function buildFileOperationEvent(params: FileOperationParams): Record<string, unknown> {
   const md: Record<string, unknown> = {
@@ -1572,7 +1572,7 @@ export function buildFileOperationEvent(params: FileOperationParams): Record<str
 }
 
 // ---------------------------------------------------------------------------
-// Local git commit/PR operation classification (Claude-Code gitOperationTracking.ts
+// Local git commit/PR operation classification (the reference gitOperationTracking.ts
 // parity): detect `git commit` (+ --amend), `git push`, `gh pr <action>`,
 // `glab mr create`, and curl-based PR creation in a raw command string (succeeded
 // only, exitCode===0) so the usage view can count local commit/PR activity. Pure
@@ -1597,7 +1597,7 @@ export interface GitOperationClassification {
 /**
  * Build a regex matching `git <subcmd>` while tolerating git's global options
  * between `git` and the subcommand (e.g. `git -c commit.gpgsign=false commit`,
- * `git -C path push`, `git --git-dir=path commit`). Mirrors Claude's gitCmdRe.
+ * `git -C path push`, `git --git-dir=path commit`). Mirrors the reference's gitCmdRe.
  */
 function gitSubcmdRe(subcmd: string, suffix = ''): RegExp {
   return new RegExp(`\\bgit(?:\\s+-[cC]\\s+\\S+|\\s+--\\S+=\\S+)*\\s+${subcmd}\\b${suffix}`);
@@ -1626,7 +1626,7 @@ const PR_ENDPOINT_RE = /https?:\/\/[^\s'"]*\/(pulls|pull-requests|merge[-_]reque
  * commit (and additionally emits `commit_amend` for `--amend`); `git push` emits
  * `push`; each `gh pr <action>` / `glab mr create` / curl-POST-to-a-PR-endpoint
  * emits the relevant op and (for creates) increments the PR counter. Mirrors
- * Claude's trackGitOperations detection, including the curl PR-create branch.
+ * the reference's trackGitOperations detection, including the curl PR-create branch.
  */
 export function classifyGitOperation(command: string, exitCode: number): GitOperationClassification {
   const empty: GitOperationClassification = { operations: [], commitDelta: 0, prDelta: 0 };
@@ -1659,7 +1659,7 @@ export function classifyGitOperation(command: string, exitCode: number): GitOper
 }
 
 // ---------------------------------------------------------------------------
-// Per-agent incremental context delta (Claude-Code betaSessionTracing.ts parity):
+// Per-agent incremental context delta (the reference betaSessionTracing.ts parity):
 // track the hash of the last-reported message per invocation source (main thread /
 // subagent / warmup have independent conversations) so a trace/record can carry only
 // the NEW user/tool-result messages added since the previous request, instead of
@@ -1683,8 +1683,8 @@ export interface IncrementalContextDelta<T> {
  * independent conversation. When the previously-reported hash is no longer present
  * in the array (compaction/reset), it falls back to the whole array (startIndex 0).
  * The remembered hash advances to the LAST message only when a non-empty delta is
- * produced (matching Claude's lastReportedMessageHash update being gated on
- * newMessages.length > 0). Mirrors Claude's betaSessionTracing new_context tracking.
+ * produced (matching the reference's lastReportedMessageHash update being gated on
+ * newMessages.length > 0). Mirrors the reference's betaSessionTracing new_context tracking.
  */
 export class IncrementalContextTracker {
   private readonly _last = new Map<string, string>();
@@ -1757,14 +1757,14 @@ export interface AnalyticsTrackerOpts {
   /**
    * Inter-batch pause (ms) inserted between consecutive batch POSTs during the
    * shutdown drain so a large chunked export does not hammer the collector.
-   * Default 0 (back-to-back). Mirrors Claude's batchDelayMs.
+   * Default 0 (back-to-back). Mirrors the reference's batchDelayMs.
    */
   otlpBatchDelayMs?: number;
   /**
    * Runtime killswitch probe consulted before every export. While it returns true
    * the sender produces zero network traffic (events stay queued) and resumes once
    * it clears — a sink can be disabled at runtime without tearing it down. Mirrors
-   * Claude's injectable isKilled() probe.
+   * the reference's injectable isKilled() probe.
    */
   isKilled?: () => boolean;
   /**
@@ -1784,7 +1784,7 @@ export interface AnalyticsTrackerOpts {
    * down collector. A single successful send resets the streak. Undefined (default)
    * keeps the stop-on-first-failure behaviour; when set, the drain ADVANCES past a
    * dropped batch (with a fresh per-batch budget) until the streak is reached.
-   * Mirrors Claude's SerialBatchEventUploader `maxConsecutiveFailures`.
+   * Mirrors the reference's SerialBatchEventUploader `maxConsecutiveFailures`.
    */
   maxConsecutiveFailures?: number;
   /** Invoked when a fully-retried OTLP batch is permanently dropped (shutdown diagnostics). */
@@ -1803,7 +1803,7 @@ export interface AnalyticsTrackerOpts {
   /**
    * When true the configured {@link otlpEndpoint} is a signal-specific logs endpoint
    * (from `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`) and is POSTed verbatim — `/v1/logs` is
-   * NOT appended (mirrors Claude's per-signal endpoint selection). Default false: the
+   * NOT appended (mirrors the reference's per-signal endpoint selection). Default false: the
    * endpoint is treated as generic and `/v1/logs` is appended. Resolve both from
    * {@link resolveOtlpLogsEndpoint}.
    */
@@ -1814,7 +1814,7 @@ export interface AnalyticsTrackerOpts {
    * collector can attribute usage per developer WITHOUT the raw email ever leaving
    * the machine. Off by default; also enabled by the `AMI_OTEL_INCLUDE_GIT_USER` env
    * knob. The raw email is resolved via {@link getGitEmail} (git absent / no email →
-   * the attribute is simply omitted). Mirrors Claude's getGitEmail identity signal.
+   * the attribute is simply omitted). Mirrors the reference's getGitEmail identity signal.
    */
   includeGitUser?: boolean;
   /** Working directory whose git `user.email` is read for {@link includeGitUser}. Default process.cwd(). */
@@ -1824,7 +1824,7 @@ export interface AnalyticsTrackerOpts {
   /**
    * Pre-resolved undici dispatcher (proxy / mTLS / custom-CA) attached to every OTLP
    * POST. When unset, one is auto-resolved from the OTLP proxy + TLS env vars (see
-   * {@link resolveOtlpTransport}) against the configured endpoint. Mirrors Claude's
+   * {@link resolveOtlpTransport}) against the configured endpoint. Mirrors the reference's
    * HttpsProxyAgent + httpAgentOptions transport. Injectable for tests.
    */
   otlpDispatcher?: unknown;
@@ -1838,7 +1838,7 @@ export interface AnalyticsTrackerOpts {
    * etc.), bounding memory by AGE in addition to the {@link MAX_IN_MEMORY_EVENTS} count
    * cap. <=0/undefined disables the age sweep. Seeded from `AMI_ANALYTICS_EVENT_TTL_MS`
    * (a positive number of ms, or a truthy non-number → {@link DEFAULT_IN_MEMORY_EVENT_TTL_MS}).
-   * Mirrors Claude's SPAN_TTL_MS orphan eviction.
+   * Mirrors the reference's SPAN_TTL_MS orphan eviction.
    */
   inMemoryEventTtlMs?: number;
   /** Sleep + RNG injection for deterministic tests. */
@@ -1867,7 +1867,7 @@ export interface AnalyticsTrackerOpts {
    * so a slow disk append never stalls the render/keystroke tick. The buffer is
    * drained synchronously on {@link AnalyticsTracker.shutdown}/{@link AnalyticsTracker.closeWithGrace}
    * (exit-safe). <=0/undefined keeps the synchronous append. Seeded from the
-   * `AMI_ANALYTICS_FILE_FLUSH_MS` env knob. Mirrors Claude's bufferedWriter disk sink.
+   * `AMI_ANALYTICS_FILE_FLUSH_MS` env knob. Mirrors the reference's bufferedWriter disk sink.
    */
   fileFlushIntervalMs?: number;
   /**
@@ -1879,39 +1879,39 @@ export interface AnalyticsTrackerOpts {
   /**
    * Egress event-name allowlist: when set, ONLY events of these types ever leave the
    * machine (disk JSONL / console / OTLP); others stay in-memory only. Mirrors
-   * Claude's DATADOG_ALLOWED_EVENTS hard allowlist.
+   * the reference's DATADOG_ALLOWED_EVENTS hard allowlist.
    */
   egressEventAllowlist?: readonly string[];
   /**
    * Egress field allowlist: when set, ONLY these data fields survive on the exported
-   * copy of every event (others are stripped). Mirrors Claude's TAG_FIELDS gate.
+   * copy of every event (others are stripped). Mirrors the reference's TAG_FIELDS gate.
    */
   egressFieldAllowlist?: readonly string[];
   /**
    * When true, large/repeated string content is de-duplicated per session before
    * egress: the full body is logged once per unique SHA-256, then collapsed to a
-   * preview + hash + length. Mirrors Claude's seenHashes content dedup.
+   * preview + hash + length. Mirrors the reference's seenHashes content dedup.
    */
   dedupeContent?: boolean;
   /**
    * A command whose JSON-object stdout supplies OTLP auth headers, merged over the
    * static headers on every export and debounced-cached (29 min). `exec`/`now` are
    * injectable for tests; the default runs the command with a 30s timeout. Mirrors
-   * Claude's otelHeadersHelper setting.
+   * the reference's otelHeadersHelper setting.
    */
   otlpHeadersHelper?: { command: string; exec?: (command: string) => string; now?: () => number };
   /**
    * Per-sink killswitch: individually disable the in-memory, on-disk JSONL, or
    * off-machine OTLP sink. Merged over the env knobs (`AMI_NO_ANALYTICS` kills all;
    * `SUPERINFERENCE_DISABLE_SINKS=memory,file,otlp`). Fail-open; mutable at runtime via
-   * {@link AnalyticsTracker.setKilledSinks}. Mirrors Claude's per-sink killswitch config.
+   * {@link AnalyticsTracker.setKilledSinks}. Mirrors the reference's per-sink killswitch config.
    */
   killedSinks?: Partial<Record<SinkName, boolean>>;
   /**
    * Attach point-in-time process metrics (memory + CPU% delta) under a `process`
    * field on every logged event. Off by default (noise); also enabled by the
    * `AMI_OTEL_PROCESS_METRICS` env knob. Readers are injectable for tests. Mirrors
-   * Claude's buildProcessMetrics attachment.
+   * the reference's buildProcessMetrics attachment.
    */
   includeProcessMetrics?: boolean;
   processMetricsDeps?: ProcessMetricsDeps;
@@ -1921,7 +1921,7 @@ export interface AnalyticsTrackerOpts {
    * outage spanning a whole session does not silently lose telemetry. Enabled by this
    * flag or the `AMI_OTEL_PERSIST_FAILED` env knob; spool dir defaults to
    * `<logDir>/telemetry-failed` (override with {@link failedBatchDir}). Mirrors
-   * Claude's cross-run failed-batch retry.
+   * the reference's cross-run failed-batch retry.
    */
   persistFailedBatches?: boolean;
   /** Override directory for the durable failed-batch spool. */
@@ -1930,21 +1930,21 @@ export interface AnalyticsTrackerOpts {
    * Bypass telemetry batching: when true, every logged event is flushed to the OTLP
    * send path immediately (one batch per event) instead of accumulating to the
    * size/byte/interval boundary — a low-latency/debugging pass-through. Off by default;
-   * also enabled by the `AMI_OTEL_IMMEDIATE_FLUSH` env knob. Mirrors Claude's
+   * also enabled by the `AMI_OTEL_IMMEDIATE_FLUSH` env knob. Mirrors the reference's
    * bufferedWriter `immediateMode`.
    */
   telemetryImmediateMode?: boolean;
   /**
    * Field NAMES that are local-only: kept on the privileged on-machine sinks (in-memory
    * + JSONL + console) but stripped from the general-access off-machine OTLP export.
-   * Merged with the `AMI_ANALYTICS_LOCAL_ONLY_FIELDS` env list. Mirrors Claude's
+   * Merged with the `AMI_ANALYTICS_LOCAL_ONLY_FIELDS` env list. Mirrors the reference's
    * differential-by-sink redaction (full payload to the privileged 1P sink, stripped
    * copy to the general-access backend).
    */
   localOnlyFields?: readonly string[];
   /**
    * Key PREFIX marking local-only fields (stripped from the OTLP export only). Merged
-   * with the `AMI_ANALYTICS_LOCAL_ONLY_PREFIX` env knob. Mirrors Claude's `_PROTO_*`
+   * with the `AMI_ANALYTICS_LOCAL_ONLY_PREFIX` env knob. Mirrors the reference's `_PROTO_*`
    * prefix strip.
    */
   localOnlyFieldPrefix?: string;
@@ -1952,7 +1952,7 @@ export interface AnalyticsTrackerOpts {
    * Point-in-time numeric metrics provider (typically the Profiler's getAll() split
    * into gauges/counters). When set, {@link AnalyticsTracker.flushOtlp} exports an OTLP
    * METRICS payload ({@link toOtlpMetricsPayload}) on every flush/shutdown — bridging
-   * AMI's rich quantitative data to any OTLP metrics backend. Mirrors Claude's metrics
+   * AMI's rich quantitative data to any OTLP metrics backend. Mirrors the reference's metrics
    * signal (PeriodicExportingMetricReader). The seam keeps the engine's profiler wiring
    * a single injected function (no engine import into core).
    */
@@ -1961,14 +1961,14 @@ export interface AnalyticsTrackerOpts {
    * Span-tree provider (typically the Profiler's getSpanTree()). When set,
    * {@link AnalyticsTracker.flushOtlp} exports an OTLP TRACES payload
    * ({@link toOtlpTracePayload}) on every flush/shutdown — surfacing the nested
-   * interaction/llm/tool/hook timeline in any OTLP trace backend. Mirrors Claude's
+   * interaction/llm/tool/hook timeline in any OTLP trace backend. Mirrors the reference's
    * sessionTracing span emission; injected to avoid a core→engine dependency.
    */
   traceSource?: () => readonly SpanNode[];
 }
 
 // ---------------------------------------------------------------------------
-// Durable failed-batch spool (Claude-Code firstPartyEventLoggingExporter.ts parity):
+// Durable failed-batch spool (the reference firstPartyEventLoggingExporter.ts parity):
 // a telemetry batch that is permanently dropped after exhausting its in-process
 // retries is written to disk, and a LATER process (next session's flush) re-reads
 // and re-POSTs it, deleting the file on success — so a transient collector outage
@@ -1984,7 +1984,7 @@ const FAILED_BATCH_FILE_RE = /^failed-batch-.*\.jsonl$/;
  * Each spooled batch is one file of NDJSON event lines, written via a temp file +
  * atomic rename (a reader never sees a half-written file). Files are created 0o600 in
  * a 0o700 dir. All ops are best-effort (never throw) — the spool is a backstop, not a
- * critical path. Mirrors Claude's per-batch disk persistence + cross-run retry.
+ * critical path. Mirrors the reference's per-batch disk persistence + cross-run retry.
  */
 export class FailedBatchStore {
   constructor(private readonly _dir: string) {}
@@ -2055,7 +2055,7 @@ export function resolveFileFlushIntervalMs(env: NodeJS.ProcessEnv, opt?: number)
 }
 
 // ---------------------------------------------------------------------------
-// Level-filtered telemetry diagnostic boundary (Claude-Code
+// Level-filtered telemetry diagnostic boundary (the reference
 // utils/telemetry/logger.ts ClaudeCodeDiagLogger parity): an error-only bridge
 // for the telemetry subsystem's own internal diagnostics. error()/warn() surface
 // the message as BOTH a real Error (onError) and a debug line (onDebug), while
@@ -2087,7 +2087,7 @@ export interface TelemetryDiagLoggerDeps {
 /**
  * Build a {@link TelemetryDiagLogger} that routes error/warn diagnostics to BOTH
  * the error sink (as an Error) and the debug sink (verbatim), and suppresses
- * info/debug/verbose entirely. Mirrors Claude's ClaudeCodeDiagLogger, whose
+ * info/debug/verbose entirely. Mirrors the reference's ClaudeCodeDiagLogger, whose
  * error()/warn() call logError + logForDebugging while info/debug/verbose return.
  * Both sinks are isolated (a throwing sink never propagates into the hot path).
  */
@@ -2113,11 +2113,11 @@ export class AnalyticsTracker {
   private logFile: string | null;
   private dirInitialized = false;
   private _sessionId: string | undefined;
-  /** Per-prompt correlation id stamped onto every EVENT (not resource/metrics — Claude's prompt.id). */
+  /** Per-prompt correlation id stamped onto every EVENT (not resource/metrics — the reference's prompt.id). */
   private _promptId: string | undefined;
-  /** Local commit counter feeding the usage view (Claude's getCommitCounter). */
+  /** Local commit counter feeding the usage view (the reference's getCommitCounter). */
   private _commitCount = 0;
-  /** Local PR counter feeding the usage view (Claude's getPrCounter). */
+  /** Local PR counter feeding the usage view (the reference's getPrCounter). */
   private _prCount = 0;
   /** Per-source incremental-context tracker, lazily created on first use. */
   private _incrementalContext: IncrementalContextTracker | null = null;
@@ -2205,7 +2205,7 @@ export class AnalyticsTracker {
   private _traceSource: (() => readonly SpanNode[]) | undefined;
   /** Count of runtime telemetry reconfigurations applied via {@link reconfigureTelemetry}. */
   private _reconfigureCount = 0;
-  /** Re-entrancy guard for persisted-batch recovery (Claude's `isRetrying` parity). */
+  /** Re-entrancy guard for persisted-batch recovery (the reference's `isRetrying` parity). */
   private _recovering = false;
 
   constructor(logDir?: string, opts?: AnalyticsTrackerOpts) {
@@ -2274,7 +2274,7 @@ export class AnalyticsTracker {
     this._eventTtlMs = resolveInMemoryEventTtlMs(this._env, opts?.inMemoryEventTtlMs);
     // Best-effort telemetry delay: route through the shared sleep with
     // `{ unref: true }` so a pending inter-batch delay or graceful-close drain
-    // timer never holds the process open at shutdown (parity: Claude's unref'd
+    // timer never holds the process open at shutdown (parity: the reference's unref'd
     // grace sleep). Analytics is strictly best-effort — droppable on exit.
     this._sleep = opts?.sleepImpl ?? ((ms) => sleep(ms, undefined, { unref: true }));
     this._rand = opts?.rand ?? Math.random;
@@ -2424,7 +2424,7 @@ export class AnalyticsTracker {
   /**
    * Enable/disable individual sinks at runtime (merged over the current map; a
    * `false` re-enables a previously-killed sink). Fail-open. Lets a consumer kill a
-   * noisy/leaky sink without reconstructing the tracker (Claude per-sink killswitch).
+   * noisy/leaky sink without reconstructing the tracker (the reference per-sink killswitch).
    */
   setKilledSinks(update: Partial<Record<SinkName, boolean>>): void {
     for (const s of SINK_NAMES) {
@@ -2454,7 +2454,7 @@ export class AnalyticsTracker {
    * Set (or clear, with undefined) the per-prompt correlation id stamped onto every
    * subsequent event's data as `prompt.id` — so a turn's events can be grouped to the
    * specific prompt that produced them. Event-level only (never a resource/metric
-   * dimension). Mirrors Claude's per-turn getPromptId(). */
+   * dimension). Mirrors the reference's per-turn getPromptId(). */
   setPromptId(promptId: string | undefined): void {
     this._promptId = promptId;
   }
@@ -2469,7 +2469,7 @@ export class AnalyticsTracker {
    * privacy-preserving path hash and size-guarded content hash. Delegates to
    * {@link buildFileOperationEvent} (reuses the existing hashing helpers) and routes
    * through the normal {@link log} pipeline so the event is retained/exported like any
-   * other. Mirrors Claude's logFileOperation. */
+   * other. Mirrors the reference's logFileOperation. */
   logFileOperation(params: FileOperationParams): void {
     this.log('file_operation', buildFileOperationEvent(params));
   }
@@ -2478,7 +2478,7 @@ export class AnalyticsTracker {
    * Classify a finished command for local git/PR usage ({@link classifyGitOperation}),
    * increment the commit/PR counters, and emit one `git_operation` event per matched
    * operation. A non-zero exit or a non-git/PR command is a no-op. The counters feed
-   * the usage view (Claude's getCommitCounter/getPrCounter parity). */
+   * the usage view (the reference's getCommitCounter/getPrCounter parity). */
   trackGitOperation(command: string, exitCode: number): void {
     const c = classifyGitOperation(command, exitCode);
     if (c.operations.length === 0) return;
@@ -2503,7 +2503,7 @@ export class AnalyticsTracker {
    * {@link IncrementalContextTracker}, AND emit a privacy-safe `context_delta` event
    * carrying the SOURCE and `new_context_message_count` (never the raw message bodies
    * — those stay local). Returns the delta so a caller can additionally trace content
-   * under an explicit opt-in. Mirrors Claude's betaSessionTracing new_context tracking. */
+   * under an explicit opt-in. Mirrors the reference's betaSessionTracing new_context tracking. */
   recordIncrementalContext<T>(
     source: string,
     messages: readonly T[],
@@ -2535,7 +2535,7 @@ export class AnalyticsTracker {
    * (and the {@link setAllowedSources} gate it drives) resolve to `source` for the
    * entire async chain of `fn` — across every `await` — and NOT for sibling/parent
    * chains. ALWAYS establishes a fresh boundary (even for `undefined`) so a leaked
-   * ambient context can never bleed in (Claude workloadContext parity). Returns `fn`'s
+   * ambient context can never bleed in (the reference workloadContext parity). Returns `fn`'s
    * return value (including a Promise, whose continuation keeps the context). Prefer
    * this over {@link pushSource}/{@link popSource} for void-detached background work
    * (cron, forked slash commands, subagents) whose continuation outlives the caller.
@@ -2598,7 +2598,7 @@ export class AnalyticsTracker {
     // Per-prompt correlation id: stamped onto every EVENT so a session's events can
     // be grouped to the specific prompt/turn that produced them. Deliberately an
     // event-level dimension (never a resource/metric one, where it would be unbounded
-    // cardinality) — mirrors Claude's getPromptId() `prompt.id` attribute. An explicit
+    // cardinality) — mirrors the reference's getPromptId() `prompt.id` attribute. An explicit
     // `prompt.id` already in the data wins.
     if (this._promptId !== undefined && !('prompt.id' in recordData)) {
       recordData = { ...recordData, 'prompt.id': this._promptId };
@@ -2631,7 +2631,7 @@ export class AnalyticsTracker {
       ? sanitizeAnalyticsData(recordData, { env: this._env })
       : markAnalyticsSafe(recordData);
 
-    // Egress allowlist (Claude datadog double gate): drop the whole event from every
+    // Egress allowlist (the reference datadog double gate): drop the whole event from every
     // egress sink when its TYPE is not allowed (it stays in-memory), else strip the
     // payload to the allowed fields. Applied before dedup/append so disk + console +
     // OTLP all see the identical minimized copy.
@@ -2664,7 +2664,7 @@ export class AnalyticsTracker {
 
     // Warn ONCE if an event has nowhere durable to go (no disk log, no active OTLP
     // export, no console exporter) — surfacing a misconfigured/absent sink instead
-    // of silently losing telemetry (mirrors Claude's hasWarnedNoEventLogger latch).
+    // of silently losing telemetry (mirrors the reference's hasWarnedNoEventLogger latch).
     const hasSink = !!this.logFile
       || (!!this._otlpEndpoint && this._otlpExport && !isTelemetryDisabled(this._env))
       || this._consoleExport;
@@ -2681,7 +2681,7 @@ export class AnalyticsTracker {
     if (this._otlpEndpoint && this._otlpExport && !isTelemetryDisabled(this._env) && !this.isSinkKilled('otlp')) {
       // Exception-isolated like the file-append sink above: a throw from sender
       // construction / enqueue (e.g. a bad batch opt) must never propagate into the
-      // engine's hot loop — analytics is always best-effort (mirrors Claude's
+      // engine's hot loop — analytics is always best-effort (mirrors the reference's
       // backend-mirror try/catch isolation). A failure warns once, then is swallowed.
       try {
         if (!this._telemetry) {
@@ -2795,7 +2795,7 @@ export class AnalyticsTracker {
   /**
    * Total telemetry events not yet successfully exported (queued + retained ready
    * batches), readable even after {@link shutdown} — exit/shutdown diagnostics.
-   * Mirrors Claude's SerialBatchEventUploader.pendingCount.
+   * Mirrors the reference's SerialBatchEventUploader.pendingCount.
    */
   getPendingTelemetryCount(): number {
     return this._telemetry?.pendingCount ?? 0;
@@ -2803,7 +2803,7 @@ export class AnalyticsTracker {
 
   /**
    * Snapshot of the batch-telemetry transport's lifetime counters for introspection
-   * (surfaced by `/analytics`). Claude frames droppedBatchCount/pendingCount as
+   * (surfaced by `/analytics`). the reference frames droppedBatchCount/pendingCount as
    * explicit introspection points ("callers can snapshot before flush() and compare
    * after to detect silent drops"); this exposes the full set so a user-facing
    * diagnostic can report queue depth + silent telemetry loss rather than it being
@@ -2835,7 +2835,7 @@ export class AnalyticsTracker {
   /**
    * Bounded graceful close: give the final {@link flushOtlp} a best-effort `graceMs`
    * window (racing it against a timeout) before latching shutdown, so a slow/hung
-   * collector can never block exit beyond the grace period. Mirrors Claude's
+   * collector can never block exit beyond the grace period. Mirrors the reference's
    * HybridTransport close() `Promise.race([flush(), timeout(CLOSE_GRACE_MS)])`. Any
    * events still queued are left for a later process to recover. Idempotent;
    * best-effort (never throws).
@@ -2920,7 +2920,7 @@ export class AnalyticsTracker {
    * Gracefully shut the telemetry pipeline down: run one final {@link flushOtlp}
    * while still live, then latch `_shutdown` so every later {@link log} egress and
    * {@link flushOtlp} is rejected and the batch sender refuses further events — a
-   * post-shutdown export guard mirroring Claude's exporter `isShutdown` flag. Safe
+   * post-shutdown export guard mirroring the reference's exporter `isShutdown` flag. Safe
    * to call more than once. Best-effort: never throws.
    */
   async shutdown(): Promise<void> {
@@ -2947,7 +2947,7 @@ export class AnalyticsTracker {
       if (ok) {
         // A successful mid-session send proves the collector is healthy — immediately
         // drain any previously-spooled failed batches instead of waiting for the next
-        // flush/backoff tick (Claude's "success means healthy, retry queued" parity).
+        // flush/backoff tick (the reference's "success means healthy, retry queued" parity).
         if (this._failedStore) await this.recoverPersistedBatches();
       } else if (this._telemetry) {
         this._telemetry.requeueFront([batch]);
@@ -3077,7 +3077,7 @@ export class AnalyticsTracker {
    * current buffer is flushed before the param swap — see
    * {@link TelemetryBatchSender.reconfigure}) AND keep the tracker's own resolved
    * cadence/batch knobs in sync so a later lazily-created sender inherits the new values.
-   * Mirrors Claude's reinitialize1PEventLoggingIfConfigChanged.
+   * Mirrors the reference's reinitialize1PEventLoggingIfConfigChanged.
    */
   reconfigureTelemetry(opts: TelemetryReconfigureOpts): void {
     this._telemetry?.reconfigure(opts);
@@ -3104,7 +3104,7 @@ export class AnalyticsTracker {
   async recoverPersistedBatches(): Promise<number> {
     if (!this._failedStore || !this._otlpEndpoint || !this._otlpExport || this._shutdown) return 0;
     if (isTelemetryDisabled(this._env) || this.isSinkKilled('otlp') || this._isKilled?.()) return 0;
-    // Re-entrancy guard (Claude's `isRetrying`): a recovery triggered by a successful
+    // Re-entrancy guard (the reference's `isRetrying`): a recovery triggered by a successful
     // mid-session send must not overlap one already running at a flush head.
     if (this._recovering) return 0;
     this._recovering = true;
@@ -3180,7 +3180,7 @@ export interface TelemetryBatchSenderOpts {
    * Bypass batching: flush one batch per {@link TelemetryBatchSender.enqueue} call
    * instead of accumulating to the size/byte boundary (the interval timer is moot with
    * nothing buffered). A single config knob turning the buffered sink into a
-   * pass-through for low-latency/debug sinks. Mirrors Claude's bufferedWriter
+   * pass-through for low-latency/debug sinks. Mirrors the reference's bufferedWriter
    * `immediateMode`.
    */
   immediateMode?: boolean;
@@ -3189,14 +3189,14 @@ export interface TelemetryBatchSenderOpts {
    * {@link TelemetryBatchSender.enqueueAsync} awaits until drain frees space rather
    * than dropping the newest event. Off by default (the synchronous {@link TelemetryBatchSender.enqueue}
    * stays lossy — best-effort telemetry). Blocked producers are released when drain
-   * frees space OR on {@link TelemetryBatchSender.shutdown}. Mirrors Claude's
+   * frees space OR on {@link TelemetryBatchSender.shutdown}. Mirrors the reference's
    * SerialBatchEventUploader backpressure (enqueue awaits, close releases waiters).
    */
   backpressure?: boolean;
 }
 
 /**
- * Runtime-reconfigurable batch-pipeline parameters (Claude-Code firstPartyEventLogger.ts
+ * Runtime-reconfigurable batch-pipeline parameters (the reference firstPartyEventLogger.ts
  * reinitialize1PEventLoggingIfConfigChanged parity). Any subset may be changed on a live
  * sender via {@link TelemetryBatchSender.reconfigure}; omitted fields are left unchanged.
  */
@@ -3271,7 +3271,7 @@ export class TelemetryBatchSender {
    * the sender is (or becomes) shut down. With backpressure OFF it is equivalent to the
    * synchronous {@link enqueue} (no blocking — the lossy best-effort default). Blocked
    * producers are released as {@link takeBatch} frees space or by {@link shutdown}.
-   * Mirrors Claude's SerialBatchEventUploader.enqueue await-until-space.
+   * Mirrors the reference's SerialBatchEventUploader.enqueue await-until-space.
    */
   async enqueueAsync(type: string, data: Record<string, unknown>, sequence?: number): Promise<boolean> {
     if (this._shutdown) { this._totalDropped++; return false; }
@@ -3367,12 +3367,12 @@ export class TelemetryBatchSender {
     this._shutdown = true;
     this.stopAutoFlush();
     // Release blocked producers so they observe the shutdown and resolve false
-    // (never left hanging) — mirrors Claude's close() waking backpressure waiters.
+    // (never left hanging) — mirrors the reference's close() waking backpressure waiters.
     this._releaseBackpressure();
   }
 
   /**
-   * Reconfigure the batch pipeline on a LIVE sender (Claude's
+   * Reconfigure the batch pipeline on a LIVE sender (the reference's
    * reinitialize1PEventLoggingIfConfigChanged parity) with event-loss-safe ordering:
    * (1) pause the auto-flush timer, (2) FORCE-FLUSH the current buffer so every
    * already-queued event is drained through onBatch / retained for drain() BEFORE the
@@ -3411,7 +3411,7 @@ export class TelemetryBatchSender {
   /**
    * Total events not yet drained: the live queue plus every event retained in
    * ready-but-undrained batches. Readable after {@link shutdown} (which leaves the
-   * queue intact) so exit diagnostics can report un-exported depth. Mirrors Claude's
+   * queue intact) so exit diagnostics can report un-exported depth. Mirrors the reference's
    * SerialBatchEventUploader.pendingCount.
    */
   get pendingCount(): number {
@@ -3451,13 +3451,13 @@ export class TelemetryBatchSender {
 
 /**
  * Max serialized bytes for a single OTLP attribute value — 60KB, headroom under
- * the common 64KB backend attribute limit (mirrors Claude's MAX_CONTENT_SIZE).
+ * the common 64KB backend attribute limit (mirrors the reference's MAX_CONTENT_SIZE).
  */
 export const MAX_OTLP_ATTR_BYTES = 60 * 1024;
 
 /**
  * Cap a string at `maxSize` serialized bytes, appending a marker and reporting the
- * original length so a consumer knows the value was clipped (mirrors Claude's
+ * original length so a consumer knows the value was clipped (mirrors the reference's
  * truncateContent, which pairs the clipped value with `*_truncated`/`*_original_length`).
  */
 export function truncateContent(
@@ -3634,13 +3634,13 @@ export interface OtlpLogsEndpoint {
   /**
    * True when sourced from the dedicated `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` — then
    * the URL is used verbatim ({@link otlpLogsUrl} appends no `/v1/logs`). Mirrors
-   * Claude's per-signal endpoint selection distinct from the generic endpoint.
+   * the reference's per-signal endpoint selection distinct from the generic endpoint.
    */
   perSignal: boolean;
 }
 
 /**
- * Resolve the OTLP LOGS endpoint honoring signal-specific selection (Claude parity):
+ * Resolve the OTLP LOGS endpoint honoring signal-specific selection (the reference parity):
  * the dedicated `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` wins and is marked `perSignal`
  * (used verbatim); otherwise the generic `OTEL_EXPORTER_OTLP_ENDPOINT` (then AMI's
  * `SUPERINFERENCE_OTLP_ENDPOINT`) is used and gets `/v1/logs` appended. Returns null
@@ -3670,12 +3670,12 @@ export function resolveOtlpSignalEndpoint(
 }
 
 // ---------------------------------------------------------------------------
-// OTLP METRICS signal (Claude-Code instrumentation.ts L113-215 parity): AMI's
+// OTLP METRICS signal (the reference instrumentation.ts L113-215 parity): AMI's
 // logs-only OTLP export is extended with a metrics signal so the rich quantitative
 // data the Profiler already computes (per-label durations, TTFT, p50/p95/p99,
 // counters/gauges via its getAll() snapshot) can be bridged to any OTLP metrics
 // backend over HTTP/JSON (AMI ships no @opentelemetry SDK). The aggregation
-// temporality defaults to 'delta' — the saner default Claude picks — while remaining
+// temporality defaults to 'delta' — the saner default the reference picks — while remaining
 // overridable via OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE.
 // ---------------------------------------------------------------------------
 
@@ -3685,7 +3685,7 @@ export type MetricsTemporality = keyof typeof OTLP_TEMPORALITY;
 
 /**
  * Resolve the metrics aggregation-temporality preference, DEFAULTING TO 'delta' (the
- * saner default Claude's instrumentation.ts L113-116 sets) while honoring
+ * saner default the reference's instrumentation.ts L113-116 sets) while honoring
  * `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE`. Only an explicit `cumulative`
  * selects cumulative; anything else (unset / unknown / blank) falls back to delta.
  */
@@ -3711,7 +3711,7 @@ export interface MetricSnapshot {
  * carrying the resolved aggregation temporality ({@link resolveMetricsTemporalityPreference},
  * default delta). Non-finite values are skipped. The resource attributes mirror the
  * logs payload (same {@link buildTelemetryResourceAttrs}), so a collector segments
- * metrics and logs identically. Mirrors Claude's metrics signal, hand-built over
+ * metrics and logs identically. Mirrors the reference's metrics signal, hand-built over
  * HTTP/JSON since AMI has no OTEL SDK dependency.
  */
 export function toOtlpMetricsPayload(
@@ -3750,7 +3750,7 @@ export function toOtlpMetricsPayload(
 }
 
 // ---------------------------------------------------------------------------
-// OTLP TRACES signal (Claude-Code sessionTracing.ts L176-655 parity): AMI's Profiler
+// OTLP TRACES signal (the reference sessionTracing.ts L176-655 parity): AMI's Profiler
 // already reconstructs a parent-child span tree (interaction -> llm_request / tool ->
 // tool.execution / blocked_on_user / hook) via getSpanTree(); this bridges that tree
 // to an OTLP/JSON TracesData payload so the nested interaction timeline renders in any
@@ -3775,7 +3775,7 @@ function otlpTraceId(seed: string): string {
  * start/end nanos derived from its ms timings, and attributes carrying `span.type`,
  * `agent.id`, `duration_ms` (when closed) plus the node's own attrs. All spans share
  * one session-scoped traceId so the whole interaction renders as a single navigable
- * trace. Mirrors Claude's claude_code.interaction/llm_request/tool span emission.
+ * trace. Mirrors the reference's claude_code.interaction/llm_request/tool span emission.
  */
 export function toOtlpTracePayload(
   spans: readonly SpanNode[],
@@ -3822,7 +3822,7 @@ export function toOtlpTracePayload(
 
 // ---------------------------------------------------------------------------
 // OTLP transport config: proxy (HTTP[S]_PROXY / NO_PROXY), mutual-TLS client
-// certs, and a custom CA — mirroring Claude's getProxyUrl / shouldBypassProxy /
+// certs, and a custom CA — mirroring the reference's getProxyUrl / shouldBypassProxy /
 // HttpsProxyAgent + httpAgentOptions. The export still goes over the global
 // fetch; a resolved undici dispatcher is attached to the request init so a
 // self-hosted collector reachable only through a corporate proxy or presenting a
@@ -4076,7 +4076,7 @@ export function generateToolSummary(
   const summaries = toolResults.map(r => {
     const lines = r.output.split('\n');
     // Clip the first line and, when it was clipped, append a '…' so a truncated
-    // summary is visually distinguishable from a complete one (mirrors Claude's
+    // summary is visually distinguishable from a complete one (mirrors the reference's
     // truncate.ts indicator) — otherwise an exactly-100-char line and a clipped
     // 100-char line would look identical.
     let shortOutput = lines[0].substring(0, TOOL_SUMMARY_LINE_MAX);

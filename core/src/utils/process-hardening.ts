@@ -5,7 +5,7 @@
  * model is tricked into running, which executes as the same UID and could read a
  * core dump of the agent process to scrape those secrets.
  *
- * This is the pure-Node port of the defense-in-depth idea behind Claude Code's
+ * This is the pure-Node port of the defense-in-depth idea behind the reference's
  * `setNonDumpable()` / `prctl(PR_SET_DUMPABLE, 0)` hardening. It applies TWO
  * complementary, independent, fail-open measures:
  *
@@ -15,7 +15,7 @@
  *    the kernel writes for this process. That removes the "trigger a crash, then
  *    scrape the heap out of the core file" vector, which is the exfiltration path a
  *    sandboxed-but-same-UID bash command can most easily reach.
- * 2. **Live-ptrace block** via `prctl(PR_SET_DUMPABLE, 0)` (Claude's exact
+ * 2. **Live-ptrace block** via `prctl(PR_SET_DUMPABLE, 0)` (the reference's exact
  *    `setNonDumpable()` call): this ALSO blocks a same-UID `gdb -p $PPID` /
  *    `/proc/<pid>/mem` read of the running heap, not just the post-crash core file.
  *    Node has no built-in `prctl`, so this measure is only reachable when the
@@ -179,7 +179,7 @@ export function loadLibcPrctl(
 
 /**
  * Measure 2: block live same-UID ptrace of this process via
- * `prctl(PR_SET_DUMPABLE, 0)` — Claude Code's exact `setNonDumpable()` call. On a
+ * `prctl(PR_SET_DUMPABLE, 0)` — the reference's exact `setNonDumpable()` call. On a
  * runtime with libc FFI this stops a prompt-injected `gdb -p $PPID` / `/proc/<pid>/
  * mem` read from scraping provider keys out of the live heap. NEVER throws: a
  * non-Linux platform, an opt-out, a runtime without FFI, a nonzero prctl return, or
@@ -358,7 +358,7 @@ export function describeProcessHardening(
       note: !supported
         ? 'prctl(PR_SET_DUMPABLE,0) ptrace block is Linux-only; no-op (fail-open) on this platform'
         : ffiAvailable
-          ? 'prctl(PR_SET_DUMPABLE,0) blocks live same-UID ptrace/gdb/proc-mem reads of the heap (Claude setNonDumpable parity)'
+          ? 'prctl(PR_SET_DUMPABLE,0) blocks live same-UID ptrace/gdb/proc-mem reads of the heap (the reference setNonDumpable parity)'
           : 'prctl(PR_SET_DUMPABLE,0) needs a libc FFI (Bun-style); plain Node has none, so this measure is a no-op (fail-open) and only the core-dump filter applies',
     },
   };

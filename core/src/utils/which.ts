@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 // Cross-platform executable resolution — a Node-portable analogue of the
-// `which`/`where.exe` probe (and Bun.which fast-path) Claude Code uses. AMI's
+// `which`/`where.exe` probe (and Bun.which fast-path) the reference uses. AMI's
 // container-runtime detection previously ran `command -v <cmd>` through a POSIX
 // shell, which silently fails on Windows cmd.exe (the correct probe is
 // `where.exe`) and always spawns a subprocess even though PATH can be scanned
@@ -90,7 +90,7 @@ function fastPathLookup(command: string): string | null {
 
 /**
  * Native `Bun.which` when running under the Bun runtime, else null. Parity with
- * Claude Code's `bunWhich` capability switch (utils/which.ts): `Bun.which` is an
+ * the reference's `bunWhich` capability switch (utils/which.ts): `Bun.which` is an
  * in-process, no-spawn PATH lookup, so when it exists it is the fastest and most
  * runtime-faithful resolver — preferred over both the manual PATH scan and the
  * subprocess fallback. Detected at call time (not bound once at module load) so
@@ -141,7 +141,7 @@ function spawnLookup(command: string): string | null {
 export function whichSync(command: string): string | null {
   if (!command) return null;
   // Bun fast path: a native, in-process resolver — no subprocess. When present
-  // it is authoritative (parity with Claude Code's `whichSync = bunWhich ?? …`).
+  // it is authoritative (parity with the reference's `whichSync = bunWhich ?? …`).
   const bun = bunWhich();
   if (bun) return bun(command) ?? null;
   return fastPathLookup(command) ?? spawnLookup(command);
@@ -150,7 +150,7 @@ export function whichSync(command: string): string | null {
 /**
  * Session cache of binary-presence checks, keyed by the trimmed command name.
  * Stores BOTH positive and negative results so a given command is probed at most
- * once per session. Parity with Claude Code's `binaryCache` (utils/binaryCheck.ts).
+ * once per session. Parity with the reference's `binaryCache` (utils/binaryCheck.ts).
  */
 const binaryCache = new Map<string, boolean>();
 
@@ -159,7 +159,7 @@ const binaryCache = new Map<string, boolean>();
  * check. Cross-platform via {@link whichSync} (`where.exe`/PATHEXT on Windows,
  * `command -v`/PATH scan on POSIX), session-cached (hits AND misses), and
  * defensive: an empty or whitespace-only command resolves to `false` without any
- * filesystem probe. Parity with Claude Code's `isBinaryInstalled`
+ * filesystem probe. Parity with the reference's `isBinaryInstalled`
  * (utils/binaryCheck.ts). Use this instead of re-spawning `which`/`where` per
  * call site (e.g. LSP server launch).
  */
@@ -185,7 +185,7 @@ export function clearBinaryCache(): void {
  * `['uv', 'pipx', 'pip', 'pip3']`, or a language server's `['pyright-langserver',
  * 'pyright']`) and gets back the first one actually on PATH, so a tool with
  * several interchangeable front-ends degrades gracefully instead of hard-failing
- * on the absence of the single hardcoded one. Mirrors Claude Code's alternate-
+ * on the absence of the single hardcoded one. Mirrors the reference's alternate-
  * binary fallback chains (e.g. `detectPythonPackageManager` uvx→pipx→pip→pip3).
  * Empty/whitespace candidates are skipped. Reuses the session-cached
  * {@link isBinaryInstalled} probe by default — it does NOT re-implement a second
@@ -204,21 +204,21 @@ export function firstAvailableBinary(
 }
 
 /**
- * Node package managers probed, in Claude-Code preference order
+ * Node package managers probed, in the reference preference order
  * (`detectPackageManagers`, utils/env.ts): npm → yarn → pnpm. Exported so a
  * caller/test shares the ONE canonical ordering instead of hardcoding its own.
  */
 export const KNOWN_PACKAGE_MANAGERS = ['npm', 'yarn', 'pnpm'] as const;
 
 /**
- * JavaScript runtimes probed, in Claude-Code preference order
+ * JavaScript runtimes probed, in the reference preference order
  * (`detectRuntimes`, utils/env.ts): bun → deno → node.
  */
 export const KNOWN_JS_RUNTIMES = ['bun', 'deno', 'node'] as const;
 
 /**
  * Which of the known Node PACKAGE MANAGERS are installed system-wide, returned in
- * preference order (npm → yarn → pnpm). Parity with Claude Code's
+ * preference order (npm → yarn → pnpm). Parity with the reference's
  * `detectPackageManagers` (utils/env.ts): a NO-EXEC PATH probe (via
  * {@link isBinaryInstalled} → {@link whichSync}, which never runs the binary) used
  * to tell which toolchains are available on the host — a DIFFERENT axis from
@@ -235,7 +235,7 @@ export function detectPackageManagers(
 
 /**
  * Which of the known JS RUNTIMES are installed system-wide, returned in preference
- * order (bun → deno → node). Parity with Claude Code's `detectRuntimes`
+ * order (bun → deno → node). Parity with the reference's `detectRuntimes`
  * (utils/env.ts); same no-exec, session-cached PATH probe as
  * {@link detectPackageManagers}. Lets a caller prefer an installed runtime or
  * advertise which runtimes a host provides.
@@ -248,7 +248,7 @@ export function detectRuntimes(
 
 /**
  * Resolve an executable *name* to its full PATH path, returning the spawn-ready
- * `{ cmd, args }` pair (parity with Claude Code's `findExecutable`, which
+ * `{ cmd, args }` pair (parity with the reference's `findExecutable`, which
  * replaced spawn-rx's `findActualExecutable`). `cmd` is the resolved absolute
  * path when found, else the original name unchanged (so `spawn` can still apply
  * its own PATH lookup); `args` is passed through untouched. Resolving up front

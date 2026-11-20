@@ -16,7 +16,7 @@
  * a non-substitution script returns `null` so the caller falls back to showing
  * the raw command.
  *
- * Mirrors Claude Code's `tools/BashTool/sedEditParser.ts`
+ * Mirrors the reference's `tools/BashTool/sedEditParser.ts`
  * (`parseSedEditCommand` / `applySedSubstitution`).
  */
 
@@ -365,7 +365,7 @@ function sedReplacementIsFaithful(replacement: string): boolean {
  * and perform the in-memory write; otherwise it falls back to the raw command
  * (no misleading diff) and lets the real `sed` run — so the user never approves a
  * preview that differs from the bytes actually written (the `_simulatedSedEdit`
- * exactness guarantee from Claude Code's SedEditPermissionRequest).
+ * exactness guarantee from the reference's SedEditPermissionRequest).
  */
 export function canSimulateSedEditFaithfully(sedInfo: SedEditInfo): boolean {
   return sedPatternIsFaithful(sedInfo.pattern) && sedReplacementIsFaithful(sedInfo.replacement);
@@ -433,7 +433,7 @@ function defaultWriteFileUtf8(absPath: string, content: string): void {
 /**
  * Perform a `sed -i` in-place edit by WRITING the {@link applySedSubstitution}
  * result directly, instead of executing the real `sed` binary — guaranteeing the
- * bytes written are exactly the ones a preview showed (Claude Code's
+ * bytes written are exactly the ones a preview showed (the reference's
  * `_simulatedSedEdit` exactness guarantee). Returns the simulation on success, or
  * `null` when the caller must fall back to running the real `sed` command: the
  * command is not a faithful single substitution, a non-empty backup suffix cannot

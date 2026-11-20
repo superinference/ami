@@ -7,13 +7,13 @@
  * filesystem access, otherwise `path.isAbsolute`/`fs.*` treat them as relative.
  *
  * The conversion is pure and hot (called on every path expansion), so results
- * are memoized behind a bounded LRU cache — matching Claude Code's
+ * are memoized behind a bounded LRU cache — matching the reference's
  * `memoizeWithLRU(..., 500)` in `utils/windowsPaths.ts`.
  *
- * [FUNCTIONAL CHANGE] New module — Windows POSIX-path parity with Claude Code.
+ * [FUNCTIONAL CHANGE] New module — Windows POSIX-path parity with the reference.
  */
 
-/** Default ceiling on cached entries, mirroring Claude Code's 500. */
+/** Default ceiling on cached entries, mirroring the reference's 500. */
 const LRU_MAX = 500;
 
 /**

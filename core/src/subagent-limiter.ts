@@ -42,7 +42,7 @@ export class SubagentLimiter {
 
   // Constructor overrides take precedence over the env vars. When absent, the
   // limits are resolved LIVE by the getters below so a long-lived limiter honours
-  // runtime env/config changes (matching Claude's per-batch getMaxToolUseConcurrency()).
+  // runtime env/config changes (matching the reference's per-batch getMaxToolUseConcurrency()).
   private readonly maxConcurrentOverride?: number;
   private readonly maxDepthOverride?: number;
   private readonly maxLifetimeOverride?: number;
@@ -120,7 +120,7 @@ export class SubagentLimiter {
    * call rejects without taking a slot or lifetime budget; if it aborts while
    * parked, the waiter is spliced out of the queue and its Promise rejected, so
    * a cancelled spawn can never strand a concurrency slot or hang forever.
-   * Mirrors Claude threading `abortController.signal` through the tool fan-out.
+   * Mirrors the reference threading `abortController.signal` through the tool fan-out.
    */
   async acquire(signal?: AbortSignal): Promise<void> {
     if (signal?.aborted) {

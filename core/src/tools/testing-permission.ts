@@ -3,11 +3,11 @@ import { ToolDefinition, ToolResult } from '../types';
 /**
  * Environment-gated SYNTHETIC permission-flow test tool.
  *
- * Parity: Claude Code's `TestingPermissionTool`
+ * Parity: the reference's `TestingPermissionTool`
  * (src/tools/testing/TestingPermissionTool.tsx) — a side-effect-free, test-only
  * tool whose SOLE purpose is to deterministically force the permission dialog so
  * an end-to-end test can exercise the ask → allow/deny path without mutating
- * files or running bash. Claude's tool combines two behaviors:
+ * files or running bash. the reference's tool combines two behaviors:
  *   - `isEnabled()` returns true only in a `test` build (invisible in production);
  *   - `checkPermissions()` UNCONDITIONALLY returns `{behavior:'ask', message:'Run test?'}`,
  *     with `isReadOnly()`/`isConcurrencySafe()` true and a no-op `call()`.
@@ -16,13 +16,13 @@ import { ToolDefinition, ToolResult } from '../types';
  * so parity is achieved functionally rather than field-for-field:
  *   - env gating is expressed through {@link ToolDefinition.isEnabled} +
  *     {@link isTestingPermissionEnabled} (opt-in, OFF by default) so the tool is
- *     dropped from the advertised pool in production, exactly like Claude's build gate;
+ *     dropped from the advertised pool in production, exactly like the reference's build gate;
  *   - the unconditional "always ask" is enforced in the centralized
  *     {@link import('../permissions').PermissionManager.check} via the
  *     {@link TESTING_PERMISSION_TOOL_NAME} guard (every mode asks; deny-all and an
  *     explicit user deny rule still win).
  *
- * INTENTIONAL DIVERGENCE (labeled): Claude declares this tool `isReadOnly()===true`,
+ * INTENTIONAL DIVERGENCE (labeled): the reference declares this tool `isReadOnly()===true`,
  * but in AMI a read-only + concurrency-safe tool takes the executor's no-prompt
  * read-only fast path and would never reach the permission prompt. To keep the
  * SAME functional behavior (the call is routed through the permission-asking path),
@@ -36,7 +36,7 @@ export const TESTING_PERMISSION_TOOL_NAME = 'testing_permission';
 /**
  * Opt-in env var that makes the synthetic permission test tool visible. OFF by
  * default so the tool is invisible in production and never pollutes the normal
- * advertised pool — the functional equivalent of Claude's build-time
+ * advertised pool — the functional equivalent of the reference's build-time
  * `isEnabled()==='test'` gate. Accepts `1`/`true` (case-insensitive).
  */
 export const TESTING_PERMISSION_ENV = 'AMI_TESTING_PERMISSION';
@@ -66,10 +66,10 @@ export const testingPermissionTool: ToolDefinition = {
   // no-prompt fast path). The centralized permission guard then forces the ask.
   isReadOnly: false,
   // Runtime availability gate — dropped from the advertised pool unless the
-  // test-only opt-in env var is set (parity: Claude's `isEnabled()==='test'`).
+  // test-only opt-in env var is set (parity: the reference's `isEnabled()==='test'`).
   isEnabled: () => isTestingPermissionEnabled(),
   async execute(): Promise<ToolResult> {
-    // No-op, side-effect-free body (parity: Claude's `call()` returning a fixed
+    // No-op, side-effect-free body (parity: the reference's `call()` returning a fixed
     // success string). The point of the tool is the permission prompt, not the work.
     return { output: `${TESTING_PERMISSION_TOOL_NAME} executed successfully` };
   },

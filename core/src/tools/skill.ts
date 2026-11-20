@@ -24,7 +24,7 @@ export interface SkillResolution {
 }
 
 /**
- * Resolve a requested skill name to a registered skill, mirroring Claude Code's
+ * Resolve a requested skill name to a registered skill, mirroring the reference's
  * Skill-tool name resolution as an additive superset:
  *
  * 1. **Exact match** — handles unscoped names and fully-qualified `plugin:skill`
@@ -84,7 +84,7 @@ function skillRuleMatches(pattern: string | undefined, skillName: string): boole
 }
 
 /**
- * Evaluate per-skill permission rules keyed by skill NAME, mirroring Claude Code's
+ * Evaluate per-skill permission rules keyed by skill NAME, mirroring the reference's
  * SkillTool.checkPermissions (deny rules first, then allow rules, with exact and
  * `name:*` prefix matching). This is the per-skill deny/allow/ask surface AMI
  * previously lacked — an operator can now `deny: ["Skill(dangerous)"]` or scope
@@ -92,7 +92,7 @@ function skillRuleMatches(pattern: string | undefined, skillName: string): boole
  *
  * Returns `undefined` when NO `Skill(...)` rule matches, so the default behavior is
  * unchanged: the generic skill-tool permission gate (the `skill` tool is
- * non-read-only) still provides Claude's default-ask. Only an explicit matching
+ * non-read-only) still provides the reference's default-ask. Only an explicit matching
  * rule overrides that. Pure + exported for testability.
  */
 export function evaluateSkillPermission(
@@ -102,7 +102,7 @@ export function evaluateSkillPermission(
   if (!rules || rules.length === 0) return undefined;
   const skillRules = rules.filter(r => normalizeToolName(r.tool) === 'skill');
   if (skillRules.length === 0) return undefined;
-  // Deny wins over allow wins over ask (defense-in-depth, Claude's order).
+  // Deny wins over allow wins over ask (defense-in-depth, the reference's order).
   for (const order of ['deny', 'allow', 'ask'] as const) {
     for (const r of skillRules) {
       if (r.action === order && skillRuleMatches(r.pattern, skillName)) return order;
@@ -113,7 +113,7 @@ export function evaluateSkillPermission(
 
 /**
  * Allowlist of {@link SkillDefinition} property keys that are REVIEWED-SAFE — a
- * skill carrying only these may auto-run without an extra approval. Mirrors Claude
+ * skill carrying only these may auto-run without an extra approval. Mirrors the reference
  * Code's `SAFE_SKILL_PROPERTIES` fail-closed design (SkillTool.ts:875-908): any
  * property NOT on this list that carries a meaningful value forces the skill
  * through the permission gate, so new/injected skill metadata (e.g. an
@@ -136,7 +136,7 @@ export { SAFE_SKILL_PROPERTIES };
  * Return the skill's property keys that are OUTSIDE {@link SAFE_SKILL_PROPERTIES}
  * AND carry a meaningful value (not undefined/null, not an empty array/object).
  * An empty result means the skill uses only reviewed-safe properties and may
- * auto-run. Mirrors Claude Code's `skillHasOnlySafeProperties` value check.
+ * auto-run. Mirrors the reference's `skillHasOnlySafeProperties` value check.
  * Pure + exported for testability.
  */
 export function unsafeSkillProperties(skill: SkillDefinition): string[] {
@@ -161,7 +161,7 @@ export function skillHasOnlySafeProperties(skill: SkillDefinition): boolean {
  * A diagnostic produced while resolving a skill's tool restriction list — surfaced
  * so a misconfigured `allowed-tools`/`disallowed-tools` (a typo, a disconnected MCP
  * tool, or a whitelist that resolves to nothing) is VISIBLE instead of silently
- * degrading the subagent's toolset. Mirrors Claude Code's validation/selected-count
+ * degrading the subagent's toolset. Mirrors the reference's validation/selected-count
  * affordance (ToolSelector drops unresolved names but still surfaces the count).
  */
 export interface SkillToolFilterWarning {
@@ -174,13 +174,13 @@ export interface SkillToolFilterWarning {
 }
 
 /**
- * Coarse tool-class taxonomy (parity with Claude Code's ToolSelector getToolBuckets:
+ * Coarse tool-class taxonomy (parity with the reference's ToolSelector getToolBuckets:
  * Read-only / Edit / Execution / MCP / Other). Lets a skill/agent allowlist be
  * authored and reasoned about by tool CLASS ("allow all read-only + edit") instead
  * of enumerating every tool name. Derived from the tool's own `isMcp`/`isReadOnly`
  * flags plus a small name set for the edit/execution classes (mutating file tools
  * and shell/process tools are never read-only, so they can't be auto-classified by
- * the flags alone) — mirroring Claude's hard-coded bucket membership.
+ * the flags alone) — mirroring the reference's hard-coded bucket membership.
  */
 export type ToolCategory = 'read-only' | 'edit' | 'execution' | 'mcp' | 'other';
 
@@ -216,7 +216,7 @@ type ParsedSkillToolEntry = { category: ToolCategory } | { name: string };
 /**
  * Parse a single `allowed-tools`/`disallowed-tools` entry.
  *
- * Accepts Claude Code's authoring forms and maps them onto AMI concepts so a
+ * Accepts the reference's authoring forms and maps them onto AMI concepts so a
  * skill/command imported verbatim resolves to the right tools instead of silently
  * matching nothing:
  * - **Category tokens** (`read-only`, `edit`, `execution`, `mcp`, `other`) → the
@@ -224,7 +224,7 @@ type ParsedSkillToolEntry = { category: ToolCategory } | { name: string };
  * - **Scoped command patterns** `Tool(scope:*)` → the tool-name portion (`Tool`).
  *   The scope is a permission concern handled by the permission engine, not the
  *   tool-list filter, so only the name is used for inclusion here.
- * - **Claude-cased / aliased names** (`Bash`, `Read`, `Edit`, `Grep`, `LS`, …) →
+ * - **compat-cased / aliased names** (`Bash`, `Read`, `Edit`, `Grep`, `LS`, …) →
  *   AMI names (`bash`, `file_read`, `file_edit`, `grep`, `list_dir`, …) via the
  *   shared `normalizeToolName` alias map (single source of truth — no local copy).
  */
@@ -245,7 +245,7 @@ function isRealSkillPath(filePath: string | undefined): filePath is string {
 /**
  * The directory a disk-based skill lives in — where its sibling reference files
  * (scripts, templates, docs the SKILL.md refers to) sit — or `null` for a built-in
- * or in-memory skill that ships no on-disk tree. Parity with Claude's automatic
+ * or in-memory skill that ships no on-disk tree. Parity with the reference's automatic
  * "Base directory for this skill" pointer. Pure + exported for testability.
  */
 export function skillBaseDir(skill: SkillDefinition | null | undefined): string | null {
@@ -258,7 +258,7 @@ export function skillBaseDir(skill: SkillDefinition | null | undefined): string 
 /**
  * Prepend a "Base directory for this skill: <dir>" pointer to a disk-based skill's
  * content so the model can Read/Grep the skill's sibling reference files on demand
- * without the author having to template `${SKILL_DIR}` by hand (parity with Claude
+ * without the author having to template `${SKILL_DIR}` by hand (parity with the reference
  * Code's bundled/disk skill base-dir injection). No-op for built-in/in-memory
  * skills and idempotent (never double-prepends). Pure + exported for testability.
  */
@@ -270,7 +270,7 @@ export function withSkillBaseDir(content: string, skill: SkillDefinition | null 
 
 /**
  * Build the skill-activation byline, surfacing the sandboxing a skill applies at the
- * moment it activates (parity with Claude's renderToolResultMessage byline): the
+ * moment it activates (parity with the reference's renderToolResultMessage byline): the
  * number of tools the skill is scoped to (when it restricts its toolset) and the
  * model it is pinned to (when non-default). A `·`-joined one-liner; the base message
  * is always first. Pure + exported for testability.
@@ -294,10 +294,10 @@ export function skillActivationByline(
  *
  * Logic:
  * 1. A list containing the `*` wildcard means "all tools" — skip the allowlist
- *    filter (Claude Code's `tools: ['*']` sentinel; AMI's convention of an empty
+ *    filter (the reference's `tools: ['*']` sentinel; AMI's convention of an empty
  *    list already means "all", so `*` is treated identically).
  * 2. If allowedTools is set, whitelist to only those tools (entries normalized via
- *    {@link parseSkillToolEntry}, so scoped `Tool(scope:*)` and Claude-cased
+ *    {@link parseSkillToolEntry}, so scoped `Tool(scope:*)` and compat-cased
  *    names resolve to the correct AMI tool).
  * 3. Otherwise, include all tools minus 'skill'.
  * 4. If disallowedTools is set, remove those tools from the result.
@@ -323,7 +323,7 @@ export function filterToolsForSkill(
   // no real tool). Category tokens are valid taxonomy and never warn.
   const resolveEntry = (entry: string, list: 'allowed' | 'disallowed', into: Set<string>): void => {
     // Server-wildcard entry `mcp__<server>__*`: derive the allow/deny set from the
-    // MCP server's LIVE advertised tools (parity with Claude Code's claude-in-chrome
+    // MCP server's LIVE advertised tools (parity with the reference's claude-in-chrome
     // skill, whose allowlist is computed from the server's enumerated tools) instead
     // of hand-listing each one, so it never drifts when the server adds/removes a tool.
     const wildcardServer = parseMcpServerWildcard(entry);
@@ -331,7 +331,7 @@ export function filterToolsForSkill(
       // Collect the server's live advertised BARE tool names, then re-derive the
       // canonical `mcp__<server>__<tool>` allowlist via deriveMcpToolAllowlist — the
       // single source for "which qualified tools does this server expose" — so the
-      // expansion matches exactly what a static Claude-style allowlist would list.
+      // expansion matches exactly what a static reference-style allowlist would list.
       const prefix = mcpToolNamespacePrefix(wildcardServer);
       const bareNames = allTools
         .filter(t => isMcpToolOfServer(t.name, wildcardServer))
@@ -447,7 +447,7 @@ export const skillTool: ToolDefinition = {
     // reaches the skill template. Previously the raw args string flowed unbounded
     // into getSkillContent (and MCP getPrompt); an oversized value could blow up
     // the context. sanitizeSkillArgs caps the value to MAX_SKILL_ARG_VALUE_LENGTH,
-    // matching the arg-safety limits Claude Code enforces on skill invocation.
+    // matching the arg-safety limits the reference enforces on skill invocation.
     const safeArgs = args ? sanitizeSkillArgs({ ARGUMENTS: args }) : undefined;
 
     if (!rawName || rawName.trim().length === 0) {
@@ -477,7 +477,7 @@ export const skillTool: ToolDefinition = {
     // An operator `deny: ["Skill(name)"]` / `allow: ["Skill(scope:*)"]` rule decides
     // which model-invokable skills may auto-run BEFORE the skill executes (inline or
     // forked). No matching rule → undefined → the generic skill-tool gate still
-    // applies the default-ask. Mirrors Claude's SkillTool.checkPermissions.
+    // applies the default-ask. Mirrors the reference's SkillTool.checkPermissions.
     const permDecision = evaluateSkillPermission(resolvedName, context._parentPermissionRules);
     if (permDecision === 'deny') {
       return {
@@ -489,7 +489,7 @@ export const skillTool: ToolDefinition = {
     // FUNCTIONAL (parity/security): fail-closed safe-property allowlist. A skill
     // carrying an UNreviewed property (outside SAFE_SKILL_PROPERTIES) with a
     // meaningful value must not auto-run — it requires explicit approval unless an
-    // operator `allow` rule already cleared it. Mirrors Claude's
+    // operator `allow` rule already cleared it. Mirrors the reference's
     // skillHasOnlySafeProperties gate so crafted/injected skill metadata (e.g.
     // from an installed catalog or plugin bundle) defaults to ask, not run.
     const skillPreCleared = permDecision === 'allow' || !skillDef || skillHasOnlySafeProperties(skillDef);
@@ -501,7 +501,7 @@ export const skillTool: ToolDefinition = {
       if (handler) {
         // FUNCTIONAL (parity/security): a skill flagged `isSensitive` must NOT leak
         // its arguments into the echoed permission summary — mask them as `***`
-        // (Claude's isSensitive arg masking). redactSkillArgs is a no-op for a
+        // (the reference's isSensitive arg masking). redactSkillArgs is a no-op for a
         // non-sensitive skill or an empty argument.
         const echoedArgs = skillDef && safeArgs?.ARGUMENTS
           ? redactSkillArgs(skillDef, safeArgs.ARGUMENTS)
@@ -544,7 +544,7 @@ export const skillTool: ToolDefinition = {
 
     // FUNCTIONAL (parity): a skill may be gated OUT of non-interactive (detached /
     // --prompt) runs via `disableNonInteractive` / `supportsNonInteractive`
-    // (Claude's per-command non-interactive gate). Refuse it in detached mode
+    // (the reference's per-command non-interactive gate). Refuse it in detached mode
     // rather than running a skill that assumes an interactive session.
     if (skillDef && !isSkillAvailableNonInteractive(skillDef, context.detachedMode === true)) {
       return {
@@ -557,7 +557,7 @@ export const skillTool: ToolDefinition = {
     // git working tree (it spawns isolated worktrees / opens PRs). Fail fast with an
     // explanatory, user-facing precondition message instead of letting a later
     // worktree-creation step surface a low-level "Failed to create worktree" error.
-    // Mirrors Claude Code's getIsGit() guard in worktree-spawning commands (/batch).
+    // Mirrors the reference's getIsGit() guard in worktree-spawning commands (/batch).
     if (skillDef?.requiresGitRepo && !isGitRepo(context.cwd)) {
       return {
         output: `Error: skill "${resolvedName}" requires a git repository because it spawns agents in isolated git worktrees and/or creates pull requests. The current directory is not a git repo — initialize one first (git init) or run this from inside an existing repository.`,
@@ -568,7 +568,7 @@ export const skillTool: ToolDefinition = {
     // FUNCTIONAL (parity): a skill that declares `requires-argument` must not run
     // with an empty argument — return its custom help/examples message (or a
     // generated usage line) instead of invoking an argument-less body. Mirrors
-    // Claude's required-argument skills (e.g. /batch's MISSING_INSTRUCTION_MESSAGE).
+    // the reference's required-argument skills (e.g. /batch's MISSING_INSTRUCTION_MESSAGE).
     if (skillDef?.requiresArgument && !(safeArgs?.ARGUMENTS && safeArgs.ARGUMENTS.trim().length > 0)) {
       return { output: missingSkillArgumentMessage(skillDef), isError: true };
     }
@@ -580,7 +580,7 @@ export const skillTool: ToolDefinition = {
       // ONLY through its discoverable namespaced identifier `mcp__<server>__<prompt>`
       // (the same canonical name MCP tools carry) — NOT by guessing a bare prompt
       // name against every server. This closes the "technically reachable but not
-      // discoverable" hole Claude closed in getAllCommands (only loadedFrom==='mcp'
+      // discoverable" hole the reference closed in getAllCommands (only loadedFrom==='mcp'
       // prompt commands are resolvable), so a non-skill MCP prompt can no longer be
       // invoked by a guessed bare name.
       const parsed = parseMcpToolName(skillName);
@@ -600,7 +600,7 @@ export const skillTool: ToolDefinition = {
           // FUNCTIONAL (parity/errors): surface a transient MCP failure instead of
           // silently reporting "not found" — a server/list error is distinct from a
           // genuinely-missing skill and gives the model an actionable signal.
-          // Mirrors Claude's `Failed to load remote skill <slug>: <msg>`.
+          // Mirrors the reference's `Failed to load remote skill <slug>: <msg>`.
           return {
             output: `Error: failed to load MCP skill "${skillName}": ${err instanceof Error ? err.message : String(err)}`,
             isError: true,
@@ -624,7 +624,7 @@ export const skillTool: ToolDefinition = {
       // to the SESSION permission context for as long as this skill stays active.
       // An inline skill's instructions execute in the SAME session, so the parent
       // engine runs its bash/tool calls — without this, a plain inline skill could
-      // not pre-approve its own scoped commands the way Claude's security-review
+      // not pre-approve its own scoped commands the way the reference's security-review
       // command injects allowed-tools into alwaysAllowRules.command. Reuses the
       // canonical scopedToolAllowRules helper (same derivation the forked-skill path
       // applies to the sub-engine) and is decoupled from isStanceSkill, so granting
@@ -636,7 +636,7 @@ export const skillTool: ToolDefinition = {
       );
       // Report the skill's effective sandboxing (tool-restriction count + model
       // override) at activation, instead of a bare "activated inline" sentence, so
-      // the user sees the skill scoped the toolset/model (parity with Claude's
+      // the user sees the skill scoped the toolset/model (parity with the reference's
       // skill-load byline). The count is only computed when the skill declares a
       // restriction; an unrestricted skill keeps the plain message.
       const restricts = (skill?.allowedTools?.length ?? 0) > 0 || (skill?.disallowedTools?.length ?? 0) > 0;
@@ -670,7 +670,7 @@ export const skillTool: ToolDefinition = {
     context.abortSignal.addEventListener('abort', forwardAbort, { once: true });
 
     // FUNCTIONAL (parity): a forked skill may target a NAMED agent type
-    // (SkillDefinition.agent, parity with Claude's PromptCommand.agent). When set,
+    // (SkillDefinition.agent, parity with the reference's PromptCommand.agent). When set,
     // the sub-engine is bound to that agent's system prompt (identity/persona) and
     // its model/maxTurns are used as a FALLBACK when the skill does not override
     // them — instead of a generic, agent-agnostic sub-engine. An unknown agent name
@@ -695,7 +695,7 @@ export const skillTool: ToolDefinition = {
       // resolveSkillModelOverride.
       //
       // `model: inherit` is a sentinel meaning "run with the parent/session model"
-      // (parity with Claude's loadSkillsDir, which normalizes frontmatter.model ===
+      // (parity with the reference's loadSkillsDir, which normalizes frontmatter.model ===
       // 'inherit' to undefined). The loader already normalizes it away, so this is a
       // defense-in-depth guard for a programmatically-built skill: it must NOT reach
       // resolveSkillModelOverride (which would set the bogus model id 'inherit') and
@@ -726,7 +726,7 @@ export const skillTool: ToolDefinition = {
       // Forward the parent session's permission rules so inherited deny rules
       // still apply inside the forked skill (least-privilege / policy honored).
       // FUNCTIONAL (parity): a skill's PATH/ARGUMENT-scoped allowlist entry
-      // (`Edit(~/.claude/settings.json)`, parity with Claude's statusline-spawned
+      // (`Edit(~/.claude/settings.json)`, parity with the reference's statusline-spawned
       // subagent) becomes an additive ALLOW rule prepended ahead of the inherited
       // rules — scoping the forked subagent to exactly the authored operations
       // while parent DENY rules still unconditionally win. Name-only entries are
@@ -736,7 +736,7 @@ export const skillTool: ToolDefinition = {
         ...(context._parentPermissionRules ?? []),
       ],
       permissionPromptHandler: context._permissionPromptHandler,
-      // Invocation-scoped frontmatter hooks (parity with Claude's registerFrontmatterHooks):
+      // Invocation-scoped frontmatter hooks (parity with the reference's registerFrontmatterHooks):
       // the forked skill's OWN `hooks` plus, when it targets a named agent, that agent's
       // `hooks`. Registered on the sub-engine for the duration of this fork and torn down
       // when it shuts down. Skill hooks from untrusted tiers were already stripped at load.
@@ -744,13 +744,13 @@ export const skillTool: ToolDefinition = {
         // Stamp each source's bundle/base root onto its command hooks so a
         // `${CLAUDE_PLUGIN_ROOT}`-referencing hook resolves its bundled asset path:
         // skill hooks use the skill's root, the targeted agent's hooks use the
-        // agent's root (parity with Claude's skillRoot/baseDir → registerFrontmatterHooks).
+        // agent's root (parity with the reference's skillRoot/baseDir → registerFrontmatterHooks).
         const fh = [
           ...(withFrontmatterHookPluginRoot(skill?.hooks, skill ? skillPluginRoot(skill) : undefined) ?? []),
           ...(withFrontmatterHookPluginRoot(agentDef?.hooks, agentDef ? agentPluginRoot(agentDef) : undefined) ?? []),
         ];
         // isAgent=false: a forked skill is not a completing subagent, so its `stop`
-        // hooks stay `stop` (parity with Claude's registerSkillHooks, which never
+        // hooks stay `stop` (parity with the reference's registerSkillHooks, which never
         // remaps). Attribute the registration to the skill for the debug/audit log.
         return fh.length > 0
           ? { frontmatterHooks: fh, frontmatterHooksSource: `skill '${resolvedName}'` }
@@ -764,7 +764,7 @@ export const skillTool: ToolDefinition = {
     }
 
     // FUNCTIONAL (parity/security): least-privilege capability ceiling for the forked
-    // sub-engine (parity with Claude's forked-agent createAutoMemCanUseTool). When the
+    // sub-engine (parity with the reference's forked-agent createAutoMemCanUseTool). When the
     // skill declares a sandbox (`read-only-bash` / `confine-writes-to`), cap the forked
     // agent to read-only bash and/or writes confined to the listed dirs — a HARD ceiling
     // enforced ahead of the sub-engine's permission mode, independent of auto-allow. This
@@ -783,7 +783,7 @@ export const skillTool: ToolDefinition = {
     const subEngine = context._engineFactory(subConfig);
     let result = '';
 
-    // Opt-in live-progress cap (parity: Claude's SkillTool MAX_PROGRESS_MESSAGES_TO_SHOW
+    // Opt-in live-progress cap (parity: the reference's SkillTool MAX_PROGRESS_MESSAGES_TO_SHOW
     // + verbose flag, adapted to AMI's live-stream model). When
     // `_maxSkillProgressMessages` is a non-negative finite integer, only the first N
     // nested tool-use STEPS of the forked skill are surfaced live to the parent stream;
@@ -848,7 +848,7 @@ export const skillTool: ToolDefinition = {
     const header = `[Skill: ${resolvedName} · ${tools.length} tools · model ${providerConfig.model || 'default'}${agentNote}${sandboxNote}]${warningText}`;
     const sandboxMeta = sandboxCeiling ? { sandbox: { readOnlyBash: !!sandboxCeiling.readOnlyBashOnly, writeRoots: sandboxCeiling.writeRoots ?? [] } } : {};
     // Summary of the nested tool-use steps suppressed from the live stream by the
-    // `_maxSkillProgressMessages` cap (parity: Claude's "+N more tool use" byline).
+    // `_maxSkillProgressMessages` cap (parity: the reference's "+N more tool use" byline).
     const progressSummary =
       hiddenToolUses > 0 ? `\n+${hiddenToolUses} more tool ${hiddenToolUses === 1 ? 'use' : 'uses'}` : '';
     const progressMeta = hiddenToolUses > 0 ? { progressHidden: hiddenToolUses } : {};
@@ -857,7 +857,7 @@ export const skillTool: ToolDefinition = {
     // cancel forwarded into subAbort, or the parent signal itself aborted) ended
     // the for-await loop with only PARTIAL output. Report it as an ERROR, not a
     // spurious success — otherwise the model treats truncated/cancelled work as a
-    // completed result. Mirrors Claude's runAgent post-drain abort check.
+    // completed result. Mirrors the reference's runAgent post-drain abort check.
     if (subAbort.signal.aborted || context.abortSignal.aborted) {
       return {
         output: `${header}\nSkill "${resolvedName}" was cancelled before completion.${result ? `\n\n--- Partial output ---\n${capSkillOutput(result)}` : ''}`,

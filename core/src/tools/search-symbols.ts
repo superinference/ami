@@ -15,7 +15,7 @@ let _buildPromise: Promise<void> | null = null;
 let _queryablePromise: Promise<void> | null = null;
 /** Set when the last background index build rejected, so the next call retries
  *  instead of permanently serving an empty index (a transient fs/git error at
- *  startup would otherwise never recover). Mirrors Claude Code's tracked
+ *  startup would otherwise never recover). Mirrors the reference's tracked
  *  backend-failure state. */
 let _buildFailed = false;
 
@@ -27,7 +27,7 @@ const DEFAULT_INDEX_TIMEOUT_MS = 10_000;
 const DEFAULT_RESULT_LIMIT = 30;
 /** Hard ceiling on `limit` (and the meaning of `limit: 0` — "as many as allowed").
  *  Bounds the result volume pulled into context even when the model asks for
- *  "unlimited", mirroring Claude Code's capped head_limit behavior. */
+ *  "unlimited", mirroring the reference's capped head_limit behavior. */
 const MAX_RESULT_LIMIT = 250;
 /** When a `type` filter is active the result cap must apply AFTER filtering, so a
  *  wider ranked candidate set is pulled from the (type-agnostic) index and capped
@@ -212,7 +212,7 @@ export const searchSymbolsTool: ToolDefinition = {
 
     if (page.length === 0) {
       const stats = indexer.getStats();
-      // Actionable "why empty / what to try" guidance (mirrors Claude's
+      // Actionable "why empty / what to try" guidance (mirrors the reference's
       // self-diagnosing empty-result messages) rather than just reporting counts.
       const offsetNote = offset > 0 && matched.length > 0
         ? ` ${matched.length} match(es) exist but offset ${offset} skipped past them — lower the offset.`
@@ -231,7 +231,7 @@ export const searchSymbolsTool: ToolDefinition = {
 
     // Group results by file and print each path once as a header, then indented
     // `name (type) - Line N` entries — far more scannable than repeating the full
-    // path on every line (mirrors Claude's formatWorkspaceSymbolResult).
+    // path on every line (mirrors the reference's formatWorkspaceSymbolResult).
     const byFile = new Map<string, SymbolEntry[]>();
     for (const s of page) {
       const relPath = path.relative(context.cwd, s.filePath);

@@ -14,7 +14,7 @@ import { log } from './logger';
  * + `NODE_EXTRA_CA_CERTS` file contents) is the single canonical
  * {@link assembleCATrustStore} in `utils/mtls.ts`; this module adds ONLY a memo
  * in front of the env-only (no client-cert material) resolution plus an explicit
- * {@link clearCACertsCache} entry point. Parity: Claude Code's
+ * {@link clearCACertsCache} entry point. Parity: the reference's
  * `getCACertificates` / `clearCACertsCache` (utils/caCerts.ts) — it memoizes the
  * same env-driven resolution and exposes a cache-clear so a mid-session trust
  * change (e.g. a settings/trust-apply path writing `NODE_EXTRA_CA_CERTS`) can

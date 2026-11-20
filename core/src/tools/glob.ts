@@ -17,7 +17,7 @@ const MAX_RESULTS = 100;
 const MAX_OUTPUT_CHARS = 50_000;
 // Default glob timeout. The in-process tinyglobby walk is otherwise unbounded — a
 // pathological pattern over a huge tree could hang the turn forever. Env-configurable
-// (AMI_GLOB_TIMEOUT_SECONDS) to mirror Claude Code's CLAUDE_CODE_GLOB_TIMEOUT_SECONDS.
+// (AMI_GLOB_TIMEOUT_SECONDS) to mirror the reference's CLAUDE_CODE_GLOB_TIMEOUT_SECONDS.
 export const GLOB_TIMEOUT_ENV = 'AMI_GLOB_TIMEOUT_SECONDS';
 const DEFAULT_GLOB_TIMEOUT_MS = 20_000;
 
@@ -27,7 +27,7 @@ export function globTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
   return Number.isFinite(raw) && raw > 0 ? raw * 1000 : DEFAULT_GLOB_TIMEOUT_MS;
 }
 
-/** Env knob for the glob result-count cap (per page), mirroring Claude Code's
+/** Env knob for the glob result-count cap (per page), mirroring the reference's
  *  globLimits.maxResults. Falls back to the built-in default. */
 export const GLOB_MAX_RESULTS_ENV = 'AMI_GLOB_MAX_RESULTS';
 export function globMaxResults(env: NodeJS.ProcessEnv = process.env): number {
@@ -57,7 +57,7 @@ export function isRipgrepGlobEnabled(env: NodeJS.ProcessEnv = process.env): bool
 /**
  * Parse an env flag whose default is TRUE: unset or empty → true; only an
  * explicit falsey token ('0'/'false'/'no'/'off') flips it to false. Mirrors
- * Claude Code's `isEnvTruthy(env || 'true')` convention for its glob toggles
+ * the reference's `isEnvTruthy(env || 'true')` convention for its glob toggles
  * (so an empty string counts as unset, not as "false").
  */
 function envFlagDefaultTrue(raw: string | undefined): boolean {
@@ -68,7 +68,7 @@ function envFlagDefaultTrue(raw: string | undefined): boolean {
 
 /**
  * Env toggle for including hidden (dot) files in glob results. Defaults ON
- * (matching the prior always-`dot:true` behavior and Claude Code's default).
+ * (matching the prior always-`dot:true` behavior and the reference's default).
  * Set AMI_GLOB_HIDDEN=false to exclude dotfiles. Mirrors CLAUDE_CODE_GLOB_HIDDEN.
  */
 export const GLOB_HIDDEN_ENV = 'AMI_GLOB_HIDDEN';
@@ -79,7 +79,7 @@ export function globIncludesHidden(env: NodeJS.ProcessEnv = process.env): boolea
 /**
  * Env toggle controlling whether glob RESPECTS the project's .gitignore. The
  * flag is AMI_GLOB_NO_IGNORE and defaults ON (true = do NOT respect .gitignore),
- * preserving the prior behavior and matching Claude Code's CLAUDE_CODE_GLOB_NO_IGNORE
+ * preserving the prior behavior and matching the reference's CLAUDE_CODE_GLOB_NO_IGNORE
  * default. Set AMI_GLOB_NO_IGNORE=false to honor .gitignore (nested + .git/info/exclude).
  * Returns true when results should be filtered through .gitignore.
  */
@@ -89,7 +89,7 @@ export function globRespectsGitignore(env: NodeJS.ProcessEnv = process.env): boo
 }
 
 /** Top-level keys the glob tool accepts. Any other key is rejected (strict schema,
- *  parity with Claude Code's `z.strictObject`), so a hallucinated/typo'd parameter
+ *  parity with the reference's `z.strictObject`), so a hallucinated/typo'd parameter
  *  fails loud instead of being silently ignored. */
 const GLOB_ALLOWED_KEYS = new Set(['pattern', 'path', 'offset', 'limit']);
 
@@ -97,7 +97,7 @@ const GLOB_ALLOWED_KEYS = new Set(['pattern', 'path', 'offset', 'limit']);
  * Split an absolute glob pattern into its static base directory (everything before
  * the first glob metacharacter `* ? [ {`) and the remaining relative pattern, so the
  * walk can be rooted at a real directory and the glob applied relative to it. Mirrors
- * Claude Code's `extractGlobBaseDirectory` (utils/glob.ts), including the filesystem-
+ * the reference's `extractGlobBaseDirectory` (utils/glob.ts), including the filesystem-
  * root (`/*.txt` → base `/`) and Windows-drive-root (`C:/*.txt` → base `C:\`) special
  * cases. Returns an empty `baseDir` when the first glob char precedes any path
  * separator (the pattern is relative to cwd and needs no re-rooting).
@@ -180,13 +180,13 @@ function runRipgrepFiles(args: string[], cwd: string, signal?: AbortSignal, over
 async function ripgrepFiles(pattern: string, cwd: string, ignore: string[], signal?: AbortSignal, override?: RipgrepOverride): Promise<string[] | null> {
   // --no-ignore: don't respect .gitignore (default; AMI_GLOB_NO_IGNORE=false lets
   // ripgrep honor it natively). --hidden: include dotfiles (AMI_GLOB_HIDDEN=false
-  // excludes them). Mirrors Claude Code's rg flag assembly.
+  // excludes them). Mirrors the reference's rg flag assembly.
   const args = ['--files'];
   if (!globRespectsGitignore()) args.push('--no-ignore');
   if (globIncludesHidden()) args.push('--hidden');
   // Order the walk newest-first in ripgrep itself (`--sortr=modified`) so the match
   // set arrives pre-sorted and we skip the per-file `statSync` pass on a potentially
-  // huge result list — a bounded, non-blocking mtime sort (parity: Claude uses rg's
+  // huge result list — a bounded, non-blocking mtime sort (parity: the reference uses rg's
   // native `--sort=modified`). Keeps AMI's newest-first ordering (`--sortr`, reverse).
   args.push('--sortr=modified');
   args.push('-g', pattern);
@@ -248,7 +248,7 @@ export const globTool: ToolDefinition = {
       },
     },
     required: ['pattern'],
-    // Strict input object: reject unknown top-level keys (parity with Claude's
+    // Strict input object: reject unknown top-level keys (parity with the reference's
     // z.strictObject) so a hallucinated/typo'd parameter fails loud. Enforced at
     // runtime in execute() against GLOB_ALLOWED_KEYS.
     additionalProperties: false,
@@ -264,13 +264,13 @@ export const globTool: ToolDefinition = {
       return { output: 'Error: glob search was cancelled.', isError: true };
     }
     // Strict input object: reject unknown/typo'd top-level keys instead of silently
-    // ignoring them (parity with Claude's z.strictObject — a hallucinated `recursive`
+    // ignoring them (parity with the reference's z.strictObject — a hallucinated `recursive`
     // or misspelled `paht` fails loud). Declared on inputSchema.additionalProperties.
     const unknownKeys = Object.keys(input).filter(k => !GLOB_ALLOWED_KEYS.has(k));
     if (unknownKeys.length > 0) {
       return { output: `Error: Unknown parameter(s): ${unknownKeys.join(', ')}. Allowed: pattern, path, offset, limit.`, isError: true };
     }
-    // Absolute glob pattern: Claude lets `pattern` itself be a fully absolute path.
+    // Absolute glob pattern: the reference lets `pattern` itself be a fully absolute path.
     // Extract its static base directory and apply the remainder relative to it, so the
     // walk is rooted at a real dir (tinyglobby/rg -g both want a relative pattern). The
     // derived base is confined to the workspace / allowed roots by validatePatternAndPath
@@ -335,7 +335,7 @@ export const globTool: ToolDefinition = {
     // (common's plugin-orphan-cache) and kept for a grace window; never enumerate
     // their stale files. Dropped if the pattern explicitly targets the hold dir, so
     // a deliberate audit of orphaned versions still works (same escape hatch as
-    // node_modules/.git above). Parity: Claude's getGlobExclusionsForPluginCache.
+    // node_modules/.git above). Parity: the reference's getGlobExclusionsForPluginCache.
     if (!pattern.includes(ORPHANED_PLUGIN_HOLD_DIRNAME)) ignore.push(`**/${ORPHANED_PLUGIN_HOLD_DIRNAME}/**`);
 
     // .gitignore respect (opt-in via AMI_GLOB_NO_IGNORE=false). Translate the
@@ -350,7 +350,7 @@ export const globTool: ToolDefinition = {
     // File-READ deny globs from the permission layer: never ENUMERATE a file the user
     // forbade reading (its path alone leaks via a directory listing). Applied to BOTH
     // the ripgrep route (negated to `-g !glob`) and the in-process tinyglobby `ignore`.
-    // Parity: Claude feeds getFileReadIgnorePatterns into glob/ls exclusions too.
+    // Parity: the reference feeds getFileReadIgnorePatterns into glob/ls exclusions too.
     for (const p of context.readIgnorePatterns ?? []) ignore.push(toAnyDepthGlob(p));
 
     try {
@@ -407,7 +407,7 @@ export const globTool: ToolDefinition = {
         return { output: `No files found matching pattern: ${pattern}` };
       }
 
-      // Sort by mtime descending (newest first), matching Claude Code. The ripgrep
+      // Sort by mtime descending (newest first), matching the reference. The ripgrep
       // route already ordered the walk via `--sortr=modified`, so only the in-process
       // tinyglobby route needs the per-file stat pass (parallel, non-blocking, bounded
       // by the match set). Stat each entry relative to the search root; a stat failure
@@ -453,7 +453,7 @@ export const globTool: ToolDefinition = {
       const summary = `[${total} files${truncated ? ' (truncated)' : ''}]`;
       let output = `${summary}\n${shown.join('\n')}`;
       // When the result set was cut off, tell the model HOW to recover (narrow the
-      // search) rather than just that it was truncated — mirrors Claude Code's
+      // search) rather than just that it was truncated — mirrors the reference's
       // "Consider using a more specific path or pattern." affordance.
       const narrowHint = ' Consider using a more specific path or pattern to narrow the search.';
       if (offset > 0) {

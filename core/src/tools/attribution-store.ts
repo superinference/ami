@@ -10,7 +10,7 @@ import { log } from '../logger';
  * session, so a later `git_commit` can surface a per-file contribution figure in
  * its attribution introspection note. This is the SOURCE wiring for the existing
  * (previously unconsumed) {@link FileAttributionState} / {@link recordFileContribution}
- * data model in session.ts — parity with Claude Code's AttributionSnapshot, whose
+ * data model in session.ts — parity with the reference's AttributionSnapshot, whose
  * `fileStates` track `claudeContribution` characters per file.
  *
  * Keyed by the tool-context `sessionId` (a sub-engine's `agentId` is folded in by
@@ -28,7 +28,7 @@ import { log } from '../logger';
  * scores a SAME-LENGTH replacement (e.g. `"Esc" → "esc"` ⇒ 1, not 0) and
  * sub-string substitutions where only an interior slice changed. A brand-new file
  * (`oldContent === ''`) scores the whole new length; a full deletion
- * (`newContent === ''`) scores the whole old length. Parity: Claude Code's
+ * (`newContent === ''`) scores the whole old length. Parity: the reference's
  * `computeFileModificationState` char-contribution core (commitAttribution.ts
  * L325-L367).
  */
@@ -61,7 +61,7 @@ export function computeAgentCharContribution(oldContent: string, newContent: str
  * realpath-resolved before the relative key is computed, and the result is forced
  * to forward slashes so it also matches `git diff` output on Windows. A relative
  * input is returned unchanged; an absolute path outside the repo falls back to the
- * raw-prefix relative form, and finally to the original path. Parity: Claude Code's
+ * raw-prefix relative form, and finally to the original path. Parity: the reference's
  * `normalizeFilePath` (commitAttribution.ts L252-L291).
  */
 export function normalizeAttributionPath(filePath: string, repoRoot: string): string {
@@ -131,7 +131,7 @@ export interface AgentFileChange {
  * {@link applyFileContribution}. This is the scalable variant of
  * {@link recordAgentFileContribution}: a single git/jj operation (or a MultiEdit)
  * that touches a large set of files is tracked in O(n) instead of the O(n²) cost
- * of copying the whole map per file. Parity: Claude Code's `trackBulkFileChanges`
+ * of copying the whole map per file. Parity: the reference's `trackBulkFileChanges`
  * single-Map-copy mitigation (commitAttribution.ts L489-L542). An empty `changes`
  * list is a no-op (no needless copy). Each change still emits the standard verbose
  * `Tracked N chars for <path>` observability hint.
@@ -146,7 +146,7 @@ export function recordBulkAgentFileContributions(
   const next = { ...(sessionFileAttribution.get(key) ?? {}) };
   for (const c of changes) {
     applyFileContribution(next, c.path, c.content, c.contributedChars, c.mtime);
-    // Observability affordance (parity: Claude Code's `Attribution: Tracked N chars
+    // Observability affordance (parity: the reference's `Attribution: Tracked N chars
     // for <path>` debug hint). Routed through the standard verbose debug path, so it
     // only surfaces under AMI_DEBUG_LOG_LEVEL=verbose (optionally narrowed with
     // AMI_DEBUG_COMPONENTS=attribution) and costs nothing otherwise.
@@ -170,7 +170,7 @@ export function getSessionFileAttribution(
 /**
  * Session-scoped count of USER PROMPTS (each top-level engine `submit()` is one
  * prompt — a "shot"). This is the honest source for the "N-shotted" figure in a
- * commit's attribution introspection (parity: Claude Code's transcript
+ * commit's attribution introspection (parity: the reference's transcript
  * `countUserPromptsFromEntries` / "N-shotted by …"). Keyed like the file
  * attribution store so a commit can read the live count via the same `sessionId`
  * the tool executor already threads. Process-lifetime only; the git note is the
@@ -180,7 +180,7 @@ export function getSessionFileAttribution(
  * Per-session EFFORT accounting — the counters that let a commit report how much
  * steering/permission/cancellation happened FOR THAT COMMIT, not cumulatively.
  * Each running counter is paired with an `*AtLastCommit` baseline so the delta
- * since the previous commit is a subtraction. Parity: Claude Code's
+ * since the previous commit is a subtraction. Parity: the reference's
  * `AttributionState` effort fields (commitAttribution.ts L182-192). Vendor-neutral
  * shape; mirrors the persisted {@link AttributionSnapshot} schema 1:1.
  */
@@ -203,7 +203,7 @@ export interface SessionEffortState {
 
 /** The per-commit effort deltas computed from a {@link SessionEffortState}. */
 export interface CommitEffort {
-  /** User prompts submitted since the last commit (Claude's "steers"). */
+  /** User prompts submitted since the last commit (the reference's "steers"). */
   steers: number;
   /** Interactive permission prompts shown since the last commit. */
   permissionPrompts: number;
@@ -246,7 +246,7 @@ export function recordUserPrompt(sessionId: string | undefined): void {
 /**
  * Record that one interactive permission prompt was shown this session. Wired from
  * the tool executor's interactive permission wait so the per-commit permission
- * count reflects genuine user-facing prompts (parity: Claude's
+ * count reflects genuine user-facing prompts (parity: the reference's
  * `incrementPermissionPromptCount`).
  */
 export function recordPermissionPrompt(sessionId: string | undefined): void {
@@ -255,7 +255,7 @@ export function recordPermissionPrompt(sessionId: string | undefined): void {
 
 /**
  * Record that the user cancelled (ESC / turn abort) a pending permission prompt
- * this session (parity: Claude's ESC-press / cancel tracking). Wired from the tool
+ * this session (parity: the reference's ESC-press / cancel tracking). Wired from the tool
  * executor's `cancelled` permission outcome.
  */
 export function recordEscapeCancel(sessionId: string | undefined): void {
@@ -281,7 +281,7 @@ export function getSessionEffort(sessionId: string | undefined): SessionEffortSt
  * The per-commit effort deltas (steers / permission prompts / escapes SINCE the
  * last commit) for a session, each clamped to `>= 0`. Read by `git_commit` to
  * compose the attribution note's per-commit "N-shotted" figure rather than a
- * cumulative session total. Parity: Claude Code's per-commit steer/permission/
+ * cumulative session total. Parity: the reference's per-commit steer/permission/
  * escape accounting via the `*AtLastCommit` baselines.
  */
 export function computeCommitEffort(sessionId: string | undefined): CommitEffort {
@@ -296,7 +296,7 @@ export function computeCommitEffort(sessionId: string | undefined): CommitEffort
 /**
  * Snapshot the current running counters into their `*AtLastCommit` baselines so the
  * NEXT commit's {@link computeCommitEffort} measures only the effort after this
- * commit. Wired from `git_commit` right after a commit lands. Parity: Claude Code
+ * commit. Wired from `git_commit` right after a commit lands. Parity: the reference
  * advancing the effort baselines on commit.
  */
 export function advanceEffortBaselines(sessionId: string | undefined): void {
@@ -309,7 +309,7 @@ export function advanceEffortBaselines(sessionId: string | undefined): void {
 /**
  * Record the HEAD SHA at session start (idempotent — only the FIRST non-empty SHA
  * sticks) so later tooling can detect commits made OUTSIDE this session by
- * comparing against it. Parity: Claude Code's `startingHeadSha`.
+ * comparing against it. Parity: the reference's `startingHeadSha`.
  */
 export function setStartingHeadSha(sessionId: string | undefined, sha: string): void {
   const e = effortFor(keyFor(sessionId));
@@ -323,7 +323,7 @@ export function getStartingHeadSha(sessionId: string | undefined): string | null
   return sessionEffort.get(keyFor(sessionId))?.startingHeadSha ?? null;
 }
 
-/** Overall authorship summary for a commit (parity: Claude Code's
+/** Overall authorship summary for a commit (parity: the reference's
  *  `AttributionSummary`, with vendor-neutral `agent*` naming). */
 export interface AttributionSummary {
   /** Integer percent (0..100) of the committed tracked chars authored by the agent. */
@@ -336,7 +336,7 @@ export interface AttributionSummary {
   surfaces: string[];
 }
 
-/** Per-file authorship record in {@link AttributionData} (parity: Claude Code's
+/** Per-file authorship record in {@link AttributionData} (parity: the reference's
  *  `FileAttribution`). */
 export interface FileAttribution {
   agentChars: number;
@@ -349,7 +349,7 @@ export interface FileAttribution {
 
 /**
  * Versioned, structured attribution payload for a commit — the durable schema a
- * git note (or any downstream tool) can persist and re-parse. Parity: Claude
+ * git note (or any downstream tool) can persist and re-parse. Parity: the reference
  * Code's `AttributionData` (commitAttribution.ts L214-224), with vendor-neutral
  * naming (`agentChars`/`agentPercent` rather than `claude*`). The numeric
  * `version` discriminant lets the schema evolve without ambiguity.
@@ -445,7 +445,7 @@ export function buildAttributionData(params: {
  * Serialize a session's live in-memory attribution (per-file contributions +
  * effort counters) into a full-state {@link AttributionSnapshot} anchored to
  * `messageId`. The snapshot is a COMPLETE dump, never a delta — so a restore reads
- * only the most-recent one (see {@link restoreAttributionStore}). Parity: Claude
+ * only the most-recent one (see {@link restoreAttributionStore}). Parity: the reference
  * Code's `stateToSnapshotMessage` (commitAttribution.ts L869-894).
  */
 export function buildAttributionSnapshot(
@@ -475,9 +475,9 @@ export function buildAttributionSnapshot(
  * the LAST one. Snapshots are full-state dumps (see {@link buildAttributionSnapshot}),
  * so the newest already holds the most-recent count for every path and counter —
  * iterating and SUMMING across snapshots would cause quadratic growth on restore
- * (Claude Code documents 837 snapshots × 280 files summing to ~1.15 quadrillion
+ * (the reference documents 837 snapshots × 280 files summing to ~1.15 quadrillion
  * phantom chars for a 5KB file over a 5-day session). Returns `true` when a snapshot
- * was applied, `false` for an empty list (nothing to restore). Parity: Claude Code's
+ * was applied, `false` for an empty list (nothing to restore). Parity: the reference's
  * `restoreAttributionStateFromSnapshots` (commitAttribution.ts L899-929).
  */
 export function restoreAttributionStore(

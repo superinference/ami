@@ -14,7 +14,7 @@ export interface CommandNode {
    * Only present on `simple` nodes that actually redirect stdout/stderr to a
    * file (`>`/`>>`). Captured so security consumers can read redirect targets
    * from the AST (write-target collection) and distinguish truncate from append.
-   * Mirrors Claude Code's `OutputRedirection[]` on a parsed command.
+   * Mirrors the reference's `OutputRedirection[]` on a parsed command.
    */
   redirections?: OutputRedirection[];
   /**
@@ -23,7 +23,7 @@ export interface CommandNode {
    * on `simple` nodes that carry at least one assignment. {@link extractCommands}
    * reads these to track a static variable scope so a `$VAR` later used as a
    * command NAME resolves to its assigned value — defeating the
-   * `A=nc; $A -e …` blocklist-evasion. Mirrors Claude Code's `varScope` tracking
+   * `A=nc; $A -e …` blocklist-evasion. Mirrors the reference's `varScope` tracking
    * in utils/bash/ast.ts (collectCommands).
    */
   assignments?: Record<string, string>;
@@ -33,7 +33,7 @@ export interface CommandNode {
 /**
  * A single file-output redirection: the destination path and whether it
  * truncates (`>`) or appends (`>>`). Dup/merge forms (`2>&1`, `>&2`) are NOT
- * output redirections and are excluded. Mirrors Claude Code's
+ * output redirections and are excluded. Mirrors the reference's
  * `OutputRedirection` (utils/bash/ParsedCommand.ts).
  */
 export interface OutputRedirection {
@@ -125,7 +125,7 @@ function scanOutputRedirections(command: string): RedirectionSpan[] {
  * command string (scanned directly) or an already-parsed {@link CommandNode}
  * (walked, collecting redirections from every simple node incl. nested
  * subshells / command substitutions). Returns each redirect's `target` +
- * `operator`. Mirrors Claude Code's `IParsedCommand.getOutputRedirections()`.
+ * `operator`. Mirrors the reference's `IParsedCommand.getOutputRedirections()`.
  */
 export function getOutputRedirections(input: string | CommandNode): OutputRedirection[] {
   if (typeof input === 'string') {
@@ -144,7 +144,7 @@ export function getOutputRedirections(input: string | CommandNode): OutputRedire
  * Return `command` with ALL file-output redirections removed and whitespace
  * collapsed — e.g. `echo hi > out.txt 2>>err` → `echo hi`. Built on the single
  * {@link scanOutputRedirections} detector so it stays consistent with
- * {@link getOutputRedirections}. Mirrors Claude Code's
+ * {@link getOutputRedirections}. Mirrors the reference's
  * `IParsedCommand.withoutOutputRedirections()`.
  */
 export function withoutOutputRedirections(command: string): string {
@@ -161,7 +161,7 @@ export function withoutOutputRedirections(command: string): string {
  * Split a command into its pipe-separated segments (quote-aware). Only the real
  * pipe operator `|` splits; `||` (logical OR) and quoted `|` do not. Each
  * segment is trimmed; a command with no pipe yields a single-element array.
- * Mirrors Claude Code's `IParsedCommand.getPipeSegments()`.
+ * Mirrors the reference's `IParsedCommand.getPipeSegments()`.
  */
 export function getPipeSegments(command: string): string[] {
   const segments: string[] = [];
@@ -214,7 +214,7 @@ const MAX_PARSE_DEPTH = 50;
  * input. It is DISTINCT from `null` (empty / over-length / genuinely unparseable):
  * callers MUST treat `PARSE_ABORTED` as fail-CLOSED ("too complex to analyze →
  * block"), never route it to the permissive "parse-unavailable → PASS" path.
- * Mirrors Claude Code's PARSE_ABORTED symbol (utils/bash/parser.ts).
+ * Mirrors the reference's PARSE_ABORTED symbol (utils/bash/parser.ts).
  */
 export const PARSE_ABORTED: unique symbol = Symbol('parse-aborted');
 
@@ -222,7 +222,7 @@ export const PARSE_ABORTED: unique symbol = Symbol('parse-aborted');
  * Wall-clock parse budget (ms). Bails out on pathological/adversarial input so a
  * single command can't stall the security gate. Override per call via the
  * `timeoutMs` budget option; pass `Infinity` to disable (e.g. correctness tests
- * where CI jitter could otherwise cause a spurious abort). Mirrors Claude's
+ * where CI jitter could otherwise cause a spurious abort). Mirrors the reference's
  * PARSE_TIMEOUT_MS=50.
  */
 const PARSE_TIMEOUT_MS = 50;
@@ -230,7 +230,7 @@ const PARSE_TIMEOUT_MS = 50;
 /**
  * Node-count budget. Bails out before OOM/stack blow-ups on input that produces
  * an abnormally large AST. Override per call via the `maxNodes` budget option.
- * Mirrors Claude's MAX_NODES=50_000.
+ * Mirrors the reference's MAX_NODES=50_000.
  */
 const MAX_NODES = 50_000;
 
@@ -245,7 +245,7 @@ export interface ParseBudget {
 /**
  * Caller-supplied environment used to resolve a `$VAR` used as a COMMAND NAME
  * during extraction. Either a plain name→value map, or a resolver function
- * `(key) => value | undefined`. Mirrors Claude Code's `tryParseShellCommand(cmd,
+ * `(key) => value | undefined`. Mirrors the reference's `tryParseShellCommand(cmd,
  * env?)` second parameter (utils/bash/shellQuote.ts L24-L45), which accepts a
  * `Record<string,string|undefined>` OR a `(key)=>string|undefined` resolver and
  * forwards it to shell-quote so the caller controls `$VAR` expansion during
@@ -283,7 +283,7 @@ interface ParseState {
  * `AST_BLOCKED_COMMANDS` matcher in bash-security sees `nc`/`insmod`/… even when
  * spelled with quotes or an escape (`"nc"`, `'insmod'`, `\rm`) — otherwise the
  * quoted spelling parses to a token carrying the quotes and the blocklist match
- * silently fails open. Mirrors Claude Code's ast.ts resolved-argv (quotes
+ * silently fails open. Mirrors the reference's ast.ts resolved-argv (quotes
  * removed, backslash unescaped) that feeds the permission/security matcher.
  */
 export function resolveShellWord(word: string): string {
@@ -334,7 +334,7 @@ function countNode(state: ParseState): void {
  * misses — e.g. `readonly LD_PRELOAD=/evil.so`, `typeset LD_LIBRARY_PATH=/x`,
  * `local PATH=/x`, `declare LD_PRELOAD=/evil.so` (no `-x`).
  *
- * Mirrors Claude Code's DECLARATION_COMMANDS allow-set
+ * Mirrors the reference's DECLARATION_COMMANDS allow-set
  * (utils/bash/parser.ts L20-28, extractCommandArguments L189-196).
  */
 export const DECLARATION_COMMANDS = new Set([
@@ -682,7 +682,7 @@ function parseBashASTInternal(input: string, depth: number, state: ParseState): 
  * is deliberately NOT cached: wall-clock aborts are time-dependent and must be
  * re-evaluated. The cached AST is treated as IMMUTABLE by all consumers
  * (`extractCommands` / `hasActualOperatorNodes` / `getOutputRedirections` only
- * read it). Mirrors Claude Code's size-1 last-command parse cache.
+ * read it). Mirrors the reference's size-1 last-command parse cache.
  */
 let lastParse: { key: string; result: CommandNode | null } | null = null;
 
@@ -735,7 +735,7 @@ function recoverHiddenCommand(tokens: string[]): string | null {
  * `$0`, `$@`, `$*`, `$-`) and expansions with operators (`${X:-y}`, `$VAR/sub`)
  * do not match — only a bare indirect command invocation does. Used by
  * {@link extractCommands} to resolve `$VAR` command names against the tracked
- * assignment scope. Mirrors Claude Code's indirect-command resolution.
+ * assignment scope. Mirrors the reference's indirect-command resolution.
  */
 function parseVariableReference(token: string): string | null {
   const m = /^\$\{([A-Za-z_]\w*)\}$/.exec(token) ?? /^\$([A-Za-z_]\w*)$/.exec(token);
@@ -750,7 +750,7 @@ export function extractCommands(node: CommandNode, env?: ParseEnv): string[] {
   // run. The scope is CARRIED across `&&`/`;` (both clauses run with the prior
   // assignment visible) but RESET across `||`, `|` and `&` and NOT propagated
   // out of a subshell/command-substitution — clauses that may not run, or run in
-  // a subshell, must not leak a value. Mirrors Claude's varScope reset rules.
+  // a subshell, must not leak a value. Mirrors the reference's varScope reset rules.
   function walk(n: CommandNode, scope: Map<string, string>): void {
     if (n.type === 'simple' && n.command) {
       if (n.assignments) {
@@ -822,7 +822,7 @@ export function extractCommands(node: CommandNode, env?: ParseEnv): string[] {
  * This is the structural counterpart to the textual code-loading regex: it lets
  * security consumers match pinned variables set via `readonly`/`local`/`typeset`/
  * `declare` (without `-x`) — declaration keywords the regex does not cover.
- * Mirrors Claude Code's declaration-command argument extraction.
+ * Mirrors the reference's declaration-command argument extraction.
  */
 export function extractDeclaredAssignments(node: CommandNode): DeclaredAssignment[] {
   const out: DeclaredAssignment[] = [];
@@ -866,7 +866,7 @@ export function extractCommandsFromString(
  * argument to `find`), NOT as a `;` operator, so a command whose only "operator"
  * is an escaped one parses to a single `simple` node and returns `false` here.
  * Security consumers use that to tell a literal escaped operator (benign word
- * argument) from one that is actually chaining commands — mirroring Claude Code's
+ * argument) from one that is actually chaining commands — mirroring the reference's
  * `hasActualOperatorNodes` (utils/bash/treeSitterAnalysis.ts).
  *
  * NOTE: a *dangling* trailing operator (`cmd &&`, `cmd ;`) also parses to a lone
@@ -881,7 +881,7 @@ export function hasActualOperatorNodes(node: CommandNode): boolean {
 
 /**
  * Dangerous textual features of a bash command, as reusable boolean fields.
- * Mirrors Claude Code's `DangerousPatterns`
+ * Mirrors the reference's `DangerousPatterns`
  * (utils/bash/treeSitterAnalysis.ts L45-L52): one struct consumers read instead
  * of each re-scanning the raw string for `$()`/`${}`/`<()`/heredoc/comment.
  */
@@ -900,7 +900,7 @@ export interface DangerousPatterns {
 
 /**
  * Compound shape of a bash command, as reusable boolean fields + the control
- * operators and top-level segments. Mirrors Claude Code's `CompoundStructure`
+ * operators and top-level segments. Mirrors the reference's `CompoundStructure`
  * (utils/bash/treeSitterAnalysis.ts L54-L64).
  */
 export interface CompoundStructure {
@@ -918,7 +918,7 @@ export interface CompoundStructure {
   segments: string[];
 }
 
-/** Unified structured analysis of a bash command. Mirrors Claude's `TreeSitterAnalysis`. */
+/** Unified structured analysis of a bash command. Mirrors the reference's `TreeSitterAnalysis`. */
 export interface CommandStructureAnalysis {
   dangerousPatterns: DangerousPatterns;
   compoundStructure: CompoundStructure;
@@ -1002,7 +1002,7 @@ function collectCompound(n: CommandNode, out: CompoundStructure): void {
  * textual {@link DangerousPatterns} (scanned from `command`) plus the structural
  * {@link CompoundStructure} (walked from the AST — pass a pre-parsed `node` to
  * avoid re-parsing on the security hot path; `null`/{@link PARSE_ABORTED} yield
- * empty structural fields). Mirrors Claude Code's `analyzeCommand`
+ * empty structural fields). Mirrors the reference's `analyzeCommand`
  * (utils/bash/treeSitterAnalysis.ts), giving consumers one struct of reusable
  * boolean fields instead of each re-scanning the string.
  */

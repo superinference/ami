@@ -16,7 +16,7 @@
  * prompt in the rule-evaluated modes (`ask` / `acceptEdits`) instead of silently
  * auto-approving arbitrary code.
  *
- * Mirrors Claude Code's `CROSS_PLATFORM_CODE_EXEC` / `DANGEROUS_BASH_PATTERNS`
+ * Mirrors the reference's `CROSS_PLATFORM_CODE_EXEC` / `DANGEROUS_BASH_PATTERNS`
  * (utils/permissions/dangerousPatterns.ts) and the `isDangerousBashPermission`
  * rule-shape matcher (utils/permissions/permissionSetup.ts).
  *
@@ -66,7 +66,7 @@ export const CROSS_PLATFORM_CODE_EXEC: readonly string[] = [
  * points plus Unix shells and arg-executing wrappers that run arbitrary code
  * via `-c` / by wrapping any following command.
  *
- * (Claude additionally gates a set of ant-internal tools behind
+ * (the reference additionally gates a set of ant-internal tools behind
  * `USER_TYPE === 'ant'`; those — `coo`, `fa run`, and over-allowlisted general
  * tools like `curl`/`git`/`gh`/`aws` — are Anthropic-sandbox-specific empirical
  * risk calls, not universal code-exec, and are intentionally omitted for AMI.)
@@ -85,7 +85,7 @@ export const DANGEROUS_BASH_PATTERNS: readonly string[] = [
 /**
  * Does a Bash allow-rule's content denote an over-broad code-execution prefix?
  *
- * Recognizes the rule-shape variants AMI/Claude produce for a prefix grant
+ * Recognizes the rule-shape variants AMI/the reference produce for a prefix grant
  * (exact, `:*`, trailing `*`, ` *`, ` -…*`) against every {@link
  * DANGEROUS_BASH_PATTERNS} entry. Returns `false` for a NARROW, specific rule
  * (e.g. `python manage.py migrate`, `node server.js`) — only a broad prefix

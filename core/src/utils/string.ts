@@ -9,7 +9,7 @@
  * `charAt(0).toUpperCase() + slice(1)` capitalize idiom, and four near-identical
  * private `escapeReg(Exp|ex)` RegExp-escape helpers were duplicated at a dozen+
  * call sites. These helpers consolidate all of that into one place and mirror
- * Claude Code's `src/utils/stringUtils.ts` (`countCharInString`, `plural`,
+ * the reference's `src/utils/stringUtils.ts` (`countCharInString`, `plural`,
  * `capitalize`, `escapeRegExp`) so the behaviour matches the reference exactly.
  */
 
@@ -45,7 +45,7 @@ export function countCharInString(
  * - otherwise → `pluralWord`, which defaults to `word + 's'` but can be overridden
  *   for irregular plurals (e.g. `plural(2, 'entry', 'entries')`).
  *
- * Mirrors Claude Code's `plural(n, word, pluralWord = word + 's')`.
+ * Mirrors the reference's `plural(n, word, pluralWord = word + 's')`.
  *
  * @example plural(1, 'file')              // 'file'
  * @example plural(3, 'file')              // 'files'
@@ -59,7 +59,7 @@ export function plural(n: number, word: string, pluralWord: string = word + 's')
  * Uppercases the first character of `str`, leaving the rest unchanged. Unlike
  * lodash `capitalize`, this does NOT lowercase the remaining characters — so
  * `capitalize('fooBar') === 'FooBar'`. Replaces the open-coded
- * `str.charAt(0).toUpperCase() + str.slice(1)` idiom. Mirrors Claude Code's
+ * `str.charAt(0).toUpperCase() + str.slice(1)` idiom. Mirrors the reference's
  * `capitalize`. An empty string is returned unchanged.
  *
  * @example capitalize('read')      // 'Read'
@@ -74,7 +74,7 @@ export function capitalize(str: string): string {
  * inside a `RegExp` source. Single canonical replacement for the four private
  * `escapeReg(Exp|ex)` / `escapeForRegExp` helpers (grep, session fork-title,
  * skill arg-name, PowerShell command matching) and the inline `.replace(...)`
- * escapes (config key probe, Windows registry parse). Mirrors Claude Code's
+ * escapes (config key probe, Windows registry parse). Mirrors the reference's
  * `escapeRegExp`.
  *
  * @example escapeRegExp('a.b*c') // 'a\\.b\\*c'

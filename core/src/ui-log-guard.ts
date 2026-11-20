@@ -169,7 +169,7 @@ export class UILogGuard {
       ? sanitizeLogMessage(source, { ...this._sanitizeOpts, allowNewlines: false, redactSecrets: false })
       : source;
     const entry: LogEntry = { message: safeMessage, tier, source: safeSource, timestamp: Date.now(), level };
-    // FUNCTIONAL FIX (parity with Claude's addToInMemoryErrorLog): ring-buffer
+    // FUNCTIONAL FIX (parity with the reference's addToInMemoryErrorLog): ring-buffer
     // eviction of the OLDEST entry when full, rather than dropping the incoming
     // one. The newest (most diagnostically relevant) logs are always retained;
     // a long-running session keeps recording instead of freezing on the first N.

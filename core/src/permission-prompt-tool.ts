@@ -1,7 +1,7 @@
 /**
  * Delegated permission-prompt tool result parsing (building block).
  *
- * Parity: Claude Code's `--permission-prompt-tool <name>` routes every non-interactive
+ * Parity: the reference's `--permission-prompt-tool <name>` routes every non-interactive
  * ("ask") permission decision through a named tool, whose JSON result is validated against
  * `permissionToolOutputSchema` and normalized into an allow/deny decision
  * (references/claude/claude-code-main/src/utils/permissions/PermissionPromptToolResultSchema.ts).

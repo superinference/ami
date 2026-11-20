@@ -63,7 +63,7 @@ export function getMcpRemoteConnectionBatchSize(): number {
 
 /**
  * The OAuth loopback callback port pinned via `MCP_OAUTH_CALLBACK_PORT`
- * (Claude-parity env knob), or undefined when unset. When set, the redirect URI
+ * (the reference-parity env knob), or undefined when unset. When set, the redirect URI
  * uses this fixed port (no dynamic discovery) so users behind a firewall can
  * allow-list a stable callback port.
  */
@@ -76,7 +76,7 @@ export function getConfiguredOAuthCallbackPort(): number | undefined {
 
 /**
  * True when a per-server OAuth `callbackPort` config value is a usable TCP port — a
- * positive integer within the 1..65535 range (Claude-parity `--callback-port`
+ * positive integer within the 1..65535 range (the reference-parity `--callback-port`
  * validation). A missing / non-integer / out-of-range value is rejected so a
  * malformed config falls through to the env knob / dynamic port discovery rather than
  * building an invalid redirect URI.
@@ -86,7 +86,7 @@ export function isValidCallbackPort(port: number | undefined): port is number {
 }
 
 /**
- * Resolve the OAuth loopback redirect URI for a server, with Claude-parity precedence
+ * Resolve the OAuth loopback redirect URI for a server, with the reference-parity precedence
  * (`mcp add --callback-port` / MCP_OAUTH_CALLBACK_PORT): an explicit per-server
  * `redirectUri` wins; else a per-server `callbackPort` (validated via
  * {@link isValidCallbackPort}) wins over the global `envCallbackPort`; else no fixed
@@ -130,7 +130,7 @@ export async function runBoundedPool<T>(items: T[], limit: number, worker: (item
 const DEFAULT_MCP_DESCRIPTION_LENGTH = 2048;
 // Hard upper ceiling for SUPERINFERENCE_MAX_MCP_DESCRIPTION_LENGTH. A mistaken or
 // hostile value (e.g. =99999999) would let a single MCP server bloat EVERY tool
-// description and exhaust the model's context window (DoS). Parity: Claude Code's
+// description and exhaust the model's context window (DoS). Parity: the reference's
 // validateBoundedIntEnvVar upper-limit cap + capped/invalid diagnostic logging.
 const MCP_DESCRIPTION_UPPER_LIMIT = 100_000;
 function getMcpMaxDescriptionLength(): number {
@@ -169,7 +169,7 @@ export function matchMcpAutoAllow(toolName: string, patterns: string[]): boolean
  * the query string is dropped (it can carry access tokens, e.g. a `?token=...`
  * SSE URL) and the trailing slash is normalized away. Returns undefined for a
  * stdio server (no `url`) or a config whose `url` does not parse — so a caller can
- * simply omit the URL from a log line when this returns undefined. Mirrors Claude's
+ * simply omit the URL from a log line when this returns undefined. Mirrors the reference's
  * `getLoggingSafeMcpBaseUrl`; reuses no state, so it is a pure helper the manager
  * routes every logged server URL through.
  */
@@ -202,7 +202,7 @@ export function normalizeMcpUrl(raw: string): string | null {
 }
 
 /**
- * A structured MCP allow/deny policy entry (parity with Claude's
+ * A structured MCP allow/deny policy entry (parity with the reference's
  * allowed/deniedMcpServers): match a server by its name, by its full stdio
  * command array (`[command, ...args]`, exact), or by upstream URL (exact or a
  * `*`-wildcard like `https://*.example.com/*`). A bare string is shorthand: a URL
@@ -217,10 +217,10 @@ export type McpPolicyEntry =
   | { serverCommand: string[] }
   | { serverUrl: string }
   /**
-   * Provenance-scoped entry (Claude-parity channelAllowlist): approval keyed to the
+   * Provenance-scoped entry (the reference-parity channelAllowlist): approval keyed to the
    * plugin bundle that produced a server rather than its arbitrary local name.
    * `pluginSource` matches {@link McpServerConfig.pluginSource} exactly (or as a
-   * `*`-wildcard family). The Claude-shaped `{ marketplace, plugin }` form compiles
+   * `*`-wildcard family). The reference-shaped `{ marketplace, plugin }` form compiles
    * to the `<plugin>@<marketplace>` provenance convention {@link scopePluginMcpServers}
    * stamps, and also admits the marketplace-agnostic bare `<plugin>`.
    */
@@ -229,7 +229,7 @@ export type McpPolicyEntry =
 
 /**
  * Resolve the set of server names a user has toggled OFF via the persisted
- * `disabledMcpServers` / `enabledMcpServers` config knobs (parity with Claude
+ * `disabledMcpServers` / `enabledMcpServers` config knobs (parity with the reference
  * Code's per-server enable/disable toggles, which disable a configured server
  * WITHOUT removing its config). A server is effectively disabled when it appears
  * in `disabled` and is NOT re-enabled in `enabled` — so `enabledMcpServers` acts
@@ -331,7 +331,7 @@ function compileMcpPolicy(entries: readonly McpPolicyEntry[], opts?: { caseInsen
     } else if ('pluginSource' in e && typeof e.pluginSource === 'string' && e.pluginSource) {
       addPluginSource(e.pluginSource);
     } else if ('marketplace' in e && 'plugin' in e && typeof e.marketplace === 'string' && typeof e.plugin === 'string' && e.plugin) {
-      // Claude's {marketplace, plugin} provenance maps onto AMI's single
+      // the reference's {marketplace, plugin} provenance maps onto AMI's single
       // `pluginSource` tag: scopePluginMcpServers stamps `<plugin>@<marketplace>`,
       // so admit that composed form AND the marketplace-agnostic bare plugin name.
       addPluginSource(`${e.plugin}@${e.marketplace}`);
@@ -395,7 +395,7 @@ export function handshakeError(name: string, err: unknown): Error {
  * than a generic error — an OAuth-protected server whose consent is required or
  * unavailable (headless), or an HTTP 401/403. Lets the manager surface a distinct
  * `needs-auth` state ("click to authenticate") instead of a hard `error`, matching
- * Claude Code's dedicated needs-auth connection state.
+ * the reference's dedicated needs-auth connection state.
  */
 export function isAuthRequiredError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
@@ -411,7 +411,7 @@ export function isTransientConnectError(err: unknown): boolean {
 }
 
 /**
- * Severity of an MCP config diagnostic (Claude-parity `ValidationError.severity`,
+ * Severity of an MCP config diagnostic (the reference-parity `ValidationError.severity`,
  * McpParsingWarnings.tsx:L210-212). A `fatal` problem means the offending config —
  * a whole file (parse failure) or a single server entry (invalid shape) — was NOT
  * loaded; a `warning` problem is recoverable (the server still loads, e.g. an unset
@@ -433,7 +433,7 @@ export interface McpConfigError {
 
 /**
  * A single structured MCP config diagnostic with full per-entry attribution,
- * mirroring Claude's `ValidationError` + `mcpErrorMetadata` (McpParsingWarnings.tsx
+ * mirroring the reference's `ValidationError` + `mcpErrorMetadata` (McpParsingWarnings.tsx
  * `[Error]/[Warning] [serverName] path: message`). Unlike the coarse
  * {@link McpConfigError} (whole-file parse failures only), this unifies EVERY config
  * problem — file parse failures, per-server shape/validation errors (fatal), and
@@ -454,7 +454,7 @@ export interface McpConfigDiagnostic {
 }
 
 /**
- * The config-source scope a live MCP server was loaded from (Claude-parity
+ * The config-source scope a live MCP server was loaded from (the reference-parity
  * `ConfigScope`, MCPListPanel.tsx). `project`/`local`/`user`/`enterprise` each
  * come from a config file at that tier; `dynamic` is a built-in / programmatically
  * added server with no backing file. `MCP_SCOPE_ORDER` is the deterministic
@@ -465,7 +465,7 @@ export interface McpConfigDiagnostic {
 export const MCP_SCOPE_ORDER = ['project', 'local', 'user', 'enterprise', 'dynamic'] as const;
 export type McpServerScope = (typeof MCP_SCOPE_ORDER)[number];
 
-/** Human-readable heading label for a scope group (Claude-parity getScopeHeading). */
+/** Human-readable heading label for a scope group (the reference-parity getScopeHeading). */
 export function mcpScopeLabel(scope: McpServerScope): string {
   switch (scope) {
     case 'project': return 'Project MCPs';
@@ -494,12 +494,12 @@ export interface McpServerConfig {
   /**
    * When false, disable the client's automatic reconnect retry loop for this
    * server (a caller/supervisor owns recovery). Defaults to true. Parity with
-   * Claude Code's `WebSocketTransportOptions.autoReconnect`.
+   * the reference's `WebSocketTransportOptions.autoReconnect`.
    */
   autoReconnect?: boolean;
   /**
    * Transport discriminator. Beyond the base transports (stdio / sse / http /
-   * ws / wss), AMI recognizes the Claude-parity IDE discriminants `sse-ide`
+   * ws / wss), AMI recognizes the reference-parity IDE discriminants `sse-ide`
    * (an SSE endpoint exposed by a code editor) and `ws-ide` (a WebSocket one),
    * plus `sdk` (an in-process / host-wired server). An IDE discriminant carries
    * a human-readable {@link McpServerConfig.ideName} and is connected over its
@@ -512,7 +512,7 @@ export interface McpServerConfig {
   /**
    * Human-readable name of the code editor backing an IDE MCP server (e.g.
    * "VS Code", "JetBrains"), surfaced on the `/mcp` IDE-connection badge
-   * (Claude-parity `ideName`, useIdeConnectionStatus.ts:L20-24). Only meaningful
+   * (the reference-parity `ideName`, useIdeConnectionStatus.ts:L20-24). Only meaningful
    * when {@link McpServerConfig.transport} is `sse-ide` / `ws-ide`;
    * {@link getMcpIdeName} gates on that so a stray `ideName` on a non-IDE server
    * is ignored.
@@ -523,7 +523,7 @@ export interface McpServerConfig {
    * User-entered config values for a plugin/bundle-declared server, keyed by the
    * field name the plugin's `userConfig` schema declares. Referenced from the
    * server's `command`/`args`/`url`/`env`/`headers` via `${user_config.<key>}`
-   * placeholders (Claude-parity `resolvePluginMcpEnvironment`,
+   * placeholders (the reference-parity `resolvePluginMcpEnvironment`,
    * mcpPluginIntegration.ts:L475-490). Substituted BEFORE general `${ENV}`
    * expansion so a user/plugin value wins over a same-named process env var.
    */
@@ -532,21 +532,21 @@ export interface McpServerConfig {
    * Install directory of the plugin that packaged this server. Injected into a
    * stdio server's env as `CLAUDE_PLUGIN_ROOT` and substitutable via
    * `${CLAUDE_PLUGIN_ROOT}` so a bundled stdio server can locate its own files
-   * (Claude-parity, mcpPluginIntegration.ts:L510-521).
+   * (the reference-parity, mcpPluginIntegration.ts:L510-521).
    */
   pluginRoot?: string;
   /**
    * Persistent per-plugin data directory. Injected into a stdio server's env as
    * `CLAUDE_PLUGIN_DATA` and substitutable via `${CLAUDE_PLUGIN_DATA}`. The two
    * injected env keys are literal paths — NOT run through `${ENV}` expansion
-   * (Claude-parity, mcpPluginIntegration.ts:L517).
+   * (the reference-parity, mcpPluginIntegration.ts:L517).
    */
   pluginDataDir?: string;
   /**
    * Provenance tag for a server contributed by a plugin/bundle (the bundle name or
    * install source). Set by {@link scopePluginMcpServers} alongside the
    * `plugin:<name>:<server>` name scoping so the `/mcp` view can attribute a
-   * scoped server back to the plugin that shipped it (Claude-parity
+   * scoped server back to the plugin that shipped it (the reference-parity
    * `ScopedMcpServerConfig.pluginSource`, mcpPluginIntegration.ts:L341-360).
    */
   pluginSource?: string;
@@ -555,7 +555,7 @@ export interface McpServerConfig {
    * tool, a poll cadence, and optional fixed arguments; whenever a polled tool's
    * output *changes* between polls the manager emits `tool-polling-update` and the
    * engine surfaces it to the model as an `<mcp-polling-update type="tool" …>` block
-   * (parity: Claude Code's `UserResourceUpdateMessage` polling branch). Polling runs
+   * (parity: the reference's `UserResourceUpdateMessage` polling branch). Polling runs
    * only while the server is connected (started on `ready`, stopped on close/remove).
    */
   pollTools?: McpToolPollSpec[];
@@ -570,7 +570,7 @@ export interface McpServerConfig {
     loginHint?: string;
     refreshBufferMs?: number;
     /**
-     * Pin the OAuth loopback callback to this fixed port for THIS server (Claude-parity
+     * Pin the OAuth loopback callback to this fixed port for THIS server (the reference-parity
      * `mcp add --callback-port`). Per-server override of the global
      * {@link getConfiguredOAuthCallbackPort} env knob: when set, the redirect URI uses
      * this port (no dynamic discovery) so a user behind a firewall can allow-list a
@@ -593,7 +593,7 @@ export type McpServerState = (typeof MCP_SERVER_STATES)[number];
 
 /**
  * OAuth credential-state introspection for an `oauth`-configured server — the
- * read-only `/mcp` counterpart of Claude Code's `mcp xaa show` subcommand
+ * read-only `/mcp` counterpart of the reference's `mcp xaa show` subcommand
  * (commands/mcp/xaaIdpCommand.ts:L220-240). Surfaces WHICH identity the server is
  * configured for (resolved `clientId`, `scope`, `callbackPort`) and whether its
  * secrets are in place (`hasClientSecret` = a client secret is stored vs PKCE-only,
@@ -630,13 +630,13 @@ export interface McpServerStatus {
   containerBacked?: boolean;
   /**
    * Authentication status for a remote (sse/http) server: true when it holds a
-   * working session (connected/ready with tools) — mirrors Claude's auth badge.
+   * working session (connected/ready with tools) — mirrors the reference's auth badge.
    * `undefined` for stdio servers (not auth-scoped) and non-ready remotes.
    */
   isAuthenticated?: boolean;
   /**
    * True when a remote (sse/http) server is in the `needs-auth` state — its OAuth
-   * consent is required/unavailable so it is not connected. Mirrors Claude's
+   * consent is required/unavailable so it is not connected. Mirrors the reference's
    * per-server `needsAuth` auth-status field (MCPAgentServerMenu.tsx:L108-158),
    * the negative counterpart of {@link isAuthenticated}, so a UI can render a
    * distinct "needs authentication" affordance. `undefined` when not applicable.
@@ -644,7 +644,7 @@ export interface McpServerStatus {
   needsAuth?: boolean;
   /**
    * The count of consecutive failed reconnect attempts currently in flight for a
-   * dropped server (Claude-parity `reconnectAttempt`, MCPListPanel.tsx:L315-325),
+   * dropped server (the reference-parity `reconnectAttempt`, MCPListPanel.tsx:L315-325),
    * so a status view can render "reconnecting (n/{@link maxReconnectAttempts})…".
    * `undefined`/absent when no reconnect is in progress.
    */
@@ -653,7 +653,7 @@ export interface McpServerStatus {
    *  only alongside an in-flight {@link reconnectAttempt} for the "n/max" display. */
   maxReconnectAttempts?: number;
   /**
-   * The config-source scope this server was loaded from (Claude-parity scope
+   * The config-source scope this server was loaded from (the reference-parity scope
    * grouping). `undefined` only before scope has been recorded. See
    * {@link McpServerScope}.
    */
@@ -664,7 +664,7 @@ export interface McpServerStatus {
   /**
    * The skill/stance (agent) definitions that pulled this server in — the reverse
    * mapping of which `mcp-servers`-declaring stance(s) introduced a given MCP server
-   * (Claude-parity `AgentMcpServerInfo.sourceAgents`, MCPAgentServerMenu.tsx:L139-142
+   * (the reference-parity `AgentMcpServerInfo.sourceAgents`, MCPAgentServerMenu.tsx:L139-142
    * "Used by: <agent list>"). De-duplicated + alphabetically sorted. `undefined` for a
    * server no stance declares (e.g. a plain config-file server), so a `/mcp` view can
    * render provenance only where it exists. Populated via
@@ -674,7 +674,7 @@ export interface McpServerStatus {
   /**
    * True when the connected server OPTED IN to relaying permission prompts over a
    * message channel by declaring BOTH experimental capabilities `claude/channel`
-   * and `claude/channel/permission` (Claude-parity `filterPermissionRelayClients`,
+   * and `claude/channel/permission` (the reference-parity `filterPermissionRelayClients`,
    * channelPermissions.ts:L177-194). Lets a `/mcp` diagnostics view flag a server
    * as a permission-relay surface. `false` for a server that declares neither or
    * only one; derived from {@link McpClient.supportsChannelPermissionRelay}.
@@ -682,14 +682,14 @@ export interface McpServerStatus {
   channelPermissionRelay?: boolean;
   /**
    * The resolved launch command of a stdio server (`config.command`), so a `/mcp`
-   * drill can show the user exactly what process backs the server (Claude-parity
+   * drill can show the user exactly what process backs the server (the reference-parity
    * MCPStdioServerMenu "Command:" line, MCPStdioServerMenu.tsx:L115-118). `undefined`
    * for a remote (http/sse/ws) server, which has a URL rather than a command.
    */
   command?: string;
   /**
    * The resolved launch arguments of a stdio server (`config.args`), rendered on the
-   * drill's "Args:" line alongside {@link command} (Claude-parity MCPStdioServerMenu
+   * drill's "Args:" line alongside {@link command} (the reference-parity MCPStdioServerMenu
    * "Args:" line, MCPStdioServerMenu.tsx:L120-123). Absent when the server has no args.
    */
   args?: string[];
@@ -705,7 +705,7 @@ export interface McpServerStatus {
 
 /**
  * Group a flat list of MCP server statuses by their originating stance/agent
- * (Claude-parity `MCPListPanel` agent grouping, MCPListPanel.tsx:L166-170/L408): each
+ * (the reference-parity `MCPListPanel` agent grouping, MCPListPanel.tsx:L166-170/L408): each
  * server is emitted once under EVERY agent in its {@link McpServerStatus.sourceAgents}
  * list, agent names are de-duplicated, and both the agent headings and the servers
  * within each group are alphabetically ordered for a stable `/mcp` rendering. Servers
@@ -733,7 +733,7 @@ export function groupMcpServersBySourceAgent(
 
 /**
  * A partition of the live MCP servers into the two actionable connectivity buckets
- * Claude surfaces as proactive notifications (useMcpConnectivityStatus.tsx:L24-75):
+ * the reference surfaces as proactive notifications (useMcpConnectivityStatus.tsx:L24-75):
  * `failed` servers are in a hard `error` state, `needsAuth` servers are in the
  * recoverable `needs-auth` state (the user can re-authenticate). Each bucket is a
  * de-duplicated, display-ordered (alphabetical, inherited from
@@ -747,7 +747,7 @@ export interface McpConnectivitySummary {
 
 /**
  * A tally of the live MCP servers bucketed by distinct connectivity state
- * (Claude-parity `buildMcpProperties`, status.tsx:L89-115): a compact
+ * (the reference-parity `buildMcpProperties`, status.tsx:L89-115): a compact
  * `{connected, pending, needsAuth, failed}` count for a status-pane summary line
  * that stays ONE row no matter how many servers are configured (20+ servers would
  * otherwise wrap over many rows and dominate the pane). The reserved `ide`
@@ -809,7 +809,7 @@ const defaultHeadersHelperRunner: HeadersHelperRunner = (command, env) =>
  * the connection.
  */
 /**
- * Introspection hooks for {@link resolveMcpServerHeaders} (Claude-parity
+ * Introspection hooks for {@link resolveMcpServerHeaders} (the reference-parity
  * `logMCPDebug`/`logMCPError` around header retrieval). Injected by the manager so the
  * per-server MCP log records WHEN a helper ran and HOW MANY headers it produced — key
  * debuggability into what a server will actually send. Both default to no-ops so the
@@ -906,7 +906,7 @@ export class McpManager extends EventEmitter {
   /** Per-server count of consecutive failed reconnect attempts (for backoff). */
   private reconnectAttempts = new Map<string, number>();
   /**
-   * Tool-polling scheduler (parity: Claude Code's `mcp-polling-update`). Started
+   * Tool-polling scheduler (parity: the reference's `mcp-polling-update`). Started
    * per-server from {@link McpServerConfig.pollTools} on `ready`, stopped on
    * close/remove, and torn down with {@link disconnectAll}. Change-detected polls
    * re-emit as a `tool-polling-update` event the engine drains and injects.
@@ -932,22 +932,22 @@ export class McpManager extends EventEmitter {
   private _oauthAbort = new Map<string, AbortController>();
   private pendingServers = new Map<string, PendingServerInfo>();
   private serverErrors = new Map<string, string>();
-  /** Config-source scope per server (Claude-parity scope grouping). Recorded at
+  /** Config-source scope per server (the reference-parity scope grouping). Recorded at
    *  load/add time; a programmatically-added server defaults to `'dynamic'`. */
   private _serverScopes = new Map<string, McpServerScope>();
   /** Enterprise exclusive-control: when true only `enterprise`-scope servers load
-   *  (Claude-parity `allowManagedMcpServersOnly`). Toggled via
+   *  (the reference-parity `allowManagedMcpServersOnly`). Toggled via
    *  {@link setAllowManagedServersOnly}. */
   private _allowManagedServersOnly = false;
   /** Absolute config-file path a server was loaded from (undefined for dynamic). */
   private _serverSources = new Map<string, string>();
   /** Reverse index of which skill/stance (agent) definition(s) declared each server
-   *  (Claude-parity `AgentMcpServerInfo.sourceAgents`). Recorded when a stance
+   *  (the reference-parity `AgentMcpServerInfo.sourceAgents`). Recorded when a stance
    *  registers its `mcp-servers`; surfaced on {@link McpServerStatus.sourceAgents}. */
   private _serverSourceAgents = new Map<string, Set<string>>();
   /**
    * Content hash of the RAW config entry each config-loaded server was last
-   * registered from (Claude-parity config-hash change detection,
+   * registered from (the reference-parity config-hash change detection,
    * useManageMCPConnections excludeStalePluginClients). {@link reloadFromConfig}
    * diffs a re-read file against these hashes so an UNCHANGED server is left
    * running untouched while a server whose entry CHANGED is torn down and
@@ -986,7 +986,7 @@ export class McpManager extends EventEmitter {
   private _approvedServers = new Set<string>();
   /**
    * M14 (U018) — names of PROJECT-tier MCP servers the user has explicitly
-   * REJECTED (Claude's persisted `disabledMcpjsonServers`). This is the negative
+   * REJECTED (the reference's persisted `disabledMcpjsonServers`). This is the negative
    * counterpart of {@link _approvedServers}: a rejected project server is
    * SUPPRESSED on every load (never registered, never re-surfaced for approval)
    * instead of re-appearing as `pending` each session. Seeded from a persisted
@@ -996,7 +996,7 @@ export class McpManager extends EventEmitter {
    */
   private _rejectedServers = new Set<string>();
   /**
-   * M14 (U018) — blanket "trust all project MCP servers" flag (Claude's
+   * M14 (U018) — blanket "trust all project MCP servers" flag (the reference's
    * `enableAllProjectMcpServers`). When true, every project-tier server that is
    * not explicitly rejected is approved without a per-server prompt, so a user
    * who trusts a repo can opt every current AND future `.mcp.json` server in with
@@ -1005,7 +1005,7 @@ export class McpManager extends EventEmitter {
   private _enableAllProjectServers = false;
   /**
    * Names of INTERNAL / managed MCP servers that are protected from the user-facing
-   * enable/disable toggle (Claude-parity `c.name !== 'ide'` toggle guard,
+   * enable/disable toggle (the reference-parity `c.name !== 'ide'` toggle guard,
    * commands/mcp/mcp.tsx:L31-32). A built-in server the host wires itself (e.g. an
    * IDE bridge) must not be clobbered by a `/mcp disable` (bulk `all` or targeted),
    * so {@link stopServer} refuses to DISABLE a protected server. Seeded by the
@@ -1018,7 +1018,7 @@ export class McpManager extends EventEmitter {
    * child process ({@link MCP_BYPASS_PERMISSION_ENV}={@link MCP_BYPASS_PERMISSION_VALUE})
    * — that the host session runs in a bypass / auto-allow permission mode, so a
    * server that gates its own tool invocations can skip its in-server prompts and
-   * stay non-interactive (Claude-parity: CLAUDE_CHROME_PERMISSION_MODE=
+   * stay non-interactive (the reference-parity: CLAUDE_CHROME_PERMISSION_MODE=
    * 'skip_all_permission_checks' is injected into the MCP server env when the session
    * is in bypass mode). Off by default; set by the integrator from the resolved
    * session permission mode. Only stdio (process-spawning) servers receive it — a
@@ -1027,7 +1027,7 @@ export class McpManager extends EventEmitter {
   private _bypassPermissions = false;
   /**
    * Names of MCP servers that have successfully connected at least once this
-   * install (Claude-parity `claudeAiMcpEverConnected`). This gates startup
+   * install (the reference-parity `claudeAiMcpEverConnected`). This gates startup
    * connectivity notifications: a server that worked before and is now failed is a
    * state change worth surfacing, whereas one that has NEVER connected (e.g.
    * needs-auth since it first appeared) is one the user has demonstrably not set up
@@ -1039,7 +1039,7 @@ export class McpManager extends EventEmitter {
   private _everConnected = new Set<string>();
   /**
    * Config-loaded server names that were SUPPRESSED as duplicates of an
-   * already-registered server of the same name (Claude-parity
+   * already-registered server of the same name (the reference-parity
    * `mcp-server-suppressed-duplicate`, services/mcp/config.ts:L1216-L1229). AMI
    * resolves MCP config by first-wins precedence (a higher-precedence scope's
    * server keeps the name), so a lower-precedence config declaring the same name is
@@ -1080,7 +1080,7 @@ export class McpManager extends EventEmitter {
    */
   _secretStore: McpSecretStore = defaultMcpSecretStore();
   /**
-   * Per-server structured log sink seams (Claude-parity `logMCPError`/`logMCPDebug`).
+   * Per-server structured log sink seams (the reference-parity `logMCPError`/`logMCPDebug`).
    * Default to the real on-disk JSONL writers; overridable in tests so the per-server
    * logging path is observable without touching the real config dir. Production
    * behavior is identical to calling the imports.
@@ -1088,7 +1088,7 @@ export class McpManager extends EventEmitter {
   _logMcpError: (serverName: string, error: unknown, opts?: McpLogSinkOptions) => void = logMcpServerError;
   _logMcpDebug: (serverName: string, message: string, opts?: McpLogSinkOptions) => void = logMcpServerDebug;
   /**
-   * Session id stamped into each per-server MCP log record (Claude-parity
+   * Session id stamped into each per-server MCP log record (the reference-parity
    * `getSessionId()` in logMCPError/logMCPDebug). Set by the integrator from the live
    * session; omitted from records when unset.
    */
@@ -1101,7 +1101,7 @@ export class McpManager extends EventEmitter {
   _platform: NodeJS.Platform = process.platform;
 
   /**
-   * TTL for the needs-auth skip cache. Defaults to the Claude-parity 15 min;
+   * TTL for the needs-auth skip cache. Defaults to the reference-parity 15 min;
    * overridable in tests so the expiry path is exercisable without real time.
    */
   _needsAuthCacheTtlMs: number = MCP_NEEDS_AUTH_CACHE_TTL_MS;
@@ -1190,7 +1190,7 @@ export class McpManager extends EventEmitter {
   }
 
   /**
-   * Set the session id stamped into per-server MCP log records (Claude-parity
+   * Set the session id stamped into per-server MCP log records (the reference-parity
    * `getSessionId()`). The integrator calls this once with the live session id so a
    * `/mcp` diagnostics reader can correlate a server's log entries with the session
    * that produced them. Read at log-write time, so it applies to already-registered
@@ -1208,7 +1208,7 @@ export class McpManager extends EventEmitter {
 
   /**
    * The dated JSONL log-file path for `name`'s dedicated per-server MCP log
-   * (Claude-parity `getMCPLogsPath`). Lets a `/mcp` diagnostics view / introspection
+   * (the reference-parity `getMCPLogsPath`). Lets a `/mcp` diagnostics view / introspection
    * tell the user exactly which file holds a specific server's error+debug history.
    */
   getServerLogPath(name: string): string {
@@ -1228,7 +1228,7 @@ export class McpManager extends EventEmitter {
   }
 
   /**
-   * Enterprise exclusive-control switch (Claude-parity `allowManagedMcpServersOnly`):
+   * Enterprise exclusive-control switch (the reference-parity `allowManagedMcpServersOnly`):
    * when enabled, ONLY admin-provisioned (`enterprise`-scope, via
    * {@link loadManagedServers}) MCP servers are loaded — every user/project/local/
    * dynamic server is blocked at load with a `config-blocked` diagnostic. Set by the
@@ -1264,7 +1264,7 @@ export class McpManager extends EventEmitter {
 
   /**
    * Configure servers to deny by name, normalized/wildcard upstream URL, or full
-   * stdio command array (S9 + Claude allow/deny parity). Default-open: an empty
+   * stdio command array (S9 + the reference allow/deny parity). Default-open: an empty
    * list blocks nothing. A plain-string entry is a name or exact URL (as before);
    * a `*`-bearing string is a URL wildcard (if it looks like a URL) or a name
    * wildcard; a structured entry targets `serverName`/`serverCommand`/`serverUrl`.
@@ -1312,7 +1312,7 @@ export class McpManager extends EventEmitter {
   /**
    * Config-loaded servers that were suppressed as duplicates of an
    * already-registered server with the same name (first-wins precedence) —
-   * `{ name, duplicateOf }` pairs for a /mcp diagnostics view (Claude-parity
+   * `{ name, duplicateOf }` pairs for a /mcp diagnostics view (the reference-parity
    * `mcp-server-suppressed-duplicate`). Informational, not an error: the duplicate
    * entry simply never registered because a higher-precedence config already owns
    * the name.
@@ -1322,7 +1322,7 @@ export class McpManager extends EventEmitter {
   }
 
   /**
-   * Unified, severity-tagged, per-entry MCP config diagnostics (Claude-parity
+   * Unified, severity-tagged, per-entry MCP config diagnostics (the reference-parity
    * McpParsingWarnings `ValidationError` + `mcpErrorMetadata`): one flat list that
    * merges every config problem — whole-file PARSE failures and per-server shape
    * VALIDATION errors (both `fatal`, the config was not loaded) and recoverable
@@ -1383,7 +1383,7 @@ export class McpManager extends EventEmitter {
 
   /**
    * Partition the live MCP servers into the `failed` (hard `error` state) and
-   * `needsAuth` (recoverable `needs-auth` state) buckets Claude surfaces as proactive
+   * `needsAuth` (recoverable `needs-auth` state) buckets the reference surfaces as proactive
    * connectivity notifications (useMcpConnectivityStatus.tsx): an auth boundary the
    * user can fix by authenticating is kept distinct from a hard failure. Each bucket
    * is alphabetical (inherited from {@link listAllServers}). Feeds
@@ -1401,7 +1401,7 @@ export class McpManager extends EventEmitter {
 
   /**
    * Bucket the live MCP servers by distinct connectivity state for a COMPACT
-   * one-line status-pane summary (Claude-parity `buildMcpProperties`,
+   * one-line status-pane summary (the reference-parity `buildMcpProperties`,
    * status.tsx:L89-115): `ready`→connected, `pending`/`connecting`→pending,
    * `needs-auth`→needsAuth, `error`→failed. The reserved `ide` pseudo-client is
    * excluded (surfaced as its own IDE badge via {@link getIdeConnectionStatus}),
@@ -1466,7 +1466,7 @@ export class McpManager extends EventEmitter {
       ...config.env,
       ...(this.rootPaths[0] ? { SUPERINFERENCE_PROJECT_DIR: this.rootPaths[0] } : {}),
       // Tell a spawned stdio MCP server the host session is in bypass/auto-allow
-      // mode so it can skip its own in-server permission prompts (Claude-parity
+      // mode so it can skip its own in-server permission prompts (the reference-parity
       // CLAUDE_CHROME_PERMISSION_MODE injection).
       ...(this._bypassPermissions && isStdioServer
         ? { [MCP_BYPASS_PERMISSION_ENV]: MCP_BYPASS_PERMISSION_VALUE }
@@ -1490,7 +1490,7 @@ export class McpManager extends EventEmitter {
     });
 
     client.on('error', (err) => {
-      // Persist to the server's dedicated per-server log file (Claude-parity
+      // Persist to the server's dedicated per-server log file (the reference-parity
       // logMCPError) in addition to the in-memory event, so a flaky server has an
       // isolated, auditable error trail distinct from every other server's.
       this._logMcpError(name, err, this.mcpLogOpts());
@@ -1508,7 +1508,7 @@ export class McpManager extends EventEmitter {
       const cfg = this.configs.get(name);
       const t = this.effectiveTransport(cfg);
       // A server pinned autoReconnect:false owns its own recovery — never auto-drive
-      // a reconnect for it (parity with Claude's autoReconnect=false → go to closed).
+      // a reconnect for it (parity with the reference's autoReconnect=false → go to closed).
       if (isRemoteMcpTransport(t)
         && cfg?.autoReconnect !== false
         && !this._intentionalDisconnect.has(name)
@@ -1523,13 +1523,13 @@ export class McpManager extends EventEmitter {
       // notifications — a server that has NEVER connected is not nagged about).
       this.markEverConnected(name);
       // Start (or, on reconnect, cleanly restart) this server's configured tool
-      // polls now that its tools are callable (parity: Claude's mcp-polling-update).
+      // polls now that its tools are callable (parity: the reference's mcp-polling-update).
       this._toolPoller.register(name, this.configs.get(name)?.pollTools);
       this.emit('server-ready', name);
     });
     // An unrecoverable auth failure on a live tool call flips the client to the
     // `needs-auth` state — surface it as a server-state change so the /mcp view can
-    // prompt a re-auth (parity with Claude Code flipping a client to needs-auth on
+    // prompt a re-auth (parity with the reference flipping a client to needs-auth on
     // McpAuthError during tool execution).
     client.on('needs-auth', () => {
       coreLog('mcp', `MCP '${name}' needs re-authentication (token revoked/expired)`);
@@ -1572,7 +1572,7 @@ export class McpManager extends EventEmitter {
 
     client.on('log', (msg: McpLogMessage) => {
       // Route a server-emitted log line to the server's dedicated debug/error file
-      // (Claude-parity logMCPDebug/logMCPError): an `error`-level line is logged as a
+      // (the reference-parity logMCPDebug/logMCPError): an `error`-level line is logged as a
       // per-server error, everything else as per-server debug, so each server's log
       // is self-contained instead of interleaved in the shared engine log.
       const text = typeof msg.data === 'string' ? msg.data : JSON.stringify(msg.data);
@@ -1583,14 +1583,14 @@ export class McpManager extends EventEmitter {
     client.on('resource-updated', (uri: string) => this.emit('resource-updated', name, uri));
     // Live per-tool-call progress (server notifications/progress for an in-flight
     // tools/call) surfaced on the manager's public event bus so a frontend can
-    // render a progress bar (Claude-parity per-tool-call onProgress).
+    // render a progress bar (the reference-parity per-tool-call onProgress).
     client.on('tool-progress', (p: { name: string; percent?: number; message?: string }) => this.emit('tool-progress', name, p));
     client.on('pagination-capped', (method: string, count: number) => {
       coreLog('mcp', `Pagination cap hit for ${name} on ${method} (${count} items)`);
       this.emit('pagination-capped', name, method, count);
     });
     // IDE-as-MCP-server editor context: surface the normalized current selection /
-    // at-mention on the manager's public bus (parity with Claude Code's
+    // at-mention on the manager's public bus (parity with the reference's
     // useIdeSelection / useIdeAtMentioned) so a frontend can fold the user's editor
     // context into the turn.
     client.on('ide-selection', (sel: McpIdeSelection) => this.emit('ide-selection', name, sel));
@@ -1659,7 +1659,7 @@ export class McpManager extends EventEmitter {
 
   /**
    * M14 (U018) — seed the set of REJECTED (persistently declined) PROJECT-tier
-   * MCP servers (Claude's `disabledMcpjsonServers`). The integrator loads this
+   * MCP servers (the reference's `disabledMcpjsonServers`). The integrator loads this
    * from a persisted store before {@link loadFromConfig}; a project server whose
    * name is here is suppressed (never registered, never re-prompted). Replaces any
    * previously-set rejections.
@@ -1689,7 +1689,7 @@ export class McpManager extends EventEmitter {
 
   /**
    * Seed the set of INTERNAL / managed MCP server names that are protected from the
-   * user-facing enable/disable toggle (Claude-parity `ide`-client toggle guard). A
+   * user-facing enable/disable toggle (the reference-parity `ide`-client toggle guard). A
    * protected server stays under host control: {@link stopServer} refuses to DISABLE
    * it. The integrator calls this once with its built-in server names. Replaces any
    * previously-set protected names.
@@ -1706,7 +1706,7 @@ export class McpManager extends EventEmitter {
   /**
    * True when `name` is an internal/managed server protected from the enable/disable
    * toggle. Matching is normalization-insensitive. A UI `/mcp disable`/`enable all`
-   * path filters these out (parity with Claude's `c.name !== 'ide'`); the core
+   * path filters these out (parity with the reference's `c.name !== 'ide'`); the core
    * {@link stopServer} enforces it as the single source of truth.
    */
   isServerProtected(name: string): boolean {
@@ -1731,7 +1731,7 @@ export class McpManager extends EventEmitter {
   }
 
   /**
-   * Seed the set of servers that have EVER connected (Claude-parity
+   * Seed the set of servers that have EVER connected (the reference-parity
    * `claudeAiMcpEverConnected`). The integrator loads this from a persisted store
    * before connecting so a server that worked in a previous session is recognized
    * as a state-change (not a first-appearance) when it now fails. Replaces any
@@ -1765,7 +1765,7 @@ export class McpManager extends EventEmitter {
   }
 
   /**
-   * Import MCP servers from a desktop MCP client's config file (Claude-parity
+   * Import MCP servers from a desktop MCP client's config file (the reference-parity
    * `readClaudeDesktopMcpServers` one-shot migration). Reads the platform-resolved
    * `claude_desktop_config.json` (macOS / WSL only; see
    * {@link resolveDesktopMcpConfigPath}), validates each declared stdio server
@@ -1805,7 +1805,7 @@ export class McpManager extends EventEmitter {
   /**
    * Introspection map from each live MCP tool's MODEL-FACING (normalized, qualified
    * `mcp__<server>__<tool>`) name back to its ORIGINAL server-side name + server
-   * (Claude-parity `SerializedTool.originalToolName` / `MCPCliState.normalizedNames`).
+   * (the reference-parity `SerializedTool.originalToolName` / `MCPCliState.normalizedNames`).
    * Normalization sanitizes, hyphen-preserves, collapses, and (when overlong)
    * truncates+hashes a tool name, so the name the model calls can differ from the
    * real server-side tool; this lets a `/mcp` view or an error message trace a
@@ -1839,7 +1839,7 @@ export class McpManager extends EventEmitter {
   }
 
   /** True when `name` matches any entry in `set` under MCP name normalization
-   *  (Claude-parity: comparisons go through `normalizeNameForMCP` on BOTH sides,
+   *  (the reference-parity: comparisons go through `normalizeNameForMCP` on BOTH sides,
    *  so a config name `my.server` and a stored decision `my_server` match). */
   private nameInSet(set: Set<string>, name: string): boolean {
     if (set.size === 0) return false;
@@ -1853,7 +1853,7 @@ export class McpManager extends EventEmitter {
 
   /**
    * M14 (U018) — resolve a PROJECT-tier server to its approval status with
-   * Claude-parity layered precedence (getProjectMcpServerStatus): an explicit
+   * the reference-parity layered precedence (getProjectMcpServerStatus): an explicit
    * reject wins first (`disabledMcpjsonServers`), then an explicit approval OR the
    * blanket enable-all flag (`enabledMcpjsonServers` / `enableAllProjectMcpServers`),
    * otherwise `pending`. All name comparisons are normalization-insensitive. This
@@ -1867,7 +1867,7 @@ export class McpManager extends EventEmitter {
 
   /**
    * Workspace-trust boundary for a config-supplied `headersHelper` SCRIPT
-   * (Claude-parity getMcpHeadersFromHelper, services/mcp/headersHelper.ts:L40-57).
+   * (the reference-parity getMcpHeadersFromHelper, services/mcp/headersHelper.ts:L40-57).
    * A `headersHelper` is an arbitrary shell command the config asks us to EXECUTE at
    * connect time — from a `project`-scoped (untrusted, cloned-repo) `.mcp.json` that
    * is an arbitrary-code-execution vector, so we must NOT run it until the project
@@ -1898,7 +1898,7 @@ export class McpManager extends EventEmitter {
   }
 
   /**
-   * M14 (U018) — reject EVERY server currently awaiting approval (Claude's
+   * M14 (U018) — reject EVERY server currently awaiting approval (the reference's
    * cancel/ESC `handleEscRejectAll`): a cancellation of the new-MCP-servers prompt
    * is a committed decision, not a no-op that re-asks. Each pending-approval server
    * is durably rejected (and torn down). Returns the names rejected.
@@ -1910,7 +1910,7 @@ export class McpManager extends EventEmitter {
   }
 
   /**
-   * M14 (U018) — clear ALL persisted project-scope decisions (Claude's
+   * M14 (U018) — clear ALL persisted project-scope decisions (the reference's
    * `mcpResetChoicesHandler`): drop the approved set, the rejected set, and the
    * blanket enable-all flag, so the user is re-prompted for every project server
    * on the next load. The complement of {@link approvePendingServer} /
@@ -2004,7 +2004,7 @@ export class McpManager extends EventEmitter {
       // Distinguish "needs authentication" from a hard error: an OAuth-protected
       // server whose consent is required/unavailable gets the recoverable
       // `needs-auth` state (surfaced for a "click to authenticate" affordance),
-      // not `error` — Claude-parity for its dedicated needs-auth connection state.
+      // not `error` — the reference-parity for its dedicated needs-auth connection state.
       const authNeeded = isAuthRequiredError(err) || this._lastAuthUrls.has(name);
       const newState: McpServerState = authNeeded ? 'needs-auth' : 'error';
       pending.state = newState;
@@ -2024,7 +2024,7 @@ export class McpManager extends EventEmitter {
   async stopServer(name: string, disable?: boolean): Promise<void> {
     // An internal/managed server (e.g. a built-in IDE bridge) is protected from the
     // user-facing DISABLE toggle so it cannot be clobbered via `/mcp disable`
-    // (targeted or bulk `all`) — Claude-parity `c.name !== 'ide'` toggle guard. A
+    // (targeted or bulk `all`) — the reference-parity `c.name !== 'ide'` toggle guard. A
     // plain stop (no `disable`) is still allowed (it is transient, not a persisted
     // user decision).
     if (disable && this.isServerProtected(name)) {
@@ -2074,14 +2074,14 @@ export class McpManager extends EventEmitter {
       return undefined;
     }
     // Resolve the loopback redirect URI + whether a dynamic free-port lookup is
-    // needed, with Claude-parity precedence: explicit config redirectUri > per-server
+    // needed, with the reference-parity precedence: explicit config redirectUri > per-server
     // `callbackPort` (`mcp add --callback-port`) > global MCP_OAUTH_CALLBACK_PORT env
     // knob > dynamic discovery at consent time.
     const redirect = resolveMcpOAuthRedirect(config.oauth, getConfiguredOAuthCallbackPort());
     // Persist tokens per server so authentication survives restarts (H22/H45).
     // Key the token file on the server NAME *and* a hash of its connection config
     // (type/url/headers) so a reconfigured server (changed URL/transport/headers)
-    // does not reuse a stale grant that no longer applies — parity with Claude's
+    // does not reuse a stale grant that no longer applies — parity with the reference's
     // getServerKey. (Labeled functional change: the token filename now embeds the
     // config hash; an old name-only token file is simply re-authed, not reused.)
     const tokenStore = new FileOAuthTokenStore(
@@ -2141,7 +2141,7 @@ export class McpManager extends EventEmitter {
 
   /**
    * Pre-authenticate a declared-but-not-connected http/sse OAuth server WITHOUT
-   * establishing a full MCP session (Claude-parity MCPAgentServerMenu
+   * establishing a full MCP session (the reference-parity MCPAgentServerMenu
    * `handleAuthenticate`, MCPAgentServerMenu.tsx:L56-81).
    *
    * Agent/skill-scoped MCP servers are lazy-connect: they only come up when the
@@ -2150,7 +2150,7 @@ export class McpManager extends EventEmitter {
    * time — building a temp OAuth provider from the server's `{transport, url}`
    * config and driving discovery → consent → token-exchange so the credential is
    * cached before first use — and resolves WITHOUT spawning the transport or
-   * discovering tools, exactly like Claude's temp-config `performMCPOAuthFlow`.
+   * discovering tools, exactly like the reference's temp-config `performMCPOAuthFlow`.
    *
    * Returns `{ authenticated }` — `true` when a token was obtained (cached for the
    * eventual connect) and `false` when no auth was required. Non-OAuth / stdio
@@ -2228,7 +2228,7 @@ export class McpManager extends EventEmitter {
     this.invalidateToolCache(name);
     // An explicit re-auth/reconnect must bypass the needs-auth skip cache: the
     // user is actively asking to retry, so drop any cached guaranteed-401 marker
-    // before re-probing (Claude-parity clearMcpAuthCache on manual auth).
+    // before re-probing (the reference-parity clearMcpAuthCache on manual auth).
     this.clearNeedsAuthCache(name);
     if (this.clients.get(name)?.state === 'ready') {
       await this.restartServer(name);
@@ -2243,7 +2243,7 @@ export class McpManager extends EventEmitter {
    *
    * FUNCTIONAL ADD (parity, U103): AMI previously re-authenticated only reactively
    * on a 401 — there was no way to proactively drop a cached token that is locally
-   * still valid but was revoked server-side. This mirrors Claude Code's
+   * still valid but was revoked server-side. This mirrors the reference's
    * `mcp xaa login --force` (xaaIdpCommand.ts:L158-L196), which clears the cached
    * id_token before re-login. Used by the `authenticate` tool's `force` option.
    *
@@ -2277,7 +2277,7 @@ export class McpManager extends EventEmitter {
    * user) OR the flow completes silently (a cached/XAA token authenticated
    * without consent → `authUrl` undefined). The background reconnect runs to
    * completion and swaps the server's real tools in on success. This mirrors
-   * Claude Code's `skipBrowserOpen` McpAuthTool (start → capture URL → return
+   * the reference's `skipBrowserOpen` McpAuthTool (start → capture URL → return
    * immediately → reconnect in background) instead of hanging the tool call on
    * an interactive browser leg that a detached agent can never complete.
    *
@@ -2408,7 +2408,7 @@ export class McpManager extends EventEmitter {
       });
     }
     // Deterministic alphabetical order regardless of Map insertion order so the
-    // /mcp listing is stable (Claude-parity).
+    // /mcp listing is stable (the reference-parity).
     return result.sort((a, b) => a.name.localeCompare(b.name));
   }
 
@@ -2419,7 +2419,7 @@ export class McpManager extends EventEmitter {
   }
 
   /**
-   * In-flight reconnect progress for `name` (Claude-parity reconnectAttempt /
+   * In-flight reconnect progress for `name` (the reference-parity reconnectAttempt /
    * maxReconnectAttempts). Returns the attempt count + ceiling ONLY while a
    * reconnect is actually scheduled (a pending timer with a recorded attempt),
    * else `{}` — so a healthy server carries no reconnect fields. The first attempt
@@ -2442,8 +2442,8 @@ export class McpManager extends EventEmitter {
    * Launch-command and OAuth-credential introspection fields for `name`, spread into
    * every {@link McpServerStatus} construction site so the `/mcp` drill can show what
    * backs a server. A stdio server surfaces its resolved `command`/`args`
-   * (Claude-parity MCPStdioServerMenu); an `oauth`-configured server surfaces its
-   * {@link McpOAuthCredentialState} (Claude-parity `mcp xaa show`). The config is read
+   * (the reference-parity MCPStdioServerMenu); an `oauth`-configured server surfaces its
+   * {@link McpOAuthCredentialState} (the reference-parity `mcp xaa show`). The config is read
    * from the connected-client config map, falling back to a pending server's stored
    * config, so a not-yet-connected server still reports its command/args/oauth state.
    * Returns `{}` for a server with neither a stdio command nor oauth config.
@@ -2552,7 +2552,7 @@ export class McpManager extends EventEmitter {
       client.disconnect();
       this.clients.delete(name);
     }
-    // Credential lifecycle hygiene (Claude-parity `cleanupSecureStorage`,
+    // Credential lifecycle hygiene (the reference-parity `cleanupSecureStorage`,
     // cli/handlers/mcp.tsx:L79-84): forgetting a server purges its PERSISTED OAuth
     // token file so no credential is orphaned on disk — even when the server has no
     // live client (a stopped/pending/never-connected remote), where the server-side
@@ -2573,7 +2573,7 @@ export class McpManager extends EventEmitter {
   }
 
   /**
-   * Sign out of a single OAuth MCP server WITHOUT forgetting it (parity: Claude's
+   * Sign out of a single OAuth MCP server WITHOUT forgetting it (parity: the reference's
    * "Clear Auth" / revokeServerTokens affordance surfaced through `/mcp`). Unlike
    * {@link removeServer} (which deletes the config entirely), `logout` keeps the
    * server listed but clears its credentials so the next use re-runs the OAuth
@@ -2691,11 +2691,11 @@ export class McpManager extends EventEmitter {
         }
         // A terminal auth-required failure on a remote server is a guaranteed-401
         // for the TTL window — cache it so the next connect pass skips the probe
-        // (Claude-parity setMcpAuthCacheEntry).
+        // (the reference-parity setMcpAuthCacheEntry).
         if (isRemoteMcpTransport(transport) && isAuthRequiredError(err)) this.recordNeedsAuth(name);
         const finalErr = isHandshakeFailure(err) ? handshakeError(name, err) : err;
         // A connect attempt that has exhausted its retries is a per-server error
-        // worth persisting to the server's dedicated log (Claude-parity logMCPError).
+        // worth persisting to the server's dedicated log (the reference-parity logMCPError).
         this._logMcpError(name, finalErr, this.mcpLogOpts());
         throw finalErr;
       }
@@ -2704,7 +2704,7 @@ export class McpManager extends EventEmitter {
   }
 
   /**
-   * Connect every registered client with BOUNDED concurrency (Claude-parity:
+   * Connect every registered client with BOUNDED concurrency (the reference-parity:
    * MCP_SERVER_CONNECTION_BATCH_SIZE / MCP_REMOTE_SERVER_CONNECTION_BATCH_SIZE).
    * Servers are split into local (stdio/container, process-spawning) and remote
    * (http/sse, network) groups, each run through its own concurrency pool, so a
@@ -2722,7 +2722,7 @@ export class McpManager extends EventEmitter {
         local.push(name);
         continue;
       }
-      // Needs-auth skip (Claude-parity isMcpAuthCached / hasMcpDiscoveryButNoToken):
+      // Needs-auth skip (the reference-parity isMcpAuthCached / hasMcpDiscoveryButNoToken):
       // a remote server that returned 401 within the TTL is a guaranteed-401, so
       // short-circuit straight to a needs-auth result instead of burning a network
       // round-trip + OAuth discovery on it. The user re-authenticating (/mcp →
@@ -2772,7 +2772,7 @@ export class McpManager extends EventEmitter {
     try {
       return await client.callTool(bareToolName, args, callOptions);
     } catch (err) {
-      // Transparent single retry after MCP session expiry (Claude-parity
+      // Transparent single retry after MCP session expiry (the reference-parity
       // MAX_SESSION_RETRIES=1): a routine Streamable-HTTP session rotation closes
       // the transport; clear the stale cache, reconnect, and re-run against a
       // fresh session so the rotation is invisible to the model instead of failing.
@@ -2806,7 +2806,7 @@ export class McpManager extends EventEmitter {
         // Isolate per-server failures (one server's error must not sink the whole
         // aggregate) AND log EVERY failure — not only session-expiry — so a server
         // that consistently errors on resources/list is observable instead of being
-        // silently swallowed (Claude-parity ListMcpResourcesTool). The URL goes
+        // silently swallowed (the reference-parity ListMcpResourcesTool). The URL goes
         // through getLoggingSafeMcpBaseUrl so a token-bearing query string is never
         // written to the log.
         const safeUrl = getLoggingSafeMcpBaseUrl(this.configs.get(name));
@@ -2819,14 +2819,14 @@ export class McpManager extends EventEmitter {
 
   /**
    * List a single server's resources, reconnecting-and-retrying ONCE in-call when
-   * the session has expired / the transport was closed (Claude-parity
+   * the session has expired / the transport was closed (the reference-parity
    * `ensureConnectedClient` before fetch): a server whose streamable-HTTP session
    * rotated mid-listing still returns its resources within the same call instead of
    * being dropped and only recovered on the next async health tick. A non-session
    * error (or a failure of the retry itself) propagates to the per-server catch.
    */
   private async listResourcesWithReconnect(name: string, client: McpClient): Promise<McpResource[]> {
-    // Claude-parity `ensureConnectedClient(client)` before the fetch: a server that
+    // the reference-parity `ensureConnectedClient(client)` before the fetch: a server that
     // was dropped by `onclose` (its client is no longer `ready`) is transparently
     // re-opened FIRST so its resources still appear in THIS same list call, instead
     // of being skipped until a later async health tick. A no-op when already ready;
@@ -2859,7 +2859,7 @@ export class McpManager extends EventEmitter {
   async readResource(serverName: string, uri: string, options?: { signal?: AbortSignal }): Promise<unknown> {
     const client = this.clients.get(serverName);
     if (!client) {
-      // Pre-flight validation with distinct, self-correcting errors (Claude-parity
+      // Pre-flight validation with distinct, self-correcting errors (the reference-parity
       // ReadMcpResourceTool): a name that was never registered is "not found" and
       // enumerates the valid servers so the model can self-correct; a name that is
       // known (configured/pending) but has no live client is "not connected".
@@ -3005,7 +3005,7 @@ export class McpManager extends EventEmitter {
 
   /**
    * Derived IDE editor-connection status for the reserved `ide` MCP server
-   * (Claude-parity `useIdeConnectionStatus`): `{ status: null, ideName: null }`
+   * (the reference-parity `useIdeConnectionStatus`): `{ status: null, ideName: null }`
    * when no editor is wired, else the tri-state ({@link ideStatusFromServerState})
    * plus the human-readable editor name ({@link getMcpIdeName}). Single source of
    * truth the `/mcp` view renders as the "IDE: <name> (connected)" badge, so the
@@ -3023,7 +3023,7 @@ export class McpManager extends EventEmitter {
 
   /**
    * Auto-register the reserved `ide` MCP server for a code-editor-launched endpoint
-   * when the Claude-parity auto-connect waterfall ({@link shouldAutoConnectIde}) is
+   * when the reference-parity auto-connect waterfall ({@link shouldAutoConnectIde}) is
    * satisfied AND the editor's SSE endpoint is resolvable from the environment
    * ({@link resolveIdeMcpEndpoint}, {@link MCP_IDE_SSE_PORT_ENV}). The server is
    * registered as the built-in `dynamic` scope over the `sse-ide` transport so the
@@ -3047,7 +3047,7 @@ export class McpManager extends EventEmitter {
 
   /**
    * Resolve the IDE the reserved `ide` server is currently wired to by matching
-   * its persisted config against a freshly-detected editor list (Claude-parity
+   * its persisted config against a freshly-detected editor list (the reference-parity
    * `findCurrentIDE`, ide.tsx:L208-219). Reads the live `ide` server config,
    * guards its transport to an IDE discriminant (`sse-ide` / `ws-ide`), then
    * linear-scans `availableIDEs` for the entry whose `url` is identical — the
@@ -3069,23 +3069,23 @@ export class McpManager extends EventEmitter {
   /**
    * Connect (or re-point) the reserved `ide` MCP server to a detected editor and
    * resolve once the handshake reaches a terminal state, the core analogue of
-   * Claude Code's IDECommandFlow connect state machine (ide.tsx:L515-604). Any
+   * the reference's IDECommandFlow connect state machine (ide.tsx:L515-604). Any
    * existing `ide` server is torn down first (re-point semantics), then the
    * editor is registered over the transport its URL implies
    * ({@link ideTransportForUrl}) with its `ideName` (and a bearer `authToken`
    * header when the endpoint requires one) and connected. The connect races a
    * {@link IDE_CONNECTION_TIMEOUT_MS} fallback so a server that never answers
-   * yields a `timeout` result instead of hanging — the outer ceiling Claude's
+   * yields a `timeout` result instead of hanging — the outer ceiling the reference's
    * `setTimeout(onDone, …)` provides.
    *
-   * (Claude's `isFirstCheckRef` stale-snapshot skip, ide.tsx:L529/536-539/594, is
+   * (the reference's `isFirstCheckRef` stale-snapshot skip, ide.tsx:L529/536-539/594, is
    * a React-effect re-render artifact — it ignores the first post-dispatch render
    * because the store still holds the pre-config client. Core awaits the real
    * handshake promise directly, so there is no stale snapshot to skip.)
    */
   async connectIde(ide: DetectedIdeInfo, opts: IdeConnectOptions = {}): Promise<IdeConnectResult> {
     // Re-point semantics: drop any editor already wired to the `ide` slot so the
-    // new selection replaces it (Claude deletes `dynamicMcpConfig.ide` first).
+    // new selection replaces it (the reference deletes `dynamicMcpConfig.ide` first).
     if (this.clients.has(IDE_MCP_SERVER_NAME) || this.pendingServers.has(IDE_MCP_SERVER_NAME) || this.configs.has(IDE_MCP_SERVER_NAME)) {
       this.removeServer(IDE_MCP_SERVER_NAME);
     }
@@ -3115,9 +3115,9 @@ export class McpManager extends EventEmitter {
   }
 
   /**
-   * Disconnect the reserved `ide` MCP server (Claude-parity IDECommandFlow
+   * Disconnect the reserved `ide` MCP server (the reference-parity IDECommandFlow
    * disconnect leg, ide.tsx:L562-586): tears down the live transport and forgets
-   * the server WITHOUT triggering the close-driven auto-reconnect (Claude nulls
+   * the server WITHOUT triggering the close-driven auto-reconnect (the reference nulls
    * the client `onclose`; {@link removeServer} flags an intentional disconnect to
    * the same end). Returns `disconnected:false` with "No IDE selected." when no
    * editor was wired, else `disconnected:true` with "Disconnected from <name>."
@@ -3133,7 +3133,7 @@ export class McpManager extends EventEmitter {
 
   /**
    * The on-disk path of a server's persisted OAuth token file (keyed on the server
-   * NAME *and* a hash of its connection config, matching Claude's `getServerKey`).
+   * NAME *and* a hash of its connection config, matching the reference's `getServerKey`).
    * Single source of truth so {@link addServer} (which writes/reads it) and
    * {@link removeServer} (which purges it) cannot drift on how the credential file
    * is located.
@@ -3147,7 +3147,7 @@ export class McpManager extends EventEmitter {
     return path.join(resolveConfigDir(), 'mcp-tokens', mcpTokenFileName(credentialKey));
   }
 
-  /** On-disk path of the persisted needs-auth skip cache (Claude-parity
+  /** On-disk path of the persisted needs-auth skip cache (the reference-parity
    *  `mcp-needs-auth-cache.json`). Lives alongside the MCP token files. */
   private needsAuthCachePath(): string {
     return path.join(resolveConfigDir(), 'mcp-needs-auth-cache.json');
@@ -3215,7 +3215,7 @@ export class McpManager extends EventEmitter {
 
   /**
    * Record that the skill/stance `agent` declared MCP server `name` — the reverse
-   * provenance mapping surfaced on {@link McpServerStatus.sourceAgents} (Claude-parity
+   * provenance mapping surfaced on {@link McpServerStatus.sourceAgents} (the reference-parity
    * `AgentMcpServerInfo.sourceAgents`). Idempotent: registering the same agent twice is
    * a no-op, and a server declared by several stances accumulates every declarer. A
    * blank/whitespace agent name is ignored so a malformed stance can't inject an empty
@@ -3252,7 +3252,7 @@ export class McpManager extends EventEmitter {
   }
 
   /**
-   * Group live servers by their config-source scope for a Claude-parity listing
+   * Group live servers by their config-source scope for a reference-parity listing
    * (MCPListPanel): groups are ordered by {@link MCP_SCOPE_ORDER}, servers within a
    * group are alphabetical (inherited from {@link listAllServers}), and each group
    * carries its heading `label` and the `sourcePath` of its first server so a UI can
@@ -3353,7 +3353,7 @@ export class McpManager extends EventEmitter {
     const openWorldVerbs = ['web', 'fetch', 'http', 'curl', 'download', 'upload', 'send', 'post'];
 
     // Normalize camelCase + kebab-case to snake_case before classifying so a verb
-    // that is NOT the leading token is still found (Claude-parity): e.g.
+    // that is NOT the leading token is still found (the reference-parity): e.g.
     // `searchJiraIssues` → `search_jira_issues`, `web_search_exa`, `brave-web-search`.
     // Fall back to the leading-prefix check too, so single-token lowercase names
     // like `getuser` keep classifying as before (strict superset of old behavior).
@@ -3361,7 +3361,7 @@ export class McpManager extends EventEmitter {
     const tokens = new Set(normalizeMcpToolName(toolName).split('_').filter(Boolean));
     const classify = (verbs: string[]) => verbs.some(v => tokens.has(v) || lower.startsWith(v));
     // Union the verb heuristic with the curated per-tool read/search allowlist
-    // (Claude-parity SEARCH_TOOLS/READ_TOOLS, classifyForCollapse.ts) so a
+    // (the reference-parity SEARCH_TOOLS/READ_TOOLS, classifyForCollapse.ts) so a
     // low-signal read/search op whose verb is NOT a token — `whoami`, `esql`,
     // `explain`, `aggregate`, `count`, `recommend`, `atlassian_user_info`, … —
     // is still classified read-only instead of defaulting to false. This reuses
@@ -3518,7 +3518,7 @@ export class McpManager extends EventEmitter {
       // is expected and handled above).
       const reason = err instanceof Error ? err.message : String(err);
       // Actionable guidance for the most common JSON hand-edit mistakes, so the user
-      // can fix the file instead of just seeing a raw parser offset (Claude-parity
+      // can fix the file instead of just seeing a raw parser offset (the reference-parity
       // readMcpJson actionable error, services/mcp/config.ts:L1438-1468).
       const message = `Failed to parse MCP config "${configPath}" as JSON: ${reason}. `
         + 'Check for a trailing comma, an unquoted key, a missing comma between entries, or an unclosed brace/bracket.';
@@ -3532,7 +3532,7 @@ export class McpManager extends EventEmitter {
 
   /**
    * Hot-reload an MCP config file, diffing the freshly-read entries against the
-   * LIVE servers previously loaded from the SAME file (Claude-parity
+   * LIVE servers previously loaded from the SAME file (the reference-parity
    * `excludeStalePluginClients` / config-hash reload, useManageMCPConnections):
    *
    *  - a server whose entry is byte-for-byte UNCHANGED (same content hash) is LEFT
@@ -3619,16 +3619,16 @@ export class McpManager extends EventEmitter {
         // Enterprise exclusive-control (allowManagedMcpServersOnly): when the managed
         // tier has claimed sole control of MCP, a non-enterprise server never loads —
         // skip it with a diagnostic so the user understands why their config server is
-        // absent (Claude-parity getClaudeCodeMcpConfigs exclusive managed control).
+        // absent (the reference-parity getClaudeCodeMcpConfigs exclusive managed control).
         if (this._allowManagedServersOnly && opts.scope !== 'enterprise') {
           coreLog('mcp', `skipping non-managed MCP server "${name}": only admin-managed MCP servers are allowed (allowManagedMcpServersOnly)`);
           this.emit('config-blocked', name, 'allowManagedMcpServersOnly');
           continue;
         }
         // Per-server isolation: one malformed/throwing entry must NOT abort the
-        // rest of the file (Claude-parity) — each entry is loaded in its own guard.
+        // rest of the file (the reference-parity) — each entry is loaded in its own guard.
         try {
-          // Map a Claude-Code-style `type` transport discriminator onto AMI's
+          // Map a reference-style `type` transport discriminator onto AMI's
           // `transport` field so a `{ "type": "http", "url": ... }` interop entry
           // is understood.
           const normalized = normalizeMcpServerEntry(serverConfig);
@@ -3653,7 +3653,7 @@ export class McpManager extends EventEmitter {
           // Collect non-fatal, recoverable config warnings for this server (the
           // server is still registered): (a) env vars referenced but unset — a common
           // cause of a server failing to start (H35); (b) the Windows npx-without-cmd
-          // wrapper footgun (platform-specific, Claude-parity).
+          // wrapper footgun (platform-specific, the reference-parity).
           const warnings: string[] = [];
           if (missing.size > 0) {
             const list = [...missing];
@@ -3678,7 +3678,7 @@ export class McpManager extends EventEmitter {
           }
           // M14 (U018) — a project-tier server the user previously REJECTED is
           // SUPPRESSED entirely: never registered, never re-surfaced for approval
-          // (Claude's disabledMcpjsonServers). Checked BEFORE recording scope so a
+          // (the reference's disabledMcpjsonServers). Checked BEFORE recording scope so a
           // rejected server leaves no orphan metadata behind.
           if (opts.projectScoped && this.getProjectMcpServerStatus(name) === 'rejected') {
             coreLog('mcp', `skipping rejected project MCP server "${name}"`);
@@ -3687,7 +3687,7 @@ export class McpManager extends EventEmitter {
           // First-wins precedence: a higher-precedence scope (e.g. local/project
           // over user) already owns this name. Rather than letting addServer throw a
           // FATAL "already registered" error, record the drop as an INFORMATIONAL
-          // suppressed-duplicate diagnostic (Claude-parity mcp-server-suppressed-
+          // suppressed-duplicate diagnostic (the reference-parity mcp-server-suppressed-
           // duplicate) so the user learns why their second config entry isn't showing
           // up. The winning server keeps its scope/config untouched.
           if (this.clients.has(name) || this.pendingServers.has(name)) {
@@ -3727,7 +3727,7 @@ export class McpManager extends EventEmitter {
     const result = { ...config };
     // Plugin-scoped substitution tier (${user_config.X}, ${CLAUDE_PLUGIN_ROOT},
     // ${CLAUDE_PLUGIN_DATA}) runs BEFORE general ${ENV} expansion so a user/plugin
-    // value wins over a same-named process env var (Claude-parity precedence).
+    // value wins over a same-named process env var (the reference-parity precedence).
     const pluginVars: PluginMcpVars = {
       userConfig: config.userConfig,
       pluginRoot: config.pluginRoot,
@@ -3761,7 +3761,7 @@ export class McpManager extends EventEmitter {
     // For a stdio server, inject the plugin root/data dir into the launch env as
     // literal paths so a bundled stdio server can locate its own install + data
     // directory. These two keys are NOT run through ${ENV} expansion
-    // (Claude-parity, mcpPluginIntegration.ts:L517): they are already resolved
+    // (the reference-parity, mcpPluginIntegration.ts:L517): they are already resolved
     // absolute paths. Explicit env entries win, so an author can still override.
     const isStdio = !result.url && (result.transport === undefined || result.transport === 'stdio');
     if (isStdio && (config.pluginRoot !== undefined || config.pluginDataDir !== undefined)) {
@@ -3810,7 +3810,7 @@ export class McpManager extends EventEmitter {
 
   /**
    * Ingest a server's advertised tools into the live tool cache, applying the
-   * per-server tool-count cap ({@link MAX_MCP_TOOLS_PER_SERVER}, Claude-parity):
+   * per-server tool-count cap ({@link MAX_MCP_TOOLS_PER_SERVER}, the reference-parity):
    * a server that advertises more than the cap has only its first `cap` tools
    * loaded, and a recoverable config warning is recorded (surfaced in /mcp
    * diagnostics) so the drop is visible instead of silent — defending the model's
@@ -3908,7 +3908,7 @@ export const MCP_RECONNECT_BASE_DELAY_MS = 1000;
 export const MAX_MCP_RECONNECT_DELAY_MS = 30_000;
 
 /**
- * A proactive MCP connectivity notification (Claude-parity useMcpConnectivityStatus
+ * A proactive MCP connectivity notification (the reference-parity useMcpConnectivityStatus
  * `addNotification`): a dedupe `key`, a `severity` (error for failed, warning for
  * needs-auth), and a pluralized `message` ending in the ` · /mcp` pointer. The
  * frontend renders these as transient status notifications.
@@ -3920,7 +3920,7 @@ export interface McpConnectivityNotification {
 }
 
 /**
- * Format a {@link McpConnectivitySummary} into the proactive notifications Claude
+ * Format a {@link McpConnectivitySummary} into the proactive notifications the reference
  * pushes (useMcpConnectivityStatus.tsx:L36-56): `N MCP server(s) failed · /mcp`
  * (error) and `N MCP server(s) need auth · /mcp` (warning), each pluralized and
  * dedupe-keyed. Returns `[]` when nothing is failed/needs-auth (the early-return
@@ -3954,7 +3954,7 @@ export interface McpStateSummaryPart {
 /**
  * Format a {@link McpServerStateSummary} into the ordered, non-empty parts a status
  * pane renders as a single compact "N connected, N need auth, N pending, N failed
- * · /mcp" row (Claude-parity `buildMcpProperties`, status.tsx:L99-115). Only
+ * · /mcp" row (the reference-parity `buildMcpProperties`, status.tsx:L99-115). Only
  * non-zero buckets appear, always in the fixed severity order
  * connected→needsAuth→pending→failed so the row reads consistently regardless of
  * which states are present. Returns `[]` when every bucket is zero (no actionable
@@ -3970,12 +3970,12 @@ export function formatMcpStateSummary(summary: McpServerStateSummary): McpStateS
 }
 
 /** Transport values AMI understands (for config validation / `type` mapping).
- *  Includes the Claude-parity IDE discriminants (`sse-ide`/`ws-ide`) and the
+ *  Includes the reference-parity IDE discriminants (`sse-ide`/`ws-ide`) and the
  *  in-process `sdk` transport so a `{ "type": "sse-ide", … }` entry validates. */
 const SUPPORTED_MCP_TRANSPORTS = new Set(['stdio', 'sse', 'http', 'ws', 'wss', 'sse-ide', 'ws-ide', 'sdk']);
 
 /**
- * The reserved MCP server name for the connected code editor (Claude-parity:
+ * The reserved MCP server name for the connected code editor (the reference-parity:
  * `client.name === 'ide'`, useIdeConnectionStatus.ts). The one server whose
  * connection drives the editor-integration badge; special-cased by
  * {@link McpManager.getIdeConnectionStatus}.
@@ -3984,7 +3984,7 @@ export const IDE_MCP_SERVER_NAME = 'ide';
 
 /**
  * Canonicalize a transport discriminator to the BASE transport its connection is
- * actually driven over (Claude-parity IDE discriminants): `sse-ide`→`sse`,
+ * actually driven over (the reference-parity IDE discriminants): `sse-ide`→`sse`,
  * `ws-ide`→`ws`; every base transport (and `sdk`/`undefined`) is returned
  * unchanged. Routed through by {@link McpManager.effectiveTransport} so an IDE
  * server connects over its real transport without a bespoke dispatch arm — the
@@ -4001,7 +4001,7 @@ export function canonicalMcpTransport(
 
 /**
  * The human-readable editor name for an IDE MCP server, gated on its transport
- * being an IDE discriminant (Claude-parity, useIdeConnectionStatus.ts:L20-24:
+ * being an IDE discriminant (the reference-parity, useIdeConnectionStatus.ts:L20-24:
  * `config.type === 'sse-ide' || config.type === 'ws-ide' ? config.ideName : null`).
  * Returns `null` for a non-IDE server (or a missing name) so a stray `ideName` on
  * a plain sse/http server is never surfaced as an editor badge.
@@ -4015,7 +4015,7 @@ export function getMcpIdeName(config: McpServerConfig | undefined): string | nul
 
 /**
  * Env var carrying the port of the code-editor's MCP SSE endpoint, inherited from
- * the editor extension that launched AMI (Claude-parity `CLAUDE_CODE_SSE_PORT`).
+ * the editor extension that launched AMI (the reference-parity `CLAUDE_CODE_SSE_PORT`).
  * The extension passes the port through the environment because terminal
  * multiplexers (tmux/screen) clobber `TERM_PROGRAM`, so the editor can no longer
  * be detected from the terminal alone once inside a multiplexer.
@@ -4025,7 +4025,7 @@ export const MCP_IDE_SSE_PORT_ENV = 'AMI_SSE_PORT';
 /**
  * Env var that force-ENABLES (a truthy value) or force-DISABLES (an explicit
  * falsy value) IDE MCP auto-connect, overriding every other waterfall input
- * (Claude-parity `CLAUDE_CODE_AUTO_CONNECT_IDE`). A falsy value is a hard opt-out
+ * (the reference-parity `CLAUDE_CODE_AUTO_CONNECT_IDE`). A falsy value is a hard opt-out
  * that wins over the config knob, the flag, and a supported terminal.
  */
 export const MCP_IDE_AUTOCONNECT_ENV = 'AMI_AUTO_CONNECT_IDE';
@@ -4035,7 +4035,7 @@ const SUPPORTED_IDE_TERM_PROGRAMS = new Set(['vscode', 'cursor', 'windsurf']);
 
 /**
  * True when the current terminal is a known code-editor terminal
- * (Claude-parity `isSupportedTerminal`): VS Code / Cursor / Windsurf expose an
+ * (the reference-parity `isSupportedTerminal`): VS Code / Cursor / Windsurf expose an
  * embedded terminal whose `TERM_PROGRAM` identifies the host editor, which is a
  * strong signal the user wants the editor integration auto-connected.
  */
@@ -4067,7 +4067,7 @@ export interface IdeAutoConnectOptions {
 
 /**
  * Decide whether to auto-connect to a code-editor-launched MCP endpoint, matching
- * Claude Code's `addIde` waterfall (useIDEIntegration.ts:L32-36):
+ * the reference's `addIde` waterfall (useIDEIntegration.ts:L32-36):
  *   (config knob OR `--ide` flag OR a supported editor terminal OR an inherited
  *    SSE port OR a pending extension install OR a truthy `AMI_AUTO_CONNECT_IDE`)
  *   AND NOT an explicit falsy `AMI_AUTO_CONNECT_IDE`.
@@ -4091,7 +4091,7 @@ export function shouldAutoConnectIde(opts: IdeAutoConnectOptions = {}): boolean 
  * Resolve the code-editor's MCP SSE endpoint URL from the inherited
  * {@link MCP_IDE_SSE_PORT_ENV} port, or `null` when the port is unset / not a
  * valid 1..65535 TCP port. The editor extension serves MCP over a loopback SSE
- * endpoint; AMI connects to `http://127.0.0.1:<port>/sse` (Claude-parity local
+ * endpoint; AMI connects to `http://127.0.0.1:<port>/sse` (the reference-parity local
  * IDE transport). Loopback-only — never a remote host.
  */
 export function resolveIdeMcpEndpoint(env: NodeJS.ProcessEnv = process.env): { url: string } | null {
@@ -4104,7 +4104,7 @@ export function resolveIdeMcpEndpoint(env: NodeJS.ProcessEnv = process.env): { u
 
 /**
  * A code editor AMI can connect to as the reserved `ide` MCP server
- * (Claude-parity `DetectedIDEInfo`, utils/ide.ts): the editor's display `name`
+ * (the reference-parity `DetectedIDEInfo`, utils/ide.ts): the editor's display `name`
  * and the `url` of the MCP endpoint it exposes, plus the optional `authToken`
  * the endpoint requires and whether the editor is `ideRunningInWindows` (used by
  * a WSL caller for path translation). This is the input to the interactive
@@ -4127,7 +4127,7 @@ export interface DetectedIdeInfo {
  * WebSocket endpoint (`ws://` / `wss://`) is a `ws-ide`, anything else (an
  * `http(s)://` SSE endpoint) is an `sse-ide`. The `-ide` suffix only tags
  * provenance + an {@link McpServerConfig.ideName}; {@link canonicalMcpTransport}
- * maps it back to the base wire transport. Divergence from Claude Code
+ * maps it back to the base wire transport. Divergence from the reference
  * (ide.tsx:L585, which tests only `startsWith('ws:')` and so mis-tags a `wss://`
  * endpoint as `sse-ide`): AMI also recognizes `wss://` so a secure WebSocket IDE
  * connects over its real transport.
@@ -4138,7 +4138,7 @@ export function ideTransportForUrl(url: string): 'sse-ide' | 'ws-ide' {
 
 /**
  * How long {@link McpManager.connectIde} waits for the reserved `ide` server to
- * reach a terminal state before reporting a `timeout` (Claude-parity
+ * reach a terminal state before reporting a `timeout` (the reference-parity
  * `IDE_CONNECTION_TIMEOUT_MS`, ide.tsx:L507). The connect itself has its own
  * bounded retry/backoff; this is the outer ceiling the UI shows a result by.
  */
@@ -4148,7 +4148,7 @@ export const IDE_CONNECTION_TIMEOUT_MS = 35000;
  * Terminal outcome of an interactive IDE connect ({@link McpManager.connectIde}):
  * `connected` (handshake succeeded), `failed` (handshake rejected), or `timeout`
  * (no terminal state within {@link IDE_CONNECTION_TIMEOUT_MS}). `message` is the
- * ready-to-display sentence, matching Claude Code's IDECommandFlow wording.
+ * ready-to-display sentence, matching the reference's IDECommandFlow wording.
  */
 export interface IdeConnectResult {
   outcome: 'connected' | 'failed' | 'timeout';
@@ -4163,7 +4163,7 @@ export interface IdeConnectOptions {
 
 /**
  * Derived tri-state (+null) IDE connection status a UI badge renders
- * (Claude-parity `IdeStatus`, useIdeConnectionStatus.ts): `null` means no editor
+ * (the reference-parity `IdeStatus`, useIdeConnectionStatus.ts): `null` means no editor
  * is connected (no `ide` server at all). Present-but-not-connected buckets as
  * `connected` (server `ready`), `pending` (still connecting), or `disconnected`
  * (any other state — error/stopped/needs-auth/disabled).
@@ -4171,7 +4171,7 @@ export interface IdeConnectOptions {
 export type IdeStatus = 'connected' | 'pending' | 'disconnected' | null;
 
 /**
- * Map a live MCP server state onto the editor-badge tri-state (Claude-parity
+ * Map a live MCP server state onto the editor-badge tri-state (the reference-parity
  * useIdeConnectionStatus: `connected` ↔ `ready`, `pending` ↔ connecting,
  * everything else ↔ `disconnected`). The `null` ("no editor") case is decided by
  * the caller from server presence, so this never returns `null`.
@@ -4202,7 +4202,7 @@ const MCP_URL_SCHEMES = new Set(['http:', 'https:', 'ws:', 'wss:']);
 
 /**
  * Infer a REMOTE transport from an endpoint URL's scheme when a config supplies a
- * `url` but no explicit `transport` (Claude-parity scheme inference, ide.tsx:L585-593
+ * `url` but no explicit `transport` (the reference-parity scheme inference, ide.tsx:L585-593
  * `url.startsWith('ws:') ? 'ws-ide' : 'sse-ide'`): a `ws:`/`wss:` URL is a WebSocket
  * transport, an `http:`/`https:` URL is the Streamable-HTTP transport. Returns
  * `undefined` for a non-URL / unknown scheme so the caller falls back to its default
@@ -4224,7 +4224,7 @@ export function inferMcpTransportFromUrl(url: string | undefined): 'ws' | 'wss' 
 
 /**
  * True when `raw` is a well-formed remote MCP endpoint URL — it parses as a URL AND
- * its scheme is one of http/https/ws/wss (Claude-parity add-time URL validation,
+ * its scheme is one of http/https/ws/wss (the reference-parity add-time URL validation,
  * xaaIdpCommand.ts:L44-58: a user-supplied URL is validated as a real URL BEFORE it
  * is persisted, so one malformed value cannot poison the settings file on next load).
  * Enforced at `/mcp add` time (not config load) so a hand-edited config stays lenient,
@@ -4240,7 +4240,7 @@ export function isValidMcpUrl(raw: string): boolean {
 
 /**
  * Canonicalize an MCP tool name for verb classification: camelCase and kebab-case
- * reduce to a single snake_case key (Claude-parity `normalize()`), so a read/search
+ * reduce to a single snake_case key (the reference-parity `normalize()`), so a read/search
  * verb is found even when it is not the leading token (e.g. `searchJiraIssues` →
  * `search_jira_issues`, `brave-web-search` → `brave_web_search`).
  */
@@ -4252,7 +4252,7 @@ export function normalizeMcpToolName(name: string): string {
 }
 
 /**
- * Normalize a raw MCP server config entry: map a Claude-Code-style `type`
+ * Normalize a raw MCP server config entry: map a reference-style `type`
  * transport discriminator (`{ "type": "http", "url": ... }`) onto AMI's canonical
  * `transport` field when `transport` is absent, and drop the `type` key. Non-object
  * entries are returned unchanged for the validator to reject.
@@ -4269,7 +4269,7 @@ export function normalizeMcpServerEntry(raw: unknown): unknown {
 
 /**
  * Lightweight runtime validation of an (untrusted) MCP server config entry before
- * it reaches a child-process spawn / HTTP request (Claude-parity schema guard).
+ * it reaches a child-process spawn / HTTP request (the reference-parity schema guard).
  * Returns a list of human-readable problems ([] when valid): `command`/`url` must
  * be strings, `args` a string array, `env`/`headers` string→string objects, and
  * `transport` one of stdio|sse|http|ws|wss. The entry is skipped when non-empty.
@@ -4304,7 +4304,7 @@ export function validateMcpServerConfigShape(cfg: unknown): string[] {
       issues.push('`oauth` must be an object');
     } else {
       const o = c.oauth as Record<string, unknown>;
-      // Claude-parity McpOAuthConfigSchema: an explicit AS-metadata override must be an
+      // the reference-parity McpOAuthConfigSchema: an explicit AS-metadata override must be an
       // https URL (never plaintext — it drives token/credential exchange), and a pinned
       // callback port must be a usable TCP port (positive integer in range).
       if (o.authServerMetadataUrl !== undefined) {
@@ -4335,7 +4335,7 @@ function isHttpsUrl(value: string): boolean {
 }
 
 /**
- * Validate a user-supplied MCP SERVER name before it is persisted (Claude-parity
+ * Validate a user-supplied MCP SERVER name before it is persisted (the reference-parity
  * `addMcpConfig` name check, services/mcp/config.ts:L630-L679). A server name becomes
  * part of the model-facing qualified tool namespace (`mcp__<server>__<tool>`) and
  * AMI's own `serverName:toolName` call resolution splits on the first `:`, so a name
@@ -4343,7 +4343,7 @@ function isHttpsUrl(value: string): boolean {
  * would corrupt qualified-tool resolution or produce an ambiguous tool name. Returns
  * a human-readable error message for an empty or ill-formed name, else `null` (valid).
  * Enforced at `/mcp add` time (not config load) so a hand-edited config stays lenient,
- * exactly like Claude's add-time-only validation.
+ * exactly like the reference's add-time-only validation.
  */
 export function validateMcpServerName(name: string): string | null {
   const trimmed = name.trim();
@@ -4362,7 +4362,7 @@ export function validateMcpServerName(name: string): string | null {
  * warning string (with the concrete fix) on win32, else null (no-op on every other
  * platform). Non-stdio entries (those carrying a `url`) are never flagged. This is a
  * recoverable WARNING, not a fatal error: the server is still registered; the hint
- * is surfaced via {@link McpManager.getConfigWarnings}. Mirrors Claude's
+ * is surfaced via {@link McpManager.getConfigWarnings}. Mirrors the reference's
  * parseMcpConfig npx check.
  */
 export function detectWindowsNpxWrapperWarning(
@@ -4445,7 +4445,7 @@ export function sanitizeMcpToolSchema(schema: unknown): object {
  * both undefined AND had no `:-default` (so callers can surface missing-var
  * diagnostics). An unresolved reference (undefined var with no `:-default`)
  * leaves the ORIGINAL token (`${VAR}` / `$VAR`) in place rather than collapsing
- * to '' (Claude-parity, envExpansion.ts:L30-31) so the broken placeholder stays
+ * to '' (the reference-parity, envExpansion.ts:L30-31) so the broken placeholder stays
  * visible for debugging, in tandem with the missing-var diagnostic — the absence
  * of a value is then distinguishable from an intentionally-empty one. A
  * `${VAR:-default}` with VAR undefined expands to the default and is NOT reported
@@ -4458,7 +4458,7 @@ export function expandEnvVarsTracked(value: string): { expanded: string; missing
       const v = process.env[bare];
       if (v !== undefined) return v;
       missingVars.push(bare);
-      // Leave the original `$VAR` token in place (Claude-parity) so the unresolved
+      // Leave the original `$VAR` token in place (the reference-parity) so the unresolved
       // placeholder is visible rather than silently blanked.
       return match;
     }
@@ -4471,7 +4471,7 @@ export function expandEnvVarsTracked(value: string): { expanded: string; missing
     if (v !== undefined) return v;
     if (def !== undefined) return def;
     missingVars.push(name);
-    // Leave the original `${VAR}` token in place (Claude-parity) so the unresolved
+    // Leave the original `${VAR}` token in place (the reference-parity) so the unresolved
     // placeholder is visible rather than silently blanked.
     return match;
   });
@@ -4494,7 +4494,7 @@ export interface PluginMcpVars {
 
 /**
  * Substitute the plugin-scoped variable classes in a config string BEFORE the
- * general `${ENV}` tier runs (Claude-parity `resolvePluginMcpEnvironment`,
+ * general `${ENV}` tier runs (the reference-parity `resolvePluginMcpEnvironment`,
  * mcpPluginIntegration.ts:L475-490):
  *   - `${user_config.<key>}` → the user-entered value for `<key>` (empty string
  *     when the key is absent, so a stale placeholder never leaks a literal
@@ -4506,7 +4506,7 @@ export interface PluginMcpVars {
  *
  * On Windows the two plugin-PATH substitutions (`CLAUDE_PLUGIN_ROOT` /
  * `CLAUDE_PLUGIN_DATA`) have their backslashes normalized to forward slashes
- * (Claude-parity `substitutePluginVariables`, pluginOptionsStorage.ts:L312-345)
+ * (the reference-parity `substitutePluginVariables`, pluginOptionsStorage.ts:L312-345)
  * so a path like `C:\Users\me\plugin` dropped into a shell command/arg is not
  * mangled by backslash escape interpretation. `user_config` values are NOT
  * normalized — they are opaque user data, not plugin install paths.
@@ -4525,7 +4525,7 @@ export function substitutePluginMcpVars(value: string, vars: PluginMcpVars): str
 /**
  * Scope a plugin/bundle's MCP server names so two different plugins can each ship
  * a server under the same local name (e.g. `github`) without one clobbering the
- * other (Claude-parity `addPluginScopeToServers`, mcpPluginIntegration.ts:L341-360).
+ * other (the reference-parity `addPluginScopeToServers`, mcpPluginIntegration.ts:L341-360).
  * Each server is renamed to `plugin:${pluginName}:${name}` and tagged with a
  * {@link McpServerConfig.pluginSource} provenance marker. Returns the scoped map
  * plus a `nameMap` (original → scoped) so the caller can carry the plugin's
@@ -4581,7 +4581,7 @@ export function remapMcpAutoAllowPatterns(
 
 /**
  * Strip a leading UTF-8 byte-order mark (U+FEFF) from a string before it is
- * handed to `JSON.parse` (Claude-parity `stripBOM`, utils/json.ts +
+ * handed to `JSON.parse` (the reference-parity `stripBOM`, utils/json.ts +
  * remoteManagedSettings/syncCacheState.ts). PowerShell 5.x (and some Windows
  * editors) write UTF-8 files WITH a leading BOM, so an `.mcp.json` generated /
  * hand-edited there begins with an invisible `﻿` that makes `JSON.parse`
@@ -4596,7 +4596,7 @@ export function stripJsonBom(raw: string): string {
 /**
  * Deterministic content hash of a raw MCP server config entry, used by
  * {@link McpManager.reloadFromConfig} to detect whether a server's config changed
- * across a config-file reload (Claude-parity config-hash diff). Object keys are
+ * across a config-file reload (the reference-parity config-hash diff). Object keys are
  * sorted recursively so two logically-equal configs that differ only in JSON key
  * order hash identically (a reload of an unchanged-but-reformatted file does not
  * needlessly tear a server down and respawn it).
@@ -4628,16 +4628,16 @@ export function findMcpConfigScopes(cwd: string): Array<{ path: string; scope: M
 
   // Precedence is first-wins (addServer rejects a duplicate name, so the first
   // config to register a server keeps it). Within a scope AMI's own config beats
-  // the Claude Code interop one; project scope beats user scope.
+  // the reference interop one; project scope beats user scope.
   //
   // We intentionally interop only at PROJECT scope (the shareable `.mcp.json` a
   // repo commits), NOT user-global ~/.claude.json: that file aggregates every
-  // Claude Code server a developer ever configured (and a large per-project
+  // the reference server a developer ever configured (and a large per-project
   // tree), so auto-loading it would silently spin up unrelated servers. Users
   // who want global servers in AMI put them in ~/.ami/mcp.json.
 
   // 0. AMI local (machine-private, uncommitted `.ami/mcp.local.json` in cwd) — a
-  //    per-user, NOT-committed project override (Claude-parity `local` ConfigScope):
+  //    per-user, NOT-committed project override (the reference-parity `local` ConfigScope):
   //    add a server for THIS repo on THIS machine only. Highest precedence
   //    (first-wins) so it overrides a committed project entry of the same name, and
   //    is NEVER approval-gated (the user authored it themselves, like the user scope),
@@ -4649,10 +4649,10 @@ export function findMcpConfigScopes(cwd: string): Array<{ path: string; scope: M
   const projectConfig = path.join(cwd, '.ami', 'mcp.json');
   if (fs.existsSync(projectConfig)) entries.push({ path: projectConfig, scope: 'project' });
 
-  // 2. Claude Code project interop — the shareable `.mcp.json`. Walk from cwd UP
+  // 2. the reference project interop — the shareable `.mcp.json`. Walk from cwd UP
   //    to the filesystem root collecting every `.mcp.json` (closer-to-cwd first),
   //    so a monorepo-root config is still found when AMI is launched from a nested
-  //    subdirectory (Claude-parity). first-wins precedence means the nearest file's
+  //    subdirectory (the reference-parity). first-wins precedence means the nearest file's
   //    servers take priority over an ancestor's.
   let dir = path.resolve(cwd);
   while (true) {
@@ -4678,7 +4678,7 @@ export function findMcpConfigPaths(cwd: string): string[] {
  * Env var (and its value) injected into a spawned stdio MCP server's child process
  * when the host session runs in a bypass / auto-allow permission mode, so a server
  * with its own permission layer can skip its prompts and stay non-interactive.
- * Mirrors Claude Code's `CLAUDE_CHROME_PERMISSION_MODE='skip_all_permission_checks'`
+ * Mirrors the reference's `CLAUDE_CHROME_PERMISSION_MODE='skip_all_permission_checks'`
  * injection; the value is kept identical for cross-framework interop with servers
  * that already recognize that sentinel. See {@link McpManager.setBypassPermissions}.
  */
@@ -4687,7 +4687,7 @@ export const MCP_BYPASS_PERMISSION_VALUE = 'skip_all_permission_checks';
 
 /**
  * Resolve a non-colliding MCP server name against a set of already-used NORMALIZED
- * names (Claude-parity numbered-suffix dedup, claudeai.ts:L92-L119). Tries the base
+ * names (the reference-parity numbered-suffix dedup, claudeai.ts:L92-L119). Tries the base
  * name first, then appends ` (2)`, ` (3)`, … until the FINAL normalized name
  * (suffix included) is unused — the subtle edge case is that the SUFFIXED name is
  * what gets normalized+checked, so a suffix that itself collides with another
@@ -4715,7 +4715,7 @@ export function resolveMcpServerNameCollision(
 /**
  * Injectable platform / filesystem seams for desktop-config import (see
  * {@link resolveDesktopMcpConfigPath} / {@link readDesktopMcpServers}). Mirrors the
- * ambient inputs Claude's `getClaudeDesktopConfigPath` reads (platform, USERPROFILE,
+ * ambient inputs the reference's `getClaudeDesktopConfigPath` reads (platform, USERPROFILE,
  * home dir, file/dir existence), split out so the WSL path-resolution branches are
  * testable on any CI host without a real Windows mount.
  */
@@ -4760,18 +4760,18 @@ function defaultDesktopImportEnv(): DesktopImportEnv {
 }
 
 /** The Windows directory names that are not real user profiles (skipped when
- *  scanning /mnt/c/Users for a desktop config). Mirrors Claude's skip list. */
+ *  scanning /mnt/c/Users for a desktop config). Mirrors the reference's skip list. */
 const WSL_NON_USER_DIRS = new Set(['Public', 'Default', 'Default User', 'All Users']);
 
 /**
  * Resolve the path to a desktop MCP client's `claude_desktop_config.json`
- * (Claude-parity `getClaudeDesktopConfigPath`), or `null` when the platform is
+ * (the reference-parity `getClaudeDesktopConfigPath`), or `null` when the platform is
  * unsupported or no config file can be located:
  *  - macOS → `~/Library/Application Support/Claude/claude_desktop_config.json`;
  *  - WSL → first `${USERPROFILE}` (backslashes→slashes, drive-letter stripped) mapped
  *    to `/mnt/c<path>/AppData/Roaming/Claude/…` if it exists, else a scan of
  *    `/mnt/c/Users/<user>/AppData/Roaming/Claude/…` skipping system profiles;
- *  - every other platform → `null` (Claude throws; AMI returns null so an importer
+ *  - every other platform → `null` (the reference throws; AMI returns null so an importer
  *    can simply report "nothing to import").
  */
 export function resolveDesktopMcpConfigPath(e: DesktopImportEnv = defaultDesktopImportEnv()): string | null {
@@ -4798,7 +4798,7 @@ export function resolveDesktopMcpConfigPath(e: DesktopImportEnv = defaultDesktop
 
 /**
  * Read + validate the MCP servers declared in a desktop client's
- * `claude_desktop_config.json` (Claude-parity `readClaudeDesktopMcpServers`), as a
+ * `claude_desktop_config.json` (the reference-parity `readClaudeDesktopMcpServers`), as a
  * `{ name: config }` map. Every value goes through the same
  * {@link normalizeMcpServerEntry}/{@link validateMcpServerConfigShape} guard used for
  * a config file (a malformed entry is skipped per-entry, not fatal), and only stdio

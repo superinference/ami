@@ -23,7 +23,7 @@ import { getLineNumberStyle, type LineNumberStyle } from './file-read-limits';
  * True when `resolved` lives under the shared TEAM-memory tree for `cwd`. A write
  * there is replicated to every repository collaborator, so a secret in it is
  * strictly worse than one committed to this checkout — the secret guard escalates
- * to a collaborator-aware block for such paths (parity: Claude Code's
+ * to a collaborator-aware block for such paths (parity: the reference's
  * teamMemSecretGuard `isTeamMemPath` scoping). Reuses the ONE canonical
  * team-memory classifier ({@link MemoryManager.isTeamMemFile}) rather than a
  * second path check; best-effort — any classifier failure falls back to the
@@ -42,7 +42,7 @@ const MAX_EDIT_FILE_SIZE = 1_073_741_824; // 1 GiB
 /**
  * Byte cap on an edit/overwrite success diff. A large scattered edit can produce
  * a diff bigger than the content it describes; bounding it here keeps the
- * per-turn token cost proportional (parity with Claude Code's snippet cap) while
+ * per-turn token cost proportional (parity with the reference's snippet cap) while
  * still showing the leading hunks. buildUnifiedDiff truncates at a line boundary
  * and appends a `... [N lines truncated] ...` marker past this size.
  */
@@ -55,7 +55,7 @@ const EDIT_DIFF_MAX_BYTES = 16_384;
  * underlying {@link buildUnifiedDiff}/{@link buildStructuredPatch} still split
  * BOTH the whole old and new contents into per-line arrays — an O(file) memory +
  * CPU cost that is wasteful for a many-MB file whose diff nobody can read anyway.
- * Mirrors Claude Code's MAX_SCAN_BYTES, which degrades a whole-file write to the
+ * Mirrors the reference's MAX_SCAN_BYTES, which degrades a whole-file write to the
  * plain "create" view "rather than OOMing on a diff of a multi-GB file". The hard
  * 1 GiB {@link MAX_EDIT_FILE_SIZE} cap still rejects genuinely huge files first;
  * this bounds the diff work for everything under it.
@@ -68,7 +68,7 @@ const EDIT_DIFF_SCAN_MAX_BYTES = 10 * 1024 * 1024; // 10 MiB
  * structured diff is wasteful O(file) work on a diff nobody can read. Shared by
  * every success path (overwrite, single-replace, replace_all, multi-edit) so the
  * degrade-to-size-only behavior is applied UNIFORMLY, not only on the overwrite
- * path (parity with Claude Code's MAX_SCAN_BYTES diff fallback across edit modes).
+ * path (parity with the reference's MAX_SCAN_BYTES diff fallback across edit modes).
  */
 function exceedsDiffScanCap(oldContent: string, newContent: string): boolean {
   return Buffer.byteLength(oldContent) > EDIT_DIFF_SCAN_MAX_BYTES ||
@@ -111,7 +111,7 @@ export const readHooks: { readCapped: typeof readFileCapped } = {
  * snippet of WHAT changed on disk since the model last read the file — not merely
  * THAT it changed. `before` is the content the model last read (from the warm
  * {@link FileCache} entry); `after` is the current on-disk content already in hand
- * at the call site. This is AMI's analogue of Claude Code's `edited_text_file`
+ * at the call site. This is AMI's analogue of the reference's `edited_text_file`
  * attachment ({@link boundedChangeSnippet} → getSnippetForTwoFileDiff): a
  * format-on-save / linter rewrite is shown with its surrounding context so the
  * model can decide what to re-read, instead of a bare "read it again". Degrades to
@@ -137,7 +137,7 @@ function staleFileChangeOutput(reason: FileChangeReason, verb: string, before: s
  * `await` yields the event loop, during which a concurrent process can modify the
  * target. Without this re-check the subsequent write would silently clobber that
  * concurrent change. Re-checking here — synchronously, right before the write —
- * keeps the staleness-confirmation→write span atomic (parity with Claude Code's
+ * keeps the staleness-confirmation→write span atomic (parity with the reference's
  * FileWriteTool/FileEditTool, which keep "no async operations between the
  * staleness check and writing to disk"). Returns an error ToolResult when the
  * file changed under us (and drops the now-stale cache entry); undefined when it
@@ -160,10 +160,10 @@ function recheckStaleBeforeWrite(resolved: string, verb: string, context: ToolCo
 
 /**
  * Hard read-before-edit guard for the string-replace and multi-edit paths (parity:
- * Claude Code's FileEditTool `validateInput` errorCode 6 — "File has not been read
+ * the reference's FileEditTool `validateInput` errorCode 6 — "File has not been read
  * yet. Read it first before writing to it."). A targeted edit against an existing
  * file the model never read still risks matching/replacing a span it cannot see, so
- * Claude blocks it outright instead of proceeding. AMI previously AUTO-READ on this
+ * the reference blocks it outright instead of proceeding. AMI previously AUTO-READ on this
  * path (seeding {@link ToolContext.filesRead} itself), a leniency that let a blind
  * edit through and silently contradicted the tool's own "You MUST file_read an
  * existing file before changing it" contract. This replaces that auto-read with the
@@ -198,7 +198,7 @@ function requireReadBeforeEdit(resolved: string, context: ToolContext): ToolResu
  * Every parameter the file_edit tool understands, including the accepted aliases
  * for the target path (`path`) and the write-mode content (`content`,
  * `file_text`, `file_content`). Any key outside this set is rejected up front —
- * mirroring Claude Code's strict input schema — so a hallucinated/typo'd
+ * mirroring the reference's strict input schema — so a hallucinated/typo'd
  * parameter (e.g. `filepath`, `newText`) fails loudly instead of being silently
  * dropped and producing a confusing "file not found" / no-op later.
  */
@@ -257,7 +257,7 @@ function isAmiSettingsConfigPath(resolved: string): boolean {
 }
 
 /**
- * Schema-validate an edit to an AMI settings file (parity with Claude Code's
+ * Schema-validate an edit to an AMI settings file (parity with the reference's
  * `validateInputForSettingsFileEdit`): a JSON-syntactically-valid edit can still
  * corrupt the security-governing config by introducing a wrong-typed value, an
  * out-of-enum value, or an unrecognized (typo'd) key. Simulate the post-edit
@@ -343,7 +343,7 @@ function collectPermissionRuleWarnings(parsed: unknown): string[] {
 
 /**
  * Schema-validate the PERMISSION RULES of an edit to a Claude-compatible settings
- * file (parity with Claude Code's `validateInputForSettingsFileEdit`, which
+ * file (parity with the reference's `validateInputForSettingsFileEdit`, which
  * validates the whole settings schema — including permission-rule validity —
  * after an edit). A JSON-syntactically-valid edit can still introduce a malformed
  * rule that would silently never match (a security hole). Block ONLY a
@@ -409,7 +409,7 @@ function validateJsonEdit(resolved: string, originalContent: string, newContent:
  * Walk the first hunk's leading context (lines prefixed `' '`) to the first
  * removed/added line (`'-'`/`'+'`), advancing the old-side counter past each
  * context line, so the reported location points at the edit itself (parity:
- * Claude Code's readEditContext lineOffset, which locates the edit, not the window
+ * the reference's readEditContext lineOffset, which locates the edit, not the window
  * start). Returns undefined when there is no change.
  */
 function firstChangedLine(hunks: DiffHunk[]): number | undefined {
@@ -432,21 +432,21 @@ interface SequentialEdit {
 /**
  * Single-edit vs edits[]-batch discriminator attached to a successful edit result
  * so a diff/permission UI can branch on how many edits it is presenting (parity:
- * Claude Code's IDEDiffConfig `editMode`, stamped `'single'` by
+ * the reference's IDEDiffConfig `editMode`, stamped `'single'` by
  * createSingleEditDiffConfig and `'multiple'` for an `edits[]` batch).
  */
 export type EditMode = 'single' | 'multiple';
 
 /**
  * Build the structured result metadata every SUCCESSFUL file_edit emits (parity:
- * Claude Code's FileEditTool `outputSchema`), carried on {@link ToolResult.metadata}
+ * the reference's FileEditTool `outputSchema`), carried on {@link ToolResult.metadata}
  * so a programmatic caller reads the edit's shape/magnitude without re-parsing the
  * human `output`. `userModified` reflects {@link ToolContext.userModified} — true
  * when the user EDITED this tool call's input at the permission prompt (AMI's
  * approve-with-edited-input / `updatedInput` accept-with-edits flow) before
  * approving, so the applied bytes diverge from the model's original proposal. This
- * is AMI's analogue of Claude Code's diff-editor `computeEditsFromContents`
- * (hooks/useDiffInIDE.ts): where Claude re-derives the FileEdit[] from the user's
+ * is AMI's analogue of the reference's diff-editor `computeEditsFromContents`
+ * (hooks/useDiffInIDE.ts): where the reference re-derives the FileEdit[] from the user's
  * hand-modified file content, AMI rewrites the edit INPUT the user approved and
  * records here that what landed was the human-corrected call, not the proposal.
  * Threaded via the ONE canonical permission-layer `userModified` signal — no
@@ -525,8 +525,8 @@ export function captureLspBaseline(resolved: string, context: ToolContext): void
 
 /**
  * Boundary-transparency disclosure for a BLOCKED symlink write target (parity:
- * Claude Code's ShowInIDEPrompt symlink-target surfacing). AMI takes a STRONGER
- * posture than Claude — {@link validateFileWritePath} blocks EVERY symlink write
+ * the reference's ShowInIDEPrompt symlink-target surfacing). AMI takes a STRONGER
+ * posture than the reference — {@link validateFileWritePath} blocks EVERY symlink write
  * target rather than disclosing-and-allowing an in-workspace one — but the bare
  * "is a symlink — write blocked" error never told the user WHERE the link
  * redirects, so the boundary crossing it protected against was invisible at the
@@ -653,13 +653,13 @@ export function commitWrite(
   context.filesRead?.add(resolved);
   notifyLsp(resolved, rawToWrite, context);
   // Record the agent's per-file character contribution for commit attribution
-  // (parity: Claude's AttributionSnapshot fileStates). Best-effort — an
+  // (parity: the reference's AttributionSnapshot fileStates). Best-effort — an
   // accounting failure must never fail an otherwise-successful write.
   try {
     recordAgentFileContribution(
       context.sessionId,
       // Store under a realpath-normalized repo-relative key so it matches the key
-      // git_commit looks up by (parity: Claude Code's normalizeFilePath keying).
+      // git_commit looks up by (parity: the reference's normalizeFilePath keying).
       normalizeAttributionPath(resolved, context.cwd),
       cacheContent,
       // Char-level authored-chars (common prefix/suffix), which correctly scores
@@ -702,7 +702,7 @@ export async function writeEntireFile(
     // ABOVE, but a file can grow past that stat before this read (a TOCTOU window,
     // or a pseudo/growing file); the capped read closes it by reporting `truncated`
     // and never slurping the whole over-cap file into one allocation (parity:
-    // Claude Code's readCapped diff-read fallback).
+    // the reference's readCapped diff-read fallback).
     const capped = await readHooks.readCapped(resolved, MAX_EDIT_FILE_SIZE);
     if (capped === null) {
       // ENOENT — brand-new file, nothing to lose; fileExists stays false.
@@ -794,7 +794,7 @@ export async function writeEntireFile(
   // model sent in `content` instead of re-converting to the old file's EOL.
   // Re-converting silently corrupted files whose intended EOL differs from the
   // old one (e.g. rewriting a CRLF file to an LF shell script) — parity with
-  // Claude Code's FileWriteTool, which removed that preservation for this reason.
+  // the reference's FileWriteTool, which removed that preservation for this reason.
   const finalContent = content;
 
   if (fileExists && oldContent.length > 0) {
@@ -836,7 +836,7 @@ export async function writeEntireFile(
 
   // OOM/cost guard: past EDIT_DIFF_SCAN_MAX_BYTES, splitting both whole contents
   // into per-line arrays for a diff is wasteful work on a diff nobody can read.
-  // Degrade to a size-only summary (parity: Claude's MAX_SCAN_BYTES fallback to
+  // Degrade to a size-only summary (parity: the reference's MAX_SCAN_BYTES fallback to
   // the plain "create" view instead of diffing a multi-GB file).
   if (exceedsDiffScanCap(oldContent, content)) {
     return {
@@ -922,14 +922,14 @@ async function applySequentialEdits(
   // a later edit that is EQUIVALENT to an earlier one — same result on the
   // original file, or the same reproducible failure — instead of re-applying it
   // (which would double-apply) or surfacing a confusing "not found" once the
-  // earlier edit already rewrote the region. Parity: Claude Code's
+  // earlier edit already rewrote the region. Parity: the reference's
   // areFileEditsEquivalent idempotent/duplicate-edit recognition.
   const seenEdits: SequentialEdit[] = [];
   const skipped: string[] = [];
   // Track the new_strings of edits already applied in this batch. A later edit
   // whose old_string is a substring of an earlier edit's new_string is almost
   // always a model mistake (it would re-edit text the previous edit just wrote,
-  // not the original file), so reject it — mirroring Claude Code's sequential-edit
+  // not the original file), so reject it — mirroring the reference's sequential-edit
   // guard (FileEditTool/utils.ts). Trailing newlines are stripped before the
   // containment test, matching the reference.
   const appliedNewStrings: string[] = [];
@@ -1051,7 +1051,7 @@ async function applySequentialEdits(
   // the `structuredPatch` field. Surface the TRUE 1-based line where the first
   // change landed so the model/UI can locate the edit without re-reading the file
   // — the SAME `[edit: file:LINE, +a -b]` tag the single-replace path emits
-  // (parity: Claude Code's readEditContext lineOffset, applied uniformly across
+  // (parity: the reference's readEditContext lineOffset, applied uniformly across
   // both replace modes).
   const patch = buildStructuredPatch(normalizeToLf(rawContent), content);
   const editLine = firstChangedLine(patch);
@@ -1094,7 +1094,7 @@ async function applySequentialEdits(
  * prefix format so the model knows exactly which prefix to strip from
  * old_string/new_string. In the default `compact` style the prefix is a number +
  * tab (`N\t<content>`); in the `arrow` style it is a padded number + arrow
- * (`     N→<content>`). Mirrors Claude Code's getEditToolDescription(), which
+ * (`     N→<content>`). Mirrors the reference's getEditToolDescription(), which
  * switches the "line number prefix format" clause on isCompactLinePrefixEnabled().
  */
 export function buildFileEditDescription(style: LineNumberStyle = getLineNumberStyle()): string {
@@ -1109,7 +1109,7 @@ export function buildFileEditDescription(style: LineNumberStyle = getLineNumberS
 export const fileEditTool: ToolDefinition = {
   name: 'file_edit',
   // Discovery hint for tool_search: synonyms a model might phrase the intent with
-  // that are not in the formal name/description (parity: Claude's Tool.searchHint
+  // that are not in the formal name/description (parity: the reference's Tool.searchHint
   // 'modify file contents in place'). Consumed by tool-search.ts scoring.
   searchHint: 'modify file contents in place create overwrite write edit replace rewrite patch',
   description: buildFileEditDescription(),
@@ -1158,7 +1158,7 @@ export const fileEditTool: ToolDefinition = {
     },
     required: ['file_path'],
   },
-  // Structured result contract (parity: Claude Code's FileEditTool `outputSchema`).
+  // Structured result contract (parity: the reference's FileEditTool `outputSchema`).
   // Describes the keys {@link buildEditMetadata} attaches to a successful edit's
   // {@link ToolResult.metadata}, so a resumed/persisted result can be validated and
   // a frontend can read the edit's shape without re-parsing the text output.
@@ -1185,7 +1185,7 @@ export const fileEditTool: ToolDefinition = {
     },
   },
   isReadOnly: false,
-  // Data-minimization projection for the auto-mode safety classifier (parity: Claude's
+  // Data-minimization projection for the auto-mode safety classifier (parity: the reference's
   // per-tool `Tool.toAutoClassifierInput`). The security-relevant signal of an edit is
   // WHICH file is being written and in what mode — NOT the (potentially large / secret)
   // content. Expose only the path + write-vs-replace + any octal mode bits; never ship
@@ -1227,11 +1227,11 @@ export const fileEditTool: ToolDefinition = {
     // Glob patterns are never valid as a write/edit target — the tool uses the
     // path literally, so a `*`/`?` wildcard can only be a model mistake that would
     // either create a literally-named file or silently miss the intended one.
-    // Reject with an actionable, self-correcting message (parity with Claude
+    // Reject with an actionable, self-correcting message (parity with the reference
     // Code's write-path glob guard). Only the unambiguous wildcards `*`/`?` are
     // flagged so legitimate bracket/brace filenames (e.g. Next.js `[id].tsx`,
     // `{a,b}.ts`) stay editable — an intentional superset divergence from
-    // Claude's broader `[*?[]{}]` set to avoid breaking real filenames.
+    // the reference's broader `[*?[]{}]` set to avoid breaking real filenames.
     if (/[*?]/.test(filePath)) {
       return {
         output: `Error: Glob patterns are not allowed in write operations. Please specify an exact file path (got "${filePath}").`,
@@ -1243,7 +1243,7 @@ export const fileEditTool: ToolDefinition = {
     // tool writes to the SAME canonical path the permission layer checks (which
     // also expands `~`). Otherwise `~/notes.txt` would resolve to a literal `~`
     // directory under cwd while the permission allowlist was evaluated against
-    // <home>/notes.txt — a bypass. Parity: Claude Code's expandPath-before-write.
+    // <home>/notes.txt — a bypass. Parity: the reference's expandPath-before-write.
     if (filePath === '~' || filePath.startsWith('~/') || filePath.startsWith('~\\')) {
       filePath = path.join(os.homedir(), filePath.slice(1));
     }
@@ -1268,7 +1268,7 @@ export const fileEditTool: ToolDefinition = {
     // Symlink guard: block writes to symlinks to prevent redirect attacks. When the
     // block fired on a symlink, disclose WHERE it redirects (resolved target +
     // inside/outside-workspace) so the blocked boundary crossing is visible to the
-    // user (parity: Claude Code's symlink-target surfacing, adapted to AMI's
+    // user (parity: the reference's symlink-target surfacing, adapted to AMI's
     // stronger block-all-symlinks posture). A non-symlink failure gets no suffix.
     const writePathCheck = validateFileWritePath(resolved);
     if (!writePathCheck.valid) {
@@ -1361,7 +1361,7 @@ export const fileEditTool: ToolDefinition = {
         // helper (the same one file_read uses) instead of a crude 3-char-prefix
         // substring scan. suggestSimilarPaths ranks a same-basename/different-
         // extension sibling (e.g. `config.ts` requested, `config.toml` present) and a
-        // case-only mismatch ahead of plain typos — parity with Claude Code's
+        // case-only mismatch ahead of plain typos — parity with the reference's
         // findSimilarFile (same base name, different extension) — and never over-
         // matches on a shared 3-letter prefix.
         const similar = suggestSimilarPaths(resolved, path.dirname(resolved), 5);
@@ -1422,7 +1422,7 @@ export const fileEditTool: ToolDefinition = {
     // Large-needle short-circuit: an old_string longer than the ENTIRE file can
     // never match, so skip the full-file scan + the O(needle) overlap-buffer
     // allocation fuzzyFindAndReplace would make for a pathologically large needle
-    // (parity: Claude's CHUNK_SIZE large-old_string fast path, which diffs inputs
+    // (parity: the reference's CHUNK_SIZE large-old_string fast path, which diffs inputs
     // instead of scanning). Emit a precise diagnostic instead of the generic
     // "not found" so the model learns the needle is oversized, not merely absent.
     if (normalizedOld.length > content.length) {
@@ -1455,7 +1455,7 @@ export const fileEditTool: ToolDefinition = {
             hints.map(h => `  Line ${h.lineNumber}: ${h.line}`).join('\n');
         }
         // When a close match exists, show a bounded context WINDOW around it with
-        // true 1-based line numbers and omission markers (parity: Claude Code's
+        // true 1-based line numbers and omission markers (parity: the reference's
         // scanForContext/sliceContext, which show the match's surroundings re-based
         // to its real file position with a truncation signal) — far more useful on
         // a large file than always dumping the first 30 lines from the top. With no
@@ -1542,7 +1542,7 @@ export const fileEditTool: ToolDefinition = {
 
     // Diff-cost cap: skip the O(file) unified + structured diff and the per-line
     // count past the cap, uniformly with the overwrite, replace_all and multi-edit
-    // paths (parity: Claude's MAX_SCAN_BYTES diff fallback).
+    // paths (parity: the reference's MAX_SCAN_BYTES diff fallback).
     if (exceedsDiffScanCap(content, normalizeToLf(newContent))) {
       return {
         output: `[edit: ${path.basename(resolved)}]\nSuccessfully edited ${resolved}${strategyNote}\n\n(diff omitted: file exceeds the ${(EDIT_DIFF_SCAN_MAX_BYTES / (1024 * 1024)).toFixed(0)} MiB diff cap — showing summary only)`,
@@ -1557,7 +1557,7 @@ export const fileEditTool: ToolDefinition = {
     const { additions, removals } = countLinesChanged(content, normalizeToLf(newContent));
     // Surface the TRUE 1-based line where the edit landed (the first hunk's
     // oldStart), so the model/UI can locate the change in the file without
-    // re-reading it — parity with Claude Code's readEditContext, which reports the
+    // re-reading it — parity with the reference's readEditContext, which reports the
     // edit in its surrounding context at its real line number (lineOffset). The
     // structured patch is computed once and reused for both the location tag and
     // the `structuredPatch` field.

@@ -205,7 +205,7 @@ function commandWritesViaFlags(base: string, tokens: string[]): boolean {
       return args.some((a) => a === '-o' || a === '--output' || a.startsWith('--output='));
     case 'tree':
       // `tree -o <file>` / `--output <file>` writes the listing to a file. All
-      // other tree flags are display/filter options (mirrors Claude's tree
+      // other tree flags are display/filter options (mirrors the reference's tree
       // safeFlags, which deliberately omit -o). `-o` must disqualify caching so
       // the written file does not go uninvalidated.
       return args.some((a) => a === '-o' || a === '--output' || a.startsWith('--output='));

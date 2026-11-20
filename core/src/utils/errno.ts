@@ -7,7 +7,7 @@
  * single code (almost always only `'ENOENT'`), so the set of codes that mean
  * "the path could not be reached" was never defined in ONE place and sites
  * disagreed (most missed `ENOTDIR`/`ELOOP`/`EACCES`). This module is that single
- * place — parity with Claude Code's `src/utils/errors.ts`
+ * place — parity with the reference's `src/utils/errors.ts`
  * (`getErrnoCode`/`getErrnoPath`/`isENOENT`/`isFsInaccessible`). Every fs catch
  * block classifies errors through these helpers instead of an ad-hoc cast.
  */
@@ -51,7 +51,7 @@ export function getErrnoCode(err: unknown): string | undefined {
  * when none is present. Lets an error message name the OFFENDING path even when
  * it differs from the one the caller passed (a parent component of a deep path,
  * a symlink target, …). Replaces the ad-hoc `(err as NodeJS.ErrnoException).path`
- * cast (parity: Claude Code's getErrnoPath).
+ * cast (parity: the reference's getErrnoPath).
  */
 export function getErrnoPath(err: unknown): string | undefined {
   if (err && typeof err === 'object' && 'path' in err) {
@@ -74,7 +74,7 @@ export function isENOENT(err: unknown): boolean {
  * unreachable — i.e. its errno is one of {@link FS_INACCESSIBLE_CODES}. Use in a
  * catch block after an fs operation to distinguish an expected "nothing there /
  * no access" from an unexpected error (EIO, EBUSY, …) that should surface
- * differently (parity: Claude Code's isFsInaccessible).
+ * differently (parity: the reference's isFsInaccessible).
  */
 export function isFsInaccessible(err: unknown): err is NodeJS.ErrnoException {
   const code = getErrnoCode(err);

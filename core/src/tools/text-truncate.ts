@@ -18,7 +18,7 @@ export function graphemes(s: string): string[] {
 }
 
 /**
- * PARITY (Claude Code `utils/truncate.ts` `truncate(str, maxWidth, singleLine)`,
+ * PARITY (the reference `utils/truncate.ts` `truncate(str, maxWidth, singleLine)`,
  * used by the BackgroundTask activity line with `activityLimit ?? 40`): bound a
  * task's activity/command string to a single line of at most `maxWidth` grapheme
  * clusters, appending a single-character ellipsis (`…`) when anything is cut.

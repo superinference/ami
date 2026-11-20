@@ -1,7 +1,7 @@
 // ===========================================================================
 // fault-injection.ts — runtime fault-injection seam for the LIVE recovery path
 //
-// Parity: Claude Code's bridge/bridgeDebug.ts wrapApiForFaultInjection. Claude
+// Parity: the reference's bridge/bridgeDebug.ts wrapApiForFaultInjection. the reference
 // wraps the real BridgeApiClient so a queued one-shot fault is thrown on the
 // next matching call and then delegates through, letting an operator drive the
 // LIVE recovery machinery (retry/backoff/teardown) — not a mock — and watch it
@@ -21,7 +21,7 @@
 // retryable:true → the provider retry loop backs off and retries). The two are
 // distinguished exactly the way a real wire error is: by the HTTP status the
 // thrown error carries (RETRYABLE_STATUS_CODES), so the REAL classifier decides
-// — matching Claude's fatal-vs-transient split.
+// — matching the reference's fatal-vs-transient split.
 //
 // Driven entirely by the AMI_FAULT_INJECTION env var (a test/debug knob,
 // modelled on AMI_MOCK_RATE_LIMIT): zero extra overhead when unset — a single

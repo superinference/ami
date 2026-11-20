@@ -20,7 +20,7 @@ export const DEFAULT_MCP_TOOL_TIMEOUT_MS = 300_000;
  *  the default.
  *
  *  Precedence: AMI's own `SUPERINFERENCE_MCP_TOOL_TIMEOUT_MS` wins (kept as the
- *  canonical knob), then Claude Code's standard `MCP_TOOL_TIMEOUT` env var is
+ *  canonical knob), then the reference's standard `MCP_TOOL_TIMEOUT` env var is
  *  honored for parity (managedEnvConstants.ts:L161 — both are milliseconds), so
  *  a user who sets the industry-standard variable gets the expected behavior
  *  without having to learn an AMI-specific name. */
@@ -37,7 +37,7 @@ export function getMcpToolTimeout(): number {
 export const MAX_MCP_TOOL_NAME_LEN = 128;
 
 /** Per-image token cost charged against the MCP output budget when deciding how
- *  many image blocks to keep from a tool result. Mirrors Claude Code's
+ *  many image blocks to keep from a tool result. Mirrors the reference's
  *  `IMAGE_TOKEN_ESTIMATE` (utils/mcpValidation.ts:L15 — 1600 tokens per image),
  *  so a result with many images cannot blow the configured output-token budget. */
 export const IMAGE_TOKEN_ESTIMATE = 1600;
@@ -46,18 +46,18 @@ export const IMAGE_TOKEN_ESTIMATE = 1600;
  *  (generic) token estimate of an MCP result is at or below this fraction of the
  *  budget, the result is assumed NOT to need truncation and the more accurate
  *  (and potentially expensive) second-stage count is skipped entirely. Mirrors
- *  Claude Code's `MCP_TOKEN_COUNT_THRESHOLD_FACTOR` (utils/mcpValidation.ts:L14 — 0.5). */
+ *  the reference's `MCP_TOKEN_COUNT_THRESHOLD_FACTOR` (utils/mcpValidation.ts:L14 — 0.5). */
 export const MCP_TOKEN_COUNT_THRESHOLD_FACTOR = 0.5;
 
 /** Rough, cheap token estimate of an MCP result's text, used as the first stage
- *  of the truncation gate. Mirrors Claude Code's `getContentSizeEstimate`
+ *  of the truncation gate. Mirrors the reference's `getContentSizeEstimate`
  *  (utils/mcpValidation.ts:L59 → `roughTokenCountEstimation`, ~4 chars/token). */
 export function getMcpContentSizeEstimate(text: string): number {
   return estimateTokens(text);
 }
 
 /** Decide whether an MCP tool result's text must be truncated to fit the
- *  model-visible output-token budget, using Claude Code's TWO-STAGE design
+ *  model-visible output-token budget, using the reference's TWO-STAGE design
  *  (utils/mcpValidation.ts:L151-L178 `mcpContentNeedsTruncation`):
  *
  *   1. CHEAP GATE — a rough generic estimate ({@link getMcpContentSizeEstimate}).
@@ -93,7 +93,7 @@ export function mcpContentNeedsTruncation(
 }
 
 /** Width of the inline MCP progress bar rendered from a server's
- *  `notifications/progress` percentage. Mirrors Claude Code's 20-wide ProgressBar
+ *  `notifications/progress` percentage. Mirrors the reference's 20-wide ProgressBar
  *  (tools/MCPTool/UI.tsx:L57-90). */
 export const MCP_PROGRESS_BAR_WIDTH = 20;
 
@@ -101,7 +101,7 @@ export const MCP_PROGRESS_BAR_WIDTH = 20;
  *  `notifications/progress` update, for streaming through `context.onProgress`
  *  (→ a `tool_use_progress` EngineEvent the TUI/detached runner both render).
  *
- *  Mirrors Claude Code's `renderToolUseProgressMessage` (tools/MCPTool/UI.tsx:L57-90):
+ *  Mirrors the reference's `renderToolUseProgressMessage` (tools/MCPTool/UI.tsx:L57-90):
  *  a determinate bar + rounded `N%` when the server reports a total, otherwise a
  *  `Processing…`/message line when only a count/message is known. The percentage is
  *  clamped to 0–100 so a misbehaving server can never render an over/underful bar. */
@@ -119,7 +119,7 @@ export function formatMcpProgressLine(p: { percent?: number; message?: string })
 /** Budget-aware compression of the raw base64 image blocks an MCP tool result
  *  carries, into first-class {@link ImageContent} blocks for the model turn.
  *
- *  Mirrors Claude Code's `truncateContentBlocks` image handling
+ *  Mirrors the reference's `truncateContentBlocks` image handling
  *  (utils/mcpValidation.ts:L113-L149): each kept image is charged
  *  {@link IMAGE_TOKEN_ESTIMATE} against the output-token budget (so a result with
  *  many images cannot overflow it — the overflowing tail is dropped), and every
@@ -174,12 +174,12 @@ function shortHash(s: string): string {
  *  name pattern `^[a-zA-Z0-9_-]{1,64}$` and stays faithful to the user's actual
  *  server/tool name (FUNCTIONAL FIX, parity: AMI previously collapsed hyphens to
  *  underscores, so a `my-server` config surfaced as `mcp__my_server__…`, which did
- *  not match the name the user configured; Claude Code's `normalizeNameForMCP`
+ *  not match the name the user configured; the reference's `normalizeNameForMCP`
  *  preserves hyphens). Runs of underscores are then collapsed and leading/trailing
  *  underscores stripped — explicitly so a segment can never introduce a spurious
  *  `__` that would collide with the delimiter used to separate `mcp`, the server,
  *  and the tool (which would corrupt prefix-based permission/auto-allow matching
- *  and the inverse parser). Mirrors Claude Code's `normalizeNameForMCP`
+ *  and the inverse parser). Mirrors the reference's `normalizeNameForMCP`
  *  (services/mcp/normalization.ts). */
 export function normalizeMcpNameSegment(name: string): string {
   return name
@@ -206,7 +206,7 @@ export function qualifiedMcpToolName(serverName: string, toolName: string): stri
  *  name (returns `null` for any non-MCP or malformed input), and rejoins every
  *  remaining part with `__` so a tool name that itself contains `__` survives.
  *  `toolName` is `undefined` for a bare `mcp__<server>` server-granularity
- *  prefix. Mirrors Claude Code's `mcpInfoFromString`
+ *  prefix. Mirrors the reference's `mcpInfoFromString`
  *  (services/mcp/mcpStringUtils.ts). */
 export function parseMcpToolName(
   name: string,
@@ -220,7 +220,7 @@ export function parseMcpToolName(
 
 /** Extract a human-readable error string from an MCP tool result flagged
  *  `isError: true`: the first text content part, else a legacy `.error` field,
- *  else a generic message. Mirrors Claude Code's isError extraction. */
+ *  else a generic message. Mirrors the reference's isError extraction. */
 export function extractMcpErrorText(result: unknown): string {
   if (result && typeof result === 'object' && !Array.isArray(result)) {
     const obj = result as Record<string, unknown>;
@@ -234,7 +234,7 @@ export function extractMcpErrorText(result: unknown): string {
 }
 
 /** Read the two MCP tool-discovery hints a server can attach under the tool's
- *  `_meta` block (Claude Code parity, services/mcp/client.ts:L1779-L1785):
+ *  `_meta` block (the reference parity, services/mcp/client.ts:L1779-L1785):
  *
  *   - `anthropic/searchHint` — a free-text discovery hint. Whitespace is collapsed
  *     to single spaces and trimmed; an empty result becomes `undefined` so the
@@ -257,7 +257,7 @@ export function readMcpToolMeta(
  *
  *  Prefers the server-supplied `annotations.title` (the human label the server
  *  intends, 2025-06-18 MCP spec) over the raw programmatic tool name, and renders
- *  it in Claude Code's `userFacingName` form — `<server> - <label> (MCP)`
+ *  it in the reference's `userFacingName` form — `<server> - <label> (MCP)`
  *  (services/mcp/client.ts:L1972-1976) — so the UI shows e.g.
  *  `github - Create Issue (MCP)` instead of the mangled `create_issue`. A blank/
  *  whitespace-only title is ignored (falls back to the tool name). */
@@ -312,7 +312,7 @@ export function createMcpTool(
         // only ever advertised once its manager exists, so reaching here means the
         // manager was dropped from the tool context — record it on the in-memory
         // error ring (retrievable via getInMemoryErrors for diagnostics) instead of
-        // failing silently. Unlike Claude Code's teammate-mode snapshot accessor,
+        // failing silently. Unlike the reference's teammate-mode snapshot accessor,
         // no lazy recovery/safe-default is viable here — without a manager the tool
         // genuinely cannot run — so we still return the hard error after logging.
         logError(
@@ -425,7 +425,7 @@ export function createMcpTool(
         // Image blocks from the result are now first-class multimodal content:
         // compressed to fit the provider's size/dimension limits and charged against
         // the output-token budget, then emitted via the shared file_images protocol so
-        // the engine queues them for the next model turn (parity with Claude Code's
+        // the engine queues them for the next model turn (parity with the reference's
         // truncateContentBlocks + image resource forwarding). This REPLACES the old
         // behavior of stuffing raw, unbounded base64 into unread `metadata.mcpImages`.
         const rawImages = processed?.metadata?.mcpImages as Array<{ mimeType: string; data: string }> | undefined;
@@ -482,7 +482,7 @@ export function extractMaxResultSizeChars(result: unknown): number | undefined {
 }
 
 /** Generate a compact, jq-friendly type signature for a value, e.g.
- *  `{title: string, items: [{id: number, name: string}]}`. Mirrors Claude Code's
+ *  `{title: string, items: [{id: number, name: string}]}`. Mirrors the reference's
  *  `inferCompactSchema` (services/mcp/client.ts:L2644-2660): descends at most
  *  `depth` levels (deeper objects collapse to `{...}`), samples the first element
  *  of an array, and caps an object at its first 10 keys (appending `, ...` when
@@ -521,7 +521,7 @@ const TEXT_RESOURCE_PATTERN = /^(text\/|application\/json|application\/xml)/;
  *  wrapper object (empty content array / _meta and all).
  *
  *  `serverName` (when given) labels every inlined resource block with its
- *  provenance — `[Resource from <server> at <uri>] …` — mirroring Claude Code's
+ *  provenance — `[Resource from <server> at <uri>] …` — mirroring the reference's
  *  `transformResultContent` (services/mcp/client.ts:L2526-2534) so the model can
  *  tell which MCP server/resource an inlined block came from. */
 export function processMcpContent(result: unknown, cwd?: string, serverName?: string): { text: string; metadata?: Record<string, unknown>; format?: string } | null {
@@ -535,7 +535,7 @@ export function processMcpContent(result: unknown, cwd?: string, serverName?: st
   // Priority 2: `structuredContent` object — emit the structured payload as JSON
   // so it survives instead of being dropped to a stringify of the whole wrapper.
   // The format carries a compact jq-friendly schema signature so a spilled result
-  // tells the model the shape to query (Claude parity: transformMCPResult attaches
+  // tells the model the shape to query (the reference parity: transformMCPResult attaches
   // inferCompactSchema() to structuredContent).
   if (obj.structuredContent && typeof obj.structuredContent === 'object') {
     const schema = inferCompactSchema(obj.structuredContent);
@@ -578,7 +578,7 @@ export function processMcpContent(result: unknown, cwd?: string, serverName?: st
         const mime = (resource.mimeType as string) || '';
         // Provenance prefix: every inlined MCP resource is labeled with the
         // originating server and resource URI so the model knows the content's
-        // source (Claude parity, services/mcp/client.ts:L2526-2534 — the same
+        // source (the reference parity, services/mcp/client.ts:L2526-2534 — the same
         // `[Resource from <server> at <uri>] ` prefix is applied to text, decoded
         // text-ish, and persisted-binary resource blocks). `serverName` is the
         // real server for live tool calls; pure-function callers that omit it get
@@ -600,7 +600,7 @@ export function processMcpContent(result: unknown, cwd?: string, serverName?: st
           // Binary resource — persist the raw bytes to the tool-results dir with a
           // mime-correct extension (so the Read tool can later open the PDF/xlsx/
           // image) and surface an actionable "saved to <path>" message instead of
-          // dropping the base64 into context. Mirrors Claude's persistBlobToTextBlock.
+          // dropping the base64 into context. Mirrors the reference's persistBlobToTextBlock.
           // Without a cwd (pure-function callers), fall back to a size placeholder.
           let bytes: Buffer | null = null;
           try { bytes = Buffer.from(resource.blob as string, 'base64'); } catch { bytes = null; }

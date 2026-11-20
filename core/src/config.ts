@@ -18,7 +18,7 @@ import { readNativeManagedPolicy } from './managed-policy-source';
  * One entry of the MCP allowlist ({@link ProjectConfig.allowedMcpServers}). A plain
  * string is a server NAME or upstream URL (with optional `*`-wildcards). A
  * provenance-scoped object trusts a server by the plugin that produced it rather
- * than its arbitrary local name (Claude-parity channelAllowlist): `{ pluginSource }`
+ * than its arbitrary local name (the reference-parity channelAllowlist): `{ pluginSource }`
  * matches {@link McpServerConfig.pluginSource}, and `{ marketplace, plugin }` matches
  * the `<plugin>@<marketplace>` provenance convention. Structurally a subset of the
  * manager's `McpPolicyEntry`, so it threads straight into `setAllowedServers`.
@@ -72,7 +72,7 @@ export interface ProjectConfig {
   /**
    * Global default cap (chars) on a tool result before it is spilled to a file,
    * shared by tools that have no bespoke cap (web_fetch, PDF extraction, etc.).
-   * Parity: Claude Code's single `DEFAULT_MAX_RESULT_SIZE_CHARS` in
+   * Parity: the reference's single `DEFAULT_MAX_RESULT_SIZE_CHARS` in
    * `toolResultStorage.ts` against which each tool's declared cap is clamped — one
    * tunable knob governs every un-specialised tool's spill threshold instead of the
    * previously hardcoded per-tool constants. Resolved (with the
@@ -86,7 +86,7 @@ export interface ProjectConfig {
   /** Safe mode: skip untrusted project-local hooks/MCP/memory/skills. */
   safeMode?: boolean;
   /**
-   * Persisted per-project FOLDER-TRUST grant (parity: Claude Code's
+   * Persisted per-project FOLDER-TRUST grant (parity: the reference's
    * `hasTrustDialogAccepted` project-config knob). When `true` the user has recorded
    * that THIS workspace is trusted, so project-tier hooks (`.ami/hooks.json`) — and,
    * in an interactive session, all hooks — are allowed to load instead of being
@@ -103,7 +103,7 @@ export interface ProjectConfig {
   hasTrustDialogAccepted?: boolean;
   /**
    * Allowlist of ABSOLUTE directory paths the user has recorded as trusted (parity:
-   * Claude Code's per-project trust records resolved by `computeTrustDialogAccepted` /
+   * the reference's per-project trust records resolved by `computeTrustDialogAccepted` /
    * `isPathTrusted`). Trust is INHERITED down the tree: a workspace is trusted when it
    * is — or is nested under — any listed path, so trusting a parent directory implies
    * trust of all its children. Normally persisted in the GLOBAL config (`~/.ami/
@@ -121,7 +121,7 @@ export interface ProjectConfig {
    * Retention window (days) for persisted session transcripts. On startup, sessions
    * whose last on-disk activity is older than this are deleted
    * ({@link SessionManager.cleanupOldSessions}). A missing/0/non-positive value DISABLES
-   * cleanup (keep everything). Parity: Claude Code's `cleanupPeriodDays`.
+   * cleanup (keep everything). Parity: the reference's `cleanupPeriodDays`.
    */
   cleanupPeriodDays?: number;
   /**
@@ -130,13 +130,13 @@ export interface ProjectConfig {
    * per-call `model` → agent-definition model → explore fast default). A model id or
    * family alias forces that default; the `inherit` sentinel keeps the parent's exact
    * model ("follow the leader"); omitted falls through to the provider-aware hardcoded
-   * fallback. Parity: Claude Code's `teammateDefaultModel` / getDefaultTeammateModel.
+   * fallback. Parity: the reference's `teammateDefaultModel` / getDefaultTeammateModel.
    */
   subagentDefaultModel?: string;
   /** Opt-in cap on how many of a forked skill's nested tool-use steps are surfaced
    *  live to the parent stream; the rest are summarized as "+K more tool use" in the
    *  skill result. A non-negative integer (0 = result-only). Omitted keeps AMI's full
-   *  live streaming. Parity: Claude Code's SkillTool MAX_PROGRESS_MESSAGES_TO_SHOW +
+   *  live streaming. Parity: the reference's SkillTool MAX_PROGRESS_MESSAGES_TO_SHOW +
    *  verbose flag (adapted to AMI's live-stream model). */
   maxSkillProgressMessages?: number;
   /** Defer long-tail tools from the per-turn catalog until tool_search loads them. */
@@ -150,7 +150,7 @@ export interface ProjectConfig {
    * are forbidden — a requested `--yolo` / `bypassPermissions` / `auto-allow` is
    * force-downgraded to the safe default and the Shift+Tab cycle skips them. A
    * {@link MANAGED_ONLY_KEYS} entry, so only a managed/enterprise config tier can
-   * set it; project/local/env/cli can never flip it. Parity: Claude Code's
+   * set it; project/local/env/cli can never flip it. Parity: the reference's
    * `permissions.disableBypassPermissionsMode === 'disable'`.
    */
   disableBypassPermissionsMode?: boolean;
@@ -159,18 +159,18 @@ export interface ProjectConfig {
    * every event (preToolUse/postToolUse/sessionStart/sessionEnd/subagentStart/…
    * including status-line and file-suggestion hooks). A {@link MANAGED_ONLY_KEYS}
    * entry — only a managed/enterprise config tier can set it; project/local/env/cli
-   * can never flip it. Parity: Claude Code's `disableAllHooks` policy setting.
+   * can never flip it. Parity: the reference's `disableAllHooks` policy setting.
    */
   disableAllHooks?: boolean;
   /**
    * Managed hook lockdown: when true, ONLY admin/managed-sourced hooks execute —
    * user, project, and plugin hooks are blocked (managed > non-managed privilege
    * boundary). A {@link MANAGED_ONLY_KEYS} entry — managed tier is the sole source.
-   * Parity: Claude Code's `allowManagedHooksOnly` policy setting.
+   * Parity: the reference's `allowManagedHooksOnly` policy setting.
    */
   allowManagedHooksOnly?: boolean;
   /**
-   * Managed plugin policy map (Claude parity: `enabledPlugins`). Keyed by plugin id
+   * Managed plugin policy map (the reference parity: `enabledPlugins`). Keyed by plugin id
    * (`name@marketplace` or a bare name for direct installs). A `false` value FORCE-
    * DISABLES that plugin at every scope and chokepoint — install, enable, and load —
    * independent of {@link allowManagedModsOnly}; a `true`/`string[]` value vouches for
@@ -178,10 +178,10 @@ export interface ProjectConfig {
    * enterprise config tier can set it; project/local/env/cli can never flip it.
    */
   enabledPlugins?: Record<string, boolean | string[]>;
-  /** Managed allow-only mode for plugins/mods (Claude parity: load only vouched mods). */
+  /** Managed allow-only mode for plugins/mods (the reference parity: load only vouched mods). */
   allowManagedModsOnly?: boolean;
   /**
-   * Per-surface plugin-only lock (Claude parity: `strictPluginOnlyCustomization`). `true`
+   * Per-surface plugin-only lock (the reference parity: `strictPluginOnlyCustomization`). `true`
    * locks ALL customization surfaces (`skills`/`agents`/`hooks`/`mcp`) to plugin+managed
    * sources; an array locks only the listed surfaces. A {@link MANAGED_ONLY_KEYS} entry —
    * only a managed/enterprise config tier can set it.
@@ -190,8 +190,8 @@ export interface ProjectConfig {
   /**
    * MCP allowlist: when non-empty, only these MCP servers may be connected. An entry
    * is a server NAME or upstream URL (string, `*`-wildcards allowed) OR a
-   * PROVENANCE-scoped entry (Claude-parity channelAllowlist): `{ pluginSource }` to
-   * approve every server a given plugin bundle produced, or the Claude-shaped
+   * PROVENANCE-scoped entry (the reference-parity channelAllowlist): `{ pluginSource }` to
+   * approve every server a given plugin bundle produced, or the reference-shaped
    * `{ marketplace, plugin }` which matches the `<plugin>@<marketplace>` provenance
    * tag. Provenance keying trusts "servers from this plugin" regardless of each
    * server's arbitrary local name. Enforced by {@link McpManager} via setAllowedServers.
@@ -203,7 +203,7 @@ export interface ProjectConfig {
    * over {@link allowedMcpServers} — a server on both lists is denied. Default-open:
    * an empty/absent list blocks nothing. A managed-tier value is authoritative (a
    * project/local config can only ADD denies via array accumulation, never remove a
-   * managed deny). Parity: Claude Code's enterprise `deniedMcpServers` setting.
+   * managed deny). Parity: the reference's enterprise `deniedMcpServers` setting.
    */
   deniedMcpServers?: string[];
   /**
@@ -211,20 +211,20 @@ export interface ProjectConfig {
    * WITHOUT removing their config, so a server can be turned off and back on again.
    * Distinct from {@link deniedMcpServers} (an admin/enterprise policy): this is a
    * user convenience toggle. A name also present in {@link enabledMcpServers} is
-   * re-enabled (the enable list wins per-name). Parity: Claude Code's
+   * re-enabled (the enable list wins per-name). Parity: the reference's
    * `disabledMcpServers`.
    */
   disabledMcpServers?: string[];
   /**
    * User-level per-server ENABLE override: re-enables a server that
    * {@link disabledMcpServers} turned off (matched by name, case-insensitive).
-   * Parity: Claude Code's `enabledMcpServers`.
+   * Parity: the reference's `enabledMcpServers`.
    */
   enabledMcpServers?: string[];
   /** Managed MCP server definitions pushed by enterprise policy. */
   managedMcpServers?: Record<string, unknown>;
   /**
-   * Managed exclusive-control switch (parity: Claude Code's
+   * Managed exclusive-control switch (parity: the reference's
    * `allowManagedMcpServersOnly`): when true, ONLY admin-provisioned
    * ({@link managedMcpServers}, enterprise scope) MCP servers may run — every
    * user/project/local/dynamic server is blocked at load. A {@link MANAGED_ONLY_KEYS}
@@ -235,11 +235,11 @@ export interface ProjectConfig {
    * SL1: custom status line. Either a bare shell command string whose stdout is
    * rendered as the status line, OR the Claude-Code-compatible object form
    * {@link StatusLineConfig} `{ command, padding }` — so a settings file ported from
-   * Claude Code (`statusLine: { command, padding }`) parses unchanged instead of being
+   * the reference (`statusLine: { command, padding }`) parses unchanged instead of being
    * rejected as "must be a string". The object form's `padding` takes precedence over
    * the `SUPERINFERENCE_STATUSLINE_PADDING` env knob. Normalize both shapes with
    * {@link normalizeStatusLine}; the command auto-run trust gate still applies.
-   * Parity: Claude Code's `settings.statusLine` object `{ type, command, padding }`.
+   * Parity: the reference's `settings.statusLine` object `{ type, command, padding }`.
    */
   statusLine?: string | StatusLineConfig;
   /** Bash commands exempted from the container sandbox (audit #4: settable + consumed,
@@ -249,7 +249,7 @@ export interface ProjectConfig {
    * Managed sandbox-egress lockdown: when true, the container sandbox permits ONLY
    * managed/approved network domains — a project/local tier cannot widen egress. A
    * {@link MANAGED_ONLY_KEYS} entry (managed tier is the sole source); authoritative
-   * in {@link mergeConfigs}. Parity: Claude Code's `shouldAllowManagedSandboxDomainsOnly`.
+   * in {@link mergeConfigs}. Parity: the reference's `shouldAllowManagedSandboxDomainsOnly`.
    */
   allowManagedSandboxDomainsOnly?: boolean;
   /**
@@ -270,13 +270,13 @@ export interface ProjectConfig {
    * runner (reference-journal `runStartupMigrations` / `CURRENT_MIGRATION_VERSION`): the
    * ordered one-time migration batch runs only while this stored value lags the current
    * generation, then stamps it, so bumping the code constant re-runs the whole set once.
-   * Parity: Claude Code's persisted `migrationVersion`.
+   * Parity: the reference's persisted `migrationVersion`.
    */
   migrationVersion?: number;
   /** Override the composer-hint surface: inject custom hints / drop the built-ins. */
   composerHintsOverride?: { hints?: Array<{ key: string; label: string; learnedAfter: number }>; excludeDefault?: boolean };
   /**
-   * Worktree behavior knobs (parity: Claude Code's `settings.worktree`).
+   * Worktree behavior knobs (parity: the reference's `settings.worktree`).
    * `symlinkDirectories` is an opt-in list of directories to symlink from the
    * source checkout into a freshly-created worktree (avoids disk bloat for large,
    * reproducible dirs like `node_modules`, `vendor`, `.venv`). When this key is
@@ -289,14 +289,14 @@ export interface ProjectConfig {
    * worktree creation for huge monorepos). When ABSENT or empty, the full tree is
    * checked out as usual.
    * `tmux` (default false) opts a freshly-created worktree into a detached tmux
-   * session rooted at the worktree (parity: Claude Code's `--tmux` worktree mode):
+   * session rooted at the worktree (parity: the reference's `--tmux` worktree mode):
    * enter_worktree spawns the session and surfaces the `tmux attach -t <name>`
    * command, and exit_worktree tears it down on remove / reminds how to reattach on
    * keep. When ABSENT or false, no tmux session is created.
    */
   worktree?: { symlinkDirectories?: string[]; sparsePaths?: string[]; tmux?: boolean };
   /**
-   * Persistent `web_fetch` domain policy (parity: Claude Code's preapproved /
+   * Persistent `web_fetch` domain policy (parity: the reference's preapproved /
    * trusted-docs domain list persisted as a saved setting, as opposed to the
    * per-REQUEST `allowed_domains` / `blocked_domains` tool params). A saved policy
    * lets an operator pin a durable allow/deny-list once instead of repeating it on
@@ -315,7 +315,7 @@ export interface ProjectConfig {
    */
   webFetch?: { allowedDomains?: string[]; blockedDomains?: string[] };
   /**
-   * Commit / PR attribution override (parity: Claude Code's `attribution.commit` /
+   * Commit / PR attribution override (parity: the reference's `attribution.commit` /
    * `attribution.pr` settings). When `commit` is a non-empty string it REPLACES the
    * default `Co-Authored-By: AMI …` trailer the git_commit tool appends; when it is
    * the empty string `""` the trailer is suppressed entirely (same effect as the
@@ -324,7 +324,7 @@ export interface ProjectConfig {
    * attribution. Consumed by {@link resolveCommitAttribution} in
    * core/core/src/tools/git-commit.ts.
    *
-   * `auto` opts into repo-class-aware attribution (parity: Claude Code's
+   * `auto` opts into repo-class-aware attribution (parity: the reference's
    * undercover auto-default): when `true` and no explicit `commit` override is
    * set, the default AMI trailer is appended ONLY when the repo's `origin` remote
    * is positively classified as owned (matches one of `ownRemotes`); on an
@@ -332,18 +332,18 @@ export interface ProjectConfig {
    * strict side wins unless ownership is confirmed). `ownRemotes` holds normalized
    * remote substrings (e.g. `"github.com/myorg/"`) that mark a repo as owned.
    *
-   * `enabled` is the settings-driven MASTER disable toggle (parity: Claude Code's
+   * `enabled` is the settings-driven MASTER disable toggle (parity: the reference's
    * deprecated `includeCoAuthoredBy: false`, which zeroed both the commit and PR
    * attribution texts): setting `enabled: false` suppresses BOTH the commit trailer
    * AND the PR-body attribution line via settings.json alone — no env var required.
    * An explicit per-surface `commit`/`pr` string override still wins over it (the
-   * most-specific setting takes precedence, matching Claude Code where the
+   * most-specific setting takes precedence, matching the reference where the
    * `attribution` object overrides the deprecated boolean). `enabled: true` (or
    * absent) leaves normal resolution unchanged — it is not a force-on override.
    */
   attribution?: { commit?: string; pr?: string; auto?: boolean; ownRemotes?: string[]; enabled?: boolean };
   /**
-   * Persisted preferred RESPONSE language (parity: Claude Code's `LanguagePicker`
+   * Persisted preferred RESPONSE language (parity: the reference's `LanguagePicker`
    * settings knob). The English language NAME ("japanese", "french", …) the model
    * must answer in, regardless of the language the user writes in. Previously AMI
    * honored a response-language directive ONLY via the ephemeral
@@ -356,7 +356,7 @@ export interface ProjectConfig {
    */
   language?: string;
   /**
-   * Persisted per-skill usage statistics keyed by skill name (parity: Claude Code's
+   * Persisted per-skill usage statistics keyed by skill name (parity: the reference's
    * global-config `skillUsage`). Each entry is a {@link SkillUsageStat}
    * (`{ usageCount, lastUsedAt }`), written to the GLOBAL config on each skill
    * invocation via {@link persistSkillUsageStat} and read back at session start so a
@@ -366,7 +366,7 @@ export interface ProjectConfig {
   skillUsage?: Record<string, SkillUsageStat>;
   /**
    * Persisted one-time preference / dialog "already shown" flags, keyed by a stable
-   * preference name (parity: Claude Code's GlobalConfig one-shot knobs such as
+   * preference name (parity: the reference's GlobalConfig one-shot knobs such as
    * `hasIdeAutoConnectDialogBeenShown` / `hasUsedBackgroundTask` / the bypass-permissions
    * acknowledgment). Each entry records that a one-time prompt/notice was surfaced so it
    * is never re-shown. Written to the GLOBAL config via {@link markPreferenceShown} and
@@ -376,7 +376,7 @@ export interface ProjectConfig {
   preferencesShown?: Record<string, boolean>;
   /**
    * Persisted seen-COUNTS for count-limited notices, keyed by a stable notice name
-   * (parity: Claude Code's "show at most MAX_SHOW_COUNT times" persisted seen-count
+   * (parity: the reference's "show at most MAX_SHOW_COUNT times" persisted seen-count
    * knob). A notice is shown while its count is below its cap; {@link recordNoticeSeen}
    * increments the count (capped) via the lock-safe updater and {@link shouldShowNotice}
    * gates on it. Internal, non-user-facing state (global config only).
@@ -384,32 +384,32 @@ export interface ProjectConfig {
   noticeSeenCounts?: Record<string, number>;
   /**
    * Durable rollup of the PREVIOUS session's aggregated metric counters, persisted to the
-   * PROJECT config on process exit (parity: Claude Code's StatsProvider `process.on('exit')`
+   * PROJECT config on process exit (parity: the reference's StatsProvider `process.on('exit')`
    * flush of `store.getAll()` into `lastSessionMetrics` via `saveCurrentProjectConfig`). It
    * is a plain `name -> count` snapshot carried forward so the next launch can read the prior
    * session's rollup without re-aggregating the analytics log. Written via
-   * {@link saveLastSessionMetrics} (which no-ops on an empty snapshot, matching Claude's
+   * {@link saveLastSessionMetrics} (which no-ops on an empty snapshot, matching the reference's
    * `Object.keys(metrics).length > 0` guard) and read via {@link readLastSessionMetrics};
    * internal, non-user-facing state (project config only, like {@link skillUsage}).
    */
   lastSessionMetrics?: Record<string, number>;
   /**
    * How many times the per-project onboarding affordance has been surfaced, used for
-   * hint-fatigue capping (parity: Claude Code's `projectOnboardingSeenCount`). Once it
+   * hint-fatigue capping (parity: the reference's `projectOnboardingSeenCount`). Once it
    * reaches {@link PROJECT_ONBOARDING_SEEN_CAP} the nudge stops showing. Incremented via
    * {@link incrementProjectOnboardingSeenCount} and consulted by
    * {@link shouldShowProjectOnboarding}; internal per-project state (project config only).
    */
   projectOnboardingSeenCount?: number;
   /**
-   * True once the user has completed the per-project onboarding (parity: Claude Code's
+   * True once the user has completed the per-project onboarding (parity: the reference's
    * `hasCompletedProjectOnboarding`). A set flag permanently suppresses the onboarding
    * nudge regardless of the seen-count. Set via {@link maybeMarkProjectOnboardingComplete}
    * and consulted by {@link shouldShowProjectOnboarding}; internal per-project state.
    */
   hasCompletedProjectOnboarding?: boolean;
   /**
-   * Preferred terminal-emulator name for deep-link launches (parity: Claude Code's GLOBAL
+   * Preferred terminal-emulator name for deep-link launches (parity: the reference's GLOBAL
    * `deepLinkTerminal`). It is the only preference that survives into a headless
    * LaunchServices / browser-link context where `TERM_PROGRAM` is unset, so it is persisted
    * to the GLOBAL config via {@link saveDeepLinkTerminal} and read via
@@ -418,7 +418,7 @@ export interface ProjectConfig {
   deepLinkTerminal?: string;
   /**
    * Override (ms) for the slow-operation deferral delay used by interactivity-aware
-   * background scheduling (default {@link BACKGROUND_SLOW_OP_DELAY_MS}); parity: Claude
+   * background scheduling (default {@link BACKGROUND_SLOW_OP_DELAY_MS}); parity: the reference
    * Code's `DELAY_VERY_SLOW_OPERATIONS_THAT_HAPPEN_EVERY_SESSION`. Read via
    * {@link resolveBackgroundSlowOpDelayMs}; a cross-layer tunable knob.
    */
@@ -426,14 +426,14 @@ export interface ProjectConfig {
   /**
    * Override (ms) for the "user recently interacted" recency window that defers heavy
    * background work so it never competes with an actively typing user (default
-   * {@link BACKGROUND_INTERACTION_RECENCY_MS}); parity: Claude Code's 1-minute
+   * {@link BACKGROUND_INTERACTION_RECENCY_MS}); parity: the reference's 1-minute
    * `getLastInteractionTime() > Date.now() - 1000*60` guard. Read via
    * {@link resolveBackgroundInteractionRecencyMs}; a cross-layer tunable knob.
    */
   backgroundInteractionRecencyMs?: number;
   /**
    * Persistent registry of known LOCAL clone paths for a GitHub repository, keyed by
-   * the lowercased `owner/repo` (parity: Claude Code's global-config `githubRepoPaths`).
+   * the lowercased `owner/repo` (parity: the reference's global-config `githubRepoPaths`).
    * Each value is a most-recently-used list of absolute, symlink-resolved, NFC-normalized
    * clone roots — the clone a repo was most recently used from is kept first. Written via
    * {@link updateGithubRepoPathMapping}/{@link removePathFromRepo} and read via
@@ -445,7 +445,7 @@ export interface ProjectConfig {
   /**
    * Glob/path patterns for instruction (CLAUDE.md / AGENTS.md / SUPERINFERENCE.md /
    * `*.local.md`) files to EXCLUDE from the auto-loaded memory context (parity:
-   * Claude Code's `claudeMdExcludes` setting / `isClaudeMdExcluded`). A user can opt
+   * the reference's `claudeMdExcludes` setting / `isClaudeMdExcluded`). A user can opt
    * specific instruction files out of loading — e.g. a vendored
    * `"**\/node_modules/**\/CLAUDE.md"` or an oversized legacy `"docs/OLD.md"` — without
    * deleting them. Previously AMI only honored excludes from the ephemeral
@@ -460,7 +460,7 @@ export interface ProjectConfig {
   /**
    * Persisted, explicit user CONSENT to let instruction (CLAUDE.md / AGENTS.md /
    * SUPERINFERENCE.md) `@path` imports resolve files OUTSIDE the launch workspace
-   * (parity: Claude Code's `hasClaudeMdExternalIncludesApproved`,
+   * (parity: the reference's `hasClaudeMdExternalIncludesApproved`,
    * components/ClaudeMdExternalIncludesDialog.tsx). AMI's default posture is a hard
    * block — an `@~/shared.md` / `@../sibling/standards.md` is replaced with a visible
    * "import blocked — outside workspace" marker so a crafted memory file can never
@@ -496,7 +496,7 @@ export interface ProjectConfig {
   // Declaring them here (with their runtime base type in {@link PROJECT_CONFIG_FIELD_TYPES})
   // makes them recognized keys (no spurious unknown-key typo warning), value-validated,
   // and — paired with their new entries in {@link mergeConfigs} — actually honored from
-  // the config files. Parity: Claude Code's settings-schema keys that flow through the
+  // the config files. Parity: the reference's settings-schema keys that flow through the
   // settings cascade into the running session.
   // -------------------------------------------------------------------------
   /** Opt out of the architect/advisor model slot (parity: engine-factory `architectEnabled:false`). */
@@ -509,22 +509,22 @@ export interface ProjectConfig {
   teammateExecutionMode?: string;
   /** Opt in to the unattended-retry loop for a detached/autonomous run. */
   unattendedRetry?: boolean;
-  /** Toggle file checkpointing/mutation snapshots (parity: Claude's fileCheckpointingEnabled). */
+  /** Toggle file checkpointing/mutation snapshots (parity: the reference's fileCheckpointingEnabled). */
   fileCheckpointingEnabled?: boolean;
   /** Capture a V8 heap snapshot the first time process RSS crosses the memory-warning
-   *  high-water mark, instead of only logging (parity: Claude's heapDumpService auto-1.5GB). */
+   *  high-water mark, instead of only logging (parity: the reference's heapDumpService auto-1.5GB). */
   heapDumpOnMemoryWarning?: boolean;
   /**
    * Asymmetric positive-only cache of machine-local capability detections keyed by
    * name (e.g. `dockerAvailable`). Only `true` values are ever persisted — a
    * negative is never written, so a config shared across machines can't be poisoned
-   * by a machine that lacks the capability (parity: Claude Code's
+   * by a machine that lacks the capability (parity: the reference's
    * `cachedChromeExtensionInstalled`). Written/read via reference-journal's
    * `persistPositiveCapability` / `readCachedCapability`.
    */
   cachedCapabilities?: Record<string, boolean>;
   /**
-   * Named capability feature-flags keyed by feature name (parity: Claude Code's
+   * Named capability feature-flags keyed by feature name (parity: the reference's
    * `features` map / `feature()`): a `false` value disables a named feature, `true`
    * force-enables it, overriding the per-feature default. Env flags
    * (`SUPERINFERENCE_FEATURE_<NAME>` / `CLAUDE_CODE_FEATURE_<NAME>`) still win.
@@ -550,12 +550,12 @@ export interface ProjectConfig {
   outputStyle?: string;
   /**
    * Include the git guidance + dynamic git-context block in the system prompt
-   * (parity: Claude Code's `includeGitInstructions`). Defaults ON when unset; the
+   * (parity: the reference's `includeGitInstructions`). Defaults ON when unset; the
    * `SUPERINFERENCE_DISABLE_GIT_INSTRUCTIONS` env var overrides this knob.
    */
   includeGitInstructions?: boolean;
   /**
-   * Suppress proactive plugin-installation hints (parity: Claude Code's
+   * Suppress proactive plugin-installation hints (parity: the reference's
    * `disableHintRecommendations` preference). When `true`, the `/plugin recommend`
    * flow withholds the prompt. Toggled via `/plugin hints on|off`.
    */
@@ -564,7 +564,7 @@ export interface ProjectConfig {
    * Path to an additional CA-certificate bundle (PEM) applied to
    * `NODE_EXTRA_CA_CERTS` at startup — BEFORE any TLS connection — so Node picks up
    * a corporate-proxy / TLS-inspecting CA without the user having to export the env
-   * var before every launch (parity: Claude Code's
+   * var before every launch (parity: the reference's
    * `caCertsConfig.applyExtraCACertsFromConfig`). An explicit `NODE_EXTRA_CA_CERTS`
    * already in the environment WINS (one-shot override); otherwise this value seeds
    * it. The referenced bundle must be an existing, readable regular file — a
@@ -574,7 +574,7 @@ export interface ProjectConfig {
   extraCaCerts?: string;
   /**
    * Extra filesystem directories granted to the tool-access workspace from the
-   * first turn (parity: Claude Code's `permissions.additionalDirectories`). Unioned
+   * first turn (parity: the reference's `permissions.additionalDirectories`). Unioned
    * with the remembered `/add-dir` store into the PermissionManager allowed read
    * roots at engine setup. Relative entries resolve against the project root.
    * Patterns ACCUMULATE across config layers (a higher layer adds more dirs, never
@@ -583,35 +583,35 @@ export interface ProjectConfig {
   additionalDirectories?: string[];
   /**
    * When `true`, file globbing honors the project's `.gitignore` (nested +
-   * `.git/info/exclude`); when `false` it ignores it (parity: Claude Code's
+   * `.git/info/exclude`); when `false` it ignores it (parity: the reference's
    * `respectGitignore` file-picker toggle). Bridged to the existing
    * `AMI_GLOB_NO_IGNORE` env knob by {@link applyConfigGitignore}; an explicit env
    * value WINS. Unset keeps AMI's default (glob does NOT filter through gitignore).
    */
   respectGitignore?: boolean;
   /**
-   * When `false`, automatic context compaction is disabled (parity: Claude Code's
+   * When `false`, automatic context compaction is disabled (parity: the reference's
    * persisted `autoCompactEnabled` toggle). Bridged to the existing
    * `SUPERINFERENCE_DISABLE_AUTO_COMPACT` env knob by {@link applyConfigAutoCompact};
    * an explicit env value WINS. Unset/`true` keeps auto-compaction on (the default).
    */
   autoCompactEnabled?: boolean;
   /**
-   * Custom directory for plan-mode `.md` files (parity: Claude Code's
+   * Custom directory for plan-mode `.md` files (parity: the reference's
    * `plansDirectory`). Resolved RELATIVE to the project root and validated to stay
    * within it by the plan-mode tool. Bridged to the existing `AMI_PLANS_DIR` env
    * knob by {@link applyConfigPlansDirectory}; an explicit env value WINS.
    */
   plansDirectory?: string;
   /**
-   * Opt into the Anthropic `fast-mode` beta (parity: Claude Code's `fast-mode`
+   * Opt into the Anthropic `fast-mode` beta (parity: the reference's `fast-mode`
    * beta knob, token `fast-mode-2026-02-01`). When `true` the token is appended to
    * the `anthropic-beta` header via the `ANTHROPIC_BETAS` escape hatch (consumed by
    * `getExtraAnthropicBetas`). Applied by {@link applyConfigAnthropicBetas}.
    */
   fastMode?: boolean;
   /**
-   * Opt into the Anthropic `redact-thinking` beta (parity: Claude Code's
+   * Opt into the Anthropic `redact-thinking` beta (parity: the reference's
    * `redact-thinking` request beta / `showThinkingSummaries`, token
    * `redact-thinking-2026-02-12`). When `true` the token is appended to the
    * `anthropic-beta` header via the `ANTHROPIC_BETAS` escape hatch. Applied by
@@ -629,11 +629,11 @@ export interface ProjectConfig {
   // in {@link PROJECT_CONFIG_FIELD_TYPES} and their copy in {@link mergeConfigs}) makes
   // them recognized (no spurious unknown-key warning), value-validated, and actually
   // honored from the config files — the same fix the w78 cluster applied. Same class of
-  // bug, newly-found keys. Parity: Claude Code's settings-schema keys flowing through
+  // bug, newly-found keys. Parity: the reference's settings-schema keys flowing through
   // the settings cascade into the running session.
   // -------------------------------------------------------------------------
   /**
-   * Gate the eager background session-memory extraction pass (parity: Claude Code's
+   * Gate the eager background session-memory extraction pass (parity: the reference's
    * `autoMemoryEnabled` settings key). Read by `engine-factory` {@link resolveAutoMemory};
    * an explicit `false` forces consolidation OFF regardless of the `AMI_DISABLE_AUTO_MEMORY`
    * env/default. Unset defers to the env + default-on behavior.
@@ -641,7 +641,7 @@ export interface ProjectConfig {
   autoMemoryEnabled?: boolean;
   /**
    * Alias of {@link autoMemoryEnabled} gating background memory consolidation (parity:
-   * Claude Code's `autoDreamEnabled` settings key). `engine-factory`
+   * the reference's `autoDreamEnabled` settings key). `engine-factory`
    * {@link resolveAutoMemory} accepts either name (and `sessionMemoryEnabled`) as the
    * equivalent tri-state; a real boolean wins over the env/default.
    */
@@ -655,7 +655,7 @@ export interface ProjectConfig {
   /**
    * Off-switch for loading the shared TEAM-memory store (the `.ami/memory/team/`
    * subtree {@link MemoryManager.loadTeamMemories} reads into the system prompt).
-   * Parity: Claude Code gates team memory behind an enable flag
+   * Parity: the reference gates team memory behind an enable flag
    * (`feature('TEAMMEM')` + `isTeamMemoryEnabled()`); AMI previously ALWAYS loaded any
    * present team-memory files with no config knob. This additive tri-state lets a user
    * or org turn team-memory loading OFF — set `false` and the team subtree is never
@@ -678,13 +678,13 @@ export interface ProjectConfig {
   /**
    * Persist whether the worktree capability tools (`enter_worktree` / `exit_worktree`)
    * are advertised to the model (read by `engine-factory` {@link resolveWorktreeToolsEnabled};
-   * parity: Claude Code's worktree-mode toggle `isWorktreeModeEnabled`). Config tier of
+   * parity: the reference's worktree-mode toggle `isWorktreeModeEnabled`). Config tier of
    * the precedence waterfall (opt flag > `AMI_WORKTREE_TOOLS` env > this config boolean >
    * default-on). A locked-down/CI config can drop them as a unit.
    */
   worktreeToolsEnabled?: boolean;
   /**
-   * Off-switch for the next-prompt SPECULATION feature (parity: Claude Code's
+   * Off-switch for the next-prompt SPECULATION feature (parity: the reference's
    * `speculationEnabled` global-config knob + `isSpeculationEnabled()` gate). Speculation
    * defaults ON; an explicit `false` disables it. Resolved per workspace by
    * {@link resolveSpeculationEnabled} across the full config waterfall and fed to the
@@ -694,7 +694,7 @@ export interface ProjectConfig {
    */
   speculationEnabled?: boolean;
   /**
-   * Opt-OUT of enabling model-default thinking at session start (parity: Claude Code's
+   * Opt-OUT of enabling model-default thinking at session start (parity: the reference's
    * `alwaysThinkingEnabled` setting consulted by `shouldEnableThinkingByDefault()`).
    * AMI already auto-adopts a reasoning model's default thinking level unless the user
    * pins one ({@link import('../../../common/src/model-thinking').deriveModelDefaultThinking}).
@@ -706,7 +706,7 @@ export interface ProjectConfig {
    */
   alwaysThinkingEnabled?: boolean;
   /**
-   * Persisted auto-connect-to-IDE toggle (parity: Claude Code's `autoConnectIde`
+   * Persisted auto-connect-to-IDE toggle (parity: the reference's `autoConnectIde`
    * settings key / the `addIde` waterfall in useIDEIntegration.ts). ONE enabling
    * input to the engine's IDE auto-connect waterfall ({@link import('./mcp').shouldAutoConnectIde});
    * a supported editor terminal, an inherited `AMI_SSE_PORT`, or a truthy
@@ -717,18 +717,18 @@ export interface ProjectConfig {
   autoConnectIde?: boolean;
   /**
    * Show the OSC 9;4 taskbar/tab progress indicator in supported terminals (parity:
-   * Claude Code's `terminalProgressBarEnabled` settings key). AMI emits progress by
+   * the reference's `terminalProgressBarEnabled` settings key). AMI emits progress by
    * default (its long-standing behavior); an explicit `false` suppresses it by seeding
    * the `AMI_NO_PROGRESS` kill-switch via {@link applyConfigTerminalProgress}, so the
    * persisted preference no longer requires exporting the env var. An explicit
    * `AMI_NO_PROGRESS` env value still WINS. Unset/`true` keeps AMI's default-on
-   * (superset divergence from Claude's default-off-unless-set — AMI never regresses the
+   * (superset divergence from the reference's default-off-unless-set — AMI never regresses the
    * loved default, only ADDs the opt-out knob).
    */
   terminalProgressBarEnabled?: boolean;
   /**
    * Show the per-turn duration on the completion line ("✳ Worked FOR 1m 3s · done …")
-   * (parity: Claude Code's `showTurnDuration` settings key). AMI shows it by default;
+   * (parity: the reference's `showTurnDuration` settings key). AMI shows it by default;
    * an explicit `false` suppresses ONLY the duration (keeping the verb/wall-clock) by
    * seeding `AMI_SHOW_TURN_DURATION` via {@link applyConfigTurnDuration}, so the choice
    * can be persisted instead of exporting the env var. An explicit `AMI_SHOW_TURN_DURATION`
@@ -736,7 +736,7 @@ export interface ProjectConfig {
    */
   showTurnDuration?: boolean;
   /**
-   * Persisted verbose output-detail toggle (parity: Claude Code's global-config
+   * Persisted verbose output-detail toggle (parity: the reference's global-config
    * `verbose` boolean, default false). When `true`, the render consumers that already
    * key off the `AMI_VERBOSE` env knob (the API-error display + the tool-result
    * descriptor's full-vs-truncated rendering, via the cli `resolveVerboseEnabled`)
@@ -750,7 +750,7 @@ export interface ProjectConfig {
    */
   verbose?: boolean;
   /**
-   * Terminal selection auto-copy toggle (parity: Claude Code's global-config
+   * Terminal selection auto-copy toggle (parity: the reference's global-config
    * `copyOnSelect ?? true`): when a drag-select completes, the highlighted text is
    * written to the clipboard (and the "ctrl+c copy" hint is surfaced). Defaults ON;
    * an explicit `false` disables the drag-release clipboard write by seeding the
@@ -760,7 +760,7 @@ export interface ProjectConfig {
    */
   copyOnSelect?: boolean;
   /**
-   * Persisted "always copy the full response" preference for `/copy` (parity: Claude
+   * Persisted "always copy the full response" preference for `/copy` (parity: the reference
    * Code's global-config `copyFullResponse` — commands/copy/copy.tsx L89-L92,L356-L369).
    * When `true`, `/copy --list` bypasses the code-block picker menu entirely and copies
    * the full reply directly (the picker's `always` opt-in, surfaced in AMI as
@@ -769,7 +769,7 @@ export interface ProjectConfig {
    */
   copyFullResponse?: boolean;
   /**
-   * Interactive-TUI layout mode (parity: Claude Code's `isFullscreenEnvEnabled()`
+   * Interactive-TUI layout mode (parity: the reference's `isFullscreenEnvEnabled()`
    * fullscreen-vs-scrollback toggle). Defaults ON: AMI renders in the terminal's
    * ALTERNATE SCREEN buffer (a fixed-height fullscreen canvas that leaves the host
    * scrollback untouched on exit). An explicit `false` opts INTO a scrollback layout —
@@ -785,7 +785,7 @@ export interface ProjectConfig {
    */
   fullscreen?: boolean;
   /**
-   * Disable syntax highlighting of fenced code blocks and diff lines (parity: Claude
+   * Disable syntax highlighting of fenced code blocks and diff lines (parity: the reference
    * Code's `syntaxHighlightingDisabled` cosmetic config knob). When `true`, the single
    * highlight on/off source the cli reads (`syntaxHighlightEnabled` →
    * `AMI_SYNTAX_HIGHLIGHT`) renders plain source while the rest of the UI stays colored.
@@ -797,7 +797,7 @@ export interface ProjectConfig {
   syntaxHighlightingDisabled?: boolean;
   /**
    * Idle threshold (ms) before a "generation done" desktop notification fires (parity:
-   * Claude Code's numeric `messageIdleNotifThresholdMs`, default 60000). AMI already has
+   * the reference's numeric `messageIdleNotifThresholdMs`, default 60000). AMI already has
    * desktop notifications with an `AMI_DESKTOP_NOTIFY_THRESHOLD_MS` env knob (cli
    * `getNotifyThreshold`); this persists the threshold in the settings waterfall instead
    * of requiring the env var. A positive finite value seeds the env knob via
@@ -806,7 +806,7 @@ export interface ProjectConfig {
    */
   messageIdleNotifThresholdMs?: number;
   /**
-   * Show model thinking summaries (parity: Claude Code's `showThinkingSummaries`
+   * Show model thinking summaries (parity: the reference's `showThinkingSummaries`
    * settings knob, default off). When explicitly `false` (summaries OFF), the
    * `redact-thinking` Anthropic beta token is appended to the `anthropic-beta` header
    * (via the same `ANTHROPIC_BETAS` escape hatch as {@link redactThinking}) — trading
@@ -816,7 +816,7 @@ export interface ProjectConfig {
    */
   showThinkingSummaries?: boolean;
   /**
-   * Customize the playful working-spinner gerund pool (parity: Claude Code's cosmetic
+   * Customize the playful working-spinner gerund pool (parity: the reference's cosmetic
    * `spinnerVerbs` config knob). `mode: 'append'` (default) widens the built-in pool
    * with `verbs`; `mode: 'replace'` swaps it entirely (an empty list falls back to the
    * built-ins). Serialized to the existing `AMI_SPINNER_VERBS` JSON env knob the cli
@@ -826,7 +826,7 @@ export interface ProjectConfig {
    */
   spinnerVerbs?: { mode?: 'append' | 'replace'; verbs?: string[] };
   /**
-   * Persisted toggle for background-task functionality (parity: Claude Code's
+   * Persisted toggle for background-task functionality (parity: the reference's
    * `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS` env gate behind which the entire
    * background-task path — the bash tool's `run_in_background` parameter, its
    * background guidance, and the task tool's background mode — is disabled). AMI
@@ -851,11 +851,11 @@ export interface ProjectConfig {
   // warning. Same class of bug as the engine-behavior rounds above; newly-found keys.
   // Declaring them here (+ their entry in {@link PROJECT_CONFIG_FIELD_TYPES} + their
   // copy in {@link mergeConfigs}) makes them recognized, base-type validated, and
-  // actually honored. Parity: Claude Code's policyLimits / pluginTrustMessage /
+  // actually honored. Parity: the reference's policyLimits / pluginTrustMessage /
   // marketplace-policy settings flowing through the settings cascade.
   // -------------------------------------------------------------------------
   /**
-   * Generic admin/enterprise feature-restriction map (parity: Claude Code's
+   * Generic admin/enterprise feature-restriction map (parity: the reference's
    * `services/policyLimits` `restrictions: Record<string, { allowed: boolean }>`).
    * Keyed by a named policy/feature (`computer_use`, `bash_classifier`,
    * `task_tracker`, …); only BLOCKED policies need an entry — an absent key is
@@ -869,7 +869,7 @@ export interface ProjectConfig {
   policyRestrictions?: Record<string, { allowed: boolean }>;
   /**
    * Org/enterprise custom trust-message appended to the plugin-install warning
-   * (parity: Claude Code's `getPluginTrustMessage` / managed `pluginTrustMessage`
+   * (parity: the reference's `getPluginTrustMessage` / managed `pluginTrustMessage`
    * setting). A non-empty string replaces/augments the built-in advisory with the
    * org's own policy copy (e.g. "Only install plugins approved in the internal
    * registry — see go/plugins"). Read by `common/src/plugin-commands.ts`
@@ -880,7 +880,7 @@ export interface ProjectConfig {
   pluginTrustMessage?: string;
   /**
    * RSS high-water mark (bytes) at which the engine treats memory pressure as
-   * CRITICAL and sheds load (parity: Claude Code's critical-memory RSS threshold).
+   * CRITICAL and sheds load (parity: the reference's critical-memory RSS threshold).
    * Read by `common/src/engine-factory.ts` off the merged project config
    * (`resolveEngineConfig` → `EngineConfig.memoryCriticalRssBytes`), so
    * {@link mergeConfigs} must copy it; a non-positive value is ignored by the
@@ -889,14 +889,14 @@ export interface ProjectConfig {
   memoryCriticalRssBytes?: number;
   /**
    * Prefer a tmux teammate backend over iTerm2 panes when both are available
-   * (parity: Claude Code's terminal-multiplexer preference). Read by
+   * (parity: the reference's terminal-multiplexer preference). Read by
    * `common/src/engine-factory.ts` off the merged project config to resolve the
    * teammate execution surface; {@link mergeConfigs} must copy it. Unset/`false`
    * keeps the default auto-selection.
    */
   preferTmuxOverIterm2?: boolean;
   /**
-   * Managed/enterprise policy-refresh tuning block (parity: Claude Code's remote
+   * Managed/enterprise policy-refresh tuning block (parity: the reference's remote
    * policy-limits background refresh knobs). `{ pollIntervalMs, maxRetries,
    * fetchTimeoutMs, failOpenOnStaleCache }` — each sub-field is clamped/validated
    * by `common/src/engine-factory.ts` `resolvePolicyRefreshConfig` off the merged
@@ -910,7 +910,7 @@ export interface ProjectConfig {
     failOpenOnStaleCache?: boolean;
   };
   /**
-   * Enterprise marketplace host BLOCKLIST (parity: Claude Code's `blockedMarketplaces`
+   * Enterprise marketplace host BLOCKLIST (parity: the reference's `blockedMarketplaces`
    * managed setting). Hosts named here are refused as plugin-marketplace sources
    * (deny-wins — the union across the managed + global tiers is enforced). Read by
    * `common/src/plugin-commands.ts` `sourceBlockedMarketplaces` (managed + global raw
@@ -920,7 +920,7 @@ export interface ProjectConfig {
    */
   blockedMarketplaces?: string[];
   /**
-   * Enterprise marketplace host ALLOWLIST (parity: Claude Code's
+   * Enterprise marketplace host ALLOWLIST (parity: the reference's
    * `strictKnownMarketplaces` managed setting). When configured, ONLY these hosts may
    * be added as plugin-marketplace sources. Read by `common/src/plugin-commands.ts`
    * `sourceStrictKnownMarketplaces` (managed + global raw config). Declaring it here
@@ -929,7 +929,7 @@ export interface ProjectConfig {
   strictKnownMarketplaces?: string[];
   /**
    * Gate the extra "clear context" affordance offered when the user ACCEPTS a plan
-   * (exit-plan-mode approval). Parity: Claude Code's `showClearContextOnPlanAccept`
+   * (exit-plan-mode approval). Parity: the reference's `showClearContextOnPlanAccept`
    * setting (`ExitPlanModePermissionRequest.tsx` reads
    * `settings.showClearContextOnPlanAccept ?? false`) — when on, the plan-approval
    * prompt adds an "approve AND clear context" option so a long planning turn's tokens
@@ -940,7 +940,7 @@ export interface ProjectConfig {
   showClearContextOnPlanAccept?: boolean;
   /**
    * Whether the prompt-input footer renders the current branch's pull-request status
-   * line (`common/src/pr-status.ts`). Parity: Claude Code's `prStatusFooterEnabled ??
+   * line (`common/src/pr-status.ts`). Parity: the reference's `prStatusFooterEnabled ??
    * true` (`PromptInputFooterLeftSide.tsx` `isPrStatusEnabled`). Default ON; set `false`
    * to suppress the PR footer entirely. Resolved by {@link isPrStatusFooterEnabled} off
    * the MERGED config and consumed by the footer renderer in `cli/`. A merge knob.
@@ -949,7 +949,7 @@ export interface ProjectConfig {
   /**
    * The release-notes/changelog VERSION the user has already seen, persisted in the
    * GLOBAL config so the one-time "what's new" banner is shown at most once per release.
-   * Parity: Claude Code's `lastReleaseNotesSeen` (`LogoV2.tsx` gates the banner on
+   * Parity: the reference's `lastReleaseNotesSeen` (`LogoV2.tsx` gates the banner on
    * `config.lastReleaseNotesSeen !== VERSION`, then writes the current VERSION after it
    * is shown). Read by {@link getLastReleaseNotesSeen} / {@link hasUnseenReleaseNotes}
    * and advanced by {@link markReleaseNotesSeen}; consumed by `common/src/release-notes.ts`.
@@ -960,19 +960,19 @@ export interface ProjectConfig {
    * Release channel the self-updater/launcher installs from: `latest` (newest build)
    * or `stable` (vetted releases only). A merged config knob, recognized + value-
    * validated here (enum) so an enterprise/global config pinning a channel is honored
-   * by the update path rather than flagged as an unknown key. Parity: Claude Code's
+   * by the update path rather than flagged as an unknown key. Parity: the reference's
    * `autoUpdatesChannel` setting.
    */
   autoUpdatesChannel?: 'latest' | 'stable';
   /**
    * Minimum acceptable version the launcher must satisfy before running (a managed/
    * enterprise floor; a below-floor install is upgraded/blocked by the update path).
-   * A merged config knob, recognized + base-type validated here. Parity: Claude Code's
+   * A merged config knob, recognized + base-type validated here. Parity: the reference's
    * `minimumVersion` policy setting paired with {@link autoUpdatesChannel}.
    */
   minimumVersion?: string;
   /**
-   * Opt-IN flag for voice-input mode (parity: Claude Code's `voiceEnabled`
+   * Opt-IN flag for voice-input mode (parity: the reference's `voiceEnabled`
    * settings boolean gating `isVoiceModeEnabled()` and the advertised `/voice`
    * command). Default OFF — voice mode is additive/opt-in, so only an explicit
    * `true` (at any config tier) enables it. Resolved by {@link isVoiceModeEnabled}
@@ -981,7 +981,7 @@ export interface ProjectConfig {
   voiceEnabled?: boolean;
   /**
    * Opt-IN declaration that the user WANTS the auto-allow ("auto"/bypass) permission
-   * mode (parity: Claude Code's `hasAutoModeOptIn()` settings flag). AMI's permission
+   * mode (parity: the reference's `hasAutoModeOptIn()` settings flag). AMI's permission
    * model is opt-OUT — `auto-allow` is always in the Shift+Tab cycle unless managed
    * policy ({@link disableBypassPermissionsMode}) removes it — so this knob adds the
    * missing INTENT signal: it lets the UI distinguish "the user asked for auto but it
@@ -993,35 +993,35 @@ export interface ProjectConfig {
   /**
    * Which renderer to use for file diffs: `'auto'` (AMI picks the richest surface the
    * terminal supports) or `'terminal'` (always the plain in-terminal diff). Parity:
-   * Claude Code's `diffTool` global-config knob (`'terminal' | 'auto'`, default `'auto'`).
+   * the reference's `diffTool` global-config knob (`'terminal' | 'auto'`, default `'auto'`).
    * A merge knob resolved off the merged config by {@link resolveDiffTool}; default
    * `'auto'` so an unset config keeps AMI's existing behavior.
    */
   diffTool?: 'terminal' | 'auto';
   /**
    * Cached list of frequently-modified project files used to seed example-command
-   * suggestions (parity: Claude Code's per-project `exampleFiles`). Populated out-of-band
+   * suggestions (parity: the reference's per-project `exampleFiles`). Populated out-of-band
    * by a background scan; read (with a staleness check against {@link exampleFilesGeneratedAt})
    * by {@link getCachedExampleFiles}. A per-project STATE field, not a cross-layer policy knob.
    */
   exampleFiles?: string[];
   /**
    * Epoch-millis timestamp of when {@link exampleFiles} was last generated (parity:
-   * Claude Code's `exampleFilesGeneratedAt`). {@link getCachedExampleFiles} treats a
+   * the reference's `exampleFilesGeneratedAt`). {@link getCachedExampleFiles} treats a
    * cache older than {@link EXAMPLE_FILES_TTL_MS} as stale and returns none so the
    * caller refreshes. A per-project STATE field.
    */
   exampleFilesGeneratedAt?: number;
   /**
    * Default shell backing input-box `!` commands: `'bash'` (default on every platform)
-   * or `'powershell'`. Parity: Claude Code's `defaultShell` setting + `resolveDefaultShell()`.
+   * or `'powershell'`. Parity: the reference's `defaultShell` setting + `resolveDefaultShell()`.
    * AMI does NOT auto-flip Windows to PowerShell (that would break existing bash-hook
    * users), so the default is `'bash'` everywhere. Resolved by {@link resolveDefaultShell}
    * off the merged config; a merge knob (any tier may set it).
    */
   defaultShell?: 'bash' | 'powershell';
   /**
-   * Startup announcement strings shown once at launch (parity: Claude Code's managed
+   * Startup announcement strings shown once at launch (parity: the reference's managed
    * `companyAnnouncements`). Typically set by an enterprise/managed config. On the FIRST
    * startup the first entry is shown; afterwards one is chosen at random. Resolved by
    * {@link pickCompanyAnnouncement} off the merged config.
@@ -1029,7 +1029,7 @@ export interface ProjectConfig {
   companyAnnouncements?: string[];
   /**
    * Policy knob gating whether a `dangerouslyDisableSandbox` tool override is honored.
-   * Parity: Claude Code's `SandboxManager.areUnsandboxedCommandsAllowed()` consulted by
+   * Parity: the reference's `SandboxManager.areUnsandboxedCommandsAllowed()` consulted by
    * `shouldUseSandbox()` — the sandbox is skipped ONLY when the command opts out AND this
    * policy permits unsandboxed commands. Lets an operator HARD-DISABLE the override
    * independent of permission mode: `false` (at any tier, e.g. a managed config) forces
@@ -1046,11 +1046,11 @@ export interface ProjectConfig {
  * optional horizontal `padding` (spaces per side, CC's `<Box paddingX>`). The bare
  * string form of `statusLine` is equivalent to `{ command }` with no padding.
  *
- * `type` is Claude Code's status-line TYPE discriminator (`{ "type": "command",
+ * `type` is the reference's status-line TYPE discriminator (`{ "type": "command",
  * "command": "..." }`): the ONLY shape CC's own `statuslineSetup` tool writes. AMI
  * renders the `command` directly, so `type` is accepted-and-ignored (forward-compat —
  * an unrecognized future type never rejects the block), which makes a `settings.json`
- * copied verbatim from Claude Code parse unchanged rather than being lost. Declaring it
+ * copied verbatim from the reference parse unchanged rather than being lost. Declaring it
  * here (rather than letting it fall through as an untyped extra key) documents the
  * supported CC drop-in shape and keeps the typed contract honest.
  */
@@ -1060,7 +1060,7 @@ export interface StatusLineConfig {
   /** Horizontal padding (spaces per side) applied to each rendered line. */
   padding?: number;
   /**
-   * Claude-Code status-line kind discriminator (CC only ever emits `'command'`).
+   * the reference status-line kind discriminator (CC only ever emits `'command'`).
    * Accepted for drop-in compatibility and otherwise ignored — AMI always renders the
    * `command`'s stdout. A non-string value is surfaced by {@link validateProjectConfigValues}.
    */
@@ -1072,7 +1072,7 @@ export interface StatusLineConfig {
  * the `{ command, padding }` object — into a single `{ command?, padding? }` result so
  * every consumer reads one shape. A blank/whitespace command resolves to `undefined`
  * (no status line). A non-finite/≤0 object `padding` is dropped (treated as unset so
- * the env/default fallback applies). Parity: Claude Code accepting `statusLine` as
+ * the env/default fallback applies). Parity: the reference accepting `statusLine` as
  * either a command string or a `{ command, padding }` object.
  */
 export function normalizeStatusLine(
@@ -1098,7 +1098,7 @@ export function normalizeStatusLine(
  * Set-Content), Notepad and various Windows editors write config/settings JSON
  * WITH a BOM; without this the whole file reads as corrupt. Shared by EVERY path
  * that parses AMI's own JSON config (user, local, global, AND managed) so the
- * robustness is one source. Parity: Claude Code's `stripBOM` leaf.
+ * robustness is one source. Parity: the reference's `stripBOM` leaf.
  */
 export function stripBom(input: string): string {
   return input.charCodeAt(0) === 0xfeff ? input.slice(1) : input;
@@ -1149,7 +1149,7 @@ export function stripJsoncComments(input: string): string {
  * with `{ "a": 1, }` or `["x", ]` parses instead of throwing a cryptic
  * "Unexpected token" on the dangling comma. String-aware (a comma inside a JSON
  * string literal is never touched), so it composes safely with
- * {@link stripJsoncComments}. Parity: Claude Code's JSONC parser
+ * {@link stripJsoncComments}. Parity: the reference's JSONC parser
  * (`safeParseJSONC` / `parseJsonc`) tolerates trailing commas; AMI previously only
  * stripped comments + BOM, so a trailing comma still read the whole file as corrupt.
  */
@@ -1180,7 +1180,7 @@ export function stripJsoncTrailingCommas(input: string): string {
   return result;
 }
 
-/** LRU cap (entries) on {@link parseJsonc}'s content-keyed parse memo. Parity: Claude's safeParseJSON LRU(50). */
+/** LRU cap (entries) on {@link parseJsonc}'s content-keyed parse memo. Parity: the reference's safeParseJSON LRU(50). */
 const JSONC_PARSE_CACHE_MAX_ENTRIES = 50;
 /** Only memoize small payloads — a huge config is cheaper to re-parse than to retain + clone. */
 const JSONC_PARSE_CACHE_MAX_BYTES = 100_000;
@@ -1196,7 +1196,7 @@ const jsoncParseCache = new Map<string, unknown>();
  * the pristine parsed tree and every caller receives a `structuredClone`, so a caller
  * mutating its config (e.g. {@link salvageManagedConfig}) can never corrupt a shared
  * cached value. Routes through {@link jsonHooks.parse} so the test parse-seam still
- * applies. Parity: Claude Code's `parseJsonc` + `safeParseJSON` LRU memoization.
+ * applies. Parity: the reference's `parseJsonc` + `safeParseJSON` LRU memoization.
  */
 export function parseJsonc(raw: string): unknown {
   const prepared = stripJsoncTrailingCommas(stripJsoncComments(stripBom(raw)));
@@ -1223,7 +1223,7 @@ export function parseJsonc(raw: string): unknown {
 // Config read caches + single invalidation point
 // ---------------------------------------------------------------------------
 //
-// Parity: Claude Code's settings cache (settingsCache.ts) is a set of memos behind
+// Parity: the reference's settings cache (settingsCache.ts) is a set of memos behind
 // ONE resetSettingsCache() trigger fired on every settings write / --add-dir /
 // plugin-init / hooks-refresh. AMI's config layer likewise accreted several memos
 // (the content-keyed parseJsonc LRU above; the managed-path platform memo and the
@@ -1234,7 +1234,7 @@ export function parseJsonc(raw: string): unknown {
 /**
  * Platform(+PROGRAMDATA)-keyed memo of the managed-config DEVICE-DEFAULT path, so
  * the platform switch + join runs once per platform instead of on every resolve
- * (parity: Claude's lodash-memoized `getManagedFilePath`). Keyed by platform (and, on
+ * (parity: the reference's lodash-memoized `getManagedFilePath`). Keyed by platform (and, on
  * Windows, the PROGRAMDATA that feeds the path) rather than memoized unconditionally,
  * so a forced different `process.platform` / `PROGRAMDATA` still resolves correctly.
  */
@@ -1247,7 +1247,7 @@ const managedPathCache = new Map<string, string>();
  * {@link safeWriteConfig} OR another instance's write — changes mtime/size, misses,
  * and re-reads, so a stale snapshot is never served. The cached tree is pristine and
  * every caller receives a `structuredClone`, so a caller mutating its config cannot
- * poison the cache. Parity: Claude's in-memory global-config cache + settingsCache's
+ * poison the cache. Parity: the reference's in-memory global-config cache + settingsCache's
  * miss(undefined)/negative(null) distinction.
  */
 interface TierConfigCacheEntry {
@@ -1318,7 +1318,7 @@ function loadTierConfigCached(configPath: string): ProjectConfig | null {
 /**
  * Clear EVERY config read memo in one call: the content-keyed parse LRU, the managed
  * device-path memo, and the per-tier identity cache. This is the single invalidation
- * point (parity: Claude's `resetSettingsCache`) fired by {@link safeWriteConfig} on
+ * point (parity: the reference's `resetSettingsCache`) fired by {@link safeWriteConfig} on
  * every config write; call it too after a `--add-dir`, plugin install, or hooks
  * refresh changes what the config layer would resolve.
  */
@@ -1400,7 +1400,7 @@ export class ManagedConfigError extends Error {}
  * The managed-config base file path. An explicit `SUPERINFERENCE_MANAGED_CONFIG`
  * env var always wins (testing / non-standard deployments); otherwise the default
  * is PLATFORM-SPECIFIC so an enterprise policy lands in the OS-conventional
- * machine-wide location an administrator actually writes to — mirroring Claude
+ * machine-wide location an administrator actually writes to — mirroring the reference
  * Code's `getManagedFilePath` platform switch:
  *
  *   - macOS   → `/Library/Application Support/SuperInference/config.json`
@@ -1423,7 +1423,7 @@ export function getManagedConfigPath(): string {
  * Build the ORDERED list of candidate managed-config sources, highest-priority
  * first. {@link loadManagedConfig} reads the first candidate that exists on disk,
  * so an org pushing BOTH a device-level profile and a per-user override has the
- * per-user one win — mirroring Claude Code's `getMacOSPlistPaths()` per-user >
+ * per-user one win — mirroring the reference's `getMacOSPlistPaths()` per-user >
  * device-level ordering (AMI previously resolved exactly ONE managed path with no
  * precedence).
  *
@@ -1434,7 +1434,7 @@ export function getManagedConfigPath(): string {
  *     then the legacy `/Library/Application Support/SuperInference/config.json`
  *     ({@link getManagedConfigPath}) as a back-compat device fallback. Username
  *     resolution is wrapped so a failed `os.userInfo()` (some sandboxes throw) still
- *     yields the device-level candidates. Parity: Claude's per-user > device plist order.
+ *     yields the device-level candidates. Parity: the reference's per-user > device plist order.
  *   - Windows / Linux → the single {@link getManagedConfigPath} default (ProgramData /
  *     `/etc`); there is no second native tier to layer, so the list has one entry.
  *
@@ -1466,7 +1466,7 @@ export function getManagedConfigPaths(): string[] {
 /**
  * The managed drop-in directory (`<managedBase>/config.d`). Admins can layer
  * additional managed policy as individual `*.json` files here instead of editing
- * one monolithic file (parity: Claude's managed-settings.d/ drop-ins).
+ * one monolithic file (parity: the reference's managed-settings.d/ drop-ins).
  */
 export function getManagedDropInDir(): string {
   return path.join(path.dirname(getManagedConfigPath()), 'config.d');
@@ -1474,7 +1474,7 @@ export function getManagedDropInDir(): string {
 
 /**
  * Decide whether a managed `config.d/` directory entry is eligible to be read as a
- * policy fragment. Parity: Claude Code's managed-settings.d enumeration guard, which
+ * policy fragment. Parity: the reference's managed-settings.d enumeration guard, which
  * defensively skips anything that is not a regular file or a symlink, does not end in
  * `.json`, or is a dotfile. AMI previously filtered ONLY on the `.json` suffix, so a
  * hidden sidecar/editor-swap file (`.10-team.json.swp` is excluded by suffix, but a
@@ -1491,7 +1491,7 @@ export function getManagedDropInDir(): string {
  * `lstatSync` is used so the type decision does not follow a symlink — a symlinked
  * fragment is still enumerated here but is refused later by {@link assertTrustedManagedFile}
  * (AMI refuses symlinked managed sources outright), matching AMI's stricter trust stance
- * while keeping Claude's enumeration shape. When the stat seam cannot report a type (a
+ * while keeping the reference's enumeration shape. When the stat seam cannot report a type (a
  * minimal test stub without `isFile`), the entry falls back to eligible — the per-file
  * read + trust check downstream still fails closed on a genuinely bad entry.
  */
@@ -1527,7 +1527,7 @@ export function isWorldWritable(mode: number): boolean {
  * deployments that deliberately point the override at a fixture owned by neither root nor
  * the current user set this to `1`/`true` to keep using the override; the base symlink +
  * world-writable refusals ALWAYS apply regardless. Parity-additive: it restricts the
- * AMI-only env override to an admin-grade trust boundary (Claude Code's managed path is a
+ * AMI-only env override to an admin-grade trust boundary (the reference's managed path is a
  * FIXED admin-only location the user cannot relocate) while keeping the override usable
  * behind an explicit, auditable seam.
  */
@@ -1542,7 +1542,7 @@ function managedOverrideUntrustedAllowed(env: NodeJS.ProcessEnv = process.env): 
 /**
  * Verify that a managed-policy file is a trustworthy source before it is read, and
  * throw {@link ManagedConfigError} (fail-closed) otherwise. This is AMI's analog of
- * Claude Code sourcing managed policy only from OS-protected, admin-only locations
+ * the reference sourcing managed policy only from OS-protected, admin-only locations
  * (registry HKLM / /Library/Managed Preferences) that an end user cannot redirect:
  *
  *  - a SYMLINK is refused outright — otherwise an unprivileged user could redirect
@@ -1562,7 +1562,7 @@ function managedOverrideUntrustedAllowed(env: NodeJS.ProcessEnv = process.env): 
  * group-writable override stays valid (consistent with {@link isWorldWritable}'s group
  * tolerance). This closes the AMI-only relocation hole where an unprivileged user could
  * redirect the authoritative managed-policy source at a file a DIFFERENT unprivileged
- * principal controls — the fixed admin-only trust boundary Claude Code relies on.
+ * principal controls — the fixed admin-only trust boundary the reference relies on.
  *
  * Windows (no `process.getuid`) carries no meaningful POSIX mode bits, so only the
  * symlink check applies there.
@@ -1618,7 +1618,7 @@ function parseManagedFile(configPath: string, relocatable = false): ProjectConfi
   } catch (err) {
     // A broken enterprise policy must fail closed, with the SAME actionable JSON
     // syntax-recovery hint AMI surfaces for user/project config (one shared source)
-    // instead of a bare parser message. Parity: Claude's root-level JSON syntax tip.
+    // instead of a bare parser message. Parity: the reference's root-level JSON syntax tip.
     throw new ManagedConfigError(`Managed config at ${configPath} failed to parse: ${err instanceof Error ? err.message : String(err)}. ${JSON_SYNTAX_RECOVERY_HINT}`);
   }
   // Managed policy must be a JSON object — an array/primitive at the root is a
@@ -1639,7 +1639,7 @@ function mergeManagedLayer(base: ProjectConfig, next: ProjectConfig): ProjectCon
 
 /**
  * One-entry memo of the merged managed-config RESULT keyed by a cheap file-identity
- * SIGNATURE over every managed source (parity: Claude Code's `mdmCache` behind the
+ * SIGNATURE over every managed source (parity: the reference's `mdmCache` behind the
  * explicit `clearMdmSettingsCache` clear hook). {@link loadManagedConfig} is re-invoked
  * on EVERY config-waterfall merge — `getMergedConfig`, the detached config path, the
  * `/doctor` sweep, the managed-tier change detector — and each call previously re-ran
@@ -1656,7 +1656,7 @@ function mergeManagedLayer(base: ProjectConfig, next: ProjectConfig): ProjectCon
  *  - EXPLICIT: {@link clearManagedConfigCache} is fanned out from
  *    {@link resetConfigCache} (fired by {@link safeWriteConfig} and the other write
  *    paths), covering the inputs an `mtime+size` identity cannot observe (an OS-native
- *    MDM/registry policy change), exactly as Claude Code clears `mdmCache` on a write.
+ *    MDM/registry policy change), exactly as the reference clears `mdmCache` on a write.
  *
  * SAFE under the fs-mocked managed test suites: computing the signature requires a real
  * {@link fsHooks.statSync} on each PRESENT source; when that stat cannot be taken (the
@@ -1675,7 +1675,7 @@ let managedConfigCache: ManagedConfigCacheEntry | null = null;
 /**
  * Drop the memoized managed-config result so the next {@link loadManagedConfig} re-reads
  * from disk + OS-native policy. Fanned out from {@link resetConfigCache} on every config
- * write; the AMI analog of Claude Code's `clearMdmSettingsCache`.
+ * write; the AMI analog of the reference's `clearMdmSettingsCache`.
  */
 export function clearManagedConfigCache(): void {
   managedConfigCache = null;
@@ -1771,7 +1771,7 @@ function loadManagedConfigUncached(candidates: string[]): ProjectConfig | null {
   // Resolve the ACTIVE managed source: the first ordered candidate that exists on
   // disk (per-user > device-level on macOS), falling back to the device-level
   // default when none is present. This gives priority-ordered multi-path MDM
-  // resolution instead of reading exactly one fixed path. Parity: Claude's
+  // resolution instead of reading exactly one fixed path. Parity: the reference's
   // getMacOSPlistPaths highest-priority-first source selection.
   // When the active source came from the USER-settable SUPERINFERENCE_MANAGED_CONFIG
   // override (rather than a fixed OS-conventional device path), it is user-relocatable and
@@ -1784,7 +1784,7 @@ function loadManagedConfigUncached(candidates: string[]): ProjectConfig | null {
   // NOT shadow a populated lower-priority one — it transparently falls through to the
   // next candidate. When every present source is empty, the highest-priority present
   // one is kept as the base (so its own `config.d/` drop-ins still apply); when none
-  // exist, the device default is the base (merged stays null). Parity: Claude Code's
+  // exist, the device default is the base (merged stays null). Parity: the reference's
   // consumeRawReadResult first-non-empty-source-wins chain (an empty higher source
   // falls through to a populated lower one) layered on top of getMacOSPlistPaths'
   // highest-priority-first ordering.
@@ -1844,7 +1844,7 @@ function loadManagedConfigUncached(candidates: string[]): ProjectConfig | null {
   // over the file-based managed layer (merged LAST). The read is timeout-bounded and
   // never-throwing (see managed-policy-source.ts), so a broken policy source can never
   // stall or fail the loader; a malformed/non-object payload is simply ignored. Each
-  // valid field is value-SALVAGED like a file-based managed source. Parity: Claude's
+  // valid field is value-SALVAGED like a file-based managed source. Parity: the reference's
   // native-MDM (plutil / reg query) acquisition taking precedence over file settings.
   const native = readNativeManagedPolicy();
   if (native) {
@@ -1864,11 +1864,11 @@ function loadManagedConfigUncached(candidates: string[]): ProjectConfig | null {
   // loadManagedConfig was previously silent on success, so an operator had no way to
   // confirm an enterprise policy was actually picked up or which keys it contributed.
   // Log the path + contributing key count (no values — the policy may be sensitive)
-  // so a managed deployment is diagnosable. Parity: Claude's "MDM settings found: …".
+  // so a managed deployment is diagnosable. Parity: the reference's "MDM settings found: …".
   if (merged !== null) {
     // Introspection: name the ACTIVE path, the contributing key count (no values —
     // the policy may be sensitive), the drop-in count, AND the elapsed read time so a
-    // slow managed source (e.g. an NFS mount) is diagnosable. Parity: Claude's
+    // slow managed source (e.g. an NFS mount) is diagnosable. Parity: the reference's
     // "MDM settings load completed in <N>ms" + "MDM settings found: …" breadcrumbs.
     coreLog('config', `loaded managed config ${configPath} (${Object.keys(merged).length} key(s)${entries.length > 0 ? `, ${entries.length} drop-in(s)` : ''}) in ${Date.now() - started}ms`);
   }
@@ -1882,10 +1882,10 @@ export interface ConfigValueIssue {
   /** Human-readable reason the value is invalid. */
   message: string;
   /** The offending value, so a caller can surface "you supplied X" to the user
-   *  (parity: Claude's ValidationError.invalidValue). */
+   *  (parity: the reference's ValidationError.invalidValue). */
   value?: unknown;
   /**
-   * A short, actionable fix suggestion for THIS field+kind (parity: Claude's
+   * A short, actionable fix suggestion for THIS field+kind (parity: the reference's
    * `getValidationTip`). Tells the user HOW to correct the value (e.g. "Use true
    * or false without quotes", "Valid values: ..."), not just what is wrong. Absent
    * when no specific tip applies. Surfaced alongside {@link message} by the loader
@@ -1894,7 +1894,7 @@ export interface ConfigValueIssue {
   /**
    * A documentation URL for THIS field so a diagnostic can render an actionable
    * "Learn more: <url>" affordance, turning a bare validation error into a pointer
-   * to the fix (parity: Claude Code's `ValidationErrorsList` per-error `docLink` +
+   * to the fix (parity: the reference's `ValidationErrorsList` per-error `docLink` +
    * its "Learn more:" line). Resolved by {@link getConfigValidationDocLink} and
    * deduplicated across issues by {@link formatConfigValueIssues} so the same anchor
    * is never repeated N times. Always populated. */
@@ -1915,7 +1915,7 @@ function describeJsonType(value: unknown): string {
  * config file, so the user is told HOW to fix a malformed file rather than just that
  * it is malformed. One source, reused by {@link loadConfigFileChecked} (the loader
  * diagnostic) and {@link validateConfigJson} (the stale-tmp / config-tool writer path)
- * so the wording never drifts. Parity: Claude Code's root-level JSON syntax-error tip
+ * so the wording never drifts. Parity: the reference's root-level JSON syntax-error tip
  * ("Check for missing commas, unmatched brackets, or trailing commas…").
  */
 export const JSON_SYNTAX_RECOVERY_HINT =
@@ -1925,7 +1925,7 @@ export const JSON_SYNTAX_RECOVERY_HINT =
  * The config LAYER a value/diagnostic originates from, in merge-priority order
  * (`cli` highest, `managed` lowest). Mirrors the {@link mergeConfigs} layer stack and
  * the {@link CONFIG_ENV_TIERS} env-trust tiers, so every provenance-aware surface names
- * the same set of sources. Parity: Claude Code's `SettingSource` enum.
+ * the same set of sources. Parity: the reference's `SettingSource` enum.
  */
 export type ConfigSource = 'cli' | 'env' | 'local' | 'project' | 'global' | 'managed';
 
@@ -1934,7 +1934,7 @@ export type ConfigSource = 'cli' | 'env' | 'local' | 'project' | 'global' | 'man
  * line reads "Invalid project config …" or "Invalid managed config …" instead of leaving
  * the user to infer which file a bare path belongs to (`.ami/config.local.json` vs
  * `~/.ami/config.json` vs `/etc/...`). An introspection surface over the config waterfall.
- * Parity: Claude Code's `getSettingSourceName` (e.g. `localSettings` → "project, gitignored").
+ * Parity: the reference's `getSettingSourceName` (e.g. `localSettings` → "project, gitignored").
  */
 export const CONFIG_SOURCE_NAMES: Readonly<Record<ConfigSource, string>> = {
   cli: 'command-line flag',
@@ -1966,7 +1966,7 @@ export interface ConfigDiagnostic {
    * pre-write snapshot (`<file>.backup-<ms>`) over the damaged file, e.g.
    * `cp "<backup>" "<file>"`. Present only on a fatal `parse-error`/`not-object`
    * diagnostic when such a good backup exists, so the user is told HOW to recover
-   * rather than only that the file is broken. Parity: Claude Code's
+   * rather than only that the file is broken. Parity: the reference's
    * `cp "<backup>" "<file>"` restore hint printed on a corrupt-config read.
    */
   restoreHint?: string;
@@ -1982,7 +1982,7 @@ export interface ConfigDiagnostic {
    * settings take effect — so surfacing these tells the user EXACTLY which knobs
    * (e.g. `safeMode`, `cleanupPeriodDays`, a deny/permissions key) silently lost
    * their value, instead of leaving a security-bearing setting quietly inert. Absent
-   * when the broken file sets no recognized key. Parity: Claude Code's
+   * when the broken file sets no recognized key. Parity: the reference's
    * `rawSettingsContainsKey` user-intent detection + the InvalidSettingsDialog
    * "files with errors are skipped entirely" warning.
    */
@@ -2011,7 +2011,7 @@ type ConfigFieldType = 'string' | 'number' | 'boolean' | 'string[]' | 'object' |
  * type (a string where a number/boolean/array is expected) is surfaced instead of
  * silently flowing into runtime behavior — e.g. a string `maxBudgetUsd`, whose
  * `"ten" <= 0` comparison is `false`, would otherwise slip past the spend-cap range
- * check. Parity: Claude's per-field settings-schema validation.
+ * check. Parity: the reference's per-field settings-schema validation.
  */
 const PROJECT_CONFIG_FIELD_TYPES: ReadonlyArray<readonly [keyof ProjectConfig, ConfigFieldType]> = [
   ['model', 'string'], ['provider', 'string'], ['baseUrl', 'string'],
@@ -2047,7 +2047,7 @@ const PROJECT_CONFIG_FIELD_TYPES: ReadonlyArray<readonly [keyof ProjectConfig, C
   // base-type validated, and emitted in the JSON schema. `lastSessionMetrics` is an
   // object of counters (its nested values are value-validated bespoke, like
   // noticeSeenCounts); the onboarding fatigue fields + deepLinkTerminal + background
-  // deferral knobs are scalars. Parity: Claude's lastSessionMetrics / projectOnboarding* /
+  // deferral knobs are scalars. Parity: the reference's lastSessionMetrics / projectOnboarding* /
   // deepLinkTerminal / DELAY_VERY_SLOW_OPERATIONS defaults.
   ['lastSessionMetrics', 'object'],
   ['projectOnboardingSeenCount', 'number'], ['hasCompletedProjectOnboarding', 'boolean'],
@@ -2115,7 +2115,7 @@ const PROJECT_CONFIG_FIELD_TYPES: ReadonlyArray<readonly [keyof ProjectConfig, C
   ['companyAnnouncements', 'string[]'], ['allowUnsandboxedCommands', 'boolean'],
   // Update-channel knobs (see ProjectConfig) consumed by the self-updater/launcher —
   // declared here so they are recognized + value-validated (autoUpdatesChannel is an
-  // enum in PROJECT_CONFIG_ENUMS) + emitted in the JSON schema. Parity: Claude's
+  // enum in PROJECT_CONFIG_ENUMS) + emitted in the JSON schema. Parity: the reference's
   // autoUpdatesChannel / minimumVersion settings.
   ['minimumVersion', 'string'],
 ];
@@ -2124,7 +2124,7 @@ const PROJECT_CONFIG_FIELD_TYPES: ReadonlyArray<readonly [keyof ProjectConfig, C
  * The complete set of recognized top-level `ProjectConfig` keys, derived from the two
  * validation tables above (their union is exactly the `ProjectConfig` interface, so this
  * self-updates whenever a new field is added for validation — no hand-maintained list to
- * drift). Used by {@link findUnknownConfigKeys} to surface typos. Parity: Claude Code
+ * drift). Used by {@link findUnknownConfigKeys} to surface typos. Parity: the reference
  * warns on unrecognized settings keys rather than silently ignoring them.
  */
 export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set<string>([
@@ -2135,7 +2135,7 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set<string>([
   // recognized keys so they never surface as a spurious unknown-key typo warning.
   'statusLine',
   'strictPluginOnlyCustomization',
-  // Editor-only JSON-Schema reference key (parity: Claude Code's `$schema` support). A
+  // Editor-only JSON-Schema reference key (parity: the reference's `$schema` support). A
   // config file may carry `"$schema": "<url>"` so an editor offers autocomplete /
   // live validation of the known knobs ({@link getConfigJSONSchema}); it is meta, never
   // an engine knob, so it is recognized (no spurious unknown-key warning) and skipped by
@@ -2147,7 +2147,7 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set<string>([
  * Return the top-level keys of `config` that are NOT recognized {@link KNOWN_CONFIG_KEYS}.
  * A non-empty result signals a likely typo (e.g. `"modle"` for `"model"`) or a stale key;
  * the loader surfaces these as an advisory `unknown-key` diagnostic (the config still
- * loads — unknown keys are ignored, never fatal). Parity: Claude Code surfaces
+ * loads — unknown keys are ignored, never fatal). Parity: the reference surfaces
  * unrecognized settings so misspellings don't silently take no effect.
  */
 export function findUnknownConfigKeys(config: ProjectConfig): string[] {
@@ -2167,7 +2167,7 @@ export function findUnknownConfigKeys(config: ProjectConfig): string[] {
  *     a `{` / `,` / whitespace). A key that appears only inside a string VALUE does not
  *     match, keeping false positives low.
  *
- * Parity: Claude Code's `rawSettingsContainsKey` (detect user intent even when settings
+ * Parity: the reference's `rawSettingsContainsKey` (detect user intent even when settings
  * validation fails — e.g. a configured `cleanupPeriodDays` must not be mistaken for the
  * default just because an unrelated key is malformed).
  */
@@ -2206,7 +2206,7 @@ export function detectIntendedConfigKeys(raw: string): string[] {
  * a genuine near-miss: a case-insensitive edit distance within `min(3, max(1,
  * ceil(len/3)))` — tolerant enough for a transposition (`"modle"`→`"model"`, dist 2)
  * or a wrong case (`"StatusLine"`→`"statusLine"`, dist 0) yet capped at 3 so an
- * unrelated long key never matches. Parity: Claude Code's `ValidationErrorsList`
+ * unrelated long key never matches. Parity: the reference's `ValidationErrorsList`
  * "did you mean" hint for an unrecognized settings key — AMI previously surfaced
  * this only for slash-command / `/config` key names, never for config-file keys.
  */
@@ -2266,7 +2266,7 @@ function enumValuesPrefix(allowed: readonly string[]): string {
 }
 
 /**
- * Named-field, semantics-aware validation tips (parity: Claude Code's field-matched
+ * Named-field, semantics-aware validation tips (parity: the reference's field-matched
  * `getValidationTip`). Unlike the generic per-kind tips — which describe the expected
  * SHAPE ("must be a number", "Valid values: …") — these describe what the value MEANS,
  * so a user who typed a valid-shaped-but-wrong value understands the fix. Returns
@@ -2302,7 +2302,7 @@ function fieldSpecificConfigTip(field: string, ctx: ConfigTipKind): string | und
 
 /**
  * Map a per-field validation failure to a short, actionable fix suggestion
- * (parity: Claude Code's `getValidationTip`). Returns `undefined` when no specific
+ * (parity: the reference's `getValidationTip`). Returns `undefined` when no specific
  * tip applies (the generic `message` already suffices). Keeping this as ONE table
  * (rather than inline strings at each push site) means the loader diagnostic,
  * `/doctor`, and any future renderer all surface identical guidance.
@@ -2313,7 +2313,7 @@ export function getConfigValidationTip(field: string, ctx: ConfigTipKind): strin
     return 'Environment variables must be strings — wrap numbers and booleans in quotes, e.g. "DEBUG": "true".';
   }
   // Named-field overrides that explain the SEMANTICS of the value (not just its shape),
-  // mirroring Claude Code's field-matched getValidationTip (e.g. what each permission
+  // mirroring the reference's field-matched getValidationTip (e.g. what each permission
   // mode does, what cleanupPeriodDays=0 means). These augment — never replace — the
   // generic per-kind tips below: a field without a specific override falls straight
   // through to the shape tip, so no existing behavior changes.
@@ -2346,7 +2346,7 @@ export const CONFIG_DOC_BASE = 'https://docs.superinference.org/configuration';
 
 /**
  * Resolve the documentation URL for a config `field` so a validation diagnostic can
- * render an actionable "Learn more: <url>" affordance (parity: Claude Code's
+ * render an actionable "Learn more: <url>" affordance (parity: the reference's
  * `ValidationErrorsList` per-error `docLink`). A nested field (e.g.
  * `superinference.enforcing`, `worktree.sparsePaths`, `env.DEBUG`) resolves to its
  * TOP-LEVEL anchor so related sub-field errors share one deduplicated link. Always
@@ -2362,7 +2362,7 @@ export function getConfigValidationDocLink(field: string): string {
  * Render a list of {@link ConfigValueIssue}s into one diagnostic body: the per-field
  * `field: message (tip)` entries, then a SINGLE deduplicated "Learn more: <url>, …"
  * line built from the issues' {@link ConfigValueIssue.docLink}s. Deduplicating the
- * doc links (rather than repeating one per issue) mirrors Claude Code's
+ * doc links (rather than repeating one per issue) mirrors the reference's
  * `ValidationErrorsList`, which collapses duplicate suggestion|docLink pairs before
  * rendering each as a hint + "Learn more:" line. Shared by {@link loadConfigFileChecked}
  * so the loader diagnostic and `/doctor` surface identical, non-repetitive guidance.
@@ -2380,7 +2380,7 @@ export function formatConfigValueIssues(issues: readonly ConfigValueIssue[]): st
  * non-`invalid-value` diagnostic, its single message under the diagnostic `kind`.
  *
  * This is the structured input for {@link formatConfigDiagnosticsTree} — parity with
- * Claude Code's `ValidationErrorsList`, which groups settings errors by file and renders
+ * the reference's `ValidationErrorsList`, which groups settings errors by file and renders
  * each file's errors as a nested tree. Multiple bad config files across the merge
  * waterfall (user / project / managed) are shown at once rather than one flat string.
  */
@@ -2424,7 +2424,7 @@ export function formatConfigDiagnosticsTree(
 }
 
 // ---------------------------------------------------------------------------
-// JSON Schema emission for the PROJECT config file (parity: Claude Code's
+// JSON Schema emission for the PROJECT config file (parity: the reference's
 // utils/settings/schemaOutput.ts `generateSettingsJSONSchema` + the published
 // `CLAUDE_CODE_SETTINGS_SCHEMA_URL`). This complements the governed-policy schema in
 // settings-guard.ts (`getSettingsJSONSchema`, which describes ONLY the managed/tier-
@@ -2439,7 +2439,7 @@ export function formatConfigDiagnosticsTree(
 // ---------------------------------------------------------------------------
 
 /**
- * Canonical published URL of the AMI config JSON Schema (parity: Claude Code's
+ * Canonical published URL of the AMI config JSON Schema (parity: the reference's
  * `CLAUDE_CODE_SETTINGS_SCHEMA_URL`). A user can reference it from a config file via
  * `"$schema": "<this URL>"` so an editor offers autocomplete + live validation of the
  * known knobs. Also emitted as the generated schema's `$id`.
@@ -2492,7 +2492,7 @@ function configFieldTypeToSchemaNode(type: ConfigFieldType): ConfigSchemaPropert
  * their allowed values; union/custom-shape keys (`statusLine`,
  * `strictPluginOnlyCustomization`) are left permissive (no `type`) so a valid value of
  * either shape validates. Non-strict (`additionalProperties: true`) — unknown keys still
- * load (AMI never fails closed on an unrecognized config key; it warns). Parity: Claude
+ * load (AMI never fails closed on an unrecognized config key; it warns). Parity: the reference
  * Code's `generateSettingsJSONSchema()`. Surfaced via `ami --introspect`.
  */
 export function getConfigJSONSchema(): ConfigJSONSchema {
@@ -2534,7 +2534,7 @@ export function getConfigJSONSchema(): ConfigJSONSchema {
  * field may still hold the wrong type, an out-of-range number, or an invalid enum
  * string — the TypeScript type gives no runtime guarantee). Returns a field-level
  * issue list (each carrying the offending `value`) so the loader can surface "your
- * config.json has a bad value" instead of silently accepting it (parity: Claude
+ * config.json has a bad value" instead of silently accepting it (parity: the reference
  * surfaces per-field settings-validation errors).
  *
  * Numeric RANGE reuses the canonical {@link validateEngineConfig} (no duplicate range
@@ -2576,7 +2576,7 @@ export function validateProjectConfigValues(config: ProjectConfig): ConfigValueI
   //     cleanup; a positive integer keeps that many days). A negative value would
   //     silently behave as "disabled", and a fractional value mis-rounds the cutoff — so
   //     both are surfaced with the field-specific retention tip. Skip when the base type
-  //     was already flagged (no double-report). Parity: Claude's cleanupPeriodDays
+  //     was already flagged (no double-report). Parity: the reference's cleanupPeriodDays
   //     `too_small`/bounds validation with the data-retention validation tip.
   if (config.cleanupPeriodDays !== undefined && !typeInvalid.has('cleanupPeriodDays')) {
     const d = config.cleanupPeriodDays;
@@ -2588,7 +2588,7 @@ export function validateProjectConfigValues(config: ProjectConfig): ConfigValueI
   //    that `superinference` is an object; a non-boolean nested flag (e.g.
   //    `{ enforcing: "true" }`) would otherwise flow TRUTHILY into the reflection gate
   //    and silently force-enable it. Skip when the outer object type was already flagged.
-  //    Parity: Claude validates nested settings-schema value types, not just the top level.
+  //    Parity: the reference validates nested settings-schema value types, not just the top level.
   if (config.superinference !== undefined && !typeInvalid.has('superinference')) {
     const si = config.superinference as Record<string, unknown>;
     for (const flag of ['enforcing', 'useLLMCritic'] as const) {
@@ -2601,7 +2601,7 @@ export function validateProjectConfigValues(config: ProjectConfig): ConfigValueI
   //     non-negative numbers, when present. Step 1 only guards that each outer value is an
   //     object; a non-boolean flag or a non-number/negative count would otherwise flow into
   //     the one-time-flag / notice-gate logic unchecked. Skip when the outer object type was
-  //     already flagged. Parity: Claude validates nested settings-schema value types.
+  //     already flagged. Parity: the reference validates nested settings-schema value types.
   if (config.preferencesShown !== undefined && !typeInvalid.has('preferencesShown')) {
     const flags = config.preferencesShown as Record<string, unknown>;
     for (const [name, v] of Object.entries(flags)) {
@@ -2618,7 +2618,7 @@ export function validateProjectConfigValues(config: ProjectConfig): ConfigValueI
       }
     }
   }
-  // `lastSessionMetrics` is a `name -> counter` rollup (parity: Claude's StatsProvider
+  // `lastSessionMetrics` is a `name -> counter` rollup (parity: the reference's StatsProvider
   // flush). Step 1 only guards that the outer value is an object; each nested counter must
   // be a finite non-negative number, mirroring the `noticeSeenCounts` nested check, so a
   // corrupt counter is reported rather than silently carried forward.
@@ -2643,7 +2643,7 @@ export function validateProjectConfigValues(config: ProjectConfig): ConfigValueI
     }
   }
   // 4c. Nested `policyRestrictions` entries must each be a `{ allowed: boolean }`
-  //     object (parity: Claude's policyLimits `restrictions` schema). Step 1 only
+  //     object (parity: the reference's policyLimits `restrictions` schema). Step 1 only
   //     guards that the outer value is an object; a malformed entry (a non-object, or
   //     `{ allowed: "yes" }`) would otherwise flow into the fail-open `isPolicyAllowed`
   //     gate and be silently treated as "allowed", masking a mistyped deny. Skip when
@@ -2704,7 +2704,7 @@ export function validateProjectConfigValues(config: ProjectConfig): ConfigValueI
       if (sl.padding !== undefined && !matchesConfigFieldType(sl.padding, 'number')) {
         issues.push({ field: 'statusLine.padding', message: `must be a number (got ${describeJsonType(sl.padding)})`, value: sl.padding, tip: getConfigValidationTip('statusLine.padding', { kind: 'type', type: 'number' }) });
       }
-      // Claude-Code's `{ type: 'command', command }` drop-in shape: `type` is accepted
+      // the reference's `{ type: 'command', command }` drop-in shape: `type` is accepted
       // and ignored, but a non-string `type` is a malformed block — surface it (the
       // valid `command` still loads; a bad `type` is dropped by salvage) rather than
       // silently tolerating `type: 123`.
@@ -2728,7 +2728,7 @@ export function validateProjectConfigValues(config: ProjectConfig): ConfigValueI
     }
   }
   // Attach a per-field documentation anchor to EVERY issue in one place (parity:
-  // Claude's ValidationErrorsList per-error docLink), so the loader diagnostic can
+  // the reference's ValidationErrorsList per-error docLink), so the loader diagnostic can
   // render an actionable "Learn more:" affordance without each push site repeating it.
   for (const issue of issues) issue.docLink = getConfigValidationDocLink(issue.field);
   return issues;
@@ -2745,7 +2745,7 @@ export function validateProjectConfigValues(config: ProjectConfig): ConfigValueI
  * degradation: an invalid single field degrades to "not applied" (less locked),
  * never nulls the whole file.
  *
- * Parity: Claude's `parseCommandOutputAsSettings` — `filterInvalidPermissionRules`
+ * Parity: the reference's `parseCommandOutputAsSettings` — `filterInvalidPermissionRules`
  * keeps the valid remainder of a managed policy, per-field `.catch(undefined)`
  * degrades one bad value to undefined, and `formatZodError` tags each message with
  * its source path. Reuses the ONE canonical value validator (no parallel schema).
@@ -2786,7 +2786,7 @@ export function salvageManagedConfig(config: ProjectConfig, sourcePath: string):
  * the SAME broken bytes — a backup storm. Before writing, the existing
  * `<file>.corrupt-*` quarantines are scanned; when one already holds byte-identical
  * content, that existing path is returned and NO new file is written. Parity:
- * Claude Code's corrupted-config quarantine skips the copy when an existing
+ * the reference's corrupted-config quarantine skips the copy when an existing
  * corrupted backup is byte-identical (content dedup).
  */
 export function backupCorruptConfig(configPath: string, content: string): string | null {
@@ -2849,7 +2849,7 @@ export function findMostRecentBackup(configPath: string): string | null {
  * path triggers a network (DNS/SMB) round-trip during what should be a cheap local
  * config probe — a hang/SSRF-adjacent hazard for an attacker-influenced path. A config
  * file is always expected on the local filesystem, so a UNC source is treated as
- * "no config here". Parity: Claude Code's `safeResolvePath` blocks UNC before any I/O.
+ * "no config here". Parity: the reference's `safeResolvePath` blocks UNC before any I/O.
  */
 export function isUncConfigPath(configPath: string): boolean {
   return configPath.startsWith('//') || configPath.startsWith('\\\\');
@@ -2860,7 +2860,7 @@ export function isUncConfigPath(configPath: string): boolean {
  * socket, or a character/block device. `readFileSync` on a FIFO BLOCKS indefinitely
  * waiting for a writer (a trivial DoS if a config path can be pointed at one), and a
  * device/socket is never a valid config file. The loader skips such a source as
- * "absent" rather than hanging on it. Parity: Claude Code's `safeResolvePath`
+ * "absent" rather than hanging on it. Parity: the reference's `safeResolvePath`
  * special-file guard before `realpathSync`.
  */
 export function isSpecialFileStats(stats: fs.Stats): boolean {
@@ -2876,7 +2876,7 @@ export function isSpecialFileStats(stats: fs.Stats): boolean {
 export const FLAG_SETTINGS_ENV = 'SUPERINFERENCE_SETTINGS';
 
 /**
- * Load the `--settings <file>` flag-tier config (parity: Claude's `flagSettings`
+ * Load the `--settings <file>` flag-tier config (parity: the reference's `flagSettings`
  * SETTING_SOURCES layer), from the absolute path bridged onto {@link
  * FLAG_SETTINGS_ENV}. The flag file layers ABOVE local/project/user and BELOW
  * managed policy (see {@link mergeConfigs}). Returns null when unset/blank or the
@@ -2899,7 +2899,7 @@ export function loadFlagSettingsConfig(env: NodeJS.ProcessEnv = process.env): Pr
  */
 export function loadConfigFileChecked(configPath: string): { config: ProjectConfig | null; diagnostic?: ConfigDiagnostic } {
   let raw: string;
-  // Path-safety guard (parity: Claude's safeResolvePath): refuse a UNC path before any
+  // Path-safety guard (parity: the reference's safeResolvePath): refuse a UNC path before any
   // filesystem access (it would force a network round-trip), and skip a special file
   // (FIFO/socket/device) whose `readFileSync` could BLOCK forever on a FIFO. Both are
   // treated as "no config here" — a config is always a regular local file.
@@ -2921,7 +2921,7 @@ export function loadConfigFileChecked(configPath: string): { config: ProjectConf
     // (EACCES permissions, EIO) means the file is PRESENT but could not be read;
     // surfacing that as an `unreadable` diagnostic stops a real-but-unreadable config
     // from being silently mistaken for "no config" (which would let a lower/empty
-    // layer quietly take effect). Parity: Claude's handleFileSystemError — ENOENT is
+    // layer quietly take effect). Parity: the reference's handleFileSystemError — ENOENT is
     // a debug-level non-event, every other code is a tracked error. Classify via the
     // canonical {@link getErrnoCode} accessor (core/src/utils/errno.ts) — the single
     // source for the `err.code` cast — rather than an ad-hoc inline cast, so every fs
@@ -2941,10 +2941,10 @@ export function loadConfigFileChecked(configPath: string): { config: ProjectConf
   } catch (err) {
     const backupPath = backupCorruptConfig(configPath, raw) ?? undefined;
     // Append actionable recovery guidance so the user learns HOW to fix the malformed
-    // file, not merely that the parse failed (parity: Claude's JSON syntax-error tip).
+    // file, not merely that the parse failed (parity: the reference's JSON syntax-error tip).
     const message = `${err instanceof Error ? err.message : String(err)}. ${JSON_SYNTAX_RECOVERY_HINT}`;
     // Point the user at the most recent known-GOOD pre-write snapshot (`.backup-*`),
-    // if any, with a copy-pasteable restore command (parity: Claude's `cp` restore
+    // if any, with a copy-pasteable restore command (parity: the reference's `cp` restore
     // hint). Distinct from `backupPath`, which quarantines the CORRUPT bytes.
     const good = findMostRecentConfigBackup(configPath);
     const restoreHint = good ? `cp "${good}" "${configPath}"` : undefined;
@@ -2975,11 +2975,11 @@ export function loadConfigFileChecked(configPath: string): { config: ProjectConf
   // unrecognized top-level keys (a typo like "modle", or a stale key). Surface those
   // as an advisory `unknown-key` diagnostic so misspellings don't silently take no
   // effect — the config still loads (unknown keys are ignored, never fatal). Parity:
-  // Claude Code warns on unrecognized settings keys.
+  // the reference warns on unrecognized settings keys.
   const unknownKeys = findUnknownConfigKeys(config);
   if (unknownKeys.length > 0) {
     // Attach a "did you mean X?" near-match suggestion per unknown key so a typo
-    // (e.g. "modle") is self-correctable, not merely flagged. Parity: Claude's
+    // (e.g. "modle") is self-correctable, not merely flagged. Parity: the reference's
     // ValidationErrorsList actionable-fix suggestion for an unrecognized key.
     const described = unknownKeys.map(k => {
       const suggestion = suggestKnownConfigKey(k);
@@ -2998,7 +2998,7 @@ function loadConfigFile(configPath: string): ProjectConfig | null {
 }
 
 /** Identity key for a diagnostic (`path:kind:message`), used to suppress a repeat
- *  of the exact same problem reported from an overlapping source. Mirrors Claude's
+ *  of the exact same problem reported from an overlapping source. Mirrors the reference's
  *  seenErrors key `${file}:${path}:${message}` in loadSettingsFromDisk. */
 function configDiagnosticIdentity(d: ConfigDiagnostic): string {
   return `${d.path}:${d.kind}:${d.message}`;
@@ -3009,7 +3009,7 @@ function configDiagnosticIdentity(d: ConfigDiagnostic): string {
  * local, global). A missing file is not a diagnostic; a corrupt one is, with a
  * pointer to its backup (fresh or most-recent) so the user can recover it.
  *
- * Multi-source dedup (parity: Claude's loadSettingsFromDisk seenFiles/seenErrors):
+ * Multi-source dedup (parity: the reference's loadSettingsFromDisk seenFiles/seenErrors):
  * two tiers can resolve to the SAME physical file — most commonly when AMI is run
  * from the home directory, where the `project` path (`<cwd>/.ami/config.json`) and
  * the `global` path (`<home>/.ami/config.json`) are one and the same. Each resolved
@@ -3021,7 +3021,7 @@ export function collectConfigDiagnostics(cwd: string): ConfigDiagnostic[] {
   const home = process.env.HOME || process.env.USERPROFILE || '';
   // Each probed path is tagged with its config LAYER so a diagnostic names its
   // provenance ("project" / "project, gitignored" / "user") rather than leaving the
-  // user to infer it from a bare path. Parity: Claude's per-source settings validation.
+  // user to infer it from a bare path. Parity: the reference's per-source settings validation.
   const paths: Array<{ path: string; source: ConfigSource }> = [
     { path: path.join(cwd, '.ami', 'config.json'), source: 'project' },
     { path: path.join(cwd, '.ami', 'config.local.json'), source: 'local' },
@@ -3053,7 +3053,7 @@ export function collectConfigDiagnostics(cwd: string): ConfigDiagnostic[] {
   // {@link ManagedConfigError}), so it is normally invisible to /doctor. Surface it
   // HERE alongside the user/project/local diagnostics so an invalid security-bearing
   // policy file is reported across EVERY source, never silently ignored. Parity:
-  // Claude's buildInstallationHealthDiagnostics aggregating invalid settings across
+  // the reference's buildInstallationHealthDiagnostics aggregating invalid settings across
   // managed + user + project + local. A clean/absent managed policy adds nothing.
   try {
     loadManagedConfig();
@@ -3068,7 +3068,7 @@ export function collectConfigDiagnostics(cwd: string): ConfigDiagnostic[] {
 /**
  * One FILE-based config tier in the merge waterfall: its source, resolved path, and
  * whether it is ACTIVELY contributing to the effective config (the file exists and
- * parsed to a config object). Parity: one row of Claude Code's Settings status
+ * parsed to a config object). Parity: one row of the reference's Settings status
  * `buildSettingSourcesProperties()` active-source list.
  */
 export interface ActiveConfigSource {
@@ -3094,7 +3094,7 @@ export interface ActiveConfigSource {
  * order" — distinct from {@link resolveSettingsFilePaths} (lists the four POSSIBLE tier
  * paths regardless of existence) and {@link collectConfigDiagnostics} (surfaces only
  * tiers that have ERRORS). A user/operator can see their live config source stack at a
- * glance. Parity: Claude Code's Settings status `buildSettingSourcesProperties()`
+ * glance. Parity: the reference's Settings status `buildSettingSourcesProperties()`
  * active-source enumeration.
  *
  * Order (highest precedence first): `local` > `project` > `global` > `managed` — the
@@ -3127,7 +3127,7 @@ export function collectActiveConfigSources(cwd: string): ActiveConfigSource[] {
 }
 
 // ---------------------------------------------------------------------------
-// Internal-write suppression (parity: Claude's changeDetector.ts
+// Internal-write suppression (parity: the reference's changeDetector.ts
 // markInternalWrite / consumeInternalWrite). When AMI writes a config file
 // itself (a `/config` change, an atomic-write helper), the directory watcher
 // observes that write and would otherwise reload + fire a config-change
@@ -3170,7 +3170,7 @@ export function consumeInternalWrite(
 
 /**
  * Concatenate a lower-layer array with a higher-layer one, de-duplicating while
- * preserving first-seen order. Parity: Claude's `settingsMergeCustomizer`
+ * preserving first-seen order. Parity: the reference's `settingsMergeCustomizer`
  * (`uniq([...target, ...source])`) so list-valued settings ACCUMULATE across
  * config layers instead of a higher layer clobbering a lower one. `existing`
  * (the already-accumulated lower-priority values) comes first so its ordering is
@@ -3216,7 +3216,7 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
  * true }` yields BOTH flags, instead of the project wiping the global's `enforcing`.
  * Recurses into nested objects; string arrays accumulate (concat + dedupe, like
  * {@link mergeConfigArray}); any other scalar/array is replaced (higher wins). Parity:
- * Claude Code's `settingsMergeCustomizer` / lodash `mergeWith` deep-merge of nested
+ * the reference's `settingsMergeCustomizer` / lodash `mergeWith` deep-merge of nested
  * settings objects across layers (AMI previously replaced each nested block wholesale).
  */
 function deepMergeConfigObjects(
@@ -3257,7 +3257,7 @@ export const CONFIG_WATCH_DEBOUNCE_MS = 100;
  * Write-stability window (ms): when a watched config file is observed PRESENT but
  * momentarily unparseable (the classic half-written / truncate-then-append save),
  * the reload is retried once after this delay instead of silently dropping the
- * change. Parity: Claude's changeDetector `FILE_STABILITY_THRESHOLD_MS` /
+ * change. Parity: the reference's changeDetector `FILE_STABILITY_THRESHOLD_MS` /
  * chokidar `awaitWriteFinish` stabilityThreshold.
  */
 export const CONFIG_FILE_STABILITY_THRESHOLD_MS = 1000;
@@ -3267,7 +3267,7 @@ export const CONFIG_FILE_STABILITY_THRESHOLD_MS = 1000;
  * the common atomic delete-then-recreate pattern (another session's tmp+rename,
  * an auto-updater) is coalesced into a single change when the file reappears within
  * this window; only a deletion that OUTLASTS it reverts the in-memory project layer
- * to defaults. Parity: Claude's `DELETION_GRACE_MS`.
+ * to defaults. Parity: the reference's `DELETION_GRACE_MS`.
  */
 export const CONFIG_DELETION_GRACE_MS = 1000;
 
@@ -3275,7 +3275,7 @@ export const CONFIG_DELETION_GRACE_MS = 1000;
  * Fallback reconcile-poll interval (ms). `fs.watch` is known to silently miss
  * events (network filesystems, some Linux configurations, editors that save via
  * atomic rename), so a low-frequency unref'd poll re-reads the file to pick up a
- * dropped change event. Parity: Claude's `FALLBACK_POLL_MS`.
+ * dropped change event. Parity: the reference's `FALLBACK_POLL_MS`.
  */
 export const CONFIG_FALLBACK_POLL_MS = 5000;
 
@@ -3283,7 +3283,7 @@ export const CONFIG_FALLBACK_POLL_MS = 5000;
  * Retry interval (ms) for (re-)establishing the watcher when the config directory
  * does not exist yet or the underlying watcher errored — instead of giving up
  * permanently, so a project whose `.ami/` appears mid-session (or a transient
- * inotify error) still ends up with live config reload. Parity: Claude's `#rewatch`.
+ * inotify error) still ends up with live config reload. Parity: the reference's `#rewatch`.
  */
 export const CONFIG_WATCH_RETRY_MS = 1000;
 
@@ -3296,7 +3296,7 @@ export const CONFIG_WATCH_RETRY_MS = 1000;
  * {@link ConfigService.onConfigChange} `source: 'managed'` ONLY when the serialized
  * policy actually changed. Deliberately slower than the project/global reconcile
  * poll: enterprise policy changes are rare and the read may hit a slow mount.
- * Parity: Claude Code's remote/MDM managed-settings `POLLING_INTERVAL_MS` background
+ * Parity: the reference's remote/MDM managed-settings `POLLING_INTERVAL_MS` background
  * refresh that fails open (a failed read is swallowed, never fail-closed mid-session).
  */
 export const CONFIG_MANAGED_POLL_MS = 60000;
@@ -3309,7 +3309,7 @@ export const CONFIG_MANAGED_POLL_MS = 60000;
  * observable, so reacting by closing + re-establishing would churn the watcher (and,
  * on a persistently-unreadable sibling, loop) while dropping live reload for every
  * other file. A non-permission error (inotify exhaustion, a genuinely dead handle) is
- * still treated as fatal and re-established. Parity: Claude Code's changeDetector
+ * still treated as fatal and re-established. Parity: the reference's changeDetector
  * chokidar `ignorePermissionErrors: true`.
  */
 export function isWatcherPermissionError(err: unknown): boolean {
@@ -3342,7 +3342,7 @@ export interface ConfigServiceOptions {
    * project tier's `'project'`), so a consumer can tell WHICH tier changed and the
    * engine re-applies the full waterfall (env / permissions / managed) on a global
    * edit too. Defaults off so a plain `new ConfigService(cwd)` keeps the
-   * project-only behavior. Parity: Claude Code's `useSettingsChange` watching every
+   * project-only behavior. Parity: the reference's `useSettingsChange` watching every
    * SettingSource and threading the real `source` tier through `onChange`.
    */
   watchGlobal?: boolean;
@@ -3355,7 +3355,7 @@ export interface ConfigServiceOptions {
    * ({@link CONFIG_MANAGED_POLL_MS}) PLUS an fs.watch on the managed base dir, and
    * fails OPEN — a transient/tampered read during the refresh is swallowed, never
    * fail-closed mid-session. Defaults off so a plain `new ConfigService(cwd)` keeps
-   * the project-only behavior. Parity: Claude Code's background managed/policy
+   * the project-only behavior. Parity: the reference's background managed/policy
    * settings refresh + `notifyChange('policySettings')`.
    */
   watchManaged?: boolean;
@@ -3561,7 +3561,7 @@ export class ConfigService {
    * {@link loadManagedConfig} — here that is caught and collapsed to the `null` snapshot
    * rather than crashing the poll, so a mid-session managed refresh never fail-closes the
    * running session. The initial LOAD path (engine bootstrap) still fails closed; this is
-   * only the live-refresh safety net. Parity: Claude's background poll swallowing errors.
+   * only the live-refresh safety net. Parity: the reference's background poll swallowing errors.
    */
   private readManagedSnapshot(): string {
     try {
@@ -3602,7 +3602,7 @@ export class ConfigService {
    * Low-frequency unref'd reconcile poll for the managed tier, so a policy change on a
    * path `fs.watch` cannot observe (root-owned `/etc`, an MDM network mount, a `config.d/`
    * drop-in) is still picked up within one interval. Disabled when managed watching is
-   * off or the interval is non-positive. Parity: Claude's managed-settings background poll.
+   * off or the interval is non-positive. Parity: the reference's managed-settings background poll.
    */
   private startManagedPoll(): void {
     if (this.managedPollTimer || !this.managedConfigPath || this.managedPollMs <= 0) return;
@@ -3614,7 +3614,7 @@ export class ConfigService {
    * Establish the directory watcher, or — when the directory does not exist yet /
    * `fs.watch` throws (e.g. inotify exhaustion) — schedule a retry instead of giving
    * up permanently, so a `.ami/` created after startup (or a transient error) still
-   * ends up watched. Parity: Claude's `#rewatch` retry-even-on-same-dir.
+   * ends up watched. Parity: the reference's `#rewatch` retry-even-on-same-dir.
    */
   private ensureWatch(): void {
     if (this.watcher) return;
@@ -3651,7 +3651,7 @@ export class ConfigService {
    * A watcher `error` event closes the dead watcher and re-establishes a fresh one —
    * EXCEPT a per-path permission error ({@link isWatcherPermissionError}), which is
    * tolerated in place: the handle is still live for the rest of the directory, so it
-   * is kept open rather than churned/looped. Parity: Claude's `ignorePermissionErrors`.
+   * is kept open rather than churned/looped. Parity: the reference's `ignorePermissionErrors`.
    */
   private onWatcherError(err?: unknown): void {
     if (isWatcherPermissionError(err)) {
@@ -3741,7 +3741,7 @@ export class ConfigService {
    * A grace-expired deletion reverts the in-memory project layer to empty so the
    * session falls back to the lower merge layers (global/managed/env) instead of
    * staying pinned to the deleted file's values. Listeners + onConfigChange fire with
-   * the empty config, mirroring a normal change. Parity: Claude's change-detector
+   * the empty config, mirroring a normal change. Parity: the reference's change-detector
    * treating a (grace-expired) deletion as a settings change.
    */
   private applyDeletion(): void {
@@ -3760,7 +3760,7 @@ export class ConfigService {
   /**
    * Low-frequency unref'd reconcile poll that re-reads the file so a change event
    * silently dropped by `fs.watch` (network FS, atomic-rename save) is still picked
-   * up within one interval. Parity: Claude's FALLBACK_POLL_MS safety net.
+   * up within one interval. Parity: the reference's FALLBACK_POLL_MS safety net.
    */
   private startFallbackPoll(): void {
     if (this.pollTimer || this.fallbackPollMs <= 0) return;
@@ -3781,7 +3781,7 @@ export class ConfigService {
       // label fanned out to onConfigChange below and the global/managed tiers' own
       // "changed; notifying listeners" lines. Without this the project reload was the
       // only tier with no change-time log, so an operator tailing the debug log could
-      // see a global/managed reapply but never a project one. Parity: Claude Code's
+      // see a global/managed reapply but never a project one. Parity: the reference's
       // `logForDebugging('Settings changed from <source>, updating app state')`.
       coreLog('config', `project config ${this.configPath} changed; reapplying (source: project)`);
       // Take-effect-immediately: re-apply the watched project config's `env`
@@ -3790,7 +3790,7 @@ export class ConfigService {
       // silently ignored until the next launch. Trust-tiered via applyConfigEnv —
       // a project-scoped file still only applies the SAFE_ENV_VARS allowlist, so
       // a committed config can never inject a dangerous var at runtime. Parity:
-      // Claude's onChangeAppState re-applying config-driven env on a settings change.
+      // the reference's onChangeAppState re-applying config-driven env on a settings change.
       try {
         this.lastEnvApplication = applyConfigEnv({ project: next }, this.envTarget);
       } catch (err) {
@@ -3816,7 +3816,7 @@ export class ConfigService {
    * teardown ENOENT race (a still-settling `fs.watch` callback firing on a just-removed
    * dir). Fire-and-forget callers that ignore the promise behave exactly as before. Safe
    * to call repeatedly — a second call has no watchers left to close and resolves at once.
-   * Parity: Claude Code's `changeDetector.dispose()` returning the watcher `close()`
+   * Parity: the reference's `changeDetector.dispose()` returning the watcher `close()`
    * promise so teardown can await the watcher fully stopping (ENOENT race #25253).
    */
   stop(): Promise<void> {
@@ -3860,9 +3860,9 @@ export class ConfigService {
  *   7. `managedConfig` — `/etc/superinference/config.json`
  *   8. `pluginConfig`  — plugin-contributed BASE defaults (lowest priority)
  *
- * `flagConfig` (parity: Claude's `flagSettings`) layers a one-off settings file
+ * `flagConfig` (parity: the reference's `flagSettings`) layers a one-off settings file
  * ABOVE local/project/user but BELOW the managed-policy overrides applied after
- * the loop. `pluginConfig` (parity: Claude's settingsCache plugin base) is the
+ * the loop. `pluginConfig` (parity: the reference's settingsCache plugin base) is the
  * LOWEST layer: an installed plugin seeds default knobs that every file tier
  * overrides. Both are managed-only-key-free by construction (the per-field loop
  * omits managed-only keys, which are re-applied authoritatively from
@@ -3926,7 +3926,7 @@ export function mergeConfigs(
     if (layer.deferTools !== undefined) merged.deferTools = layer.deferTools;
     // Array-valued settings ACCUMULATE across layers (concat + dedupe), so a
     // higher layer augments rather than clobbers a lower one — parity with
-    // Claude's settingsMergeCustomizer. Managed-authoritative arrays
+    // the reference's settingsMergeCustomizer. Managed-authoritative arrays
     // (allowedMcpServers / sandboxExcludedCommands when managed owns them) are
     // still replaced wholesale by the managed override below (AMI superset).
     if (layer.alwaysLoadTools !== undefined) merged.alwaysLoadTools = mergeConfigArray(merged.alwaysLoadTools, layer.alwaysLoadTools);
@@ -3944,7 +3944,7 @@ export function mergeConfigs(
     if (layer.statusLine !== undefined) merged.statusLine = layer.statusLine;
     if (layer.sandboxExcludedCommands !== undefined) merged.sandboxExcludedCommands = mergeConfigArray(merged.sandboxExcludedCommands, layer.sandboxExcludedCommands);
     // Instruction-file exclude globs ACCUMULATE across layers (a higher layer adds
-    // more exclusions, never removes a lower layer's) — parity with Claude's
+    // more exclusions, never removes a lower layer's) — parity with the reference's
     // claudeMdExcludes list-merge; unioned with the AMI_MEMORY_EXCLUDES env list at
     // load time by {@link resolveConfiguredMemoryExcludes}.
     if (layer.memoryExcludes !== undefined) merged.memoryExcludes = mergeConfigArray(merged.memoryExcludes, layer.memoryExcludes);
@@ -4087,7 +4087,7 @@ export function mergeConfigs(
   // Managed hook kill-switches are MANAGED_ONLY_KEYS: honored ONLY from the managed
   // tier (the per-field loop above deliberately omits them), so a project/local/env/
   // cli config can neither disable all hooks nor relax the managed-only lockdown —
-  // managed policy is the sole source. Parity: Claude Code's disableAllHooks /
+  // managed policy is the sole source. Parity: the reference's disableAllHooks /
   // allowManagedHooksOnly policy settings.
   if (managedConfig?.disableAllHooks) {
     merged.disableAllHooks = true;
@@ -4098,7 +4098,7 @@ export function mergeConfigs(
   // Managed plugin policy is MANAGED-authoritative: the per-field loop above
   // deliberately omits enabledPlugins/allowManagedModsOnly, so a project/local/env/
   // cli config can neither force-disable a plugin nor relax the allow-only mode —
-  // managed policy is the sole source. Parity: Claude Code's enabledPlugins policy.
+  // managed policy is the sole source. Parity: the reference's enabledPlugins policy.
   if (managedConfig?.enabledPlugins) {
     merged.enabledPlugins = managedConfig.enabledPlugins;
   }
@@ -4112,7 +4112,7 @@ export function mergeConfigs(
   // Managed MCP denylist is authoritative AND still accumulates the lower-tier
   // denies on top (deny-wins): managed denies can never be dropped by a lower
   // layer, but a project/local layer may add MORE blocked servers. Parity with
-  // Claude's deniedMcpServers precedence (a server denied at any tier stays denied).
+  // the reference's deniedMcpServers precedence (a server denied at any tier stays denied).
   if (managedConfig?.deniedMcpServers) {
     merged.deniedMcpServers = mergeConfigArray(managedConfig.deniedMcpServers, merged.deniedMcpServers ?? []);
   }
@@ -4121,7 +4121,7 @@ export function mergeConfigs(
   }
   // Sandbox exemptions weaken the container sandbox, so when managed policy owns
   // them a lower (project/local) layer must not be able to add its own — parity:
-  // Claude's areSandboxSettingsLockedByPolicy refuses local sandbox changes once a
+  // the reference's areSandboxSettingsLockedByPolicy refuses local sandbox changes once a
   // higher-priority config owns the setting. (When managed does NOT set it, a
   // project may still exempt commands, so this only overrides when present.)
   if (managedConfig?.sandboxExcludedCommands) {
@@ -4129,14 +4129,14 @@ export function mergeConfigs(
   }
   // Managed sandbox-egress lockdown is MANAGED-authoritative: only the admin tier
   // may force domains-only egress; a lower tier can never set (or clear) it. Parity:
-  // Claude's shouldAllowManagedSandboxDomainsOnly() policy knob.
+  // the reference's shouldAllowManagedSandboxDomainsOnly() policy knob.
   if (managedConfig?.allowManagedSandboxDomainsOnly) {
     merged.allowManagedSandboxDomainsOnly = true;
   }
   // Managed feature-restriction map is AUTHORITATIVE: a lower tier may ADD denies for
   // new policies (handled by the deep-merge in the loop), but a managed deny can never
   // be RELAXED by a lower layer re-allowing it. Re-apply the managed entries ON TOP so
-  // each managed `{ allowed }` wins per-policy (deny-wins / admin-wins). Parity: Claude
+  // each managed `{ allowed }` wins per-policy (deny-wins / admin-wins). Parity: the reference
   // Code's policyLimits being sourced from the managed/enterprise tier only.
   if (managedConfig?.policyRestrictions) {
     merged.policyRestrictions = deepMergeConfigObjects(
@@ -4152,7 +4152,7 @@ export function mergeConfigs(
   // ProjectConfig (permissionMode / maxTurns / maxBudgetUsd) PLUS safeMode, so a
   // lower tier can never widen a managed security boundary at runtime. This reuses
   // the SAME TIER_LOCKED_KEYS set the config-tool guard enforces at write time (one
-  // source — no second lock list). Parity: Claude Code's policySettings being the
+  // source — no second lock list). Parity: the reference's policySettings being the
   // last, winning SETTING_SOURCE for all security-relevant settings.
   if (managedConfig) {
     for (const key of TIER_LOCKED_KEYS) {
@@ -4175,7 +4175,7 @@ export function mergeConfigs(
  * when none is configured). The memory loader UNIONS this with the
  * `AMI_MEMORY_EXCLUDES` env list, so both the persisted config knob and the one-shot
  * env override are honored. Kept in the config layer (not memory.ts) so there is ONE
- * place that reads the config files and applies the merge semantics. Parity: Claude
+ * place that reads the config files and applies the merge semantics. Parity: the reference
  * Code resolving `claudeMdExcludes` from the settings waterfall for `isClaudeMdExcluded`.
  */
 export function resolveConfiguredMemoryExcludes(cwd: string): string[] {
@@ -4202,7 +4202,7 @@ export function resolveConfiguredMemoryExcludes(cwd: string): string[] {
  * always-load behavior; returns `false` only when the highest-priority tier that sets it
  * uses `false`. Kept in the config layer (not memory.ts) so there is ONE place that reads
  * the config files and applies the merge semantics, mirroring
- * {@link resolveConfiguredMemoryExcludes}. Parity: Claude Code gating team memory behind
+ * {@link resolveConfiguredMemoryExcludes}. Parity: the reference gating team memory behind
  * an enable flag before reading the shared store.
  */
 export function resolveTeamMemoryLoadingEnabled(cwd: string): boolean {
@@ -4228,7 +4228,7 @@ export function resolveTeamMemoryLoadingEnabled(cwd: string): boolean {
  * explicit opt-out from the default — the cli `resolvePromptSuggestionEnabled` waterfall
  * treats `undefined` as the default-on case, and only an explicit `false` disables
  * next-prompt speculation. A broken/untrusted managed policy fails closed and is treated
- * as absent so a speculation lookup never aborts startup. Parity: Claude Code reading the
+ * as absent so a speculation lookup never aborts startup. Parity: the reference reading the
  * `speculationEnabled` global-config knob for `isSpeculationEnabled()`.
  */
 export function resolveSpeculationEnabled(cwd: string): boolean | undefined {
@@ -4246,11 +4246,11 @@ export function resolveSpeculationEnabled(cwd: string): boolean | undefined {
 }
 
 /**
- * Whether thinking should be ENABLED BY DEFAULT at session start (parity: Claude Code's
+ * Whether thinking should be ENABLED BY DEFAULT at session start (parity: the reference's
  * `shouldEnableThinkingByDefault()` in utils/thinking.ts). Ordered gate:
  *   1. the `MAX_THINKING_TOKENS` env var, when set to a finite number, wins — a positive
  *      value forces default-on, `0` (or negative) forces off (matches the cli's
- *      `MAX_THINKING_TOKENS` handling and Claude's `parseInt(...) > 0`);
+ *      `MAX_THINKING_TOKENS` handling and the reference's `parseInt(...) > 0`);
  *   2. an explicit {@link ProjectConfig.alwaysThinkingEnabled} `=== false` opts OUT;
  *   3. otherwise default ON.
  * Consumed by {@link import('../../../common/src/model-thinking').deriveModelDefaultThinking}
@@ -4289,7 +4289,7 @@ export function shouldEnableThinkingByDefault(
  * ({@link ProjectConfig.externalMemoryImportRoots}). Kept in the config layer so there
  * is ONE place that reads the config files and applies the merge semantics; the memory
  * loader UNIONS the roots with a one-shot env override and consults `approved` before
- * ever loading an outside-workspace `@import`. Parity: Claude Code reading
+ * ever loading an outside-workspace `@import`. Parity: the reference reading
  * `hasClaudeMdExternalIncludesApproved` from the project config for external includes.
  */
 export function resolveConfiguredExternalMemoryImports(cwd: string): { approved: boolean; roots: string[] } {
@@ -4313,7 +4313,7 @@ export function resolveConfiguredExternalMemoryImports(cwd: string): { approved:
 
 /**
  * Normalize a directory path into the canonical, absolute form used as a trusted-path
- * key / ancestor-walk node (parity: Claude Code's `normalizePathForConfigKey`). A single
+ * key / ancestor-walk node (parity: the reference's `normalizePathForConfigKey`). A single
  * normalizer so a path listed in {@link ProjectConfig.trustedProjectPaths} and the `cwd`
  * being checked compare identically regardless of `.`/`..`/trailing-separator spelling.
  */
@@ -4322,7 +4322,7 @@ export function normalizeTrustPath(p: string): string {
 }
 
 /**
- * True-only trust latch (parity: Claude Code's `computeTrustDialogAccepted` latch that
+ * True-only trust latch (parity: the reference's `computeTrustDialogAccepted` latch that
  * caches ONLY the positive result). Workspace trust only ever PROMOTES within a running
  * process — once a directory resolves trusted it stays trusted for the lifetime of the
  * process even if the backing config is later edited to remove the grant, so a mid-
@@ -4340,7 +4340,7 @@ const workspaceTrustLatch = new Set<string>();
  *  2. the inherited {@link ProjectConfig.trustedProjectPaths} allowlist — the normalized
  *     `cwd` is trusted when it equals, or is nested under, ANY listed path (an ancestor
  *     walk from `cwd` up to the filesystem root), so trusting a parent directory implies
- *     trust of all its children. Parity: Claude Code's `computeTrustDialogAccepted`
+ *     trust of all its children. Parity: the reference's `computeTrustDialogAccepted`
  *     walking `resolve(path, '..')` up every ancestor returning true if any has trust.
  *
  * A positive result is latched (see {@link workspaceTrustLatch}) so trust never silently
@@ -4458,7 +4458,7 @@ export function applyConfigEnv(
  * `SUPERINFERENCE_LANGUAGE` env var that {@link buildResponseLanguageSection}
  * (the single response-language consumer) already reads — so a user can persist a
  * preferred response language in project/user config instead of exporting the env
- * var before every launch (parity: Claude Code's `LanguagePicker` persisted setting).
+ * var before every launch (parity: the reference's `LanguagePicker` persisted setting).
  *
  * Precedence is preserved: an explicit, non-blank `SUPERINFERENCE_LANGUAGE` already
  * in `target` WINS (a one-shot env override is still possible) and is returned
@@ -4483,16 +4483,16 @@ export function applyConfigLanguage(
   return undefined;
 }
 
-/** Anthropic beta token for the `fast-mode` opt-in (parity: Claude Code's betas). */
+/** Anthropic beta token for the `fast-mode` opt-in (parity: the reference's betas). */
 export const FAST_MODE_BETA = 'fast-mode-2026-02-01';
-/** Anthropic beta token for the `redact-thinking` request opt-in (parity: Claude Code). */
+/** Anthropic beta token for the `redact-thinking` request opt-in (parity: the reference). */
 export const REDACT_THINKING_BETA = 'redact-thinking-2026-02-12';
 
 /**
  * Bridge the persisted {@link ProjectConfig.extraCaCerts} knob into
  * `NODE_EXTRA_CA_CERTS` so Node picks up a corporate-proxy / TLS-inspecting CA at
  * startup, without the user having to export the env var before every launch
- * (parity: Claude Code's `caCertsConfig.applyExtraCACertsFromConfig`). An explicit
+ * (parity: the reference's `caCertsConfig.applyExtraCACertsFromConfig`). An explicit
  * `NODE_EXTRA_CA_CERTS` already in `target` WINS (one-shot override) and is returned
  * unchanged; otherwise a non-blank `config.extraCaCerts` that resolves to an
  * existing, readable REGULAR file seeds it (trimmed). A missing/unreadable/
@@ -4526,7 +4526,7 @@ export function applyConfigCaCerts(
  * Bridge the persisted {@link ProjectConfig.respectGitignore} knob into the existing
  * `AMI_GLOB_NO_IGNORE` env knob that {@link import('./tools/glob').globRespectsGitignore}
  * already reads — so a user can persist the file-picker gitignore preference in
- * project/user config instead of exporting the env var (parity: Claude Code's
+ * project/user config instead of exporting the env var (parity: the reference's
  * `respectGitignore` setting). An explicit `AMI_GLOB_NO_IGNORE` already in `target`
  * WINS (one-shot override); otherwise `respectGitignore === true` honors `.gitignore`
  * (sets the knob falsey) and `=== false` ignores it (sets it truthy). An unset config
@@ -4548,7 +4548,7 @@ export function applyConfigGitignore(
  * Bridge the persisted {@link ProjectConfig.autoCompactEnabled} knob into the existing
  * `SUPERINFERENCE_DISABLE_AUTO_COMPACT` env knob that
  * {@link import('../../common/src/context-manager').isAutoCompactDisabled} reads — so a
- * user can persist "turn auto-compaction off" in project/user config (parity: Claude
+ * user can persist "turn auto-compaction off" in project/user config (parity: the reference
  * Code's `autoCompactEnabled` toggle). An explicit disable env var (either the
  * `SUPERINFERENCE_` or the Claude-compatible `DISABLE_AUTO_COMPACT` alias) already in
  * `target` WINS; otherwise `autoCompactEnabled === false` arms the disable. Unset/
@@ -4569,7 +4569,7 @@ export function applyConfigAutoCompact(
  * `AMI_PLANS_DIR` env knob that {@link import('./tools/plan-mode').getPlansDirectory}
  * reads (and validates for path-traversal, resolving relative to the project root) —
  * so a user can persist a custom plans directory in project/user config (parity:
- * Claude Code's `plansDirectory`). An explicit `AMI_PLANS_DIR` already in `target`
+ * the reference's `plansDirectory`). An explicit `AMI_PLANS_DIR` already in `target`
  * WINS; otherwise a non-blank `config.plansDirectory` seeds it (trimmed).
  */
 export function applyConfigPlansDirectory(
@@ -4588,9 +4588,9 @@ export function applyConfigPlansDirectory(
  * beta opt-ins into the existing `ANTHROPIC_BETAS` env escape hatch that
  * {@link import('./provider').getExtraAnthropicBetas} appends to the `anthropic-beta`
  * header — so a user can persist an API-beta opt-in in project/user config (parity:
- * Claude Code's `fast-mode` / `redact-thinking` beta knobs). The `redact-thinking` token
+ * the reference's `fast-mode` / `redact-thinking` beta knobs). The `redact-thinking` token
  * is armed by EITHER {@link ProjectConfig.redactThinking} `=== true` OR the inverse
- * {@link ProjectConfig.showThinkingSummaries} `=== false` (parity: Claude gates it on
+ * {@link ProjectConfig.showThinkingSummaries} `=== false` (parity: the reference gates it on
  * `!showThinkingSummaries`). Each enabled knob's token is appended to the comma-separated
  * list WITHOUT duplicating one already present; any tokens a user set directly in
  * `ANTHROPIC_BETAS` are preserved. A no-op when no knob is enabled.
@@ -4602,7 +4602,7 @@ export function applyConfigAnthropicBetas(
   const tokens: string[] = [];
   if (config?.fastMode === true) tokens.push(FAST_MODE_BETA);
   // redact-thinking is armed by EITHER the explicit redactThinking opt-in OR the inverse
-  // showThinkingSummaries knob being turned OFF (parity: Claude Code gates
+  // showThinkingSummaries knob being turned OFF (parity: the reference gates
   // REDACT_THINKING_BETA on `!showThinkingSummaries`). The token is de-duped below, so
   // setting both never double-appends.
   if (config?.redactThinking === true || config?.showThinkingSummaries === false) {
@@ -4639,11 +4639,11 @@ export const SPINNER_VERBS_ENV = 'AMI_SPINNER_VERBS';
  * Bridge the persisted {@link ProjectConfig.terminalProgressBarEnabled} knob into the
  * existing `AMI_NO_PROGRESS` kill-switch that the cli OSC 9;4 progress gate
  * (`isProgressReportingAvailable`) already reads — so a user can persist "no progress
- * bar" in project/user config instead of exporting the env var (parity: Claude Code's
+ * bar" in project/user config instead of exporting the env var (parity: the reference's
  * `terminalProgressBarEnabled` setting). An explicit `AMI_NO_PROGRESS` already in
  * `target` WINS (one-shot override); otherwise `terminalProgressBarEnabled === false`
  * arms the kill-switch. Unset/`true` is a no-op (progress stays on — AMI's default; a
- * superset divergence from Claude's default-off, keeping AMI's loved default while
+ * superset divergence from the reference's default-off, keeping AMI's loved default while
  * ADDing the opt-out).
  */
 export function applyConfigTerminalProgress(
@@ -4660,7 +4660,7 @@ export function applyConfigTerminalProgress(
  * Bridge the persisted {@link ProjectConfig.showTurnDuration} knob into the existing
  * `AMI_SHOW_TURN_DURATION` env knob that the cli `resolveShowTurnDuration` already
  * reads — so a user can persist "hide the per-turn duration" in project/user config
- * instead of exporting the env var (parity: Claude Code's `showTurnDuration` setting).
+ * instead of exporting the env var (parity: the reference's `showTurnDuration` setting).
  * An explicit `AMI_SHOW_TURN_DURATION` already in `target` WINS; otherwise
  * `showTurnDuration === false` arms the suppression (the resolver treats `'0'` as
  * falsy). Unset/`true` is a no-op (duration stays shown — the default).
@@ -4682,7 +4682,7 @@ export function applyConfigTurnDuration(
  * waterfall (`.ami/config.json`) instead of only via the `--verbose` flag / `--config`
  * key. An explicit `AMI_VERBOSE` already in `target` WINS (so the flag/`--config` bridge
  * that seeds it is preserved); otherwise `verbose === true` arms it. Unset/`false` is a
- * no-op (concise default). Parity: Claude Code's persisted `verbose` global-config knob.
+ * no-op (concise default). Parity: the reference's persisted `verbose` global-config knob.
  */
 export function applyConfigVerbose(
   config: ProjectConfig | null | undefined,
@@ -4700,7 +4700,7 @@ export function applyConfigVerbose(
  * can persist "don't auto-copy on select" in the settings waterfall instead of exporting
  * the env var. An explicit `AMI_NO_COPY_ON_SELECT` already in `target` WINS; otherwise
  * `copyOnSelect === false` arms the opt-out. Unset/`true` is a no-op (auto-copy stays on
- * — the default). Parity: Claude Code's `copyOnSelect ?? true` global-config knob.
+ * — the default). Parity: the reference's `copyOnSelect ?? true` global-config knob.
  */
 export function applyConfigCopyOnSelect(
   config: ProjectConfig | null | undefined,
@@ -4718,7 +4718,7 @@ export function applyConfigCopyOnSelect(
  * {@link import('../../../cli/src/render').detectTerminalCapabilities} `alternateScreen`
  * capability already reads — so a user can persist "use terminal scrollback instead of
  * the fullscreen alternate-screen buffer" in the settings waterfall instead of exporting
- * an env var every session (parity: Claude Code's `isFullscreenEnvEnabled()` layout
+ * an env var every session (parity: the reference's `isFullscreenEnvEnabled()` layout
  * toggle). An explicit env value for EITHER knob already present in `target` WINS (the
  * user set it on the command line / shell), so config never overrides a live env choice.
  * Otherwise `fullscreen === false` arms the `AMI_NO_ALT_SCREEN` kill-switch (scrollback
@@ -4746,7 +4746,7 @@ export function applyConfigFullscreen(
  * can persist "no syntax highlighting" in the settings waterfall instead of only via the
  * `--config` key. An explicit `AMI_SYNTAX_HIGHLIGHT` already in `target` WINS; otherwise
  * `syntaxHighlightingDisabled === true` arms the kill-switch (a defined-falsy `'0'`).
- * Unset/`false` is a no-op (highlighting stays on). Parity: Claude Code's
+ * Unset/`false` is a no-op (highlighting stays on). Parity: the reference's
  * `syntaxHighlightingDisabled` cosmetic config knob.
  */
 export function applyConfigSyntaxHighlighting(
@@ -4766,7 +4766,7 @@ export function applyConfigSyntaxHighlighting(
  * the timing in the settings waterfall instead of exporting the env var. An explicit
  * `AMI_DESKTOP_NOTIFY_THRESHOLD_MS` already in `target` WINS; otherwise a positive finite
  * value seeds it. A non-positive/non-finite value is ignored (keeps the built-in
- * default). Parity: Claude Code's numeric `messageIdleNotifThresholdMs` (default 60000).
+ * default). Parity: the reference's numeric `messageIdleNotifThresholdMs` (default 60000).
  */
 export function applyConfigIdleNotifThreshold(
   config: ProjectConfig | null | undefined,
@@ -4786,7 +4786,7 @@ export function applyConfigIdleNotifThreshold(
  * exporting the env var. Serialized to the `{ mode, verbs }` JSON shape the resolver
  * expects. An explicit `AMI_SPINNER_VERBS` already in `target` WINS. A value whose
  * `verbs` is not a non-empty string array is ignored (nothing to override). Parity:
- * Claude Code's cosmetic `spinnerVerbs` config knob.
+ * the reference's cosmetic `spinnerVerbs` config knob.
  */
 export function applyConfigSpinnerVerbs(
   config: ProjectConfig | null | undefined,
@@ -4807,7 +4807,7 @@ export function applyConfigSpinnerVerbs(
  * existing `AMI_DISABLE_BACKGROUND_TASKS` env gate the core bash/task tools already read
  * (via {@link isBackgroundTasksDisabled}) — so a user can persist "no background tasks"
  * in the settings waterfall (`.ami/config.json`) instead of exporting the env var
- * (parity: Claude Code's `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS`). `backgroundTasksEnabled
+ * (parity: the reference's `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS`). `backgroundTasksEnabled
  * === false` arms the gate (sets `'1'`); unset/`true` is a no-op (background tasks stay
  * on — AMI's default). An explicit {@link DISABLE_BACKGROUND_TASKS_ENV} OR its
  * Claude-compatible {@link DISABLE_BACKGROUND_TASKS_ENV_COMPAT} alias already in `target`
@@ -4845,7 +4845,7 @@ export function applyConfigBackgroundTasks(
  * read, so a config-file feature toggle actually gates tool registration without
  * threading `config` through every `ToolDefinition.isEnabled()` closure. This is
  * the config-side consumer that makes the otherwise-inert `features` map live
- * (parity: Claude Code's `features` map / `feature()`).
+ * (parity: the reference's `features` map / `feature()`).
  *
  * An already-set env override wins (operator intent beats the file), matching
  * every other `applyConfig*` bridge and the `features` doc comment
@@ -4890,7 +4890,7 @@ export function applyConfigStartupKnobs(
 
 /**
  * Resolve the persisted {@link ProjectConfig.additionalDirectories} to a de-duped list
- * of absolute directory paths to add to the tool-access workspace (parity: Claude
+ * of absolute directory paths to add to the tool-access workspace (parity: the reference
  * Code's `permissions.additionalDirectories`). Relative entries resolve against the
  * project root `cwd`; blank/non-string entries are dropped. Unioned with the
  * remembered `/add-dir` store into the PermissionManager allowed read roots at engine
@@ -4914,7 +4914,7 @@ export function resolveAdditionalDirectories(
 
 /**
  * Whether the plan-approval prompt should offer the extra "accept AND clear context"
- * affordance, resolved off the already-MERGED {@link ProjectConfig}. Parity: Claude
+ * affordance, resolved off the already-MERGED {@link ProjectConfig}. Parity: the reference
  * Code's `settings.showClearContextOnPlanAccept ?? false` gate in
  * `ExitPlanModePermissionRequest.tsx`. Default OFF — the option is additive/opt-in, so
  * only an explicit `true` (at any config tier) turns it on. Consumed by the exit-plan
@@ -4928,7 +4928,7 @@ export function shouldShowClearContextOnPlanAccept(
 
 /**
  * Whether the prompt-input footer should render the branch's pull-request status line,
- * resolved off the already-MERGED {@link ProjectConfig}. Parity: Claude Code's
+ * resolved off the already-MERGED {@link ProjectConfig}. Parity: the reference's
  * `getGlobalConfig().prStatusFooterEnabled ?? true` (`PromptInputFooterLeftSide.tsx`
  * `isPrStatusEnabled`). Default ON — only an explicit `false` (at any tier) suppresses
  * the PR footer. Consumed by the footer renderer in `cli/` (which already drives
@@ -4942,7 +4942,7 @@ export function isPrStatusFooterEnabled(
 
 /**
  * Whether voice-input mode is enabled, resolved off the already-MERGED
- * {@link ProjectConfig}. Parity: Claude Code's `isVoiceModeEnabled()` reading
+ * {@link ProjectConfig}. Parity: the reference's `isVoiceModeEnabled()` reading
  * `getInitialSettings().voiceEnabled`. Default OFF — only an explicit
  * {@link ProjectConfig.voiceEnabled} `=== true` (at any tier) turns it on, so the
  * UI surface that advertises voice (e.g. a `/voice` affordance) stays hidden unless
@@ -4956,7 +4956,7 @@ export function isVoiceModeEnabled(
 
 /**
  * Whether the user has explicitly OPTED IN to the auto-allow permission mode,
- * resolved off the already-MERGED {@link ProjectConfig}. Parity: Claude Code's
+ * resolved off the already-MERGED {@link ProjectConfig}. Parity: the reference's
  * `hasAutoModeOptIn()`. AMI offers auto-allow opt-OUT by default, so this is purely
  * an INTENT signal: a consumer can tell "wanted auto but it is unavailable
  * (managed-blocked)" (opt-in `true` + {@link isBypassPermissionsModeDisabled}) apart
@@ -4970,7 +4970,7 @@ export function hasAutoModeOptIn(
 
 /**
  * Which diff renderer to use, resolved off the already-MERGED {@link ProjectConfig}.
- * Parity: Claude Code's `diffTool` setting (`'terminal' | 'auto'`, default `'auto'`).
+ * Parity: the reference's `diffTool` setting (`'terminal' | 'auto'`, default `'auto'`).
  * An unset (or non-enum — the enum validator already surfaces a bad value) config
  * resolves to `'auto'`, preserving AMI's existing richest-surface behavior.
  */
@@ -4982,7 +4982,7 @@ export function resolveDiffTool(
 
 /**
  * The default shell backing input-box `!` commands, resolved off the already-MERGED
- * {@link ProjectConfig}. Parity: Claude Code's `resolveDefaultShell()` reading
+ * {@link ProjectConfig}. Parity: the reference's `resolveDefaultShell()` reading
  * `settings.defaultShell`. Resolution order: `settings.defaultShell → 'bash'`. AMI does
  * NOT auto-flip Windows to PowerShell (that would break existing bash-hook users), so the
  * default is `'bash'` on every platform; only an explicit `'powershell'` selects it.
@@ -4995,14 +4995,14 @@ export function resolveDefaultShell(
 
 /**
  * Milliseconds after which a cached {@link ProjectConfig.exampleFiles} list is considered
- * stale (one week). Parity: Claude Code's `ONE_WEEK_IN_MS` staleness window in
+ * stale (one week). Parity: the reference's `ONE_WEEK_IN_MS` staleness window in
  * `refreshExampleCommands`.
  */
 export const EXAMPLE_FILES_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
  * The cached frequently-modified example files, resolved off the already-MERGED
- * {@link ProjectConfig} with a staleness check. Parity: Claude Code's `exampleFiles` +
+ * {@link ProjectConfig} with a staleness check. Parity: the reference's `exampleFiles` +
  * `exampleFilesGeneratedAt` read in `refreshExampleCommands` — a cache older than
  * {@link EXAMPLE_FILES_TTL_MS} (relative to `nowMs`, default `Date.now()`) is treated as
  * expired and returns `[]` so the caller refreshes it; a never-generated cache (no
@@ -5022,7 +5022,7 @@ export function getCachedExampleFiles(
 
 /**
  * Pick the startup announcement to show, resolved off the already-MERGED
- * {@link ProjectConfig}. Parity: Claude Code's LogoV2 `companyAnnouncements` pick — on
+ * {@link ProjectConfig}. Parity: the reference's LogoV2 `companyAnnouncements` pick — on
  * the FIRST startup (`numStartups === 1`) the first entry is shown so the initial
  * announcement is deterministic; on later startups one is chosen at random. Returns
  * `undefined` when no announcements are configured. `rand` (default `Math.random`) is
@@ -5041,7 +5041,7 @@ export function pickCompanyAnnouncement(
 
 /**
  * Whether a `dangerouslyDisableSandbox` tool override may be honored, resolved off the
- * already-MERGED {@link ProjectConfig}. Parity: Claude Code's
+ * already-MERGED {@link ProjectConfig}. Parity: the reference's
  * `SandboxManager.areUnsandboxedCommandsAllowed()` consulted by `shouldUseSandbox()`.
  * Default (unset) → `true`, preserving AMI's existing behavior (the override is honored);
  * an explicit `false` (e.g. a managed/enterprise config) HARD-DISABLES the override so
@@ -5059,7 +5059,7 @@ export function areUnsandboxedCommandsAllowed(
  * equals the resolved default, otherwise the value verbatim. Keeps persisted config
  * MINIMAL so a knob tracks a MOVING default instead of pinning a stale literal — the
  * next read re-derives the current default rather than reading back a redundant value.
- * Parity: Claude Code's migration/effort write paths that store `undefined` when the
+ * Parity: the reference's migration/effort write paths that store `undefined` when the
  * chosen value already equals the computed default (e.g. `toPersistableEffort`,
  * `parseUserSpecifiedModel(x) === parseUserSpecifiedModel(default)` pruning). Generic
  * over the value type; both operands may be `undefined` (an unset value stays unset).
@@ -5076,7 +5076,7 @@ export function omitWhenEqualsDefault<T>(
  * (unset) when it equals the model's default level, so the saved setting stays RELATIVE
  * to the model default and switching models naturally re-derives the correct default
  * rather than pinning an absolute level that overrides a differently-defaulted model.
- * Parity: Claude Code's `EffortCallout` persisting `value === defaultLevel ? undefined :
+ * Parity: the reference's `EffortCallout` persisting `value === defaultLevel ? undefined :
  * value` via `toPersistableEffort`. Delegates to {@link omitWhenEqualsDefault}; a
  * `defaultLevel` of `undefined` means "no model default known", so any concrete level is
  * kept verbatim.
@@ -5089,7 +5089,7 @@ export function toPersistableEffort(
 }
 
 /**
- * Idempotent, guarded rename of a single config KEY (parity: Claude Code's
+ * Idempotent, guarded rename of a single config KEY (parity: the reference's
  * `migrate*AtStartup` pattern — e.g. `migrateReplBridgeEnabledToRemoteControlAtStartup`
  * — driven by a `saveGlobalConfig(prev => next)` read-modify-write). Returns a NEW
  * config with `oldKey`'s value copied (through `coerce`) into `newKey` and `oldKey`
@@ -5164,7 +5164,7 @@ export function runConfigKeyMigrations(
 
 /**
  * Append `newItem` to a JSONC ARRAY file's content while PRESERVING existing comments
- * and formatting (parity: Claude Code's `addItemToJSONCArray`, which uses jsonc-parser
+ * and formatting (parity: the reference's `addItemToJSONCArray`, which uses jsonc-parser
  * `modify()`+`applyEdits` with `isArrayInsertion`). AMI's object config writes go
  * through {@link safeWriteConfig} (a full `JSON.stringify` rewrite that STRIPS comments);
  * this is the array-append counterpart that does NOT clobber comments. Cases mirror the
@@ -5337,7 +5337,7 @@ export interface BoundedIntOptions {
  *  - `> max`                 → `{ capped }`,  `effective = max`,     logged;
  *  - otherwise               → `{ ok }`,      `effective = value`.
  *
- * Parity: Claude Code's `validateBoundedIntEnvVar` (envValidation.ts) upper-limit
+ * Parity: the reference's `validateBoundedIntEnvVar` (envValidation.ts) upper-limit
  * cap + invalid/capped status reporting. When `name` is empty the debug log is
  * suppressed (the thin {@link parsePositiveIntEnv} wrapper reuses this without a
  * name), so there is exactly one bounded-int implementation.
@@ -5366,12 +5366,12 @@ export function validateBoundedIntEnvVar(
 }
 
 // ---------------------------------------------------------------------------
-// Unified tool-output spill threshold (parity: Claude Code toolResultStorage.ts)
+// Unified tool-output spill threshold (parity: the reference toolResultStorage.ts)
 // ---------------------------------------------------------------------------
 
 /**
  * Built-in GLOBAL default ceiling (chars) for a tool result before it is spilled to
- * a file. Parity: Claude Code's `DEFAULT_MAX_RESULT_SIZE_CHARS` — the single default
+ * a file. Parity: the reference's `DEFAULT_MAX_RESULT_SIZE_CHARS` — the single default
  * against which each tool's own declared cap is clamped, so one tunable value governs
  * every tool that has no bespoke cap (web_fetch, PDF extraction, …). Distinct from the
  * per-tool {@link ProjectConfig.bashOutputMaxChars}/{@link ProjectConfig.taskOutputMaxChars}
@@ -5396,7 +5396,7 @@ export const TOOL_OUTPUT_MAX_UPPER_LIMIT = 2_000_000;
  * then clamped DOWN by that global (`Math.min`), so one knob lowers every tool's spill
  * threshold while a tool asking for LESS keeps its tighter bound.
  *
- * A non-finite `declaredMaxChars` is a deliberate opt-out (parity: Claude's
+ * A non-finite `declaredMaxChars` is a deliberate opt-out (parity: the reference's
  * `getPersistenceThreshold` returns `Infinity` unchanged — never spill).
  */
 export function resolveToolOutputMaxChars(declaredMaxChars: number, configured?: number): number {
@@ -5446,7 +5446,7 @@ export const fsHooks = {
  * A config file can hold a provider base-URL override, an `env` block, MCP/credential-
  * adjacent knobs; an unprivileged co-user on the same host must not be able to read it.
  * An EXISTING file's mode is preserved on rewrite (only new files get this default), so
- * a user who deliberately widened permissions is not fought. Parity: Claude Code writes
+ * a user who deliberately widened permissions is not fought. Parity: the reference writes
  * its config with `mode: 0o600`.
  */
 export const CONFIG_FILE_MODE = 0o600;
@@ -5466,7 +5466,7 @@ export function validateConfigJson(content: string): { valid: boolean; error?: s
   } catch (err) {
     // Attach actionable recovery guidance (one shared source with the loader) so a
     // malformed config/stale-tmp payload tells the user how to fix it, not just that
-    // it is broken. Parity: Claude's root-level JSON syntax-error tip.
+    // it is broken. Parity: the reference's root-level JSON syntax-error tip.
     return { valid: false, error: `Invalid JSON: ${err instanceof Error ? err.message : String(err)}. ${JSON_SYNTAX_RECOVERY_HINT}` };
   }
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
@@ -5497,7 +5497,7 @@ export interface ConfigFileValidation {
  * via {@link validateProjectConfigValues}) AND unknown-key detection
  * ({@link findUnknownConfigKeys}), and returns the full {@link getConfigJSONSchema}
  * output so a caller can show the user/agent exactly what shape is expected and repair
- * the file. Parity: Claude Code's `validateSettingsFileContent` (strict-mode schema
+ * the file. Parity: the reference's `validateSettingsFileContent` (strict-mode schema
  * validation separating the parse failure from the per-field error list, returning the
  * full schema). Reuses the ONE canonical value validator + schema generator — no parallel
  * schema logic.
@@ -5538,11 +5538,11 @@ export function validateConfigFileContent(content: string): ConfigFileValidation
 /** The infix tagging a timestamped pre-write backup (distinct from `.corrupt-`). */
 const CONFIG_BACKUP_INFIX = '.backup-';
 
-/** Keep at most this many pre-write backups per config file (parity: Claude's MAX_BACKUPS). */
+/** Keep at most this many pre-write backups per config file (parity: the reference's MAX_BACKUPS). */
 export const MAX_CONFIG_BACKUPS = 5;
 
 /**
- * Minimum spacing (ms) between pre-write backups of the same file (parity: Claude's
+ * Minimum spacing (ms) between pre-write backups of the same file (parity: the reference's
  * MIN_BACKUP_INTERVAL_MS). During startup many `/config` / status-line writes can fire
  * within milliseconds; without this, each would spawn a backup file and spam disk.
  */
@@ -5587,7 +5587,7 @@ export function findMostRecentConfigBackup(filePath: string): string | null {
  * (e.g. a dotfile-managed `~/.ami/config.json` stow/chezmoi link), return its
  * target so the write updates the target IN PLACE and preserves the symlink —
  * instead of a tmp+rename replacing the link with a regular file. A non-symlink
- * or absent path resolves to itself. Parity: Claude Code's "if settings.json is a
+ * or absent path resolves to itself. Parity: the reference's "if settings.json is a
  * symlink, update the target file instead".
  */
 export function resolveConfigWriteTarget(filePath: string): string {
@@ -5612,7 +5612,7 @@ export function resolveConfigWriteTarget(filePath: string): string {
  * storm during startup bursts) and pruned to the {@link MAX_CONFIG_BACKUPS}
  * newest. Best-effort: a missing file or any backup/prune failure is swallowed —
  * a backup must never block or break the write it protects. Returns the backup
- * path written, or null. Parity: Claude's saveConfigWithLock backup rotation.
+ * path written, or null. Parity: the reference's saveConfigWithLock backup rotation.
  */
 export function backupConfigBeforeWrite(filePath: string, now: number = Date.now()): string | null {
   let content: string;
@@ -5659,7 +5659,7 @@ function existingFileMode(filePath: string): number | null {
  * Write `content` to `filePath` durably and with the right permissions:
  *  - `flush: true` fsyncs the file descriptor before the call returns, so a power loss
  *    or OS crash immediately after the subsequent rename cannot leave a zero-length or
- *    half-flushed config even though the rename "succeeded" (parity: Claude Code's
+ *    half-flushed config even though the rename "succeeded" (parity: the reference's
  *    writeFileSyncAndFlush);
  *  - a NEW file is created `mode` (0o600 — owner-only); an EXISTING file's `preserveMode`
  *    is re-applied after the write so a rewrite never widens/narrows what the user chose.
@@ -5675,7 +5675,7 @@ function writeFileDurable(filePath: string, content: string, mode: number, prese
 }
 
 // ---------------------------------------------------------------------------
-// Global-config write-count introspection (parity: Claude's globalConfigWriteCount
+// Global-config write-count introspection (parity: the reference's globalConfigWriteCount
 // / CONFIG_WRITE_DISPLAY_THRESHOLD). A pathological write RATE to the shared global
 // config (a save loop, two fighting instances) is the classic precursor to a
 // corrupt `~/.ami/config.json`; before this it was invisible until the file broke.
@@ -5685,7 +5685,7 @@ function writeFileDurable(filePath: string, content: string, mode: number, prese
 
 /**
  * Write-rate at which an unusually high global-config churn is surfaced (parity:
- * Claude Code's CONFIG_WRITE_DISPLAY_THRESHOLD=20). Reached once per process, a
+ * the reference's CONFIG_WRITE_DISPLAY_THRESHOLD=20). Reached once per process, a
  * single warning is logged — a steady trickle of saves never spams.
  */
 export const CONFIG_WRITE_DISPLAY_THRESHOLD = 20;
@@ -5695,7 +5695,7 @@ let globalConfigWriteCount = 0;
 
 /**
  * How many times the GLOBAL config (`~/.ami/config.json`) has been written this
- * process. Introspection surface over config churn (parity: Claude's
+ * process. Introspection surface over config churn (parity: the reference's
  * getGlobalConfigWriteCount) — a value at/over {@link CONFIG_WRITE_DISPLAY_THRESHOLD}
  * signals a likely write loop before it damages the file.
  */
@@ -5716,14 +5716,14 @@ function recordGlobalConfigWrite(target: string): void {
 export function safeWriteConfig(filePath: string, data: Record<string, unknown>): void {
   // Write THROUGH a symlinked config path to its target so a dotfile-managed
   // settings symlink is updated in place rather than clobbered by a regular file
-  // (parity: Claude's "if settings.json is a symlink, update the target file").
+  // (parity: the reference's "if settings.json is a symlink, update the target file").
   const target = resolveConfigWriteTarget(filePath);
   // PID-scoped scratch path: two AMI instances writing the SAME config file
   // concurrently (e.g. the shared GLOBAL `~/.ami/config.json`) must NOT share one
   // `<target>.tmp` — otherwise instance A's rename can promote instance B's
   // half-written bytes, or A's cleanup can delete B's in-flight temp, corrupting
   // the target. Embedding this process's PID gives each instance an isolated
-  // scratch namespace (parity: Claude's PID-scoped getSwarmSocketName). A crash
+  // scratch namespace (parity: the reference's PID-scoped getSwarmSocketName). A crash
   // leaves a PID-tagged orphan that {@link cleanupStaleConfigTmp} can reclaim
   // only once that PID is dead.
   const tmpPath = instanceScopedTempName(target);
@@ -5758,7 +5758,7 @@ export function safeWriteConfig(filePath: string, data: Record<string, unknown>)
   // Count a successful write to the shared GLOBAL config so pathological churn
   // (a save loop, two fighting instances) is observable before it corrupts the file.
   recordGlobalConfigWrite(target);
-  // Single invalidation point (parity: Claude's resetSettingsCache fired on write):
+  // Single invalidation point (parity: the reference's resetSettingsCache fired on write):
   // the file we just wrote IS the new config, so drop every config read memo. The
   // next loadProjectConfig/loadLocalConfig/loadGlobalConfig re-stats + re-reads the
   // fresh bytes instead of serving a now-stale identity-cached snapshot.
@@ -5770,7 +5770,7 @@ export function safeWriteConfig(filePath: string, data: Record<string, unknown>)
  * An empty object means "all built-in defaults" — AMI has no mandatory config keys, so
  * every setting falls back to its engine default when the file is `{}`. Frozen so the
  * shared default can never be mutated in place (each write takes a fresh shallow copy).
- * Parity: Claude Code's InvalidConfigDialog "Reset with default configuration" branch,
+ * Parity: the reference's InvalidConfigDialog "Reset with default configuration" branch,
  * which writes `error.defaultConfig` over the broken file.
  */
 export const DEFAULT_PROJECT_CONFIG: Readonly<ProjectConfig> = Object.freeze({});
@@ -5798,7 +5798,7 @@ export interface ResetConfigResult {
  * through the canonical atomic {@link safeWriteConfig} path (temp+rename, durable flush,
  * mode preservation, internal-write suppression, symlink write-through). Returns the
  * quarantine path so a caller can tell the user exactly where their old file went.
- * Parity: Claude Code's InvalidConfigDialog "Reset with default configuration" branch.
+ * Parity: the reference's InvalidConfigDialog "Reset with default configuration" branch.
  */
 export function resetConfigToDefault(filePath: string): ResetConfigResult {
   // Read through a symlinked config path to its target so the pre-reset snapshot
@@ -5834,7 +5834,7 @@ export interface UpdateConfigResult {
 }
 
 /**
- * Guarded functional read-modify-write of a config file (parity: Claude Code's
+ * Guarded functional read-modify-write of a config file (parity: the reference's
  * `saveGlobalConfig(updater)` / `saveConfigWithLock` lost-update + auth-loss guard).
  *
  * The caller passes a pure `updater(current) -> next`. This helper:
@@ -5846,7 +5846,7 @@ export interface UpdateConfigResult {
  *  2. REFUSES to write when the freshly-read file is present-but-corrupt
  *     (`parse-error` / `not-object`): writing a merge built on an assumed-empty
  *     base would wipe the user's recoverable content. This is AMI's analog of
- *     Claude's "re-read returned defaults → don't persist defaults over good
+ *     the reference's "re-read returned defaults → don't persist defaults over good
  *     state" (`wouldLoseAuthState`): a momentarily-unparseable file never gets
  *     overwritten with a defaults-derived config. (Advisory `invalid-value` /
  *     `unknown-key` diagnostics still load — the update proceeds on them.)
@@ -5860,7 +5860,7 @@ export interface UpdateConfigResult {
  * cross-process advisory lock ({@link withFileLockSync} on the resolved target), so
  * two AMI processes (a detached run plus an interactive one, several swarm teammates)
  * can never interleave a read and a write and lose each other's keys — the classic
- * lost-update race the step-1 re-read only narrows is closed outright. Parity: Claude
+ * lost-update race the step-1 re-read only narrows is closed outright. Parity: the reference
  * Code's `saveConfigWithLock` takes a `lockfile.lockSync` before the read-modify-write,
  * logs lock contention, and installs an `onCompromised` handler that downgrades a stolen
  * lock to a log (never an unhandled throw). The lock reuses the ONE canonical lock
@@ -5878,14 +5878,14 @@ export function updateConfigFile(
   const lockTarget = resolveConfigWriteTarget(filePath);
   // The lock file lives beside the target, so its parent directory must exist
   // before acquisition even when the config itself is being created for the first
-  // time (parity: Claude's saveConfigWithLock mkdirSync's the dir before lockSync).
+  // time (parity: the reference's saveConfigWithLock mkdirSync's the dir before lockSync).
   try {
     const dir = path.dirname(lockTarget);
     if (!fsHooks.existsSync(dir)) fsHooks.mkdirSync(dir, { recursive: true });
   } catch { /* safeWriteConfig re-attempts dir creation and surfaces a real error */ }
   const started = Date.now();
   return withFileLockSync(lockTarget, () => {
-    // Log contention (parity: Claude's "lock took longer than expected — another
+    // Log contention (parity: the reference's "lock took longer than expected — another
     // instance may be running"), measured as time spent waiting to enter the section.
     const waited = Date.now() - started;
     if (waited > 100) {
@@ -5909,7 +5909,7 @@ export function updateConfigFile(
     return { written: true, reason: 'written', config: next };
   }, {
     // A stolen lock is recoverable — downgrade to a log instead of letting the
-    // default throw become an unhandled exception (parity: Claude's onCompromised).
+    // default throw become an unhandled exception (parity: the reference's onCompromised).
     onCompromised: (err) => coreLog('config', `config write lock compromised for ${lockTarget}: ${err.message}`),
     ...lockOptions,
   });
@@ -5919,7 +5919,7 @@ export function updateConfigFile(
  * Read the persisted per-skill usage map ({@link ProjectConfig.skillUsage}) from the
  * GLOBAL config, or an empty map when none exists / the path is unavailable. Used at
  * session start to seed a skill's cross-session frecency ranking. Best-effort: any read
- * failure yields `{}` (a missing history must never block startup). Parity: Claude
+ * failure yields `{}` (a missing history must never block startup). Parity: the reference
  * Code's `getGlobalConfig().skillUsage` read.
  */
 export function loadPersistedSkillUsage(): Record<string, SkillUsageStat> {
@@ -5937,7 +5937,7 @@ export function loadPersistedSkillUsage(): Record<string, SkillUsageStat> {
  * other's counts. Returns `true` when the update was written, `false` when there is no
  * writable global-config path or the write was skipped/failed (best-effort — a usage
  * write must never surface as an error to the caller). The increment formula is the ONE
- * canonical {@link mergeSkillUsageStat}. Parity: Claude Code's `saveGlobalConfig` on each
+ * canonical {@link mergeSkillUsageStat}. Parity: the reference's `saveGlobalConfig` on each
  * skill use (`utils/suggestions/skillUsageTracking.ts`).
  */
 export function persistSkillUsageStat(name: string, now: number = Date.now()): boolean {
@@ -5957,7 +5957,7 @@ export function persistSkillUsageStat(name: string, now: number = Date.now()): b
 /**
  * Debounce window for {@link recordSkillUsageDebounced}: a skill usage written less
  * than this long ago skips the (lock + read + parse + write) global-config round-trip
- * on the next invocation. Parity with Claude Code's `SKILL_USAGE_DEBOUNCE_MS`
+ * on the next invocation. Parity with the reference's `SKILL_USAGE_DEBOUNCE_MS`
  * (utils/suggestions/skillUsageTracking.ts) — the frecency ranking uses a 7-day
  * half-life, so sub-minute write granularity is irrelevant and the hot-repeat lock+I/O
  * is pure overhead.
@@ -5973,10 +5973,10 @@ export const SKILL_USAGE_DEBOUNCE_MS = 60_000;
  * delegates the actual read-modify-write to {@link persistSkillUsageStat}, returning
  * that function's `written` verdict. Best-effort (never throws).
  *
- * The debounce cache is passed IN (not module-global as in Claude Code) so each owner
+ * The debounce cache is passed IN (not module-global as in the reference) so each owner
  * scopes it to its own lifetime — AMI creates many `SkillManager`s per process (sessions,
  * forked sub-engines), and an instance-scoped map keeps independent sessions from
- * suppressing each other's first write. Parity with Claude Code's `recordSkillUsage`
+ * suppressing each other's first write. Parity with the reference's `recordSkillUsage`
  * pattern, adapted to AMI's multi-manager model.
  */
 export function recordSkillUsageDebounced(
@@ -5994,7 +5994,7 @@ export function recordSkillUsageDebounced(
 /**
  * Global-scoped transactional read-modify-write of the user config (`~/.ami/config.json`)
  * — a thin wrapper over the lock-safe {@link updateConfigFile} that resolves the global
- * path and null-checks it in ONE place (parity: Claude Code's `saveGlobalConfig(updater)`
+ * path and null-checks it in ONE place (parity: the reference's `saveGlobalConfig(updater)`
  * lost-update + same-reference-skip + corrupt-refuse guard). The caller passes a pure
  * `updater(current) -> next`; returning the SAME reference is a no-op write. Returns the
  * {@link UpdateConfigResult}, or `null` when there is no resolvable global config path
@@ -6025,7 +6025,7 @@ export function loadPreferenceFlags(): Record<string, boolean> {
 
 /**
  * True iff the named one-time preference/dialog has already been marked shown (parity:
- * Claude Code's `shouldShow*Dialog` guards gating on a persisted `has*BeenShown` flag).
+ * the reference's `shouldShow*Dialog` guards gating on a persisted `has*BeenShown` flag).
  * An empty name is never "shown". Best-effort read (see {@link loadPreferenceFlags}).
  */
 export function wasPreferenceShown(name: string): boolean {
@@ -6036,7 +6036,7 @@ export function wasPreferenceShown(name: string): boolean {
 /**
  * Mark a one-time preference/dialog as shown in the GLOBAL config via the lock-safe
  * {@link saveGlobalConfig}, so a first-run prompt/notice is surfaced at most once and the
- * flag survives across sessions (parity: Claude Code writing `hasIdeAutoConnectDialogBeenShown`
+ * flag survives across sessions (parity: the reference writing `hasIdeAutoConnectDialogBeenShown`
  * / `hasUsedBackgroundTask` / the bypass-permissions acknowledgment). Concurrency-safe:
  * the updater re-checks the freshly-read flag and returns the same reference (no write)
  * when another writer already set it — so the flag is set exactly once. Returns `true`
@@ -6078,7 +6078,7 @@ export function getLastReleaseNotesSeen(
 /**
  * Whether a one-time "what's new" release-notes banner should be shown for
  * `currentVersion` — i.e. the persisted {@link ProjectConfig.lastReleaseNotesSeen}
- * differs from it (parity: Claude Code's `config.lastReleaseNotesSeen !== VERSION` gate
+ * differs from it (parity: the reference's `config.lastReleaseNotesSeen !== VERSION` gate
  * in `LogoV2.tsx`). A blank `currentVersion` is never "unseen" (no version to compare
  * against). Reads the passed-in config when given, otherwise the GLOBAL config.
  */
@@ -6094,7 +6094,7 @@ export function hasUnseenReleaseNotes(
  * Record that the user has seen the release notes for `version` by persisting it as
  * {@link ProjectConfig.lastReleaseNotesSeen} in the GLOBAL config via the lock-safe
  * {@link saveGlobalConfig}, so the what's-new banner is surfaced at most once per release
- * (parity: Claude Code writing `lastReleaseNotesSeen = VERSION` after the banner is
+ * (parity: the reference writing `lastReleaseNotesSeen = VERSION` after the banner is
  * shown). Concurrency-safe: the updater re-reads the fresh value and returns the same
  * reference (no write) when it already matches. Returns `true` iff the value was newly
  * persisted; `false` when `version` is empty, it was already current, there is no
@@ -6127,7 +6127,7 @@ export function loadNoticeSeenCounts(): Record<string, number> {
 }
 
 /**
- * The persisted seen-count for a count-limited notice (parity: Claude Code's persisted
+ * The persisted seen-count for a count-limited notice (parity: the reference's persisted
  * per-notice seen-count). A missing / non-numeric / negative stored value normalizes to
  * `0` (a corrupt count must never suppress a notice forever). An empty name is `0`.
  */
@@ -6139,7 +6139,7 @@ export function getNoticeSeenCount(name: string): number {
 
 /**
  * Whether a count-limited notice should still be shown — i.e. its persisted seen-count is
- * below `maxCount` (parity: Claude Code's `shouldShow = seenCount < MAX_SHOW_COUNT` gate).
+ * below `maxCount` (parity: the reference's `shouldShow = seenCount < MAX_SHOW_COUNT` gate).
  * A non-positive `maxCount` or empty name means "never show".
  */
 export function shouldShowNotice(name: string, maxCount: number): boolean {
@@ -6150,7 +6150,7 @@ export function shouldShowNotice(name: string, maxCount: number): boolean {
 /**
  * Increment the persisted seen-count for a count-limited notice via the lock-safe
  * {@link saveGlobalConfig}, capped at `maxCount` so it never grows unbounded (parity:
- * Claude Code's concurrency-safe seen-count increment). The increment is computed from
+ * the reference's concurrency-safe seen-count increment). The increment is computed from
  * the FRESH on-disk value inside the updater, so two processes mounting the same notice
  * serialize and each sees the other's increment (no double-count via a stale base); and
  * when the count is already at the cap the updater returns the same reference (no write).
@@ -6181,7 +6181,7 @@ export function recordNoticeSeen(name: string, maxCount: number): boolean {
  * Lock-safe functional read-modify-write of a PROJECT config file
  * (`<cwd>/.ami/config.json`) — the project-scoped analog of {@link saveGlobalConfig},
  * reusing the one canonical {@link updateConfigFile} path (atomic temp+rename, fresh
- * re-read under a cross-process lock, same-reference no-op). Parity: Claude Code's
+ * re-read under a cross-process lock, same-reference no-op). Parity: the reference's
  * `saveCurrentProjectConfig(updater)` used for durable per-project state
  * (`lastSessionMetrics`, the onboarding fatigue counters).
  */
@@ -6199,7 +6199,7 @@ export const LOCAL_CONFIG_GITIGNORE_RULE = '.ami/config.local.json';
 /**
  * Ensure the per-user LOCAL config file (`.ami/config.local.json`) is listed in the
  * project's `.gitignore`, so a user-specific override is never accidentally committed
- * (parity: Claude Code's `addFileGlobRuleToGitignore` fired when it writes
+ * (parity: the reference's `addFileGlobRuleToGitignore` fired when it writes
  * `settings.local.json`). Idempotent: the rule is matched as a whole line (ignoring
  * surrounding whitespace and an optional leading slash) so it is never appended twice.
  * Best-effort — any read/write failure is swallowed (a missing gitignore write must
@@ -6232,7 +6232,7 @@ export function ensureLocalConfigGitignored(cwd: string): boolean {
  * Lock-safe functional read-modify-write of the per-user LOCAL config file
  * (`<cwd>/.ami/config.local.json`) via {@link updateConfigFile}; on a successful write it
  * fire-and-forgets {@link ensureLocalConfigGitignored} so the local override is auto-added
- * to `.gitignore` (parity: Claude Code auto-gitignoring `settings.local.json` on write).
+ * to `.gitignore` (parity: the reference auto-gitignoring `settings.local.json` on write).
  */
 export function saveLocalConfig(
   cwd: string,
@@ -6245,7 +6245,7 @@ export function saveLocalConfig(
 }
 
 // ---------------------------------------------------------------------------
-// Durable last-session metrics rollup (parity: Claude's StatsProvider exit flush)
+// Durable last-session metrics rollup (parity: the reference's StatsProvider exit flush)
 // ---------------------------------------------------------------------------
 
 /**
@@ -6271,7 +6271,7 @@ export function readLastSessionMetrics(cwd: string): Record<string, number> {
 /**
  * Persist an aggregated metric snapshot as {@link ProjectConfig.lastSessionMetrics} in the
  * PROJECT config via the lock-safe {@link saveProjectConfig}, carrying the session's rollup
- * forward for the next launch. Parity: Claude Code's StatsProvider `process.on('exit')`
+ * forward for the next launch. Parity: the reference's StatsProvider `process.on('exit')`
  * flush — which writes ONLY a NON-EMPTY snapshot (`Object.keys(metrics).length > 0`), so an
  * empty map is a no-op here too. Returns `true` iff the snapshot was newly persisted;
  * `false` on an empty/invalid map or a best-effort write failure.
@@ -6297,7 +6297,7 @@ export function saveLastSessionMetrics(cwd: string, metrics: Record<string, numb
 
 /**
  * The seen-count cap after which the per-project onboarding nudge stops showing
- * (parity: Claude Code's `projectOnboardingSeenCount >= 4` guard).
+ * (parity: the reference's `projectOnboardingSeenCount >= 4` guard).
  */
 export const PROJECT_ONBOARDING_SEEN_CAP = 4;
 
@@ -6317,7 +6317,7 @@ export function getProjectOnboardingSeenCount(cwd: string): number {
 /**
  * Whether the per-project onboarding affordance should still be shown — i.e. it has NOT
  * been completed, its seen-count is below {@link PROJECT_ONBOARDING_SEEN_CAP}, and this is
- * not a demo environment (parity: Claude Code's `shouldShowProjectOnboarding`). Best-effort:
+ * not a demo environment (parity: the reference's `shouldShowProjectOnboarding`). Best-effort:
  * a read failure is treated as "do not nag".
  */
 export function shouldShowProjectOnboarding(cwd: string): boolean {
@@ -6336,7 +6336,7 @@ export function shouldShowProjectOnboarding(cwd: string): boolean {
 /**
  * Increment the persisted per-project onboarding seen-count via the lock-safe
  * {@link saveProjectConfig}, capped at {@link PROJECT_ONBOARDING_SEEN_CAP} so it never grows
- * unbounded (parity: Claude Code's `incrementProjectOnboardingSeenCount`). The increment is
+ * unbounded (parity: the reference's `incrementProjectOnboardingSeenCount`). The increment is
  * computed from the FRESH on-disk value inside the updater; at the cap the updater returns
  * the same reference (no write). Returns `true` iff the count was advanced.
  */
@@ -6357,7 +6357,7 @@ export function incrementProjectOnboardingSeenCount(cwd: string): boolean {
 /**
  * Mark the per-project onboarding complete (sets {@link ProjectConfig.hasCompletedProjectOnboarding})
  * via the lock-safe {@link saveProjectConfig}, permanently suppressing the nudge (parity:
- * Claude Code's `maybeMarkProjectOnboardingComplete`). Concurrency-safe: when the flag is
+ * the reference's `maybeMarkProjectOnboardingComplete`). Concurrency-safe: when the flag is
  * already set the updater returns the same reference (no write). Returns `true` iff newly set.
  */
 export function maybeMarkProjectOnboardingComplete(cwd: string): boolean {
@@ -6380,7 +6380,7 @@ export function maybeMarkProjectOnboardingComplete(cwd: string): boolean {
 /**
  * The persisted preferred terminal-emulator name ({@link ProjectConfig.deepLinkTerminal}) —
  * read from the passed-in config when given (e.g. the merged config), else the GLOBAL config
- * (parity: Claude Code's `getGlobalConfig().deepLinkTerminal`). A non-string / blank value
+ * (parity: the reference's `getGlobalConfig().deepLinkTerminal`). A non-string / blank value
  * normalizes to `undefined`. Best-effort.
  */
 export function resolveDeepLinkTerminal(config?: ProjectConfig | null): string | undefined {
@@ -6394,7 +6394,7 @@ export function resolveDeepLinkTerminal(config?: ProjectConfig | null): string |
 
 /**
  * Persist the preferred terminal-emulator name as {@link ProjectConfig.deepLinkTerminal} in
- * the GLOBAL config via the lock-safe {@link saveGlobalConfig} (parity: Claude Code storing
+ * the GLOBAL config via the lock-safe {@link saveGlobalConfig} (parity: the reference storing
  * `deepLinkTerminal` so the preference survives into a headless LaunchServices context).
  * Concurrency-safe: an unchanged value is a no-op. Returns `true` iff newly persisted.
  */
@@ -6416,7 +6416,7 @@ export function saveDeepLinkTerminal(name: string): boolean {
 
 /**
  * Default delay (ms) before an interactivity-aware slow background operation first runs /
- * is re-checked (parity: Claude Code's `DELAY_VERY_SLOW_OPERATIONS_THAT_HAPPEN_EVERY_SESSION`
+ * is re-checked (parity: the reference's `DELAY_VERY_SLOW_OPERATIONS_THAT_HAPPEN_EVERY_SESSION`
  * = 10 min). Overridable per-config via {@link ProjectConfig.backgroundSlowOpDelayMs}.
  */
 export const BACKGROUND_SLOW_OP_DELAY_MS = 10 * 60 * 1000;
@@ -6424,7 +6424,7 @@ export const BACKGROUND_SLOW_OP_DELAY_MS = 10 * 60 * 1000;
 /**
  * Default "user recently interacted" recency window (ms): while the last interaction is
  * within this window, heavy background work is deferred so it never competes with an
- * actively typing user (parity: Claude Code's 1-minute
+ * actively typing user (parity: the reference's 1-minute
  * `getLastInteractionTime() > Date.now() - 1000*60` guard). Overridable per-config via
  * {@link ProjectConfig.backgroundInteractionRecencyMs}.
  */
@@ -6451,7 +6451,7 @@ export function resolveBackgroundInteractionRecencyMs(config?: ProjectConfig | n
 /**
  * Whether a slow background operation should be DEFERRED because the user interacted
  * recently — i.e. the session is interactive AND the last interaction is within the
- * recency window (parity: Claude Code's
+ * recency window (parity: the reference's
  * `getIsInteractive() && getLastInteractionTime() > Date.now() - 1000*60` guard that
  * reschedules slow ops so they never compete with an actively typing user). A
  * non-interactive session, or an absent/invalid last-interaction timestamp, never defers.
@@ -6480,7 +6480,7 @@ export function shouldDeferBackgroundWork(opts: {
 /**
  * The config frozen once at session startup. A running session reads session-stable knobs
  * from this snapshot so a mid-session config edit cannot change the running session's
- * behavior (parity: Claude Code's `captureTeammateModeSnapshot` / `getTeammateModeFromSnapshot`).
+ * behavior (parity: the reference's `captureTeammateModeSnapshot` / `getTeammateModeFromSnapshot`).
  * It is DELIBERATELY not invalidated by {@link resetConfigCache} — freezing is the point.
  */
 let sessionConfigSnapshot: ProjectConfig | null = null;
@@ -6489,7 +6489,7 @@ let sessionConfigSnapshot: ProjectConfig | null = null;
  * Freeze the session-stable config snapshot ONCE at startup from the (already
  * waterfall-merged, CLI-override-applied) config. A second call is a no-op that preserves
  * the first frozen value, so later runtime config edits never mutate the running session's
- * view (parity: Claude Code capturing the snapshot once). Use {@link repointConfigSnapshot}
+ * view (parity: the reference capturing the snapshot once). Use {@link repointConfigSnapshot}
  * to deliberately re-point it. Returns a defensive clone of the frozen snapshot.
  */
 export function captureConfigSnapshot(config: ProjectConfig): ProjectConfig {
@@ -6515,7 +6515,7 @@ export function getConfigSnapshot(): ProjectConfig | null {
 /**
  * Deliberately REPLACE the frozen snapshot with a new config — the entry point for a UI
  * setting change that must take effect mid-session. The new value is passed in directly
- * (not re-read) to avoid a read-after-write race (parity: Claude Code's
+ * (not re-read) to avoid a read-after-write race (parity: the reference's
  * `clearCliTeammateModeOverride(newMode)` passing the new value directly). Returns a clone.
  */
 export function repointConfigSnapshot(config: ProjectConfig): ProjectConfig {
@@ -6531,7 +6531,7 @@ export function clearConfigSnapshot(): void {
 /**
  * Read a session-stable knob from the frozen snapshot. When no snapshot has been captured
  * yet, a defensive LAZY-CAPTURE branch logs an initialization-order warning and captures
- * from `liveConfig` before reading (parity: Claude Code's lazy-capture fallback that logs
+ * from `liveConfig` before reading (parity: the reference's lazy-capture fallback that logs
  * an init bug then re-captures); with no `liveConfig` to fall back to it returns `undefined`.
  */
 export function getSnapshotConfigValue<K extends keyof ProjectConfig>(

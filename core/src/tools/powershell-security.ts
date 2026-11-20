@@ -31,7 +31,7 @@ import { escapeRegExp } from '../utils/string';
  *
  * Source: https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_language_modes
  *
- * This mirrors Claude Code's PowerShellTool/clmTypes.ts (CLM_ALLOWED_TYPES,
+ * This mirrors the reference's PowerShellTool/clmTypes.ts (CLM_ALLOWED_TYPES,
  * normalizeTypeName, isClmAllowedType) and its security-hardened removals of the
  * network-binding accelerators.
  *
@@ -276,7 +276,7 @@ export function detectUnsafeTypeCast(command: string): {
 // ---------------------------------------------------------------------------
 // Shared dangerous-cmdlet config lists.
 //
-// Mirrors Claude Code's src/utils/powershell/dangerousCmdlets.ts: one canonical
+// Mirrors the reference's src/utils/powershell/dangerousCmdlets.ts: one canonical
 // set per hazard class, consumed by the detectors below so a cmdlet is listed
 // once and every check picks it up (no sync drift). Entries are lowercase.
 // ---------------------------------------------------------------------------
@@ -336,7 +336,7 @@ export const ALIAS_HIJACK_CMDLETS: ReadonlySet<string> = new Set([
 
 /**
  * Write cmdlets that, when targeting the `env:` drive, mutate environment
- * variables (e.g. `Set-Item Env:Path …`). Unlike Claude's list, bash-colliding
+ * variables (e.g. `Set-Item Env:Path …`). Unlike the reference's list, bash-colliding
  * destructive aliases (`rm`, `del`, `rmdir`, `erase`) are intentionally omitted:
  * this detector also runs over POSIX-shell commands, and the env: scope gate
  * (below) already requires an `env:` reference before any of these can match.
@@ -406,7 +406,7 @@ export const DANGEROUS_SCRIPT_BLOCK_CMDLETS: ReadonlySet<string> = new Set([
  * invocations (`ForEach-Object { Remove-Item -Recurse / }`), bypassing the
  * arg gate forever. The native executables (ipconfig/route/hostname) carry the
  * same callback-gated flag cases (`ipconfig /all` allowed, `/flushdns`
- * rejected) and the same wildcard-bypass risk. Mirrors Claude Code's
+ * rejected) and the same wildcard-bypass risk. Mirrors the reference's
  * ARG_GATED_CMDLETS (utils/powershell/dangerousCmdlets.ts).
  */
 export const ARG_GATED_CMDLETS: ReadonlySet<string> = new Set([
@@ -443,7 +443,7 @@ const PS_SPAWNERS_AND_LOADERS: readonly string[] = [
 /**
  * Alias forms (from the shared {@link COMMON_ALIASES} map) whose canonical
  * cmdlet is in `canonical` — so `invoke-expression` in the set automatically
- * pulls in `iex`. Mirrors Claude Code's `aliasesOf()` derivation: add a cmdlet
+ * pulls in `iex`. Mirrors the reference's `aliasesOf()` derivation: add a cmdlet
  * to one validator list and its aliases follow, no separate maintenance.
  */
 function aliasesOf(canonical: ReadonlySet<string>): string[] {
@@ -459,7 +459,7 @@ function aliasesOf(canonical: ReadonlySet<string>): string[] {
  * cmdlet listed once (in the category that fits its hazard) is covered here
  * automatically, with no sync drift. A wildcard rule for any of these would
  * defeat the per-command security checks (download/exfil, code-exec, process
- * spawn, scriptblock arg gate, …). Mirrors Claude Code's `NEVER_SUGGEST`
+ * spawn, scriptblock arg gate, …). Mirrors the reference's `NEVER_SUGGEST`
  * (utils/powershell/dangerousCmdlets.ts): the suggestion gate is a single-name
  * lookup on the command's first word, so the set holds bare names only.
  */
@@ -562,7 +562,7 @@ function argTokensAfter(command: string, cmdletRe: RegExp): string[] | undefined
 }
 
 /**
- * `New-Object` hazards (mirrors Claude's checkComObject + the CLM string-arg
+ * `New-Object` hazards (mirrors the reference's checkComObject + the CLM string-arg
  * extension): `-ComObject` instantiates an OLE automation object that is itself
  * an execution/download primitive, and a `-TypeName` passed as a *string*
  * (`New-Object System.Net.WebClient`) escapes the `[bracket]` CLM cast check, so
@@ -635,7 +635,7 @@ export function detectUnsafeNewObject(command: string): PsDetection {
 }
 
 /**
- * `Start-Process` elevation / nested-shell launch (mirrors Claude's
+ * `Start-Process` elevation / nested-shell launch (mirrors the reference's
  * checkStartProcess): `-Verb RunAs` (space or colon syntax, quote/backtick
  * tolerant) requests a UAC elevation, and launching a nested `pwsh`/`powershell`
  * spawns an unvalidated child shell.
@@ -694,7 +694,7 @@ export function detectStartProcessElevation(command: string): PsDetection {
 }
 
 /**
- * Runtime-state hijack (mirrors Claude's checkRuntimeStateManipulation): any
+ * Runtime-state hijack (mirrors the reference's checkRuntimeStateManipulation): any
  * alias/variable mutation cmdlet in command position. The command-position
  * matcher already strips an optional module qualifier.
  */
@@ -710,7 +710,7 @@ export function detectRuntimeStateHijack(command: string): PsDetection {
 }
 
 /**
- * Environment-variable manipulation (mirrors Claude's checkEnvVarManipulation):
+ * Environment-variable manipulation (mirrors the reference's checkEnvVarManipulation):
  * only fires when an `env:` scope reference is present, then blocks on a direct
  * `$env:NAME = …` assignment or an env: write cmdlet. Gating on an `env:`
  * reference keeps POSIX-shell commands (which share token names like
@@ -773,7 +773,7 @@ export function detectDangerousPsCmdlets(command: string): PsDetection {
  *
  * PowerShell's tokenizer (SpecialCharacters.IsDash) treats en-dash (U+2013),
  * em-dash (U+2014) and horizontal-bar (U+2015) as dash-equivalents, so those
- * variants are normalized to ASCII `-` before matching — mirroring Claude Code's
+ * variants are normalized to ASCII `-` before matching — mirroring the reference's
  * parser token check `($tok.Text -replace '[–—―]','-') -eq '--%'`.
  * The token must stand alone (bounded by start/whitespace/statement separators)
  * so substrings like `git log --%H` or `sed 's/--%/x/'` do not match.
@@ -793,7 +793,7 @@ export function detectStopParsingToken(command: string): PsDetection {
 // ---------------------------------------------------------------------------
 // PowerShell common parameters.
 //
-// Mirrors Claude Code's PowerShellTool/commonParameters.ts: the switches and
+// Mirrors the reference's PowerShellTool/commonParameters.ts: the switches and
 // value-taking parameters that [CmdletBinding()] adds to EVERY advanced cmdlet.
 // A value-param consumes the token after it, so a positional-argument scanner
 // must skip those values — otherwise `Start-Job -ErrorAction Stop` would
@@ -825,7 +825,7 @@ export const COMMON_PARAMETERS: ReadonlySet<string> = new Set([
  * Script-block consumers that only ever filter/transform pipeline input — their
  * block is a predicate/selector, not arbitrary script to run. A script block
  * passed to any OTHER cmdlet is treated as potential arbitrary code. Mirrors
- * Claude's SAFE_SCRIPT_BLOCK_CMDLETS. `foreach-object` is intentionally absent:
+ * the reference's SAFE_SCRIPT_BLOCK_CMDLETS. `foreach-object` is intentionally absent:
  * its block is arbitrary script, not a predicate.
  */
 export const SAFE_SCRIPT_BLOCK_CMDLETS: ReadonlySet<string> = new Set([
@@ -841,7 +841,7 @@ export const SAFE_SCRIPT_BLOCK_CMDLETS: ReadonlySet<string> = new Set([
 
 /**
  * Scheduled-task persistence cmdlets. Creating/modifying a scheduled task
- * establishes persistence that survives the session. Mirrors Claude's
+ * establishes persistence that survives the session. Mirrors the reference's
  * SCHEDULED_TASK_CMDLETS; the legacy `schtasks.exe /create|/change` form is
  * handled separately by detectScheduledTask.
  */
@@ -866,7 +866,7 @@ function normalizeParamToken(token: string): string {
  * True if `arg` is an abbreviation of `fullParam` at least as long as
  * `minPrefix` (e.g. matches `-f`, `-fi`, … `-filepath` for fullParam
  * `-filepath`, minPrefix `-f`). Tolerant of alt dash prefixes and colon-bound
- * values (`-FilePath:x`). Mirrors Claude's psExeHasParamAbbreviation.
+ * values (`-FilePath:x`). Mirrors the reference's psExeHasParamAbbreviation.
  */
 function argMatchesParam(arg: string, fullParam: string, minPrefix: string): boolean {
   const name = normalizeParamToken(arg).split(':')[0]!;
@@ -912,7 +912,7 @@ function hasPositionalStringArg(args: string[]): boolean {
  * (Invoke-Command, Start-Job, …). A `-FilePath`/`-LiteralPath` flag OR any
  * positional string arg (which binds to -FilePath via parameter-set resolution)
  * executes an arbitrary script file — the same risk as Invoke-Expression.
- * Mirrors Claude's checkDangerousFilePathExecution.
+ * Mirrors the reference's checkDangerousFilePathExecution.
  */
 export function detectFilePathExecution(command: string): PsDetection {
   for (const name of FILEPATH_EXECUTION_CMDLETS) {
@@ -942,7 +942,7 @@ export function detectFilePathExecution(command: string): PsDetection {
  * `ForEach-Object -MemberName` (or a positional member name) invokes a method by
  * string name on every piped object — e.g. `Get-Process | ForEach-Object Kill`
  * — with no script-block or `.Method()` syntax for other checks to catch.
- * Aliases `%` / `foreach` resolve to foreach-object. Mirrors Claude's
+ * Aliases `%` / `foreach` resolve to foreach-object. Mirrors the reference's
  * checkForEachMemberName.
  */
 export function detectForEachMemberName(command: string): PsDetection {
@@ -967,7 +967,7 @@ export function detectForEachMemberName(command: string): PsDetection {
 }
 
 /**
- * Scheduled-task persistence (mirrors Claude's checkScheduledTask): a
+ * Scheduled-task persistence (mirrors the reference's checkScheduledTask): a
  * SCHEDULED_TASK_CMDLETS cmdlet in command position, or legacy
  * `schtasks(.exe) /create|/change` (both `-`/`/` delimiter forms).
  */
@@ -993,7 +993,7 @@ export function detectScheduledTask(command: string): PsDetection {
 
 /**
  * `Invoke-Item` / `ii` opens a path with the default shell handler
- * (ShellExecute); on an executable it runs arbitrary code. Mirrors Claude's
+ * (ShellExecute); on an executable it runs arbitrary code. Mirrors the reference's
  * checkInvokeItem.
  */
 export function detectInvokeItem(command: string): PsDetection {
@@ -1008,7 +1008,7 @@ export function detectInvokeItem(command: string): PsDetection {
 }
 
 /**
- * Standalone `Invoke-Expression` eval (mirrors Claude's checkInvokeExpression):
+ * Standalone `Invoke-Expression` eval (mirrors the reference's checkInvokeExpression):
  * `Invoke-Expression` runs an arbitrary string as PowerShell code — the eval
  * primitive. The existing download-cradle / base64 checks in
  * detectPowerShellExecution only surface it when *combined* with a downloader or
@@ -1037,13 +1037,13 @@ export function detectInvokeExpression(command: string): PsDetection {
 }
 
 /**
- * Script-block injection (mirrors Claude's checkScriptBlockInjection, denylist
+ * Script-block injection (mirrors the reference's checkScriptBlockInjection, denylist
  * half): when a `{ … }` script block is present as an argument, any
  * DANGEROUS_SCRIPT_BLOCK_CMDLETS cmdlet (Invoke-Command, Start-Job, Register-*
  * event, New/Enter-PSSession, Invoke-Expression) in command position executes
  * that block as arbitrary code. The reference's allowlist "all commands safe"
  * second pass is intentionally omitted here: detectPowerShellExecution runs over
- * EVERY command (not a PowerShell-only AST like Claude), so an allowlist default
+ * EVERY command (not a PowerShell-only AST like the reference), so an allowlist default
  * would over-flag ordinary POSIX commands that merely contain `{ … }` brace
  * groups. The denylist keys on PowerShell-only cmdlet names, so it cannot
  * misfire on bash.
@@ -1064,7 +1064,7 @@ export function detectScriptBlockInjection(command: string): PsDetection {
 }
 
 /**
- * Dynamic command-name invocation (mirrors Claude's checkDynamicCommandName):
+ * Dynamic command-name invocation (mirrors the reference's checkDynamicCommandName):
  * the call operator `&` applied to a runtime expression rather than a literal
  * command name — `& ('i'+'ex')`, `& ('iex','x')[0]`, `& ${function:Invoke-Expression}`,
  * `& @(...)`. The command name is computed at runtime and cannot be statically
@@ -1088,7 +1088,7 @@ export function detectDynamicCommandName(command: string): PsDetection {
  * download-cradle / encoded-command / CLM-cast checks already in
  * detectPowerShellExecution. Runs in a fixed order and returns the first block.
  * The input must already be Unicode-stripped / alt-dash-normalized by the caller
- * (detectPowerShellExecution does this), mirroring Claude's ordered validator
+ * (detectPowerShellExecution does this), mirroring the reference's ordered validator
  * chain — a parse/analysis that finds no explicit block falls through to the
  * caller's final decision (never a silent allow of an unhandled hazard).
  */
@@ -1120,7 +1120,7 @@ export function detectDangerousPowerShellCommand(command: string): PsDetection {
 // ---------------------------------------------------------------------------
 // PowerShell read-only cmdlet allowlist (auto-allow).
 //
-// Mirrors Claude Code's PowerShellTool/readOnlyValidation.ts CMDLET_ALLOWLIST /
+// Mirrors the reference's PowerShellTool/readOnlyValidation.ts CMDLET_ALLOWLIST /
 // isReadOnlyCommand: the Windows counterpart of the POSIX read-only SAFE_COMMANDS
 // set in permissions.ts. A command composed solely of these side-effect-free
 // cmdlets (Get-ChildItem, Get-Content, Select-String, …) is auto-allowed in
@@ -1144,7 +1144,7 @@ export function detectDangerousPowerShellCommand(command: string): PsDetection {
 // ---------------------------------------------------------------------------
 
 /**
- * Per-cmdlet read-only flag configuration. Mirrors Claude Code's
+ * Per-cmdlet read-only flag configuration. Mirrors the reference's
  * readOnlyValidation.ts CMDLET_ALLOWLIST `CommandConfig`:
  *   - `safeFlags` — the ONLY flags the cmdlet may carry and still be a pure read
  *     (lowercase, leading dash — the runtime comparison form). A flag outside
@@ -1154,10 +1154,10 @@ export function detectDangerousPowerShellCommand(command: string): PsDetection {
  *     omitted so they are NOT auto-allowed.
  *   - `allowAllFlags` — the cmdlet's entire flag surface is display/selection
  *     only (Format-*, Select-Object, Get-ComputerInfo, …); every flag is
- *     accepted. The dangerous-arg VALUE vectors those cmdlets have in Claude
+ *     accepted. The dangerous-arg VALUE vectors those cmdlets have in the reference
  *     (calculated-property hashtables, `$env:` leaks, script blocks) are already
  *     rejected wholesale by {@link PS_READONLY_DISQUALIFY_RE} — strictly more
- *     conservative than Claude's per-arg `argLeaksValue` element-type whitelist.
+ *     conservative than the reference's per-arg `argLeaksValue` element-type whitelist.
  *
  * COMMON_PARAMETERS (-Verbose/-ErrorAction/-ErrorVariable/…) are merged in at
  * check time, so they are never restated here.
@@ -1287,7 +1287,7 @@ export const POWERSHELL_READONLY_CONFIG: Record<string, PowerShellReadOnlyConfig
   // System / environment info (read).
   'get-date': { safeFlags: ['-date', '-format', '-uformat', '-displayhint', '-asutc'] },
   'get-alias': { safeFlags: ['-name', '-definition', '-scope', '-exclude'] },
-  // NOTE (intentional AMI superset divergence): Claude removed Get-Help from its
+  // NOTE (intentional AMI superset divergence): the reference removed Get-Help from its
   // allowlist (module-autoload hazard via pipelined -Name). AMI keeps it
   // read-only (allowAllFlags) to preserve the long-standing `Get-Help` auto-allow
   // perk; the autoload attack still requires a $-bearing form rejected by
@@ -1374,7 +1374,7 @@ const PS_READONLY_DISQUALIFY_RE = /[$`{}()@&>]/;
  * {@link COMMON_PARAMETERS}, or the cmdlet declares `allowAllFlags`. A flag
  * outside that surface — a side-effecting / remote / external-entity flag such
  * as `-ComputerName`, `-CimSession`, or Get-WinEvent `-FilterXml` — returns
- * false so the command is NOT auto-allowed. Mirrors Claude Code's
+ * false so the command is NOT auto-allowed. Mirrors the reference's
  * readOnlyValidation.ts CMDLET_ALLOWLIST `safeFlags`/`allowAllFlags` check +
  * COMMON_PARAMETERS merge; positional (non-flag) values are not gated here
  * (dangerous value forms are rejected wholesale by PS_READONLY_DISQUALIFY_RE).
@@ -1416,7 +1416,7 @@ function powerShellFlagsAllowed(segment: string, cmdlet: string): boolean {
  * {@link PS_READONLY_DISQUALIFY_RE} constructs, and the defense-in-depth textual
  * detectors ({@link detectDangerousPowerShellCommand} / {@link detectUnsafeTypeCast})
  * find no hazard. Anything it cannot prove read-only returns false (→ the caller
- * falls through to a prompt). Mirrors Claude's isReadOnlyCommand contract.
+ * falls through to a prompt). Mirrors the reference's isReadOnlyCommand contract.
  */
 export function isReadOnlyPowerShellCommand(command: string): boolean {
   const trimmed = command.trim();
@@ -1476,7 +1476,7 @@ export function isReadOnlyPowerShellCommand(command: string): boolean {
  * auto-allow — the Windows counterpart of the POSIX ACCEPT_EDITS_FS_COMMANDS
  * (`mkdir`/`touch`/`mv`/`cp`/`sed`). Canonical (lowercase) cmdlet names so an
  * alias (`sc`→`set-content`, `ac`→`add-content`, `ni`→`new-item`) resolves in
- * via {@link resolveToCanonical}. Mirrors Claude's PowerShell modeValidation
+ * via {@link resolveToCanonical}. Mirrors the reference's PowerShell modeValidation
  * write-cmdlet allowlist.
  *
  * DELIBERATE EXCLUSIONS (superset divergence — never regress a delete guard):
@@ -1497,7 +1497,7 @@ export const POWERSHELL_ACCEPT_EDITS_WRITE_CMDLETS: ReadonlySet<string> = new Se
  * file/directory. Link creation is a redirection/escape vector (a symlink can
  * point a later "edit" at a secret or system path), so `acceptEdits` must NEVER
  * silently auto-allow it — it falls through to an explicit prompt. Mirrors
- * Claude's New-Item link-creation detection.
+ * the reference's New-Item link-creation detection.
  */
 const NEW_ITEM_LINK_ITEM_TYPES: ReadonlySet<string> = new Set([
   'symboliclink',
@@ -1574,7 +1574,7 @@ export function isAcceptEditsPowerShellWrite(command: string): boolean {
  * This is the engine behind cross-alias permission matching on Windows (where
  * AMI's bash tool runs PowerShell): a deny rule written for `Remove-Item` must
  * also block `rm` / `del` / `ri`, and a rule for `rm` must block `Remove-Item`,
- * because they name the same cmdlet. Mirrors Claude's PowerShell
+ * because they name the same cmdlet. Mirrors the reference's PowerShell
  * `filterRulesByContentsMatchingInput` canonical substitution.
  *
  * `stripModule` encodes the deny-over-match / allow-no-over-match asymmetry:
@@ -1608,7 +1608,7 @@ export function canonicalizePowerShellCommandName(
 // ---------------------------------------------------------------------------
 // Per-cmdlet path-parameter configuration + path extraction.
 //
-// Mirrors Claude Code's PowerShellTool/pathValidation.ts CMDLET_PATH_CONFIG +
+// Mirrors the reference's PowerShellTool/pathValidation.ts CMDLET_PATH_CONFIG +
 // extractPathsFromCommand. Each config entry declares, per cmdlet, which
 // parameters carry filesystem paths (validated), which are switches (consume no
 // value), and which are value-taking non-path params (consume a value, not a
@@ -1859,14 +1859,14 @@ export const CMDLET_PATH_CONFIG: Record<string, CmdletPathConfig> = {
  * Element types safe to treat as a static filesystem path. Anything else
  * (Variable, SubExpression, ExpandableString, ScriptBlock, …) is a
  * runtime-computed value whose path cannot be statically validated — it forces
- * an ask. Mirrors Claude's SAFE_PATH_ELEMENT_TYPES.
+ * an ask. Mirrors the reference's SAFE_PATH_ELEMENT_TYPES.
  */
 const SAFE_PATH_ELEMENT_TYPES: ReadonlySet<CommandElementType> = new Set<CommandElementType>(['StringConstant', 'Parameter']);
 
 /**
  * True if a lowercase parameter name (leading dash) matches any entry in
  * `paramList`, honoring PowerShell's unambiguous-prefix matching (`-Lit` matches
- * `-LiteralPath`). Mirrors Claude's `matchesParam`.
+ * `-LiteralPath`). Mirrors the reference's `matchesParam`.
  */
 function matchesCmdletParam(paramLower: string, paramList: readonly string[]): boolean {
   for (const p of paramList) {
@@ -1881,7 +1881,7 @@ function matchesCmdletParam(paramLower: string, paramList: readonly string[]): b
  * True if a colon-syntax value (`-Path:<value>`) contains expression constructs
  * (arrays, subexpressions, variables, backtick escapes) that mask the real
  * runtime path. The outer CommandParameterAst hides these from the AST walk, so
- * they are detected textually. Mirrors Claude's `hasComplexColonValue`.
+ * they are detected textually. Mirrors the reference's `hasComplexColonValue`.
  */
 function hasComplexColonValue(rawValue: string): boolean {
   return (
@@ -1902,7 +1902,7 @@ function hasComplexColonValue(rawValue: string): boolean {
  * non-static value means the invocation cannot be statically validated → the
  * caller must ask), and the resolved `optionalWrite` knob.
  *
- * Mirrors Claude Code's PowerShellTool/pathValidation.ts `extractPathsFromCommand`,
+ * Mirrors the reference's PowerShellTool/pathValidation.ts `extractPathsFromCommand`,
  * including the three config knobs (leafOnlyPathParams / positionalSkip /
  * optionalWrite) with their defaults (none / 0 / false).
  */
@@ -2049,7 +2049,7 @@ export function extractPowerShellCommandPaths(cmd: ParsedCommandElement): {
 // ---------------------------------------------------------------------------
 // AST-based PowerShell security validator.
 //
-// Mirrors Claude Code's PowerShellTool/powershellSecurity.ts
+// Mirrors the reference's PowerShellTool/powershellSecurity.ts
 // `powershellCommandIsSafe(command, parsed)`: the ordered validator chain that
 // consumes a native-parsed `ParsedPowerShellCommand` AST (from
 // powershell-parser.ts's `parsePowerShellCommand`) and, crucially, FAILS SAFE —
@@ -2069,7 +2069,7 @@ export function extractPowerShellCommandPaths(cmd: ParsedCommandElement): {
 // there is no second, parallel implementation of them.
 // ---------------------------------------------------------------------------
 
-/** Result of the AST-based validator (parity with Claude's shape). */
+/** Result of the AST-based validator (parity with the reference's shape). */
 export type PowerShellSecurityResult = {
   behavior: 'passthrough' | 'ask';
   message?: string;
@@ -2086,7 +2086,7 @@ function askResult(message: string): PowerShellSecurityResult {
  * tokenizer treats `/`, en-dash, em-dash and horizontal-bar as `-` equivalents,
  * so `Start-Job –FilePath x` (en-dash) must match `-filepath`. Reuses the shared
  * abbreviation helper (no re-implementation), retrying once with the alternate
- * prefixes normalized to `-`. Mirrors Claude's psExeHasParamAbbreviation.
+ * prefixes normalized to `-`. Mirrors the reference's psExeHasParamAbbreviation.
  */
 function psParamAbbrevAltAware(
   cmd: ParsedCommandElement,
@@ -2124,7 +2124,7 @@ export function powershellCommandIsSafe(
   // NoPowerShell / a syntax ErrorId, …) so the degraded-to-ask reason is
   // actionable instead of opaque. The parser already produces these diagnostics
   // (powershell-parser.ts makeInvalidResult); previously they were discarded
-  // here. Mirrors Claude Code's parse-failure reason surfacing
+  // here. Mirrors the reference's parse-failure reason surfacing
   // (powershellPermissions.ts: "…cannot be parsed: <message>").
   if (!parsed.valid) {
     const diag = parsed.errors[0];
@@ -2279,7 +2279,7 @@ export function powershellCommandIsSafe(
   // slips past it. When a real AST is available, the parser hands us the bound
   // value as the parameter's structural child, so we normalize that child text
   // (strip quotes/backticks/whitespace) and ask when it resolves to `runas`.
-  // Mirrors Claude Code's checkStartProcess children[] layer (PR #23554).
+  // Mirrors the reference's checkStartProcess children[] layer (PR #23554).
   for (const cmd of allCommands) {
     const lower = cmd.name.toLowerCase();
     if (lower !== 'start-process' && lower !== 'saps' && lower !== 'start') {
@@ -2341,7 +2341,7 @@ export function powershellCommandIsSafe(
   //   2. a write cmdlet with NO extractable path and NOT optionalWrite — e.g.
   //      `Set-Content` without a target. optionalWrite cmdlets (iwr/irm without
   //      -OutFile write to the pipeline, not disk) are exempt.
-  // Mirrors Claude Code's PowerShellTool/pathValidation.ts
+  // Mirrors the reference's PowerShellTool/pathValidation.ts
   // checkPathConstraintsForStatement path-arg handling.
   for (const cmd of allCommands) {
     const extracted = extractPowerShellCommandPaths(cmd);
@@ -2383,7 +2383,7 @@ export function powershellCommandIsSafe(
  * parameter-set resolution would route to -FilePath / -MemberName). A script
  * block arg selects the ScriptBlock parameter set instead, so it does not count.
  * Uses the AST `elementTypes` when present; over-flagging is fail-safe. Mirrors
- * the positional-binding scan in Claude's checkDangerousFilePathExecution /
+ * the positional-binding scan in the reference's checkDangerousFilePathExecution /
  * checkForEachMemberName.
  */
 /**
@@ -2394,7 +2394,7 @@ export function powershellCommandIsSafe(
  * each colon-bound parameter) so an elevation verb obscured by quoting/padding
  * that the whitespace-tokenizing textual regex cannot anticipate is still
  * surfaced. Fail-open when `children` is unavailable (the textual regex layer
- * still runs). Mirrors Claude Code's checkStartProcess children[] layer.
+ * still runs). Mirrors the reference's checkStartProcess children[] layer.
  */
 function startProcessColonVerbRunAs(cmd: ParsedCommandElement): boolean {
   if (cmd.children === undefined) {

@@ -37,7 +37,7 @@ export interface RateLimitInfo {
 }
 
 /**
- * A single unified rate-limit window (parity: Claude's per-claim utilization
+ * A single unified rate-limit window (parity: the reference's per-claim utilization
  * headers). `claimAbbrev` is the header segment (`'5h'` / `'7d'`); fields are
  * null when the corresponding header was absent.
  */
@@ -160,7 +160,7 @@ function parseResetHeader(value: string | undefined): Date | null {
 
 /**
  * Two-tier (primary + overage/spillover) hard rate-limit decision, mirroring
- * Claude Code's rateLimitMocking `shouldThrow429`: a `'rejected'` primary tier is
+ * the reference's rateLimitMocking `shouldThrow429`: a `'rejected'` primary tier is
  * only a HARD limit when there is no overage tier or the overage tier is ALSO
  * `'rejected'`. A `'rejected'` primary with an `'allowed'` overage means spillover
  * quota remains, so the request should be tolerated rather than hard-failed.
@@ -205,7 +205,7 @@ export function getTimeZone(): string {
 
 /**
  * Render a rate-limit reset timestamp as human-readable text (canonical helper;
- * mirrors Claude's formatResetTime). A reset within 24h shows just a lowercase
+ * mirrors the reference's formatResetTime). A reset within 24h shows just a lowercase
  * am/pm clock time ("3:45pm"); a reset further out also shows the date
  * ("Nov 17, 3pm"), adding the year when it differs from the current one.
  *
@@ -259,7 +259,7 @@ export function formatRateLimitReset(info: RateLimitInfo, showTimezone = false):
 }
 
 // ---------------------------------------------------------------------------
-// Proactive early-warning (parity: Claude's claudeAiLimits getEarlyWarning*).
+// Proactive early-warning (parity: the reference's claudeAiLimits getEarlyWarning*).
 // Warns BEFORE a hard limit when quota is burning faster than the time window
 // allows — e.g. 75% of the weekly window consumed in the first 60% of the week.
 // ---------------------------------------------------------------------------
@@ -287,7 +287,7 @@ export interface EarlyWarningConfig {
 }
 
 /**
- * Default warning ladders (parity: Claude's EARLY_WARNING_CONFIGS). The 7-day
+ * Default warning ladders (parity: the reference's EARLY_WARNING_CONFIGS). The 7-day
  * window intentionally carries aggressive low tiers that only make sense with a
  * KNOWN fixed window — the observed-window burn-rate heuristic in
  * `rate-limiter.ts` cannot use them because a single observation can't tell how
@@ -328,7 +328,7 @@ export function getRateLimitDisplayName(type: string): string {
 
 /**
  * Fraction (0–1) of a fixed window that has elapsed, given the window's reset
- * instant (Unix epoch SECONDS) and its total duration. Parity: Claude's
+ * instant (Unix epoch SECONDS) and its total duration. Parity: the reference's
  * computeTimeProgress. Clamped to [0, 1]; a non-positive window yields 0.
  */
 export function computeTimeProgress(
@@ -343,7 +343,7 @@ export function computeTimeProgress(
   return Math.max(0, Math.min(1, elapsed / windowSeconds));
 }
 
-/** A fired proactive early warning (parity: Claude's allowed_warning limits). */
+/** A fired proactive early warning (parity: the reference's allowed_warning limits). */
 export interface EarlyWarning {
   /** Canonical rate-limit type whose threshold fired. */
   rateLimitType: string;
@@ -361,7 +361,7 @@ export interface EarlyWarning {
 
 /**
  * Decide whether to raise a proactive early warning from parsed unified windows,
- * mirroring Claude's getEarlyWarningFromHeaders:
+ * mirroring the reference's getEarlyWarningFromHeaders:
  *  1. Header-based: any window carrying a `surpassed-threshold` wins immediately.
  *  2. Time-relative fallback: for each configured window (priority order), fire
  *     when utilization is high relative to how little of the fixed window has

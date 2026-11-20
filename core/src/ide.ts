@@ -1,7 +1,7 @@
 /**
  * JetBrains IDE detection building blocks.
  *
- * Parity building block mirroring Claude Code's `src/utils/jetbrains.ts`
+ * Parity building block mirroring the reference's `src/utils/jetbrains.ts`
  * (`ideNameToDirMap` + `buildCommonPluginDirectoryPaths`). AMI is CLI/TUI-focused,
  * so these are self-contained, dependency-injected primitives (no fs side effects
  * in the pure resolvers) that a future IDE-integration consumer can build on:
@@ -22,7 +22,7 @@ import { join } from 'node:path';
 import { homedir, platform as osPlatform } from 'node:os';
 
 /**
- * Supported JetBrains IDE identifiers. Matches Claude Code's `IdeType` JetBrains
+ * Supported JetBrains IDE identifiers. Matches the reference's `IdeType` JetBrains
  * subset — the VS Code-family identifiers are intentionally omitted (AMI does not
  * pursue VS Code integration).
  */
@@ -74,7 +74,7 @@ export const SUPPORTED_JETBRAINS_IDES: readonly JetBrainsIdeType[] = Object.free
 
 /**
  * Type guard: is `name` a supported JetBrains IDE identifier? Case-insensitive,
- * mirroring Claude Code's `ideName.toLowerCase()` lookup.
+ * mirroring the reference's `ideName.toLowerCase()` lookup.
  */
 export function isSupportedJetBrainsIde(name: string): name is JetBrainsIdeType {
   return Object.prototype.hasOwnProperty.call(JETBRAINS_IDE_DIR_MAP, name.toLowerCase());

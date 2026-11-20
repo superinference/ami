@@ -2,7 +2,7 @@
  * Shared nucleo/fzf-v2-style fuzzy-scoring primitives.
  *
  * These constants and character classifiers approximate the scoring behavior of
- * nucleo (https://github.com/helix-editor/nucleo), the fuzzy matcher Claude
+ * nucleo (https://github.com/helix-editor/nucleo), the fuzzy matcher the reference
  * Code's native file-index wraps. They are the single canonical source for the
  * boundary / camelCase / consecutive bonuses and gap penalties used by BOTH
  * the symbol-name scorer in {@link ./workspace-indexer} and the scalable
@@ -27,7 +27,7 @@ export const PENALTY_GAP_START = 3;
 export const PENALTY_GAP_EXTENSION = 1;
 
 /**
- * Hard cap on the scanned needle length (parity with Claude Code's native
+ * Hard cap on the scanned needle length (parity with the reference's native
  * file-index `MAX_QUERY_LEN`). A query longer than this is clamped before
  * scanning so a pathologically long token cannot drive a quadratic scan across
  * every candidate — a cheap resource/DoS guard. 64 chars is far longer than any

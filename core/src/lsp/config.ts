@@ -1,7 +1,7 @@
 /**
  * Configurable LSP server registry.
  *
- * Mirrors Claude Code's configurable server set (services/lsp/config.ts +
+ * Mirrors the reference's configurable server set (services/lsp/config.ts +
  * LSPServerInstance's ScopedLspServerConfig + the plugin LspServerConfig
  * schema). Which language servers exist, their command/args/env, the workspace
  * folder, per-server init options and limits, and the extension→language map
@@ -19,7 +19,7 @@ import { expandEnvVarsTracked, substitutePluginMcpVars, type PluginMcpVars } fro
 /**
  * Communication transport between the client and the language-server process.
  * Only `stdio` is implemented; `socket` is accepted as a configuration value for
- * Claude-Code schema parity but rejected at spawn time with a clear error rather
+ * the reference schema parity but rejected at spawn time with a clear error rather
  * than being silently treated as stdio.
  */
 export type LspTransport = 'stdio' | 'socket';
@@ -32,7 +32,7 @@ export interface LspServerConfig {
    * giving up — an ordered-candidate fallback chain (e.g. a server published both
    * as `pyright-langserver` and `pyright`, or `clangd` vs `clangd-18`). The first
    * entry that resolves to an installed binary is spawned; `command` is always the
-   * first preference. Mirrors Claude Code's alternate-binary fallback (the
+   * first preference. Mirrors the reference's alternate-binary fallback (the
    * uvx→pipx→pip→pip3 pattern) so a usable server isn't missed just because the
    * single canonical name is absent. Resolved via {@link firstAvailableBinary}.
    */
@@ -53,7 +53,7 @@ export interface LspServerConfig {
   /**
    * Server-specific settings pushed to the server via
    * `workspace/didChangeConfiguration` immediately after the initialize
-   * handshake completes (parity with Claude Code's per-server `settings`).
+   * handshake completes (parity with the reference's per-server `settings`).
    */
   settings?: unknown;
   /** Milliseconds to wait for `initialize` before giving up. */
@@ -63,7 +63,7 @@ export interface LspServerConfig {
   /**
    * Whether to respawn the server after a crash. Defaults to `true` (bounded by
    * `maxRestarts`). Set `false` to leave a crashed server down until the session
-   * restarts, matching Claude Code's `restartOnCrash` knob.
+   * restarts, matching the reference's `restartOnCrash` knob.
    */
   restartOnCrash?: boolean;
   /** Max crash-recovery respawns before refusing to restart. */
@@ -76,7 +76,7 @@ export interface LspServerConfig {
    * defaults first, then registered), so overriding a default's extension from a
    * different key requires an explicit higher priority. (Registering under the
    * SAME key already overrides a default outright, independent of priority.)
-   * Mirrors Claude Code's "multiple servers per extension with ordering/priority"
+   * Mirrors the reference's "multiple servers per extension with ordering/priority"
    * (`extensionMap` stores a LIST; selection is explicitly extensible to priority).
    */
   priority?: number;
@@ -164,7 +164,7 @@ export function getAllLspServers(): Record<string, LspServerConfig> {
  * a registered server wins over the built-in default. Returns `[]` when none
  * handle the extension. This is the single ranking used by BOTH the language-key
  * resolver and the `languageId` lookup so they can never disagree on which server
- * owns an extension. Mirrors Claude Code's per-extension server LIST + ordering.
+ * owns an extension. Mirrors the reference's per-extension server LIST + ordering.
  */
 export function candidatesForExtension(
   ext: string,
@@ -239,7 +239,7 @@ export function validateLspServerConfig(name: string, raw: unknown): LspServerCo
   }
   // A command carrying its arguments inline (spaces) is almost always an authoring
   // mistake — the launcher would try to exec the whole string as one program name.
-  // Claude parity (LspServerConfigSchema.command refine, utils/plugins/schemas.ts):
+  // the reference parity (LspServerConfigSchema.command refine, utils/plugins/schemas.ts):
   // reject a space-bearing command with a corrective, example-bearing message,
   // unless it is an absolute path (which may legitimately contain spaces, e.g. a
   // macOS app bundle under "/Applications/My App/...").
@@ -283,7 +283,7 @@ export function validateLspServerConfig(name: string, raw: unknown): LspServerCo
   if (r.extensionToLanguage && typeof r.extensionToLanguage === 'object') {
     const map: Record<string, string> = {};
     for (const [ext, lang] of Object.entries(r.extensionToLanguage as Record<string, unknown>)) {
-      // Claude parity (schemas.ts fileExtension refine): a file-extension key must
+      // the reference parity (schemas.ts fileExtension refine): a file-extension key must
       // start with a dot and be at least two characters, so a bare "ts" (which would
       // never match a real file suffix) is rejected with a corrective example.
       if (!ext.startsWith('.') || ext.length < 2) {
@@ -330,7 +330,7 @@ export function loadLspServersFromFile(filePath: string): Record<string, LspServ
  * The plugin-scoped resolution context for a plugin-contributed LSP server:
  * the bundle install root (`${CLAUDE_PLUGIN_ROOT}`), the persistent per-plugin
  * data dir (`${CLAUDE_PLUGIN_DATA}`), and the user's saved `userConfig` values
- * (`${user_config.<key>}`). Mirrors Claude Code's `resolvePluginLspEnvironment`
+ * (`${user_config.<key>}`). Mirrors the reference's `resolvePluginLspEnvironment`
  * context (lspPluginIntegration.ts:L229-292).
  */
 export interface LspPluginEnvironment {
@@ -345,7 +345,7 @@ export interface LspPluginEnvironment {
 
 /**
  * Resolve variable references in a plugin-contributed LSP server config, matching
- * Claude Code's `resolvePluginLspEnvironment` (lspPluginIntegration.ts:L229-292).
+ * the reference's `resolvePluginLspEnvironment` (lspPluginIntegration.ts:L229-292).
  *
  * Substitution runs in the SAME precedence order as the MCP path (reusing the
  * canonical {@link substitutePluginMcpVars} + {@link expandEnvVarsTracked} so LSP

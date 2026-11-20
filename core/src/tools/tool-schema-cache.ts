@@ -2,7 +2,7 @@
 //
 // The tool-schema array renders at server position 2 (before the system prompt),
 // so any byte-level change to it busts the entire multi-K-token tool block AND
-// everything downstream in the provider's prompt cache. The churn sources Claude
+// everything downstream in the provider's prompt cache. The churn sources the reference
 // Code guards against (dynamic tool.prompt() content, GrowthBook gate flips) plus
 // the one that bites AMI in practice — an MCP server re-advertising the SAME tool
 // as a FRESH ToolDefinition object on reconnect / tools-changed, whose inputSchema
@@ -20,7 +20,7 @@
 // It lives in a leaf module (imports only types + the shared stable serializer) so
 // a consumer that must drop the cache on a lifecycle event — e.g. the MCP manager
 // invalidating a server's tools — can call {@link clearToolSchemaCache} without
-// pulling in the provider/engine layers (mirrors Claude Code's rationale for
+// pulling in the provider/engine layers (mirrors the reference's rationale for
 // keeping toolSchemaCache a leaf so auth.ts can clear it without an import cycle).
 
 import type { ToolDefinition, ToolInputSchema } from '../types';
@@ -33,7 +33,7 @@ const TOOL_SCHEMA_CACHE = new Map<string, unknown>();
  * insensitive serialization of its inputSchema when present. Two tools that share
  * a name but carry structurally different schemas (distinct keys) never collide,
  * while the same tool re-advertised with a reordered-but-equal schema maps to the
- * SAME key — so its first-rendered bytes are reused. Mirrors Claude Code's
+ * SAME key — so its first-rendered bytes are reused. Mirrors the reference's
  * `${name}:${jsonStringify(inputJSONSchema)}` keying, hardened for key order.
  */
 export function toolSchemaCacheKey(name: string, inputSchema?: ToolInputSchema): string {
@@ -41,7 +41,7 @@ export function toolSchemaCacheKey(name: string, inputSchema?: ToolInputSchema):
 }
 
 /**
- * The raw session cache. Exposed for introspection/parity with Claude Code's
+ * The raw session cache. Exposed for introspection/parity with the reference's
  * `getToolSchemaCache()`; consumers should prefer {@link memoizeToolSchema}.
  */
 export function getToolSchemaCache(): Map<string, unknown> {

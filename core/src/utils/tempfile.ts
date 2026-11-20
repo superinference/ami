@@ -4,7 +4,7 @@
 // two id strategies (unpredictable-random vs deterministic-content-hash) live in
 // ONE place.
 //
-// Parity with Claude Code's `generateTempFilePath` (utils/tempfile.ts): a subtle
+// Parity with the reference's `generateTempFilePath` (utils/tempfile.ts): a subtle
 // dual-mode algorithm. The default id is an unpredictable `randomUUID()` (so a
 // pre-planted symlink / predictable-path attacker cannot hijack the write
 // target); when `options.contentHash` is supplied the id is instead the first 16
@@ -21,7 +21,7 @@ import { resolveTmpBase } from './shell';
 
 /**
  * Build a temp-file path under the AMI temp base ({@link resolveTmpBase}, which
- * honors `AMI_TMPDIR`/`CLAUDE_CODE_TMPDIR` — a superset of Claude Code's plain
+ * honors `AMI_TMPDIR`/`CLAUDE_CODE_TMPDIR` — a superset of the reference's plain
  * `os.tmpdir()`), using an unpredictable random id by default or a deterministic
  * content-hash id when `options.contentHash` is given.
  *

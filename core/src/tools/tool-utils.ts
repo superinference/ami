@@ -54,13 +54,13 @@ export function isCaseInsensitiveFs(platform: NodeJS.Platform = _pathCompareHook
  * separators via `path.normalize`, and — only on a case-insensitive filesystem —
  * unify separators to `/` and lowercase, so the same file reached via two letter-cases
  * (or mixed `\`/`/`) resolves to one key. On a case-sensitive FS (Linux) this is just
- * `path.normalize` (case preserved). Mirrors Claude Code's `normalizePathForComparison`.
+ * `path.normalize` (case preserved). Mirrors the reference's `normalizePathForComparison`.
  */
 export function normalizePathForComparison(filePath: string): string {
   // NFC-normalize so the two Unicode spellings of the same filename (e.g. a
   // precomposed "é" U+00E9 vs the decomposed "e" + U+0301) collapse to ONE
   // comparison key — otherwise a path reached via a decomposed spelling would
-  // dodge a dedup/containment check that stored the composed form. Mirrors Claude
+  // dodge a dedup/containment check that stored the composed form. Mirrors the reference
   // Code's NFC normalization of resolved paths used for containment checks.
   const normalized = path.normalize(filePath).normalize('NFC');
   if (isCaseInsensitiveFs()) {
@@ -82,7 +82,7 @@ export const BLOCKED_PATHS = [
   // dump raw RAM (leaking any process's secrets) or hard-hang the reader;
   // /proc/kcore exposes the live kernel core image for the same reason.
   '/dev/mem', '/dev/kmem', '/dev/port', '/proc/kcore',
-  // PARITY ADD: complete the hang-inducing device set (Claude Code's
+  // PARITY ADD: complete the hang-inducing device set (the reference's
   // BLOCKED_DEVICE_PATHS). `/dev/full` always reports ENOSPC and produces
   // infinite zero bytes on read; `/dev/tty` and `/dev/console` block forever
   // waiting on terminal input. Reading any of these hangs or floods the tool.
@@ -205,7 +205,7 @@ export function resolveSearchPath(
 ): { resolved: string; error?: string } {
   // UNC guard — BEFORE any filesystem access, mirroring resolveFilePath. Merely
   // realpath'ing a UNC path on Windows opens an outbound SMB connection that can
-  // leak NTLM credentials, so grep/glob/list refuse it too (Claude Code blocks
+  // leak NTLM credentials, so grep/glob/list refuse it too (the reference blocks
   // UNC in both safeResolvePath AND getPathsForPermissionCheck, not just reads).
   if (inputPath && isUNCPath(inputPath)) {
     return { resolved: inputPath, error: `Error: UNC paths are not allowed (potential NTLM credential leak): ${inputPath}` };
@@ -318,7 +318,7 @@ export const MAX_DIRS_TO_LIST = 5;
  * is reclaimed, so a raw glob/grep over a plugin install tree would otherwise
  * surface STALE files from an orphaned version. The search tools exclude it by
  * name — exactly as they exclude `node_modules`/`.git` — so results never mix
- * live and orphaned plugin content. Parity: Claude Code's
+ * live and orphaned plugin content. Parity: the reference's
  * `getGlobExclusionsForPluginCache` (orphanedPluginFilter.ts), adapted to AMI's
  * relocate-to-hold-dir layout. The literal is duplicated across the core↔common
  * layer boundary (core must not import from common); keep the two in sync. */
@@ -340,7 +340,7 @@ export function formatDirectoryList(dirs: readonly string[], max: number = MAX_D
 /**
  * Human-readable phrasing for the operation named in an access-denied message, so
  * a blocked path tells the reader WHAT was attempted — "read files in", "search
- * for patterns in files in", … — not just that it failed. Mirrors Claude Code's
+ * for patterns in files in", … — not just that it failed. Mirrors the reference's
  * `ACTION_VERBS` (BashTool/pathValidation.ts). Keyed by the tool operation; an
  * unknown/absent operation falls back to a generic verb via {@link describeAction}.
  */
@@ -366,8 +366,8 @@ export function describeAction(operation?: string): string {
  * Build the canonical out-of-workspace denial string — ONE source shared by the
  * read/write path resolver and the search-path resolver so the wording never
  * drifts. It (1) names the working directory as context so the model can rebase a
- * relative path (Claude Code's FILE_NOT_FOUND_CWD_NOTE convention), (2) names the
- * OPERATION in human terms via {@link describeAction} (Claude Code's ACTION_VERBS),
+ * relative path (the reference's FILE_NOT_FOUND_CWD_NOTE convention), (2) names the
+ * OPERATION in human terms via {@link describeAction} (the reference's ACTION_VERBS),
  * and (3) enumerates the session's accessible roots so the reader learns WHERE
  * access is permitted and can retry correctly.
  */
@@ -417,7 +417,7 @@ export type AncestorResolution =
  * would really be written. Walks up with `realpathSync`; an ENOENT at a
  * component is distinguished — via `lstat` — into a dangling symlink (link entry
  * present, target gone → blocked) vs a genuinely absent segment (safe to walk
- * past). ELOOP and EACCES/EIO fail closed. Mirrors Claude Code's
+ * past). ELOOP and EACCES/EIO fail closed. Mirrors the reference's
  * `resolveDeepestExistingAncestorSync` / teamMemPaths `realpathDeepestExisting`.
  */
 export function resolveDeepestExistingAncestor(absolutePath: string): AncestorResolution {
@@ -461,7 +461,7 @@ export function resolveFilePath(
   // UNC guard — BEFORE any filesystem access. Merely touching a UNC path on
   // Windows can open an outbound SMB connection that leaks NTLM credentials, so
   // the shared resolver refuses it for EVERY caller (file_edit, index.ts, …), not
-  // just the ones that happen to pre-check. Claude Code blocks UNC in safeResolvePath.
+  // just the ones that happen to pre-check. the reference blocks UNC in safeResolvePath.
   if (isUNCPath(filePath)) {
     return { resolved: filePath, error: { output: `Error: UNC paths are not allowed (potential NTLM credential leak): ${filePath}`, isError: true } };
   }
@@ -598,7 +598,7 @@ export function safeLstat(
 /**
  * Informed-consent disclosure of a symlinked write target, surfaced at the
  * permission prompt so the user/model is told the REAL path a mutating file op
- * will affect before granting approval. Mirrors Claude Code's FilePermissionDialog
+ * will affect before granting approval. Mirrors the reference's FilePermissionDialog
  * symlink branch (FilePermissionDialog.tsx:L75-89,L162-167): it computes the
  * resolved symlink target for non-read ops and shows one of two consent lines —
  * an explicit "outside working directory" warning when the target escapes cwd, or
@@ -675,7 +675,7 @@ export function detectEncoding(buf: Buffer): FileEncoding {
  * path), re-reading a multi-megabyte file to recover its BOM is pure waste — this
  * opens the fd, reads at most {@link BOM_PROBE_BYTES} bytes, and closes it.
  * Returns the default `'utf-8'` for an empty/short/absent/unreadable file so the
- * caller behaves exactly as a BOM-less UTF-8 file. Mirrors Claude Code's
+ * caller behaves exactly as a BOM-less UTF-8 file. Mirrors the reference's
  * `readFileSyncWithMetadata` leading-4096-byte encoding probe (scaled to the 4
  * BOM bytes we actually need). Single source for cheap on-disk encoding probing.
  */
@@ -787,7 +787,7 @@ export function validatePatternAndPath(
 }
 
 /**
- * Pluralize `word` for a count (mirrors Claude Code's `plural()` helper in
+ * Pluralize `word` for a count (mirrors the reference's `plural()` helper in
  * `utils/stringUtils.ts`). The single canonical implementation shared by the
  * code-intelligence tools (`search_symbols`, `lsp`) so count headers read
  * `1 symbol` / `2 symbols` without each tool re-declaring the same helper.
@@ -833,7 +833,7 @@ export function extractQuery(input: Record<string, unknown>): { query: string; e
 /**
  * VCS working-copy markers. Git is handled separately (it is detected by walking
  * ANCESTORS, since a subdirectory of a repo is still "in" the repo); the rest are
- * checked in the given directory only. Mirrors Claude Code's `VCS_MARKERS`.
+ * checked in the given directory only. Mirrors the reference's `VCS_MARKERS`.
  */
 const VCS_MARKERS: ReadonlyArray<readonly [marker: string, name: string]> = [
   ['.hg', 'mercurial'],
@@ -846,10 +846,10 @@ const VCS_MARKERS: ReadonlyArray<readonly [marker: string, name: string]> = [
 /**
  * Detect the version-control system(s) governing `dir` (default cwd). Git is
  * found by walking ancestors synchronously (so being inside any subdirectory of a
- * repo still reports `git`, mirroring Claude Code's `findGitRoot`); Mercurial/
+ * repo still reports `git`, mirroring the reference's `findGitRoot`); Mercurial/
  * SVN/Perforce/Jujutsu/Sapling are detected by their marker in `dir`; Perforce is
  * additionally inferred from the `P4PORT` env knob. Returns the detected VCS
- * names (possibly several, e.g. a git + perforce hybrid). Mirrors Claude Code's
+ * names (possibly several, e.g. a git + perforce hybrid). Mirrors the reference's
  * `detectVcs(dir?)`.
  */
 export function detectVcs(dir: string = process.cwd()): string[] {
@@ -936,7 +936,7 @@ const SECRET_RULES: SecretRule[] = [
   // PARITY ADD: sk-proj-/sk-svcacct-/sk-admin- scoped keys.
   { id: 'openai-project-key', source: '(?:^|[^a-zA-Z0-9])(sk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,}T3BlbkFJ[A-Za-z0-9_-]{20,})' },
   // OpenAI standard (non-scoped) user API key — the `sk-<20>T3BlbkFJ<20>` form
-  // whose mandatory `T3BlbkFJ` infix is the structural anchor Claude Code's
+  // whose mandatory `T3BlbkFJ` infix is the structural anchor the reference's
   // secretScanner uses for near-zero-false-positive OpenAI detection (the second
   // alternative of its `openai-api-key` rule). PARITY ADD: matched BEFORE the
   // generic `sk-` rule so a modern user key is identified by its structure, not
@@ -956,15 +956,15 @@ const SECRET_RULES: SecretRule[] = [
   { id: 'aws-access-token', source: '(?:^|[^a-zA-Z0-9])((?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z2-7]{16})' },
   { id: 'gcp-api-key', source: '(?:^|[^a-zA-Z0-9])(AIza[a-zA-Z0-9_-]{35})' },
   // Hugging Face user access tokens (`hf_` + 34 letters). PARITY ADD — matches
-  // Claude Code's huggingface-access-token rule; AI-model credentials leak here too.
+  // the reference's huggingface-access-token rule; AI-model credentials leak here too.
   { id: 'huggingface-access-token', source: '(?:^|[^a-zA-Z0-9])(hf_[a-zA-Z]{34})' },
   // DigitalOcean personal-access / OAuth tokens (`dop_v1_`/`doo_v1_` + 64 hex).
-  // PARITY ADD — curated-provider breadth (Claude Code SECRET_RULES).
+  // PARITY ADD — curated-provider breadth (the reference SECRET_RULES).
   { id: 'digitalocean-pat', source: '(?:^|[^a-zA-Z0-9])(dop_v1_[a-f0-9]{64})' },
   { id: 'digitalocean-access-token', source: '(?:^|[^a-zA-Z0-9])(doo_v1_[a-f0-9]{64})' },
   // GCP / Vertex AI service-account identities (`<name>@<project>.iam.gserviceaccount.com`).
   // These name a privileged service identity; redacting + detecting them keeps a
-  // leaked service-account email out of shared transcripts (Claude Code parity).
+  // leaked service-account email out of shared transcripts (the reference parity).
   { id: 'gcp-service-account', source: '(?:^|[^a-zA-Z0-9])([a-z0-9-]+@[a-z0-9-]+\\.iam\\.gserviceaccount\\.com)' },
   // Google OAuth access/refresh tokens (`ya29.<token>`).
   { id: 'google-oauth-token', source: '(?:^|[^a-zA-Z0-9])(ya29\\.[0-9A-Za-z_-]{20,})' },
@@ -978,9 +978,9 @@ const SECRET_RULES: SecretRule[] = [
   { id: 'jwt', source: '(?:^|[^a-zA-Z0-9])(eyJ[a-zA-Z0-9_-]{20,}\\.eyJ[a-zA-Z0-9_-]{20,}(?:\\.[a-zA-Z0-9_-]+)?)' },
   { id: 'npm-access-token', source: '(?:^|[^a-zA-Z0-9])(npm_[a-zA-Z0-9]{36,})' },
   { id: 'pypi-upload-token', source: '(?:^|[^a-zA-Z0-9])(pypi-[a-zA-Z0-9]{50,})' },
-  // PARITY ADD (curated-provider breadth, Claude Code SECRET_RULES). Each new rule
+  // PARITY ADD (curated-provider breadth, the reference SECRET_RULES). Each new rule
   // keeps the secret token in capture group 1 (so redactSecrets replaces ONLY the
-  // token, preserving boundary chars) and adopts Claude's trailing boundary
+  // token, preserving boundary chars) and adopts the reference's trailing boundary
   // alternation `(?:[\x60'"\s;]|\\[nr]|$)` — which treats a literal escaped newline
   // (the two-char `\n`/`\r` inside a serialized JSON/quoted string) as a valid
   // terminator, catching secrets embedded in minified/escaped content.
@@ -1078,7 +1078,7 @@ export function scanForSecrets(content: string): SecretMatch[] {
   // matching let those slip through the write-time guard entirely. Every rule is
   // prefix-anchored (`sk-`, `AIza`, `ghp_`, …) so a full-content `test` does not
   // backtrack on long non-matching input (freeze-protection test still holds).
-  // Mirrors Claude Code's secretScanner, which tests `rule.re.test(content)`.
+  // Mirrors the reference's secretScanner, which tests `rule.re.test(content)`.
   // One entry per rule that fires (rule ids are unique, so results are naturally
   // deduplicated). The matched bytes are never captured into the result.
   const matches: SecretMatch[] = [];
@@ -1142,7 +1142,7 @@ export function redactSecrets(content: string): string {
 
   // 6. JSON-shaped credential: "api_key": "value" (quoted key), covering common aliases.
   // (The simpler `key: "value"` form is covered by the shared credential-assignment rule above.)
-  // PARITY ADD (Claude Code SECRET_FIELD_NAMES — bridge/debugUtils.ts): redact by JSON
+  // PARITY ADD (the reference SECRET_FIELD_NAMES — bridge/debugUtils.ts): redact by JSON
   // FIELD NAME regardless of the value's shape, so an opaque custom token under
   // "access_token"/"session_ingress_token"/"environment_secret" (values that match no
   // provider prefix) is scrubbed on the export/log path, not just known-shape tokens.
@@ -1175,7 +1175,7 @@ export function scanAddedSecrets(before: string, after: string): SecretMatch[] {
 /**
  * Build the canonical write-block message for detected secrets — ONE source of
  * truth for every edit mode (single replace, replace_all, multi-edit, full
- * overwrite) so the wording never drifts between paths. Parity with Claude Code's
+ * overwrite) so the wording never drifts between paths. Parity with the reference's
  * secret guard, which both NAMES the matched secret labels AND states the
  * sharing-risk rationale (a committed secret is exposed to everyone with
  * repository access), not just the type list. `where` distinguishes a fresh
@@ -1191,7 +1191,7 @@ export function secretWarning(
   // Team-memory scope: a file under the shared team-memory tree is replicated to
   // every repository collaborator, so writing a secret there is strictly worse
   // than committing one to this checkout. Surface a distinct, collaborator-aware
-  // block message for that path (parity with Claude Code's teamMemSecretGuard,
+  // block message for that path (parity with the reference's teamMemSecretGuard,
   // which hard-blocks with "Team memory is shared with all repository
   // collaborators"). Any other path keeps the generic repository-scoped warning.
   if (opts.teamMemory) {
@@ -1264,7 +1264,7 @@ export function isMcpToolName(name: string): boolean {
  * contiguous, stably-ordered prefix and MCP tools follow in a stable order, so
  * the provider's tool-schema cache prefix does not shift between turns/runs as
  * MCP servers connect on demand. De-duplicates by name (first occurrence wins),
- * mirroring Claude Code's `mergeAndFilterTools` partition-sort. Pure — returns a
+ * mirroring the reference's `mergeAndFilterTools` partition-sort. Pure — returns a
  * new array and never mutates the input. Generic over any `{ name }` shape so it
  * can order either `ToolDefinition`s or already-serialized tool schemas.
  */
@@ -1292,7 +1292,7 @@ export function partitionAndSortTools<T extends { name: string }>(tools: readonl
  *  A create path like `src/*.ts` or `out/{a,b}` would pass base-directory
  *  validation but resolve to an unintended literal path (the write tool never
  *  expands globs), so a non-existent target containing `* ? { }` is hard-denied
- *  (Claude Code `GLOB_PATTERN_REGEX`). SUPERSET over Claude: brackets `[ ]` are
+ *  (the reference `GLOB_PATTERN_REGEX`). SUPERSET over the reference: brackets `[ ]` are
  *  DELIBERATELY NOT rejected — framework dynamic-route filenames (e.g. a Next.js
  *  `[id].tsx` or SvelteKit `[slug]/+page.svelte`) are legitimate literal paths,
  *  and the write tool uses the path verbatim (no shell glob expansion), so there
@@ -1357,7 +1357,7 @@ export const GIT_NO_PROMPT_ENV: Readonly<Record<string, string>> = {
  * `'0o755'`). Returns undefined for absent/invalid input so the caller falls back
  * to the default (umask / preserved) permissions instead of applying a bogus
  * mode. Bounded to the standard permission range (<= 0o7777) so a wild value can
- * never request an unexpected setuid/sticky combination. Parity with Claude
+ * never request an unexpected setuid/sticky combination. Parity with the reference
  * Code's `{ mode }` option on its fs write helpers (create-with-exact-bits).
  */
 export function parseFileMode(raw: unknown): number | undefined {
@@ -1442,20 +1442,20 @@ export const DIFF_CONTEXT_LINES = 3;
  * Context width used for a {@link boundedChangeSnippet} — wider than the normal
  * diff context so an out-of-band change (a formatter/linter rewrite, a
  * format-on-save) is surfaced to the model WITH enough surrounding code to
- * locate it. Parity: Claude Code's getSnippetForTwoFileDiff `context: 8`.
+ * locate it. Parity: the reference's getSnippetForTwoFileDiff `context: 8`.
  */
 export const DIFF_SNIPPET_CONTEXT_LINES = 8;
 
 /**
  * Byte cap on a {@link boundedChangeSnippet}. A format-on-save of a large file
  * could otherwise inject the whole file into the turn; 8 KiB preserves the
- * changed region while bounding the worst case. Parity: Claude Code's
+ * changed region while bounding the worst case. Parity: the reference's
  * DIFF_SNIPPET_MAX_BYTES (8192).
  */
 export const DIFF_SNIPPET_MAX_BYTES = 8192;
 
 /**
- * Context width that forces the WHOLE file into a single hunk (mirrors Claude
+ * Context width that forces the WHOLE file into a single hunk (mirrors the reference
  * Code's `singleHunk` → `context: 100_000`). Any realistic file has fewer than
  * this many unchanged lines between two edits, so every change folds into one
  * contiguous hunk.
@@ -1466,7 +1466,7 @@ export const DIFF_SINGLE_HUNK_CONTEXT = 100_000;
  * Upper bound (old-line-count × new-line-count) for running the exact O(n·m)
  * line LCS. Past this the diff would be too slow/memory-hungry to compute on the
  * request path, so we fall back to the cheap O(n) prefix/suffix single-region
- * differ — mirroring Claude Code's `DIFF_TIMEOUT_MS` guard where `structuredPatch`
+ * differ — mirroring the reference's `DIFF_TIMEOUT_MS` guard where `structuredPatch`
  * bails and the caller degrades gracefully rather than hanging.
  */
 const MAX_DIFF_CELLS = 4_000_000;
@@ -1540,7 +1540,7 @@ function lineDiffOps(oldLines: string[], newLines: string[], ignoreWhitespace: b
  * Every op within `context` positions of a change is kept; contiguous kept runs
  * become one hunk (changes separated by <= 2·context unchanged lines merge, like
  * a unified diff). Each hunk's `lines` carry the leading ` `/`+`/`-` prefix,
- * matching Claude Code's `structuredPatch` hunk shape. Returns `[]` when there
+ * matching the reference's `structuredPatch` hunk shape. Returns `[]` when there
  * is no change.
  */
 function groupHunks(ops: DiffOp[], context: number): DiffHunk[] {
@@ -1629,7 +1629,7 @@ function fastSingleRegionDiff(oldLines: string[], newLines: string[], label: str
 /**
  * Apply the {@link UnifiedDiffOptions.maxBytes} cap: truncate at the last line
  * boundary within the cap and append a `... [N lines truncated] ...` marker
- * (matching Claude Code's snippet-truncation convention), so a huge diff can
+ * (matching the reference's snippet-truncation convention), so a huge diff can
  * never blow the per-turn token budget.
  */
 function capDiffBytes(diff: string, maxBytes: number): string {
@@ -1684,7 +1684,7 @@ export function buildUnifiedDiff(
 
 /**
  * Build the machine-readable {@link DiffHunk}[] for a file mutation — parity with
- * Claude Code's FileEdit `structuredPatch` output field, which lets a frontend
+ * the reference's FileEdit `structuredPatch` output field, which lets a frontend
  * render/fold a diff per-hunk programmatically instead of re-parsing the text
  * `output`. Shares the EXACT hunk-grouping of {@link buildUnifiedDiff} (via
  * {@link groupHunks}) so the structured patch and the text diff are always
@@ -1710,7 +1710,7 @@ export function buildStructuredPatch(
  * of the change from `before` to `after` — the model-facing view of an
  * out-of-band file modification (a formatter/linter rewrite, a format-on-save),
  * so a stale-file error can show WHAT changed instead of only reporting THAT it
- * changed. Parity: Claude Code's FileEditTool/utils.ts `getSnippetForTwoFileDiff`
+ * changed. Parity: the reference's FileEditTool/utils.ts `getSnippetForTwoFileDiff`
  * (context-8 structuredPatch → keep non-`-` lines → line numbers →
  * hunks joined by `\n...\n` → 8 KiB byte cap with a `[N lines truncated]` marker).
  *
@@ -1734,7 +1734,7 @@ export function boundedChangeSnippet(before: string, after: string): string {
 }
 
 /**
- * Count the lines added vs removed between two blobs. Mirrors Claude Code's
+ * Count the lines added vs removed between two blobs. Mirrors the reference's
  * `countLinesChanged`: a brand-new file (empty old content) counts every new
  * line as an addition; otherwise additions/removals are tallied independently
  * from the line LCS so a modified line shows as one removal + one addition.
@@ -1768,7 +1768,7 @@ export function countLinesChanged(
 /**
  * Count the lines in a blob the way an editor numbers them: a trailing newline
  * is a line TERMINATOR, not the start of a new empty line. `"a\nb\n"` is 2 lines,
- * `"a\nb"` is 2 lines, `""` is 0 lines. Mirrors Claude Code's `countLines`
+ * `"a\nb"` is 2 lines, `""` is 0 lines. Mirrors the reference's `countLines`
  * (`content.endsWith(EOL) ? parts.length - 1 : parts.length`) so a "wrote N lines"
  * display matches editor line numbering instead of over-counting a normal
  * newline-terminated file by one.
@@ -1782,7 +1782,7 @@ export function countContentLines(content: string): number {
 /**
  * Marker included in file-not-found error messages that carry a working-directory
  * note, so the model can self-correct relative-vs-absolute path confusion and a
- * renderer can detect the "file not found" shape. Parity: Claude Code's
+ * renderer can detect the "file not found" shape. Parity: the reference's
  * `FILE_NOT_FOUND_CWD_NOTE`.
  */
 export const FILE_NOT_FOUND_CWD_NOTE = 'Note: your current working directory is';

@@ -6,16 +6,16 @@ import { plural } from './utils/string';
 
 /** Anthropic's hard per-request media ceiling (images + documents). The API rejects a
  *  request carrying more than this with a confusing error, so we proactively strip the
- *  OLDEST excess media to stay under it. Parity: Claude's `API_MAX_MEDIA_PER_REQUEST`. */
+ *  OLDEST excess media to stay under it. Parity: the reference's `API_MAX_MEDIA_PER_REQUEST`. */
 export const MAX_MEDIA_PER_REQUEST = 100;
 
 /** Default placeholder content for a synthetic tool_result emitted when a tool_call
- *  never received a real result. Parity: Claude's SYNTHETIC_TOOL_RESULT_PLACEHOLDER. */
+ *  never received a real result. Parity: the reference's SYNTHETIC_TOOL_RESULT_PLACEHOLDER. */
 export const SYNTHETIC_TOOL_RESULT_PLACEHOLDER = '[Tool call interrupted — no result available]';
 
 /**
  * Whether Anthropic prompt caching (cache_control breakpoints) should be emitted for
- * `model`. Mirrors Claude's `getPromptCachingEnabled`: a global `DISABLE_PROMPT_CACHING`
+ * `model`. Mirrors the reference's `getPromptCachingEnabled`: a global `DISABLE_PROMPT_CACHING`
  * kill-switch plus per-family `DISABLE_PROMPT_CACHING_HAIKU/SONNET/OPUS` knobs. The
  * family match is by model-id substring (AMI has no fixed small/sonnet/opus alias set).
  */
@@ -34,7 +34,7 @@ export function getPromptCachingEnabled(model: string): boolean {
  * message array at `limit`, dropping the OLDEST excess first so the most recent media
  * survives. Anthropic rejects a request with more than `MAX_MEDIA_PER_REQUEST` media
  * blocks with a confusing error that is hard to recover from mid-session; stripping
- * pre-emptively keeps the request valid. Parity: Claude's `stripExcessMediaItems`
+ * pre-emptively keeps the request valid. Parity: the reference's `stripExcessMediaItems`
  * applied unconditionally in the request-building path (not only on error recovery).
  * Returns the same array reference when already within the limit.
  */
@@ -82,7 +82,7 @@ export interface OversizedImage {
  * Thrown by {@link validateImagesForAPI} when one or more outbound images exceed
  * the API's per-image base64 ceiling. Carries the structured list so a caller/UI
  * can act on it, while `message` is a human-readable, actionable summary naming
- * exactly which images are too big. Parity: Claude Code's `ImageSizeError`.
+ * exactly which images are too big. Parity: the reference's `ImageSizeError`.
  */
 export class ImageSizeError extends Error {
   readonly oversized: readonly OversizedImage[];
@@ -107,7 +107,7 @@ export class ImageSizeError extends Error {
  * ceiling ({@link API_IMAGE_MAX_BASE64_SIZE}) BEFORE the request is sent. Without
  * this, an oversized image surfaces as a confusing mid-request 400 that names no
  * image; here the turn fails fast with an actionable {@link ImageSizeError} that
- * identifies each offending image by message/image index. Parity: Claude Code's
+ * identifies each offending image by message/image index. Parity: the reference's
  * `validateImagesForAPI`. A no-op (returns normally) when every image is within
  * the limit, so it is safe to call unconditionally in the request path.
  */
@@ -165,7 +165,7 @@ export function sanitizeToolCallIds(
 
 /**
  * The Anthropic prompt-cache breakpoint object emitted for a cached prefix block.
- * Mirrors the shape Claude's `getCacheControl()` returns
+ * Mirrors the shape the reference's `getCacheControl()` returns
  * (`{ type: 'ephemeral'; ttl?: '1h'; scope?: CacheScope }`):
  *  - `ttl: '1h'` opts a breakpoint into the extended-cache window instead of the
  *    implicit 5-minute default — longer-lived caching for long/idle sessions that
@@ -231,7 +231,7 @@ export function buildToolCacheBreakpoints(
  * if it leaves a NON-assistant message (user/tool) with an empty content array, the
  * message is DROPPED entirely — the API rejects a message whose content is empty, so a
  * malformed/empty user or tool turn (e.g. a compaction artifact) must not be sent.
- * Parity: Claude drops messages left with empty content after block stripping.
+ * Parity: the reference drops messages left with empty content after block stripping.
  */
 export function stripEmptyTextBlocks(
   messages: Array<Record<string, unknown>>,
@@ -267,7 +267,7 @@ export function stripEmptyTextBlocks(
  * `role:'tool'` results for the same tool_call_id. The Anthropic API rejects
  * these ("tool_use ids must be unique" / "duplicate tool_result") with a 400 that
  * permanently deadlocks a resumed/compacted session. This keeps the FIRST
- * occurrence of each id and drops later duplicates, mirroring Claude's
+ * occurrence of each id and drops later duplicates, mirroring the reference's
  * `allSeenToolUseIds` pre-send pairing repair. Runs before orphan healing so the
  * synthetic-result pass sees the deduped set.
  */
@@ -315,7 +315,7 @@ export function dedupeToolCallIds(messages: Message[]): Message[] {
 /** Env knob gating {@link getStrictToolResultPairing}: when truthy, a transcript whose
  *  tool_use/tool_result pairing had to be repaired is treated as corruption and the
  *  turn fails fast instead of silently injecting synthetic placeholders. Parity:
- *  Claude's `getStrictToolResultPairing()` HFI opt-in (utils/messages.ts). */
+ *  the reference's `getStrictToolResultPairing()` HFI opt-in (utils/messages.ts). */
 export const STRICT_TOOL_PAIRING_ENV = 'SUPERINFERENCE_STRICT_TOOL_PAIRING';
 
 /**
@@ -324,7 +324,7 @@ export const STRICT_TOOL_PAIRING_ENV = 'SUPERINFERENCE_STRICT_TOOL_PAIRING';
  * unanswered tool blocks) rather than repairing it — so a corrupted transcript surfaces
  * loudly (with full diagnostic structure) instead of producing a model response
  * conditioned on synthetic placeholders. Off by default; env-injectable for testing.
- * Parity: Claude's `getStrictToolResultPairing()`.
+ * Parity: the reference's `getStrictToolResultPairing()`.
  */
 export function getStrictToolResultPairing(env: NodeJS.ProcessEnv = process.env): boolean {
   return isEnvTruthy(env[STRICT_TOOL_PAIRING_ENV]);
@@ -334,7 +334,7 @@ export function getStrictToolResultPairing(env: NodeJS.ProcessEnv = process.env)
  * Structured record of what a tool-pairing repair pass changed, so the mutation of a
  * (possibly corrupted) transcript can be traced to its root cause instead of mutating
  * the model's context silently. Emitted via {@link OrphanHealOptions.onRepair} and
- * carried by {@link ToolPairingError} in strict mode. Parity: Claude's
+ * carried by {@link ToolPairingError} in strict mode. Parity: the reference's
  * `tengu_tool_result_pairing_repaired` analytics payload + diagnostic message-structure
  * summary.
  */
@@ -352,7 +352,7 @@ export interface ToolPairingRepairDiagnostics {
   /** Whether a leading-orphan placeholder user turn was substituted on resume. */
   leadingOrphanPlaceholderInserted: boolean;
   /** Per-index message-structure summary, e.g.
-   *  `[0] user(tool_results=[a]); [1] assistant(tool_uses=[b])`. Parity: Claude's
+   *  `[0] user(tool_results=[a]); [1] assistant(tool_uses=[b])`. Parity: the reference's
    *  `messageTypes` diagnostic string. */
   messageStructure: string;
 }
@@ -361,7 +361,7 @@ export interface ToolPairingRepairDiagnostics {
  * Thrown by {@link healOrphanedToolCalls} in strict mode ({@link getStrictToolResultPairing})
  * when a transcript's tool_use/tool_result pairing would have to be repaired. Carries the
  * structured {@link ToolPairingRepairDiagnostics} and a human-readable message naming the
- * corrupted message structure. Parity: Claude's strict-mode `ensureToolResultPairing` throw.
+ * corrupted message structure. Parity: the reference's strict-mode `ensureToolResultPairing` throw.
  */
 export class ToolPairingError extends Error {
   readonly diagnostics: ToolPairingRepairDiagnostics;
@@ -389,7 +389,7 @@ function countToolUnits(messages: Message[]): { uses: number; results: number } 
 }
 
 /** Build the per-index message-structure summary used in repair diagnostics. Mirrors
- *  Claude's `messageTypes` string (assistant → its tool_use ids, user/tool → tool_result
+ *  the reference's `messageTypes` string (assistant → its tool_use ids, user/tool → tool_result
  *  ids, everything else → its role). */
 export function buildToolPairingDiagnosticSummary(messages: Message[]): string {
   return messages
@@ -411,16 +411,16 @@ export interface OrphanHealOptions {
    *  Different causes warrant different wording — e.g. 'Result dropped during context
    *  compaction' for a truncation artifact vs 'Interrupted by user' for a real abort —
    *  instead of a single misleading generic string. Defaults to
-   *  {@link SYNTHETIC_TOOL_RESULT_PLACEHOLDER}. Parity: Claude's cause-specific wording. */
+   *  {@link SYNTHETIC_TOOL_RESULT_PLACEHOLDER}. Parity: the reference's cause-specific wording. */
   placeholder?: string;
   /** Strict mode: when true, THROW a {@link ToolPairingError} with full diagnostics if
-   *  any repair would be needed, instead of silently repairing. Parity: Claude's
+   *  any repair would be needed, instead of silently repairing. Parity: the reference's
    *  getStrictToolResultPairing() path. Defaults to false (repair). */
   strict?: boolean;
   /** Observability hook invoked with {@link ToolPairingRepairDiagnostics} whenever the
    *  repair pass actually mutated the transcript (and strict mode did not throw). Lets a
    *  consumer log/emit an analytics event so a corrupted transcript's root cause is
-   *  traceable instead of repaired silently. Parity: Claude's
+   *  traceable instead of repaired silently. Parity: the reference's
    *  `tengu_tool_result_pairing_repaired` event. */
   onRepair?: (diagnostics: ToolPairingRepairDiagnostics) => void;
 }
@@ -487,7 +487,7 @@ export function healOrphanedToolCalls(
   // surviving messages were orphaned tool_results) — which the Anthropic API rejects
   // (it must lead with a user message and contain at least one message) — substitute
   // a placeholder user turn to preserve role alternation / a non-empty payload.
-  // Mirrors Claude's "Orphaned tool result removed" repair. Scoped to that specific
+  // Mirrors the reference's "Orphaned tool result removed" repair. Scoped to that specific
   // case so a slice that legitimately starts with an assistant turn is left untouched.
   const first = messages[0];
   const droppedLeadingOrphan = !!first && first.role === 'tool' && !issuedCallIds.has(first.tool_call_id);
@@ -534,7 +534,7 @@ export function healOrphanedToolCalls(
  * on resume the provider rejects such an empty assistant turn ("all messages must have
  * non-empty content"), permanently wedging the session. Dropping them is safe — they
  * carry nothing sendable. A turn with text, or with `tool_calls` (content may be `null`),
- * is preserved. Parity: Claude's `filterOrphanedThinkingOnlyMessages`, adapted to AMI's
+ * is preserved. Parity: the reference's `filterOrphanedThinkingOnlyMessages`, adapted to AMI's
  * role-based {@link Message} shape. Order-preserving; returns the same reference when
  * nothing is dropped.
  */
@@ -551,12 +551,12 @@ export function filterOrphanedThinkingOnlyMessages(messages: Message[]): Message
 
 /** Placeholder substituted into an assistant turn that was emptied by stripping every
  *  one of its tool_calls (a turn that had NO text, only now-unavailable tool_calls).
- *  Parity: Claude's '[Tool references removed - tools no longer available]'. */
+ *  Parity: the reference's '[Tool references removed - tools no longer available]'. */
 export const UNAVAILABLE_TOOL_REFERENCE_PLACEHOLDER =
   '[Tool references removed - tools no longer available]';
 
 /** Diagnostics describing what {@link stripUnavailableToolReferences} removed, so the
- *  drop is observable (logged/emitted) instead of silent. Parity: Claude's
+ *  drop is observable (logged/emitted) instead of silent. Parity: the reference's
  *  `logForDebugging('Filtering out tool_reference for unavailable tool: …')`. */
 export interface UnavailableToolReferenceDiagnostics {
   /** Assistant tool_calls removed because their tool name was not available. */
@@ -576,7 +576,7 @@ export interface StripUnavailableToolReferencesOptions {
    *  {@link UNAVAILABLE_TOOL_REFERENCE_PLACEHOLDER}. */
   placeholder?: string;
   /** Observability hook invoked with {@link UnavailableToolReferenceDiagnostics} when
-   *  (and only when) the transform actually removed something. Parity: Claude logs the
+   *  (and only when) the transform actually removed something. Parity: the reference logs the
    *  drop; AMI surfaces it so a disconnected-MCP / removed-plugin tool reference is
    *  traceable instead of silently repaired. */
   onStrip?: (diagnostics: UnavailableToolReferenceDiagnostics) => void;
@@ -600,7 +600,7 @@ export interface StripUnavailableToolReferencesOptions {
  *    substituting a placeholder text block so the turn stays non-empty/valid.
  *
  * Order-preserving; returns the SAME reference when nothing references an unavailable
- * tool (fast no-op). Mirrors Claude's `stripUnavailableToolReferencesFromUserMessage`,
+ * tool (fast no-op). Mirrors the reference's `stripUnavailableToolReferencesFromUserMessage`,
  * adapted to AMI's role-based {@link Message} shape (tool name lives on the assistant
  * `tool_call`, not on the `tool_result`). Run BEFORE {@link healOrphanedToolCalls} so the
  * heal pass sees a transcript already free of stale-tool references.
@@ -649,7 +649,7 @@ export function stripUnavailableToolReferences(
         const hasText = typeof msg.content === 'string' && msg.content.trim() !== '';
         if (kept.length === 0 && !hasText) {
           // Turn emptied entirely → substitute the placeholder text so the provider
-          // does not reject an empty assistant turn. Parity: Claude's placeholder block.
+          // does not reject an empty assistant turn. Parity: the reference's placeholder block.
           result.push({ ...msg, content: placeholder, tool_calls: undefined });
           placeholdersInserted++;
         } else {

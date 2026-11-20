@@ -6,7 +6,7 @@
  * RAW input to that reviewer is both a data-exposure risk (secrets / large payloads)
  * and often needless (many fields carry no security signal). This module centralizes
  * the per-tool projection that controls EXACTLY which fields a tool exposes to the
- * classifier, mirroring Claude Code's per-tool `Tool.toAutoClassifierInput(input)`
+ * classifier, mirroring the reference's per-tool `Tool.toAutoClassifierInput(input)`
  * (yoloClassifier.ts L384-424):
  *
  *  - A tool's own {@link ToolDefinition.toAutoClassifierInput} hook, when present, is

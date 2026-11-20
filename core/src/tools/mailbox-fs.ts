@@ -10,7 +10,7 @@ import { MAX_MAILBOX, type AgentMessage } from './send-message';
  * ({@link ./send-message}). That is correct and fast for teammates spawned
  * IN-PROCESS (the engine's own sub-agents), but it cannot reach a teammate running
  * as a SEPARATE OS process — a swarm where each agent is its own `ami` process
- * sharing one project. Claude Code solves this with a FILE-based mailbox
+ * sharing one project. the reference solves this with a FILE-based mailbox
  * (`utils/swarm/backends/PaneBackendExecutor.ts` → `writeToMailbox`,
  * `utils/teammateMailbox.ts`): every spawn/sendMessage/terminate routes through a
  * per-`(team, agent)` inbox file, serialized across processes with a lock that
@@ -24,7 +24,7 @@ import { MAX_MAILBOX, type AgentMessage } from './send-message';
  * `finally` (covering the "concurrency-safe, crash-safe, guaranteed lock release"
  * requirement). Each inbox is a JSONL file under
  * `<teamsRoot>/<teamName>/inboxes/<agent>.jsonl`, so inboxes are namespaced PER TEAM
- * (parity with Claude's `{team}/{agent}` keying), and a `default` team name is used
+ * (parity with the reference's `{team}/{agent}` keying), and a `default` team name is used
  * when none is supplied.
  */
 
@@ -40,7 +40,7 @@ export interface FsMailboxLocation {
   teamName?: string;
 }
 
-/** Team name used when a caller does not specify one (parity: Claude's `'default'`). */
+/** Team name used when a caller does not specify one (parity: the reference's `'default'`). */
 export const DEFAULT_TEAM_NAME = 'default';
 
 /** Resolve the effective team name for a location, applying the default. */
@@ -163,7 +163,7 @@ export function takeFsInbox(
  * Discover the names of every teammate reachable over the cross-process inbox tree
  * — i.e. every agent that has (or had) an inbox file under this team. Backs the
  * "known agents" affordance so a cross-process peer is recognized as a valid
- * recipient by bare name (parity with Claude's `ListPeers` peer discovery). Names
+ * recipient by bare name (parity with the reference's `ListPeers` peer discovery). Names
  * are decoded back from their URL-encoded filenames.
  */
 export function listInboxPeers(loc: FsMailboxLocation): string[] {

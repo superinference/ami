@@ -61,7 +61,7 @@ export function createMcpConnectTool(serverName: string, description: string): T
         // A cancelled connect is reported as such, not as a connection failure.
         if (err === MCP_CONNECT_ABORTED) {
           // Actively tear down the connection the manager may still be
-          // establishing in the background, mirroring Claude's
+          // establishing in the background, mirroring the reference's
           // transport.close()/inProcessServer.close() on an aborted connect.
           // Without this, abandoning the ensureConnected() promise leaves the
           // half-open transport (and any spawned child process / container /

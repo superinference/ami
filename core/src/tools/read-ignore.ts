@@ -6,7 +6,7 @@ import { globToRegexSource } from '../permissions';
  * Files the permission layer denies for READING (e.g. `.env`, credential stores)
  * must never surface in search output — in EVERY output mode, including `content`
  * mode which would otherwise print their matching LINES, not just their names.
- * Claude Code injects the permission context's read-deny patterns into ripgrep as
+ * the reference injects the permission context's read-deny patterns into ripgrep as
  * negated globs (`--glob !pattern`, see GrepTool.ts getFileReadIgnorePatterns); AMI
  * mirrors that and additionally honors the same patterns on the grep and in-process
  * search fallbacks, so no AMI search path can leak the contents or path of a file
@@ -18,7 +18,7 @@ import { globToRegexSource } from '../permissions';
  * Convert a file-read deny glob into ripgrep's negated-glob form. ripgrep only
  * applies ignore globs relative to the working directory, so a pattern that is not
  * already anchored with a leading `/` is prefixed with `**` + `/` to match at any
- * depth; the result is negated with `!`. Mirrors Claude Code's `rgIgnorePattern`
+ * depth; the result is negated with `!`. Mirrors the reference's `rgIgnorePattern`
  * (prefix an unanchored pattern with the any-depth glob, then negate).
  */
 export function toRgIgnoreGlob(pattern: string): string {

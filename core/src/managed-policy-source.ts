@@ -23,7 +23,7 @@ import { escapeRegExp } from './utils/string';
  *
  * Every read is TIMEOUT-BOUNDED ({@link MDM_SUBPROCESS_TIMEOUT_MS}) and NEVER throws
  * (a hung, missing, or malformed policy source yields `null`, not an exception), so a
- * broken enterprise policy source can never stall or crash startup. Parity: Claude
+ * broken enterprise policy source can never stall or crash startup. Parity: the reference
  * Code's `utils/settings/mdm/{constants,rawRead,settings}.ts` native-MDM acquisition.
  */
 
@@ -53,7 +53,7 @@ export const PLUTIL_ARGS_PREFIX: readonly string[] = ['-convert', 'json', '-o', 
 
 /**
  * Hard upper bound on any native-policy subprocess. A hung policy source (e.g. a
- * wedged `reg`/`plutil`) can never stall startup past this. Parity: Claude's
+ * wedged `reg`/`plutil`) can never stall startup past this. Parity: the reference's
  * `MDM_SUBPROCESS_TIMEOUT_MS`.
  */
 export const MDM_SUBPROCESS_TIMEOUT_MS = 5000;
@@ -80,7 +80,7 @@ export const execHooks = {
 /**
  * macOS managed `.plist` candidate paths, highest-priority first: the per-user
  * managed-preferences plist (when a username resolves) then the device-level plist.
- * Parity: Claude's `getMacOSPlistPaths()` per-user > device ordering.
+ * Parity: the reference's `getMacOSPlistPaths()` per-user > device ordering.
  */
 export function getMacOSManagedPlistPaths(): Array<{ path: string; label: string }> {
   const paths: Array<{ path: string; label: string }> = [];
@@ -110,7 +110,7 @@ export function getMacOSManagedPlistPaths(): Array<{ path: string; label: string
  *     Settings    REG_SZ    {"json":"value"}
  *
  * Returns the trimmed value, or `null` when the value is absent. Pure + exported for
- * direct unit coverage. Parity: Claude's `parseRegQueryStdout`.
+ * direct unit coverage. Parity: the reference's `parseRegQueryStdout`.
  */
 export function parseRegQueryStdout(stdout: string, valueName: string = WINDOWS_REGISTRY_VALUE_NAME): string | null {
   const escaped = escapeRegExp(valueName);

@@ -1,5 +1,5 @@
 /**
- * Abort-signal listener-cap helpers — parity with Claude Code's
+ * Abort-signal listener-cap helpers — parity with the reference's
  * `createAbortController` (utils/abortController.ts), which calls
  * `setMaxListeners(DEFAULT_MAX_LISTENERS)` on each AbortSignal so many abort
  * listeners can attach without Node emitting a `MaxListenersExceededWarning`
@@ -21,7 +21,7 @@
  */
 import { setMaxListeners } from 'node:events';
 
-/** Matches Claude's DEFAULT_MAX_LISTENERS. */
+/** Matches the reference's DEFAULT_MAX_LISTENERS. */
 export const DEFAULT_ABORT_MAX_LISTENERS = 50;
 
 /**
@@ -53,7 +53,7 @@ export function createBoundedAbortController(max = DEFAULT_ABORT_MAX_LISTENERS):
  * the process) alive on its own. Equivalent to `setTimeout(fn, ms)` immediately
  * followed by `timer.unref?.()`.
  *
- * Claude Code calls `timer.unref?.()` on every abort-timeout timer
+ * the reference calls `timer.unref?.()` on every abort-timeout timer
  * (`createCombinedAbortSignal`, utils/combinedAbortSignal.ts L35) precisely so a
  * pending request/idle-watchdog timeout does not delay process exit on a path
  * where its `clearTimeout` is skipped (e.g. an early `return`/`throw` before the

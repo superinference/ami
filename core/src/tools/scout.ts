@@ -17,7 +17,7 @@ const GREP_MATCH_CAP = 20;
  *  `glob`/`file_type`. Mirrors scout's original hardcoded extension set. */
 const DEFAULT_SCOUT_INCLUDES = ['*.ts', '*.js', '*.py', '*.go', '*.rs'];
 
-/** Map a language name (Claude's `rg --type`) to its `--include` globs. Keeps a
+/** Map a language name (the reference's `rg --type`) to its `--include` globs. Keeps a
  *  scout of a Java/Ruby/C/Markdown repo from silently matching nothing. */
 const FILE_TYPE_GLOBS: Record<string, string[]> = {
   js: ['*.js', '*.jsx', '*.mjs', '*.cjs'],
@@ -38,9 +38,9 @@ const FILE_TYPE_GLOBS: Record<string, string[]> = {
 
 /**
  * Build the `grep` argv for scout's in-repo search, honouring the optional
- * caller filters: `glob` (single `--include` override, Claude's `rg --glob`),
- * `file_type` (language name → `--include` globs, Claude's `rg --type`), and
- * `case_insensitive` (`-i`, Claude's `rg -i`). With no filters it falls back to
+ * caller filters: `glob` (single `--include` override, the reference's `rg --glob`),
+ * `file_type` (language name → `--include` globs, the reference's `rg --type`), and
+ * `case_insensitive` (`-i`, the reference's `rg -i`). With no filters it falls back to
  * scout's default extension set. `query` is placed after `--` so it can never be
  * read as a flag; args are passed to `execFileSync` (no shell), so a glob/type
  * containing shell metacharacters cannot inject.
@@ -66,8 +66,8 @@ export function scoutGrepArgs(query: string, input: Record<string, unknown>): st
  * Resolve the search result window from the caller's optional `limit`/`offset`
  * so the model can page past scout's default cap instead of being stuck with a
  * silent first-20 peek. `limit` defaults to {@link GREP_MATCH_CAP}; `limit: 0`
- * is the unlimited escape hatch (Claude's `head_limit: 0`). `offset` skips the
- * first N matches (Claude's `offset`). Mirrors GrepTool's applyHeadLimit knobs.
+ * is the unlimited escape hatch (the reference's `head_limit: 0`). `offset` skips the
+ * first N matches (the reference's `offset`). Mirrors GrepTool's applyHeadLimit knobs.
  */
 export function scoutSearchWindow(input: Record<string, unknown>): { limit: number; offset: number } {
   const rawLimit = Number(input.limit);
@@ -115,7 +115,7 @@ export function normalizeRepoUrl(url: string): string {
  * for by comparing its `origin` remote to `repoUrl`. The cache directory name is
  * a sanitized slug, so distinct URLs can collide onto one path — a present `.git`
  * alone is NOT proof the cache holds the requested repo. Returns false (→ re-clone)
- * when the remote cannot be read or does not match. Mirrors Claude Code's
+ * when the remote cannot be read or does not match. Mirrors the reference's
  * validate-repo-at-path check before trusting a cached clone.
  */
 export function cachedCloneMatches(localPath: string, repoUrl: string): boolean {
@@ -155,7 +155,7 @@ export const scoutHooks = {
  * Per-clone cache of the `origin` remote URL detected at a cache path. A value of
  * `null` is a NEGATIVE result — the path was probed and has no readable git origin
  * — cached so a repeated scout of the same cache dir does not re-spawn
- * `git remote get-url`. Mirrors Claude Code's detectRepository cwd-keyed cache
+ * `git remote get-url`. Mirrors the reference's detectRepository cwd-keyed cache
  * (detectRepository.ts): both success and failure are memoised, with a try/catch
  * fallback that stores `null` rather than throwing.
  */
@@ -175,7 +175,7 @@ export function clearScoutRepoCache(localPath?: string): void {
  * Detect the `origin` remote URL of the git clone at `localPath`, memoised with a
  * try/catch fallback and negative-result caching: a path with no readable origin
  * caches (and returns) `null`, so repeated calls never re-spawn git. Mirrors
- * Claude Code's detectCurrentRepositoryWithHost cache semantics. The cache is
+ * the reference's detectCurrentRepositoryWithHost cache semantics. The cache is
  * invalidated by {@link clearScoutRepoCache} whenever scout purges/re-clones a path.
  */
 export function detectCloneRemoteUrl(localPath: string): string | null {

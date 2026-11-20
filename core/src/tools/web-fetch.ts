@@ -20,7 +20,7 @@ export const MAX_FETCH_DEADLINE_MS = 300_000;
  * Hard upper bound on the in-process PDF text-extraction step. A malformed or
  * adversarial PDF (deeply nested objects, a decompression bomb, pathological
  * streams) can make the parser spin CPU or hang unboundedly, blocking the agent.
- * Claude Code time-bounds every external PDF operation (pdfinfo 10s, pdftoppm
+ * the reference time-bounds every external PDF operation (pdfinfo 10s, pdftoppm
  * 5s/120s); AMI parses in-process, so we race getText() against this deadline and
  * always release the native parser afterward (parity: bounded PDF parsing).
  */
@@ -70,7 +70,7 @@ export async function parsePdfWithTimeout<T>(
 /**
  * Compile a caller-supplied regex `filter` and keep only the page-text lines that
  * match it, so a verbose fetched page can be reduced to the relevant lines before
- * it is summarized/returned (parity with Claude's regex content-filter knob on
+ * it is summarized/returned (parity with the reference's regex content-filter knob on
  * verbose-output tools; same contract as the bash/task-output `filter`). Returns
  * `{ error }` for an invalid pattern so the tool can surface it instead of silently
  * matching nothing. An empty/whitespace pattern is treated as "no filter".
@@ -93,7 +93,7 @@ export function filterTextByPattern(
 
 /**
  * Upper bound on content handed to the secondary summarizer / returned verbatim
- * from a preapproved trusted-docs host (parity with Claude's MAX_MARKDOWN_LENGTH).
+ * from a preapproved trusted-docs host (parity with the reference's MAX_MARKDOWN_LENGTH).
  * Preapproved docs under this size are returned raw (no lossy summarization pass).
  */
 export const MAX_MARKDOWN_LENGTH = 100_000;
@@ -101,7 +101,7 @@ export const MAX_MARKDOWN_LENGTH = 100_000;
 /**
  * Map an HTTP status code to its canonical reason phrase (e.g. 200 -> "OK",
  * 404 -> "Not Found"), so fetch results can surface a human-readable status
- * alongside the numeric code (parity with Claude's codeText). Returns '' for an
+ * alongside the numeric code (parity with the reference's codeText). Returns '' for an
  * unknown code so callers can omit a trailing phrase.
  */
 export function httpStatusText(code: number): string {
@@ -195,7 +195,7 @@ export function setCache(url: string, content: string): void {
 
 /**
  * Evict ALL cached fetched web-page content and reset the byte accounting.
- * Wired into the /clear session-reset handler (Claude parity: clearSessionCaches)
+ * Wired into the /clear session-reset handler (the reference parity: clearSessionCaches)
  * so a fresh conversation never reuses stale fetched pages — a bounded-memory
  * boundary and a cross-session data-retention hygiene guard.
  */
@@ -210,7 +210,7 @@ export function clearWebFetchCache(): void {
  * verbatim to name a file on disk — it can carry path separators, '..', or other
  * garbage that corrupts the spill filename. This whitelist returns a known-safe
  * extension and falls back to 'bin' for anything unrecognized (parity with
- * Claude's extensionForMimeType).
+ * the reference's extensionForMimeType).
  */
 export function extensionForMimeType(mimeType: string | undefined): string {
   if (!mimeType) return 'bin';
@@ -251,7 +251,7 @@ export function extensionForMimeType(mimeType: string | undefined): string {
  * and form-urlencoded. Everything else — including UNKNOWN or novel types
  * (`font/woff2`, `video/mp4`, `application/wasm`, …) — is binary. The previous
  * allow-list (image/* + zip + octet-stream) silently leaked the raw bytes of any
- * unrecognized binary type into the conversation. Parity with Claude's
+ * unrecognized binary type into the conversation. Parity with the reference's
  * `isBinaryContentType` (mcpOutputStorage.ts). An empty/absent header is treated
  * as text so a server that omits Content-Type still gets the inline path.
  */
@@ -285,7 +285,7 @@ function htmlToMarkdown(html: string): string {
 
 /**
  * Build the secondary (summarizer) model prompt for UNTRUSTED fetched content.
- * Mirrors Claude's makeSecondaryModelPrompt: a preapproved/trusted domain (one the
+ * Mirrors the reference's makeSecondaryModelPrompt: a preapproved/trusted domain (one the
  * caller explicitly allow-listed) gets a permissive "include code/doc excerpts"
  * instruction, while an untrusted domain gets strict copyright/quote guardrails
  * (125-char quote cap, no verbatim reproduction, no song lyrics, no legal
@@ -317,7 +317,7 @@ export function makeSecondaryModelPrompt(
  * which is indistinguishable from an ordinary site 403 unless the header is
  * inspected. When detected we return a JSON payload (`error_type: EGRESS_BLOCKED`)
  * so the model/caller can tell "your network blocked this" apart from "the site
- * forbade you" and react accordingly (parity with Claude Code's EgressBlockedError).
+ * forbade you" and react accordingly (parity with the reference's EgressBlockedError).
  * Returns null when the response is not an egress-proxy block.
  */
 export function detectEgressBlock(
@@ -350,7 +350,7 @@ export const webFetchTool: ToolDefinition = {
     '  - NOT for binary files (zip, tar, images) — use bash with curl -O for binary downloads.',
   // Intent synonyms NOT present in the name/description, so ToolSearch can surface
   // web_fetch when the model searches by capability rather than exact wording
-  // (parity with Claude's Tool.searchHint).
+  // (parity with the reference's Tool.searchHint).
   searchHint: 'scrape crawl retrieve webpage website visit open link read article rest api endpoint',
   inputSchema: {
     type: 'object',
@@ -387,7 +387,7 @@ export const webFetchTool: ToolDefinition = {
   isReadOnly: true,
   isConcurrencySafe: true,
   // Read-only yet OPEN-WORLD: fetches a live remote URL, so its result depends on
-  // external state and is non-reproducible across runs (parity: Claude's isOpenWorld).
+  // external state and is non-reproducible across runs (parity: the reference's isOpenWorld).
   isOpenWorld: true,
 
   async execute(
@@ -400,7 +400,7 @@ export const webFetchTool: ToolDefinition = {
     // Effective per-result spill cap: the tool's built-in MAX_RESPONSE_LENGTH clamped
     // by the GLOBAL tool-output default (project `toolOutputMaxChars` config / the
     // AMI_TOOL_OUTPUT_MAX_CHARS env override), so one knob tunes every tool's spill
-    // threshold (parity: Claude Code's getPersistenceThreshold global clamp).
+    // threshold (parity: the reference's getPersistenceThreshold global clamp).
     // Load the project-tier config ONCE: it supplies both the tool-output spill cap
     // and the persistent web_fetch domain policy enforced below.
     const projectConfig = loadProjectConfig(context.cwd);
@@ -414,7 +414,7 @@ export const webFetchTool: ToolDefinition = {
     // response shapes deterministically.
     const doHttpGet = (context._webFetchHttpGet as typeof httpGet | undefined) ?? httpGetWithRetry;
 
-    // Operator kill-switch (Claude Code parity): disable outbound web_fetch.
+    // Operator kill-switch (the reference parity): disable outbound web_fetch.
     // FUNCTIONAL CHANGE (additive): read through the shared tolerant parseEnvBool
     // so `=true`/`yes`/`on`/`ON` (not just the strict `'1'`) honour the kill-switch.
     if (parseEnvBool(process.env.CLAUDE_CODE_DISABLE_WEB_FETCH) || parseEnvBool(process.env.SUPERINFERENCE_DISABLE_WEB_FETCH)) {
@@ -517,7 +517,7 @@ export const webFetchTool: ToolDefinition = {
     // Reject non-publicly-resolvable single-label hostnames (e.g. "intranet",
     // "router") BEFORE any DNS lookup. A hostname with no dot is almost always an
     // internal short name, never a public site, so refuse it structurally (parity
-    // with Claude's validateURL `parts.length < 2` guard). `localhost` is left to
+    // with the reference's validateURL `parts.length < 2` guard). `localhost` is left to
     // the SSRF layer (which reports it as a blocked private host), and the whole
     // check is skipped when localhost is explicitly permitted for testing.
     if (!context._allowLocalhostForTesting && host !== 'localhost' && !host.includes('.')) {
@@ -537,7 +537,7 @@ export const webFetchTool: ToolDefinition = {
       pinnedIP = ssrfResult.resolvedIP;
     }
 
-    // PARITY (interactive per-host sandbox egress approval — Claude's
+    // PARITY (interactive per-host sandbox egress approval — the reference's
     // SandboxAskCallback / createSandboxAskCallback): when the deny-by-default
     // egress gate (AMI_SANDBOX_NETWORK_ASK) is on, a host that is neither already
     // granted nor approved here must be approved at request time with the exact
@@ -622,7 +622,7 @@ export const webFetchTool: ToolDefinition = {
           ? `Re-fetch with url="${finalUrl}" and the same prompt="${prompt}" if you still want this content.`
           : `Re-fetch with url="${finalUrl}" if you still want this content.`;
         // Report the actual redirect (3xx) status + reason phrase so the result is
-        // self-describing (e.g. "HTTP 301 Moved Permanently"), parity with Claude's
+        // self-describing (e.g. "HTTP 301 Moved Permanently"), parity with the reference's
         // status-code-to-text redirect message. Falls back to the final status when
         // no redirect code was captured (e.g. a test seam supplying only finalUrl).
         const redirectCode = redirectStatusCode ?? statusCode;
@@ -760,7 +760,7 @@ export const webFetchTool: ToolDefinition = {
       // Build the result. The status line carries the human-readable reason
       // phrase (e.g. "200 OK") and a separate "Received <size>" line reports the
       // bytes actually fetched, so a fetch result is self-describing at a glance
-      // (parity with Claude's "Received 12.3 KB (200 OK)" confirmation).
+      // (parity with the reference's "Received 12.3 KB (200 OK)" confirmation).
       const statusText = httpStatusText(statusCode);
       const receivedBytes = bodyBuffer ? bodyBuffer.length : Buffer.byteLength(body);
       const parts: string[] = [];
@@ -779,11 +779,11 @@ export const webFetchTool: ToolDefinition = {
       // A fetch to a curated trusted code/docs host (the built-in PREAPPROVED_HOSTS
       // knob) is treated as preapproved: its content is returned VERBATIM without a
       // lossy small-model summarization pass, as long as it fits under the markdown
-      // ceiling (parity with Claude's isPreapprovedUrl raw-markdown passthrough).
+      // ceiling (parity with the reference's isPreapprovedUrl raw-markdown passthrough).
       const preapprovedHost = isPreapprovedHost(host, parsedUrl.pathname);
       const rawPassthrough = shouldReturnRawMarkdown(host, parsedUrl.pathname, totalLength, MAX_MARKDOWN_LENGTH);
 
-      // Apply prompt to content via LLM summarization (like Claude's applyPromptToMarkdown)
+      // Apply prompt to content via LLM summarization (like the reference's applyPromptToMarkdown)
       if (input.prompt && typeof input.prompt === 'string' && context._engineFactory && !rawPassthrough) {
         // A domain the caller explicitly allow-listed — OR one on the built-in
         // preapproved trusted-docs list — is treated as preapproved/trusted, which
@@ -825,7 +825,7 @@ export const webFetchTool: ToolDefinition = {
           summarizeFailed = true;
         }
         // Surface cancellation/deadline during summarization as an error instead of
-        // silently returning the un-summarized raw output (parity with Claude's
+        // silently returning the un-summarized raw output (parity with the reference's
         // applyPromptToMarkdown, which re-checks signal.aborted after the model call
         // and throws rather than returning partial content).
         if (fetchSignal.aborted) {

@@ -65,7 +65,7 @@ export function hasBinaryExtension(filePath: string): boolean {
 }
 
 /**
- * Buffer-level binary heuristic (mirrors Claude Code's `isBinaryContent`), scanning
+ * Buffer-level binary heuristic (mirrors the reference's `isBinaryContent`), scanning
  * at most the first {@link BINARY_CHECK_BYTES} bytes of `buffer`:
  *  (a) any NUL byte → binary immediately;
  *  (b) non-printable control-character DENSITY — count control bytes (<32) other

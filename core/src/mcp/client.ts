@@ -11,7 +11,7 @@ import type { InProcessTransport } from './in-process-transport';
 
 /**
  * TLS connect-options handed to a WebSocket factory for a `wss://` MCP server —
- * client cert/key/passphrase/CA plus a secure protocol floor (parity with Claude
+ * client cert/key/passphrase/CA plus a secure protocol floor (parity with the reference
  * Code's `getWebSocketTLSOptions` returning `tls.ConnectionOptions`). The runtime
  * global `WebSocket` ignores the extra argument; a `ws`-package-backed factory
  * (injected by a host that needs mTLS) applies it so mutual-TLS / custom-CA trust
@@ -30,7 +30,7 @@ export interface McpWebSocketTlsOptions {
  * yields the mTLS material + a secure protocol floor (always at least
  * `{ minVersion }`), so a `ws`-package-backed factory presents the client cert and
  * trusts a private CA exactly like the HTTP/SSE transports. A plaintext `ws://`
- * URL carries no TLS, so this returns `undefined`. Parity with Claude Code's
+ * URL carries no TLS, so this returns `undefined`. Parity with the reference's
  * `getWebSocketTLSOptions` (utils/mtls.ts), reusing AMI's single mTLS source
  * (`getMTLSConfig`/`getSecureTLSConnectOptions`) rather than a parallel loader.
  */
@@ -48,7 +48,7 @@ export type McpTransport = (typeof MCP_TRANSPORTS)[number];
 /**
  * Minimal structural subset of the WHATWG `WebSocket` (shared by Node 20+/Bun's
  * global `WebSocket` and the `ws` package's instances) that the WebSocket MCP
- * transport needs — parity with Claude Code's `WebSocketLike` in
+ * transport needs — parity with the reference's `WebSocketLike` in
  * `utils/mcpWebSocketTransport.ts`. Modeling the subset (rather than the DOM lib
  * type) keeps the transport runtime-agnostic and injectable for tests.
  */
@@ -67,7 +67,7 @@ export const MCP_WS_OPEN = 1;
 export const DEFAULT_MCP_MAX_RESPONSE_BYTES = 10 * 1024 * 1024; // 10 MB
 
 /**
- * Default token budget for a single MCP tool result (parity with Claude Code's
+ * Default token budget for a single MCP tool result (parity with the reference's
  * `DEFAULT_MAX_MCP_OUTPUT_TOKENS`). A verbose MCP tool can return megabytes of
  * JSON; capping by *tokens* (not just bytes) keeps a single result from
  * dominating the model's context window regardless of how many raw bytes it is.
@@ -79,7 +79,7 @@ export const MCP_CHARS_PER_TOKEN = 4;
 
 /**
  * Resolve the per-result MCP output token cap. A single global override —
- * `MAX_MCP_OUTPUT_TOKENS` (positive integer, matching Claude Code's
+ * `MAX_MCP_OUTPUT_TOKENS` (positive integer, matching the reference's
  * `getMaxMcpOutputTokens`) — lets an operator widen/narrow how much a single MCP
  * tool result may contribute to the context window. An absent/invalid/non-positive
  * value falls back to {@link DEFAULT_MAX_MCP_OUTPUT_TOKENS}. `MAX_MCP_OUTPUT_TOKENS`
@@ -112,7 +112,7 @@ export const MCP_PROTOCOL_VERSION = '2025-06-18';
 /**
  * Experimental MCP capability names a server declares under
  * `capabilities.experimental` to OPT IN to relaying permission prompts over a
- * message channel (Claude-parity `claude/channel` + `claude/channel/permission`,
+ * message channel (the reference-parity `claude/channel` + `claude/channel/permission`,
  * channelPermissions.ts:L177-194). BOTH must be present before a server may be
  * treated as a permission-relay surface — a relay-only channel never becomes a
  * permission surface by accident. Inspected via
@@ -130,7 +130,7 @@ export const DEFAULT_MCP_CONNECT_TIMEOUT_MS = 10000;
 
 /**
  * Resolve the default MCP connection timeout. A single global override —
- * `MCP_TIMEOUT` (milliseconds, matching Claude Code's `getConnectionTimeoutMs`) —
+ * `MCP_TIMEOUT` (milliseconds, matching the reference's `getConnectionTimeoutMs`) —
  * lets an operator widen the connect window for slow-to-start servers without
  * editing each server's config. An explicit `connectTimeout` option still wins;
  * an absent/invalid/non-positive env value falls back to
@@ -144,7 +144,7 @@ export function getMcpConnectTimeout(): number {
 
 /**
  * Self-identifying `User-Agent` for MCP HTTP/SSE transport requests (parity with
- * Claude Code's `getMCPUserAgent`). Lets server operators recognize/allowlist AMI
+ * the reference's `getMCPUserAgent`). Lets server operators recognize/allowlist AMI
  * traffic AND see which surface originated the request — the originating
  * entrypoint and any embedding SDK/client-app are appended via the single
  * {@link amiUserAgent} builder (`ami/<version> (<entrypoint>, agent-sdk/…,
@@ -172,7 +172,7 @@ export const MCP_MAX_PAGES = 1000;
 
 /**
  * Default interval (ms) between self-generated "still running" heartbeats for an
- * in-flight MCP tool call (parity with Claude Code's 30s progress logging in
+ * in-flight MCP tool call (parity with the reference's 30s progress logging in
  * `services/mcp/client.ts`). A slow MCP tool runs under a long tool-call
  * timeout; without a heartbeat the UI/log goes silent for minutes. On each tick
  * the client emits a `tool-heartbeat` event carrying the elapsed time so a
@@ -195,7 +195,7 @@ export function getMcpToolHeartbeatIntervalMs(): number {
 
 /**
  * Default interval (ms) between keep-alive pings on a `ws`/`wss` MCP transport
- * (parity with Claude Code's WebSocketTransport DEFAULT_KEEPALIVE_INTERVAL, 5min).
+ * (parity with the reference's WebSocketTransport DEFAULT_KEEPALIVE_INTERVAL, 5min).
  * A WebSocket behind an idle-timeout proxy/load-balancer is silently dropped after
  * minutes of inactivity; a periodic MCP `ping` keeps the path warm AND doubles as
  * dead-connection detection (a failed ping tears the socket down so the normal
@@ -216,7 +216,7 @@ export function getMcpWsKeepaliveIntervalMs(): number {
 
 /**
  * Default interval (ms) between application-level keep-alive DATA frames on a
- * Streamable-HTTP MCP transport (parity with Claude Code's WebSocketTransport
+ * Streamable-HTTP MCP transport (parity with the reference's WebSocketTransport
  * DEFAULT_KEEPALIVE_INTERVAL, 5min). A long-idle HTTP/SSE connection behind an
  * idle-timeout intermediary (e.g. Cloudflare's 5-min window) is silently RST —
  * and, unlike TCP keepalives or SSE comment frames the proxy may ignore, a real
@@ -242,7 +242,7 @@ export function getMcpHttpKeepaliveIntervalMs(): number {
 
 /**
  * Env gate that SUPPRESSES the WebSocket keep-alive ping when set truthy (parity
- * with Claude Code's `isEnvTruthy(CLAUDE_CODE_REMOTE)` skipping keepalive frames
+ * with the reference's `isEnvTruthy(CLAUDE_CODE_REMOTE)` skipping keepalive frames
  * because an outer session-activity heartbeat already covers idle-timeout). When a
  * host embeds AMI behind its own heartbeat it sets `AMI_REMOTE=1` so the transport
  * does not add a redundant ping. Truthy = `1`/`true`/`yes`/`on` (case-insensitive).
@@ -480,7 +480,7 @@ interface JsonRpcNotification {
  * nor method falls through every branch) or throw inside the dispatcher (the `in`
  * operator on a primitive). Running this envelope check first lets the transport
  * reject + surface a malformed frame as a `protocol-error` instead of swallowing or
- * crashing on it — parity with Claude Code's schema-validated inbound transport
+ * crashing on it — parity with the reference's schema-validated inbound transport
  * messages (mcpWebSocketTransport validateJsonRpcMessage / zod-parsed frames). Note
  * this validates only the ENVELOPE; per-method `params` remain intentionally lenient
  * (optional fields are guarded at each handler) so a server omitting an optional
@@ -499,11 +499,11 @@ export function isValidJsonRpcMessage(msg: unknown): msg is Record<string, unkno
  * Validate the `params` of an inbound server→client NOTIFICATION against the shape
  * AMI actually dereferences, at the trust boundary, BEFORE any handler touches a
  * field — a runtime schema check on untrusted MCP-server payloads. Parity with
- * Claude Code validating inbound notification params through a zod schema in
+ * the reference validating inbound notification params through a zod schema in
  * `setNotificationHandler` before dispatch (e.g. `useIdeSelection`'s
  * `SelectionChangedSchema`, `usePromptsFromClaudeInChrome`'s notification schema);
  * AMI mirrors zod with a plain-TS structural validator to match the no-zod-dependency
- * convention used throughout `core/` (see `cron.ts`/`plugins.ts` "mirrors Claude's
+ * convention used throughout `core/` (see `cron.ts`/`plugins.ts` "mirrors the reference's
  * zod" validators). Where {@link isValidJsonRpcMessage} checks only the ENVELOPE,
  * this checks the per-method `params`.
  *
@@ -557,7 +557,7 @@ export function validateMcpNotificationParams(
         return { ok: false, error: `${method}: params.elicitationId must be a non-empty string` };
       return { ok: true };
     case 'selection_changed': {
-      // IDE-as-MCP-server editor selection (parity with Claude Code's
+      // IDE-as-MCP-server editor selection (parity with the reference's
       // `SelectionChangedSchema` in hooks/useIdeSelection.ts). `selection` is
       // nullable/optional; when present both endpoints must carry numeric line &
       // character. `text`/`filePath` are optional strings.
@@ -578,7 +578,7 @@ export function validateMcpNotificationParams(
       return { ok: true };
     }
     case 'at_mentioned': {
-      // IDE-as-MCP-server at-mention (parity with Claude Code's `AtMentionedSchema`
+      // IDE-as-MCP-server at-mention (parity with the reference's `AtMentionedSchema`
       // in hooks/useIdeAtMentioned.ts): a required `filePath` plus optional 0-based
       // `lineStart`/`lineEnd` the handler normalizes to 1-based.
       if (!isObj(params) || typeof params.filePath !== 'string' || params.filePath.length === 0)
@@ -597,7 +597,7 @@ export function validateMcpNotificationParams(
 /**
  * A point in an IDE editor selection: 0-based `line` and `character`, exactly as
  * an IDE-as-MCP-server emits them in a `selection_changed` notification (parity
- * with Claude Code's `SelectionPoint` in hooks/useIdeSelection.ts).
+ * with the reference's `SelectionPoint` in hooks/useIdeSelection.ts).
  */
 export interface McpSelectionPoint {
   line: number;
@@ -606,7 +606,7 @@ export interface McpSelectionPoint {
 
 /**
  * Raw `params` of a `selection_changed` IDE notification. `selection` is `null`
- * when the editor has no active range. Mirrors Claude Code's `SelectionData`.
+ * when the editor has no active range. Mirrors the reference's `SelectionData`.
  */
 export interface McpSelectionChangedParams {
   selection: { start: McpSelectionPoint; end: McpSelectionPoint } | null;
@@ -616,7 +616,7 @@ export interface McpSelectionChangedParams {
 
 /**
  * Normalized IDE selection emitted on the client's `ide-selection` event (parity
- * with Claude Code's `IDESelection`). `lineStart` stays 0-based (matching Claude's
+ * with the reference's `IDESelection`). `lineStart` stays 0-based (matching the reference's
  * `selectionChangeHandler`); `lineCount` is the number of fully-selected lines.
  */
 export interface McpIdeSelection {
@@ -628,7 +628,7 @@ export interface McpIdeSelection {
 
 /**
  * Normalized IDE at-mention emitted on the client's `ide-at-mentioned` event with
- * 1-based line numbers (parity with Claude Code's `IDEAtMentioned`).
+ * 1-based line numbers (parity with the reference's `IDEAtMentioned`).
  */
 export interface McpIdeAtMention {
   filePath: string;
@@ -638,7 +638,7 @@ export interface McpIdeAtMention {
 
 /**
  * Convert a validated `selection_changed` payload into a normalized
- * {@link McpIdeSelection}, mirroring Claude Code's `selectionChangeHandler`
+ * {@link McpIdeSelection}, mirroring the reference's `selectionChangeHandler`
  * (hooks/useIdeSelection.ts): `lineCount = end.line - start.line + 1`, decremented
  * by one when the selection ends on the first character of a line (so a trailing
  * caret at column 0 does not count its line). Returns `null` when the payload
@@ -658,7 +658,7 @@ export function normalizeIdeSelection(params: McpSelectionChangedParams): McpIde
 /**
  * Normalize a validated `at_mentioned` payload, converting the IDE's 0-based
  * `lineStart`/`lineEnd` to the 1-based line numbers AMI presents to the user/model
- * — adding 1 only to a defined value (parity with Claude Code's
+ * — adding 1 only to a defined value (parity with the reference's
  * hooks/useIdeAtMentioned.ts:L57-61).
  */
 export function normalizeIdeAtMention(
@@ -676,7 +676,7 @@ export function normalizeIdeAtMention(
  * as opposed to an `insufficient_scope` step-up. A revoked or otherwise invalid
  * token must drive a FULL re-authorization (`onUnauthorized`) — a scope step-up
  * (`onForbidden`) or a silent refresh cannot resurrect a revoked grant and would
- * loop. Matches Claude Code's `also403Revoked` (utils/http.ts): a 403 whose
+ * loop. Matches the reference's `also403Revoked` (utils/http.ts): a 403 whose
  * `WWW-Authenticate` challenge or response body marks the token invalid/revoked is
  * treated as a re-auth trigger. Both sources are checked case-insensitively; an
  * ordinary `access_denied`/`insufficient_scope` 403 returns false so the existing
@@ -695,7 +695,7 @@ export type McpClientState = (typeof MCP_CLIENT_STATES)[number];
  * user completes one or more URL elicitations (opens a URL in a browser). The
  * server returns `-32042` with `data.elicitations: [{ mode:'url', url,
  * elicitationId, message }, …]`; {@link McpClient.callTool} drives each
- * elicitation then retries the call (parity with Claude Code's
+ * elicitation then retries the call (parity with the reference's
  * UrlElicitationRequiredError / callMCPToolWithUrlElicitationRetry).
  */
 export const MCP_URL_ELICITATION_REQUIRED_CODE = -32042;
@@ -724,7 +724,7 @@ export class McpRpcError extends Error {
  * and (re)authorization did not succeed. Thrown from the HTTP transport's 401 /
  * 403-revoked paths after a re-auth attempt fails; the client transitions to the
  * `needs-auth` state so the manager/UI can surface a "requires authentication,
- * use /mcp to authenticate" affordance (parity with Claude Code flipping a client
+ * use /mcp to authenticate" affordance (parity with the reference flipping a client
  * to `needs-auth` on McpAuthError).
  */
 export class McpAuthError extends Error {
@@ -737,7 +737,7 @@ export class McpAuthError extends Error {
 /**
  * URL-elicitation descriptor carried in a `-32042` error's `data.elicitations`.
  * Extract + validate the url-mode entries so the tool-call retry loop only acts
- * on well-formed server requests (parity with Claude Code's
+ * on well-formed server requests (parity with the reference's
  * `ElicitRequestURLParams` runtime filter).
  */
 export interface McpUrlElicitation {
@@ -796,7 +796,7 @@ const HTTP_STREAM_RECONNECT_MAX_MS = 30000;
 /**
  * ±25% proportional jitter applied to the capped exponential reconnect delay so
  * many clients dropped by a shared outage do not retry in lockstep (thundering
- * herd). Matches the fraction Claude Code's transports use.
+ * herd). Matches the fraction the reference's transports use.
  */
 const RECONNECT_JITTER_FRAC = 0.25;
 
@@ -807,7 +807,7 @@ const RECONNECT_JITTER_FRAC = 0.25;
  * half-open TCP socket silently dropped by a NAT/proxy/load-balancer with no
  * FIN/RST). The timer is reset on EVERY incoming chunk (including keepalive
  * comment frames), and on expiry the GET request is destroyed and a reconnect
- * is scheduled. Mirrors Claude Code's SSETransport LIVENESS_TIMEOUT_MS (45s).
+ * is scheduled. Mirrors the reference's SSETransport LIVENESS_TIMEOUT_MS (45s).
  */
 const HTTP_STREAM_LIVENESS_TIMEOUT_MS = 45000;
 
@@ -817,7 +817,7 @@ const HTTP_STREAM_LIVENESS_TIMEOUT_MS = 45000;
  * (re)connect resets the clock, so the stream survives any number of brief
  * transient drops as long as no single outage lasts past the budget — unlike a
  * small fixed attempt count that gives up after a few seconds of backoff.
- * Mirrors Claude Code's SSETransport RECONNECT_GIVE_UP_MS.
+ * Mirrors the reference's SSETransport RECONNECT_GIVE_UP_MS.
  */
 const HTTP_STREAM_RECONNECT_GIVE_UP_MS = 600000;
 
@@ -826,7 +826,7 @@ const HTTP_STREAM_RECONNECT_GIVE_UP_MS = 600000;
  * rejection of the credential — retrying would just re-send the same rejected
  * bearer/session in a loop. On any of these the stream closes immediately
  * without reconnecting. (404 is handled separately as "stream unsupported →
- * degrade to POST-only", so it is NOT in this set.) Mirrors Claude Code's
+ * degrade to POST-only", so it is NOT in this set.) Mirrors the reference's
  * SSETransport PERMANENT_HTTP_CODES minus the 404 special-case.
  */
 const PERMANENT_HTTP_STREAM_CODES = new Set([401, 403]);
@@ -835,7 +835,7 @@ const PERMANENT_HTTP_STREAM_CODES = new Set([401, 403]);
  * Cap on the dedup set of seen SSE sequence numbers before pruning, and how far
  * below the high-water mark a pruned entry must be. Only sequence numbers near
  * the high-water mark matter for duplicate detection, so older ones are dropped
- * to keep the set bounded. Mirrors Claude Code's SSETransport pruning strategy.
+ * to keep the set bounded. Mirrors the reference's SSETransport pruning strategy.
  */
 const HTTP_STREAM_SEEN_SEQ_CAP = 1000;
 const HTTP_STREAM_SEEN_SEQ_PRUNE_MARGIN = 200;
@@ -895,7 +895,7 @@ export class McpClient extends EventEmitter {
    * When false, {@link reconnect} does NOT run its automatic retry loop — it tears
    * the connection down and throws at once so a caller that owns its own recovery
    * (e.g. an external supervisor/poll loop) is not fighting a second reconnect
-   * driver. Defaults to true. Parity with Claude Code's
+   * driver. Defaults to true. Parity with the reference's
    * `WebSocketTransportOptions.autoReconnect`.
    */
   private readonly autoReconnectEnabled: boolean;
@@ -922,7 +922,7 @@ export class McpClient extends EventEmitter {
    * EXTERNAL {@link disconnect}/stopServer landing mid-backoff can wake it
    * immediately ({@link wakeReconnectSleep}) instead of the loop burning the full
    * (up to {@link HTTP_STREAM_RECONNECT_MAX_MS}) delay before noticing the abort.
-   * Parity with Claude Code's wakePollLoop cancelling an in-flight at-capacity
+   * Parity with the reference's wakePollLoop cancelling an in-flight at-capacity
    * sleep so a queued fault/reconnect can proceed at once (bridge/bridgeDebug.ts).
    */
   private reconnectSleepWake: (() => void) | null = null;
@@ -977,7 +977,7 @@ export class McpClient extends EventEmitter {
    * optional `signal` is the per-request abort the client forwards — it fires
    * when the server sends `notifications/cancelled` for this request or the
    * connection drops, so an in-flight server-initiated model turn is cancellable
-   * (parity with Claude Code threading the SDK's `extra.signal`).
+   * (parity with the reference threading the SDK's `extra.signal`).
    */
   onSampling?: (request: McpSamplingRequest, signal?: AbortSignal) => Promise<McpSamplingResult>;
 
@@ -1012,7 +1012,7 @@ export class McpClient extends EventEmitter {
     reconnectGiveUpMs?: number;
     /**
      * When false, disable the automatic {@link reconnect} retry loop (a caller with
-     * its own recovery mechanism opts out). Defaults to true. Parity with Claude
+     * its own recovery mechanism opts out). Defaults to true. Parity with the reference
      * Code's `WebSocketTransportOptions.autoReconnect`.
      */
     autoReconnect?: boolean;
@@ -1154,7 +1154,7 @@ export class McpClient extends EventEmitter {
   }
 
   /**
-   * WebSocket transport (`ws://` / `wss://`) — parity with Claude Code's
+   * WebSocket transport (`ws://` / `wss://`) — parity with the reference's
    * `WebSocketTransport` (`utils/mcpWebSocketTransport.ts`). Opens a WebSocket via
    * the injectable factory (defaulting to the runtime global, which exists on
    * Node 20+/Bun/undici), then runs the standard initialize handshake over it.
@@ -1205,7 +1205,7 @@ export class McpClient extends EventEmitter {
     // Attach the persistent message/close handlers before the handshake so the
     // initialize RESPONSE (which arrives as a ws frame) is routed to the pending
     // request. A frame-level error is surfaced as a redacted diagnostic that NEVER
-    // echoes the untrusted payload (parity with Claude's logForDiagnosticsNoPII).
+    // echoes the untrusted payload (parity with the reference's logForDiagnosticsNoPII).
     ws.addEventListener('message', (ev) => this.handleWsMessage((ev as { data?: unknown })?.data));
     ws.addEventListener('close', () => this.handleWsClose());
 
@@ -1228,7 +1228,7 @@ export class McpClient extends EventEmitter {
   }
 
   /**
-   * In-process transport (`inprocess`) — parity with Claude Code's
+   * In-process transport (`inprocess`) — parity with the reference's
    * InProcessTransport / SdkControlTransport pair. Drives the standard initialize
    * handshake over a caller-provided {@link InProcessTransport} (typically the
    * client end of a {@link createLinkedTransportPair} whose server end is wired to
@@ -1318,7 +1318,7 @@ export class McpClient extends EventEmitter {
    * RSTs it ({@link scheduleHttpStreamReconnect}). Activity-gated so real traffic
    * makes a tick a no-op. Suppressed when an outer host heartbeat already covers
    * idle-timeout ({@link isMcpWsKeepaliveSuppressed} / `AMI_REMOTE`). The interval is
-   * unref'd so it never keeps the event loop alive. Parity with Claude Code's
+   * unref'd so it never keeps the event loop alive. Parity with the reference's
    * WebSocketTransport startKeepaliveInterval() keep_alive data frame.
    */
   private startHttpKeepalive(): void {
@@ -1360,7 +1360,7 @@ export class McpClient extends EventEmitter {
       }
     } catch {
       // No-PII diagnostic: a malformed frame from an untrusted server is surfaced
-      // as a stable marker WITHOUT echoing the raw payload (parity with Claude
+      // as a stable marker WITHOUT echoing the raw payload (parity with the reference
       // Code's mcpWebSocketTransport logForDiagnosticsNoPII).
       this.emit('parse-error', '[mcp websocket frame parse error]');
     }
@@ -1597,7 +1597,7 @@ export class McpClient extends EventEmitter {
     // Tool calls use a separate (long) timeout so a slow tool is not killed by the
     // short connect/request timeout (H25/H30). A slow tool would otherwise go
     // silent for minutes; emit a periodic heartbeat so a frontend/log can show
-    // "<tool> still running (Ns elapsed)" (parity with Claude Code).
+    // "<tool> still running (Ns elapsed)" (parity with the reference).
     const startTime = Date.now();
     const heartbeat = setInterval(() => {
       const elapsedMs = Date.now() - startTime;
@@ -1613,7 +1613,7 @@ export class McpClient extends EventEmitter {
     // `notifications/progress` for THIS tool call; route those to a `tool-progress`
     // event carrying the determinate percent (when the server sends total) and any
     // message, so a frontend can render a live progress bar for the in-flight call
-    // (parity with Claude Code's per-tool-call onProgress / progressToken). Cleared
+    // (parity with the reference's per-tool-call onProgress / progressToken). Cleared
     // the instant the call settles so the token map stays bounded.
     const progressToken = `mcp-${++this.progressTokenSeq}`;
     this.progressCallbacks.set(progressToken, (progress) => {
@@ -1625,7 +1625,7 @@ export class McpClient extends EventEmitter {
       // the error's `data`. Drive each elicitation (url mode) via the injected
       // handler, then re-run the call — bounded to MAX_MCP_URL_ELICITATION_RETRIES
       // so a server that keeps re-requesting cannot loop forever (parity with
-      // Claude Code's callMCPToolWithUrlElicitationRetry).
+      // the reference's callMCPToolWithUrlElicitationRetry).
       for (let attempt = 0; ; attempt++) {
         try {
           const result = await this.sendRequestAuto('tools/call', { name, arguments: args, _meta: { progressToken } }, options?.signal, options?.timeoutMs);
@@ -1655,7 +1655,7 @@ export class McpClient extends EventEmitter {
    * Present each URL elicitation from a `-32042` tool-call error to the user via
    * the injected {@link onElicitation} handler. Returns `undefined` when every
    * elicitation is accepted (caller retries the tool call), or a terminal MCP tool
-   * result describing the decline/cancel otherwise (parity with Claude Code
+   * result describing the decline/cancel otherwise (parity with the reference
    * returning an informative content block instead of throwing).
    */
   private async resolveUrlElicitations(
@@ -1691,7 +1691,7 @@ export class McpClient extends EventEmitter {
     // Serve the warm cache when populated — it is invalidated on
     // notifications/resources/list_changed and on disconnect, so a cache hit here
     // means the server's resource list has not changed since the last fetch
-    // (parity with Claude Code's LRU-cached fetchResourcesForClient). A server
+    // (parity with the reference's LRU-cached fetchResourcesForClient). A server
     // with zero resources leaves the cache empty and simply re-queries.
     if (this._resources.length > 0) return [...this._resources];
     this._resources = recursivelySanitizeUnicode(await this.collectPaginated<McpResource>('resources/list', 'resources'));
@@ -1767,7 +1767,7 @@ export class McpClient extends EventEmitter {
   async reconnect(): Promise<void> {
     this.disconnect();
     // autoReconnect disabled: the caller owns recovery, so do not run the retry
-    // loop — fail fast after the teardown above (parity with Claude Code going
+    // loop — fail fast after the teardown above (parity with the reference going
     // straight to 'closed' when WebSocketTransportOptions.autoReconnect is false).
     if (!this.autoReconnectEnabled) {
       throw new Error('MCP automatic reconnection is disabled (autoReconnect=false)');
@@ -1822,9 +1822,9 @@ export class McpClient extends EventEmitter {
    * `capabilities.experimental` (MCP spec's extension namespace). Unlike
    * {@link hasCapability} (top-level standard capabilities), this inspects the
    * nested `experimental` object a server uses to opt into non-standard
-   * extensions such as `claude/channel` (Claude-parity). Presence is keyed on a
+   * extensions such as `claude/channel` (the reference-parity). Presence is keyed on a
    * declared value — a key mapped to `undefined` is treated as absent, mirroring
-   * Claude's `experimental?.[name] !== undefined` check
+   * the reference's `experimental?.[name] !== undefined` check
    * (channelPermissions.ts:L191-192).
    */
   hasExperimentalCapability(name: string): boolean {
@@ -1838,7 +1838,7 @@ export class McpClient extends EventEmitter {
    * message channel. Requires BOTH experimental capabilities to be declared —
    * {@link MCP_CHANNEL_CAPABILITY} AND {@link MCP_CHANNEL_PERMISSION_CAPABILITY}
    * — so a relay-only channel never becomes a permission surface by accident
-   * (Claude-parity `filterPermissionRelayClients`, channelPermissions.ts:L177-194).
+   * (the reference-parity `filterPermissionRelayClients`, channelPermissions.ts:L177-194).
    * A server that declares neither, or only one, is NOT a permission-relay
    * surface. Surfaced via {@link McpServerStatus.channelPermissionRelay}.
    */
@@ -1893,7 +1893,7 @@ export class McpClient extends EventEmitter {
     // must keep retrying. An external disconnect/stopServer while the loop is
     // sleeping aborts it. Invalidate the warm resource cache so a reconnected
     // client re-fetches rather than serving a list captured before the outage
-    // (parity with Claude Code's onclose cache invalidation).
+    // (parity with the reference's onclose cache invalidation).
     if (!this.reconnectConnecting) {
       this.reconnectAborted = true;
       // Wake an in-flight backoff sleep so the loop sees the abort at once instead
@@ -2015,7 +2015,7 @@ export class McpClient extends EventEmitter {
    * tool call rejects with a JSON-RPC -32000 whose message is 'Connection closed'
    * rather than the original 404/-32001. Classify that shape as session-expiry on
    * the HTTP/SSE transport so the manager reconnects and retries the call once,
-   * keeping a routine rotation invisible to the model (parity with Claude's
+   * keeping a routine rotation invisible to the model (parity with the reference's
    * -32000 'Connection closed' → session-expired mapping).
    */
   private isConnectionClosedError(code: unknown, message: unknown): boolean {
@@ -2033,7 +2033,7 @@ export class McpClient extends EventEmitter {
    * unrecoverable authentication failure (401 / 403-revoked that re-auth could not
    * fix), returning the {@link McpAuthError} to reject with. The manager surfaces
    * this as the per-server `needs-auth` status so the UI can prompt the user to
-   * re-authenticate via `/mcp` (parity with Claude Code's needs-auth client
+   * re-authenticate via `/mcp` (parity with the reference's needs-auth client
    * state). A subsequent successful connect/reconnect flips the state back to
    * `ready`, clearing the flag.
    */
@@ -2123,7 +2123,7 @@ export class McpClient extends EventEmitter {
             const www = (res.headers?.['www-authenticate'] as string | undefined) ?? null;
             // A 403 whose challenge/body marks the token revoked/invalid is NOT a
             // scope step-up — the grant is gone, so drive a FULL re-authorization
-            // (onUnauthorized) and retry once, mirroring Claude's also403Revoked.
+            // (onUnauthorized) and retry once, mirroring the reference's also403Revoked.
             if (is403RevokedToken(www, data)) {
               this.oauth.onUnauthorized(www).then((ok: boolean) => {
                 if (ok) {
@@ -2420,7 +2420,7 @@ export class McpClient extends EventEmitter {
   /**
    * Human-facing timeout message. For a `tools/call` it names the server and the
    * tool and uses whole seconds — `MCP server "<name>" tool "<tool>" timed out
-   * after Ns` — so the model/user sees which MCP tool stalled (parity with Claude
+   * after Ns` — so the model/user sees which MCP tool stalled (parity with the reference
    * Code's tool-timeout wording). Non-tool requests keep the generic method/ms form.
    */
   private formatTimeoutMessage(method: string, params: Record<string, unknown>, timeoutMs: number): string {
@@ -2582,7 +2582,7 @@ export class McpClient extends EventEmitter {
   }
 
   /**
-   * Public outbound-notification API (Claude-parity `client.notification({method, params})`,
+   * Public outbound-notification API (the reference-parity `client.notification({method, params})`,
    * services/mcp/vscodeSdkMcp.ts) — push an application-level JSON-RPC notification to a
    * connected server, e.g. `notify('file_updated', { filePath, oldContent, newContent })`
    * or `notify('experiment_gates', { gates })`. Unlike the protocol-standard
@@ -2746,7 +2746,7 @@ export class McpClient extends EventEmitter {
     // the shape AMI dereferences BEFORE any handler runs. A malformed/wrong-typed
     // payload is surfaced as a `notification-error` and dropped rather than fed to a
     // handler or re-emitted on the generic `notification` channel (parity with
-    // Claude Code's schema-validated inbound notification handlers).
+    // the reference's schema-validated inbound notification handlers).
     const paramsCheck = validateMcpNotificationParams(notification.method, notification.params);
     if (!paramsCheck.ok) {
       this.emit('notification-error', notification.method, new Error(paramsCheck.error));
@@ -2804,7 +2804,7 @@ export class McpClient extends EventEmitter {
     // Out-of-band URL elicitation completed: the server confirms the user finished
     // the browser step for a `-32042`/url-mode elicitation. Surface the id so a
     // frontend can flip the matching waiting-state prompt to completed (parity with
-    // Claude Code's ElicitationCompleteNotificationSchema handler setting
+    // the reference's ElicitationCompleteNotificationSchema handler setting
     // `completed: true` on the queued elicitation).
     if (notification.method === 'notifications/elicitation/complete') {
       const params = notification.params as { elicitationId?: string } | undefined;
@@ -2831,7 +2831,7 @@ export class McpClient extends EventEmitter {
       }
     }
 
-    // IDE-as-MCP-server editor-context notifications (parity with Claude Code's
+    // IDE-as-MCP-server editor-context notifications (parity with the reference's
     // useIdeSelection / useIdeAtMentioned). Params are already validated above;
     // normalize and surface as typed events a frontend/engine can consume to add
     // the user's current editor selection / at-mention to the turn context.
@@ -2928,7 +2928,7 @@ export class McpClient extends EventEmitter {
     // Register an abort controller so an inbound notifications/cancelled for this
     // request id (or a connection drop, which aborts all _inboundAborts) cancels
     // the in-flight model turn instead of letting it run to completion and burn
-    // tokens — parity with Claude Code threading the SDK's per-request
+    // tokens — parity with the reference threading the SDK's per-request
     // `extra.signal` into the sampling handler.
     const controller = new AbortController();
     this._inboundAborts.set(id, controller);

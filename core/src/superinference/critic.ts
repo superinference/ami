@@ -15,7 +15,7 @@ export interface CriticRetryOptions {
  * Claude-Code-compatible alias, mirroring the pattern used by web_fetch
  * (CLAUDE_CODE_DISABLE_WEB_FETCH / SUPERINFERENCE_DISABLE_WEB_FETCH). When set, the
  * engine must fall back to the proxy critic instead of issuing the auxiliary model
- * call. Parity: Claude's advisor `CLAUDE_CODE_DISABLE_ADVISOR_TOOL` override.
+ * call. Parity: the reference's advisor `CLAUDE_CODE_DISABLE_ADVISOR_TOOL` override.
  */
 export function isCriticDisabledByEnv(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.CLAUDE_CODE_DISABLE_CRITIC === '1' || env.SUPERINFERENCE_DISABLE_CRITIC === '1';
@@ -30,7 +30,7 @@ export function isCriticDisabledByEnv(env: NodeJS.ProcessEnv = process.env): boo
  * decision path — a formatting miss can no longer masquerade as a substantive
  * negative verdict that wrongly DECREASES belief. {@link Critic.extractJSON}
  * remains the fallback for providers that ignore structured output. Parity:
- * Claude Code's `outputFormat: { type: 'json_schema', schema }` on auxiliary
+ * the reference's `outputFormat: { type: 'json_schema', schema }` on auxiliary
  * LLM-judge calls (commands/rename/generateSessionName.ts).
  */
 export const CRITIC_VERDICT_SCHEMA: Record<string, unknown> = {
@@ -51,7 +51,7 @@ export class Critic {
   // drives. Defaults to the real provider; overridable so tests can exercise the
   // retry / fail-closed paths without hitting the network.
   private streamFn: typeof streamChatCompletion;
-  // Dedicated reviewer model (parity: Claude's advisor `advisorModel`). Empty string
+  // Dedicated reviewer model (parity: the reference's advisor `advisorModel`). Empty string
   // inherits the main-loop model passed to evaluate().
   private criticModel: string;
   private retry: CriticRetryOptions;
@@ -92,7 +92,7 @@ Respond with ONLY a JSON object:
       { role: 'user', content: criticPrompt },
     ];
 
-    // Resolve the dedicated reviewer model (parity: Claude's advisor model override);
+    // Resolve the dedicated reviewer model (parity: the reference's advisor model override);
     // '' inherits the main-loop model. The verdict is attributed to this resolved id.
     const reviewerModel = this.criticModel || provider.model;
 
@@ -101,12 +101,12 @@ Respond with ONLY a JSON object:
       let streamError: string | undefined;
       // Per-call token usage for this auxiliary reviewer request, captured from the
       // provider's terminal 'done' chunk so a usage view can attribute reviewer-model
-      // spend distinctly from the main loop. Parity: Claude's getAdvisorUsage.
+      // spend distinctly from the main loop. Parity: the reference's getAdvisorUsage.
       let lastUsage: StreamChunk['usage'] | undefined;
       // Whether the reviewer's reasoning came back encrypted/redacted. The provider maps
       // a `redacted_thinking` block to a thinking_delta carrying REDACTED_THINKING_PLACEHOLDER;
       // if a genuine verdict still parses, the review is COMPLETE but its rationale was
-      // withheld. Parity: Claude's redacted-review completion state.
+      // withheld. Parity: the reference's redacted-review completion state.
       let redactedReasoning = false;
       // Route the auxiliary call through the SHARED retry wrapper (querySource 'critic')
       // so transient capacity/connection errors (429/5xx, ECONNRESET/EPIPE) are retried
@@ -161,11 +161,11 @@ Respond with ONLY a JSON object:
           score,
           reason: String(parsed.reason || ''),
           // Attribute the verdict to the model that produced it (the resolved critic
-          // model, which may differ from the main-loop model). Parity: Claude's
+          // model, which may differ from the main-loop model). Parity: the reference's
           // advisor-message model attribution.
           model: reviewerModel,
           // A redacted-but-complete review: the verdict stands, only the rationale was
-          // withheld (encrypted reasoning). Parity: Claude's redacted-review state.
+          // withheld (encrypted reasoning). Parity: the reference's redacted-review state.
           ...(redactedReasoning ? { redacted: true } : {}),
           // Per-auxiliary-model token usage, tagged with the reviewer model so a usage
           // view can attribute reviewer spend separately. Parity: getAdvisorUsage.
@@ -189,7 +189,7 @@ Respond with ONLY a JSON object:
     } catch (err) {
       // A rethrown SSL/non-network error means the reviewer was UNAVAILABLE — NOT a
       // substantive rejection. Flag it so the consumer can soften the belief floor
-      // instead of treating {approved:false,score:0} as a real "no". Parity: Claude's
+      // instead of treating {approved:false,score:0} as a real "no". Parity: the reference's
       // AdvisorMessage "Advisor unavailable (code)" error branch.
       return this.unavailable(abortSignal, err instanceof Error ? err.message : String(err), 'stream_error');
     }

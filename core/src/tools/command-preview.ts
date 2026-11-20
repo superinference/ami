@@ -1,12 +1,12 @@
 /**
  * PARITY (additive): shared command-preview truncation for task tools.
  *
- * Mirrors Claude Code's TaskStop `truncateCommand` (UI.tsx): cap a stopped/listed
+ * Mirrors the reference's TaskStop `truncateCommand` (UI.tsx): cap a stopped/listed
  * task's command to a short, bounded preview so echoing it back never floods the
- * model's context or the transcript. Claude's defaults are 2 display lines and
+ * model's context or the transcript. the reference's defaults are 2 display lines and
  * 160 characters; we keep those exact caps.
  *
- * Divergence note: Claude measures width with `stringWidth` (CJK-aware) in the ink
+ * Divergence note: the reference measures width with `stringWidth` (CJK-aware) in the ink
  * renderer. This helper lives in core/ (no ink, no terminal), so it caps by code-unit
  * length — a conservative, deterministic approximation that is correct for the common
  * ASCII case and never under-truncates. The caller surfaces the FULL command in
@@ -28,7 +28,7 @@ export interface CommandPreview {
  *
  * - Keeps at most {@link MAX_COMMAND_DISPLAY_LINES} lines.
  * - Then caps the result at {@link MAX_COMMAND_DISPLAY_CHARS} characters.
- * - Trims trailing/leading whitespace, matching Claude's `truncateCommand`.
+ * - Trims trailing/leading whitespace, matching the reference's `truncateCommand`.
  */
 export function previewCommand(
   command: string,

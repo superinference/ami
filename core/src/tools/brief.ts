@@ -4,7 +4,7 @@ const INTENTS = ['normal', 'proactive'] as const;
 type Intent = (typeof INTENTS)[number];
 
 /**
- * PARITY (validated brief config with safe-parse fallback) — Claude's BriefTool
+ * PARITY (validated brief config with safe-parse fallback) — the reference's BriefTool
  * is backed by a schema-validated config knob (`briefConfigSchema.safeParse` →
  * `DEFAULT_BRIEF_CONFIG`) so a malformed remote config can never PARTIALLY
  * enable/corrupt the feature: any invalid field drops the WHOLE object back to
@@ -40,7 +40,7 @@ function isValidTopicLen(v: unknown): v is number {
 /**
  * Parse a raw (untrusted) brief-config value with STRICT per-field validation,
  * falling back ENTIRELY to {@link DEFAULT_BRIEF_CONFIG} on ANY malformed input
- * so a bad config can never partially enable/corrupt the tool. Mirrors Claude's
+ * so a bad config can never partially enable/corrupt the tool. Mirrors the reference's
  * `briefConfigSchema().safeParse(raw)` → default-on-failure semantics.
  */
 function parseBriefConfig(raw: unknown): BriefConfig {
@@ -114,7 +114,7 @@ export const briefTool: ToolDefinition = {
         : `Summarize "${topic}" in exactly one sentence.`;
     // Surface the normal-vs-proactive intent as a STRUCTURED discriminator on the
     // result (not just baked into the prose), so a frontend can route a 'proactive'
-    // brief to a notification / unsolicited-surface affordance the way Claude's
+    // brief to a notification / unsolicited-surface affordance the way the reference's
     // BriefTool drives `logEvent('tengu_brief_send', { proactive })`. Parity: the
     // status enum is a machine-readable signal, carried on ToolResult.metadata.
     return {

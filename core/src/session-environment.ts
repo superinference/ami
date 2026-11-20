@@ -1,5 +1,5 @@
 /**
- * Persisted session environment script (Claude Code `sessionEnvironment.ts` parity).
+ * Persisted session environment script (the reference `sessionEnvironment.ts` parity).
  *
  * AMI's `bash` tool spawns every command with a freshly scrubbed environment and
  * only the static skill-env map carried across calls, so shell state — a
@@ -62,7 +62,7 @@ function safeSessionSegment(sessionId: string | undefined): string {
 
 /**
  * The per-session env directory — `<configDir>/session-env/<sessionId>/` —
- * mirroring Claude Code's `<configHome>/session-env/<sessionId>/`. Pure string
+ * mirroring the reference's `<configHome>/session-env/<sessionId>/`. Pure string
  * build (no I/O), guarded to stay within the session-env base so a crafted
  * session id cannot escape. Exposed to lifecycle hooks (as an env var) so a hook
  * can write an `<event>-hook-<index>.sh` fragment that later bash commands pick up.
@@ -85,7 +85,7 @@ const HOOK_ENV_REGEX = /^(setup|sessionstart|cwdchanged|filechanged)-hook-(\d+)\
 /**
  * The deterministic per-hook env-fragment path a lifecycle hook may write
  * `export KEY=VAL` lines into to persist environment across later bash commands
- * (Claude Code's `hookIndex`-derived `CLAUDE_ENV_FILE` for SessionStart hooks).
+ * (the reference's `hookIndex`-derived `CLAUDE_ENV_FILE` for SessionStart hooks).
  * Only the env-ingestible events (`setup`, `sessionStart`, `cwdChanged`,
  * `fileChanged` — the ones {@link getSessionEnvironmentScript} re-reads) get a
  * path; any other event returns null (writing one would never be re-ingested, so
@@ -251,7 +251,7 @@ export async function getSessionEnvironmentScript(
  * venv/conda activation survive across bash calls?" without reading source. Pure
  * (reads the configured env + resolves the base dir path; no disk I/O, no spawn).
  *
- * Parity: Claude Code's `sessionEnvironment.ts` emits a chain of provenance
+ * Parity: the reference's `sessionEnvironment.ts` emits a chain of provenance
  * messages (`loaded from CLAUDE_ENV_FILE`, `loaded from N hook file(s)`, `script
  * ready`, `not yet supported on Windows`) as it assembles the env. AMI already
  * logs the same provenance via `log('session-env', …)` during assembly; this adds

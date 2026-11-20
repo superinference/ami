@@ -23,14 +23,14 @@ const DEFAULT_LIMIT = 2000;
  * Hard OOM backstop for a FULL (un-ranged) text read, even when `allow_large`
  * bypasses the 256KB partial-view cap. A read above this is rejected with a
  * {@link FileTooLargeError} message instead of loading an unbounded file into
- * memory. Mirrors Claude Code's maxBytes/FileTooLargeError hard stop on the
+ * memory. Mirrors the reference's maxBytes/FileTooLargeError hard stop on the
  * read path (utils/readFileInRange.ts).
  */
 const MAX_FULL_READ_BYTES = 50 * 1024 * 1024; // 50 MB
 /**
  * Per-cell combined-output size (chars of text + image base64) above which a
  * notebook cell's outputs are replaced with a `jq` escape-hatch hint instead of
- * being inlined — a DoS / context-budget guard. Mirrors Claude Code's
+ * being inlined — a DoS / context-budget guard. Mirrors the reference's
  * LARGE_OUTPUT_THRESHOLD (utils/notebook.ts).
  */
 const NOTEBOOK_LARGE_OUTPUT_THRESHOLD = 10_000;
@@ -41,7 +41,7 @@ const PDF_TARGET_RAW_SIZE = 20 * 1024 * 1024; // 20 MB
  * this would dump an unbounded amount of text into context, so the model must use
  * the `pages` parameter to extract a specific range instead. Re-exported from the
  * shared {@link module:media-limits} so the tool guard and the error classifier
- * share ONE canonical page ceiling (no drift). Mirrors Claude Code's
+ * share ONE canonical page ceiling (no drift). Mirrors the reference's
  * API_PDF_MAX_PAGES (constants/apiLimits.ts).
  */
 export { API_PDF_MAX_PAGES } from '../media-limits';
@@ -52,7 +52,7 @@ const MAX_PDF_RENDER_PAGES = 10;
 /**
  * Process-lifetime cache of whether the `pdftoppm` binary (poppler-utils) is
  * available, so the image-fallback probe runs at most once per process. Mirrors
- * Claude Code's pdftoppmAvailable cache.
+ * the reference's pdftoppmAvailable cache.
  */
 let pdftoppmAvailable: boolean | undefined;
 
@@ -102,7 +102,7 @@ export const pdfHooks: {
  * `pdf-parse` dependency resolves. The Read tool's description is gated on this
  * so its self-description is an honest introspection surface that reflects the
  * real capability instead of advertising PDF reads that would fail at runtime
- * with "Error reading PDF". Mirrors Claude Code's isPDFSupported() (FileReadTool/prompt.ts).
+ * with "Error reading PDF". Mirrors the reference's isPDFSupported() (FileReadTool/prompt.ts).
  */
 export function isPDFSupported(): boolean {
   return pdfHooks.isPdfParseResolvable();
@@ -111,7 +111,7 @@ export function isPDFSupported(): boolean {
 /**
  * Whether `pdftoppm` is available (cached for the process lifetime). pdftoppm
  * prints its version to stderr and exits 0 (or a nonzero on older builds), so a
- * nonempty stderr also counts as available. Mirrors Claude Code's isPdftoppmAvailable.
+ * nonempty stderr also counts as available. Mirrors the reference's isPdftoppmAvailable.
  */
 export async function isPdftoppmAvailable(): Promise<boolean> {
   if (pdftoppmAvailable !== undefined) return pdftoppmAvailable;
@@ -128,7 +128,7 @@ export async function isPdftoppmAvailable(): Promise<boolean> {
  * Render PDF pages to JPEG images via pdftoppm (poppler-utils), returning them as
  * base64 image blocks. Used as a fallback for scanned/image-only PDFs that yield no
  * extractable text. Returns [] when pdftoppm is unavailable or produced nothing.
- * Mirrors Claude Code's extractPDFPages (pdftoppm -jpeg -r 100 -f/-l).
+ * Mirrors the reference's extractPDFPages (pdftoppm -jpeg -r 100 -f/-l).
  */
 export async function renderPdfPagesToImages(
   filePath: string,
@@ -160,7 +160,7 @@ export async function renderPdfPagesToImages(
  * Security control that travels WITH untrusted file content: a planted file must
  * not be able to turn the agent into a malware-authoring assistant. Appended to
  * every text read so the model may analyze/report on malicious code but must
- * refuse to improve, augment, or author it. Mirrors Claude Code's
+ * refuse to improve, augment, or author it. Mirrors the reference's
  * CYBER_RISK_MITIGATION_REMINDER (FileReadTool).
  */
 export const CYBER_RISK_MITIGATION_REMINDER =
@@ -225,13 +225,13 @@ export { KNOWN_BINARY_EXTENSIONS, isBinaryByExtension, checkBinaryContent };
  * dot. Modeling the document types as a data structure + a normalizing membership
  * test ({@link isPDFExtension}) replaces scattered inline `ext === '.pdf'` string
  * compares, so the check is correct whether or not the caller passed a leading dot.
- * Mirrors Claude Code's DOCUMENT_EXTENSIONS set (utils/pdfUtils.ts).
+ * Mirrors the reference's DOCUMENT_EXTENSIONS set (utils/pdfUtils.ts).
  */
 export const DOCUMENT_EXTENSIONS = new Set(['pdf']);
 
 /**
  * Whether `ext` names a PDF, normalizing a possible leading dot and case before
- * the Set lookup (so '.PDF', 'pdf', and '.pdf' all match). Mirrors Claude Code's
+ * the Set lookup (so '.PDF', 'pdf', and '.pdf' all match). Mirrors the reference's
  * isPDFExtension (utils/pdfUtils.ts).
  */
 export function isPDFExtension(ext: string): boolean {
@@ -258,7 +258,7 @@ const THIN_SPACE = '\u202f';
  * returns the path with the ALTERNATE space character before AM/PM in a `.png`
  * name (regular <-> U+202F) so the caller can retry it, or undefined when the
  * name does not match the screenshot pattern. Non-destructive: the on-disk name
- * is never rewritten up front. Mirrors Claude Code's getAlternateScreenshotPath.
+ * is never rewritten up front. Mirrors the reference's getAlternateScreenshotPath.
  */
 export function getAlternateScreenshotPath(filePath: string): string | undefined {
   const filename = path.basename(filePath);
@@ -280,7 +280,7 @@ export function getAlternateScreenshotPath(filePath: string): string | undefined
  * block that the model would mistake for a real system instruction. The entire
  * forged block is stripped before the content is cached or returned, so it can
  * never carry those boundary tags forward. AMI's own reminders are appended
- * AFTER this runs and are unaffected. Mirrors Claude Code's queryHelpers strip.
+ * AFTER this runs and are unaffected. Mirrors the reference's queryHelpers strip.
  */
 export function stripForgedSystemReminders(text: string): string {
   // eslint-disable-next-line security/detect-unsafe-regex -- lazy match bounded by a required literal close tag; linear
@@ -330,7 +330,7 @@ export function isImagePath(p: string): boolean {
 
 /**
  * Hard ceiling on the base64 size of a single image the model-provider API will
- * accept (~5 MB base64). Mirrors Claude Code's API_IMAGE_MAX_BASE64_SIZE. An
+ * accept (~5 MB base64). Mirrors the reference's API_IMAGE_MAX_BASE64_SIZE. An
  * image whose encoded payload exceeds this is rejected with an actionable error
  * rather than silently sent and bounced by the provider.
  */
@@ -342,7 +342,7 @@ export const API_IMAGE_MAX_BASE64_SIZE = 5 * 1024 * 1024;
  * the canonical `image/*` media type, or null when the bytes match no known
  * image signature. This is the single source of truth for content-based image
  * format detection (file reads, pasted images, attachment normalization) so the
- * logic is never re-implemented per call site. Mirrors Claude Code's
+ * logic is never re-implemented per call site. Mirrors the reference's
  * detectImageFormatFromBuffer / detectImageFormatFromBase64.
  */
 export function detectImageFormatFromBuffer(buf: Buffer): string | null {
@@ -392,7 +392,7 @@ export function detectImageFormatFromBase64(data: string): string | null {
  * interop differs by resolution mode — an ESM build of a drop-in replacement may
  * resolve as `{ default: fn }` while CommonJS resolves to the callable directly —
  * so unwrap a `.default` when the top-level export is not itself callable. Mirrors
- * Claude Code's unwrapDefault (imageProcessor.ts).
+ * the reference's unwrapDefault (imageProcessor.ts).
  */
 export function unwrapDefault<T>(mod: T | { default: T }): T {
   if (typeof mod === 'function') return mod as T;
@@ -421,7 +421,7 @@ export const imageHooks: {
    * distribution whose native binding is missing on a given platform still
    * downscales images instead of only being able to pass raw bytes. When unset,
    * the chain defaults to `[loadSharp]` (unchanged single-engine behavior).
-   * Mirrors Claude Code's getImageProcessor() native-first ordered fallback.
+   * Mirrors the reference's getImageProcessor() native-first ordered fallback.
    */
   loaders?: Array<() => any>;
 } = {
@@ -435,7 +435,7 @@ export const imageHooks: {
  * propagate, so the caller's existing sharp-unavailable fallback still runs. When
  * no chain is configured, the single canonical `loadSharp` loader is used — so a
  * default build behaves exactly as before and a test that mocks `imageHooks.loadSharp`
- * is still honored. Mirrors Claude Code's getImageProcessor() (native-first, sharp fallback).
+ * is still honored. Mirrors the reference's getImageProcessor() (native-first, sharp fallback).
  */
 export function loadImageProcessor(): any {
   const chain = imageHooks.loaders && imageHooks.loaders.length > 0
@@ -450,7 +450,7 @@ export function loadImageProcessor(): any {
       lastErr = err;
       // Try the next processor in the chain. Surface the degrade at debug level so
       // an operator tracing a slow/raw-bytes image read can see which processor
-      // tier failed to load. Mirrors Claude Code's getImageProcessor() warn-and-fallthrough.
+      // tier failed to load. Mirrors the reference's getImageProcessor() warn-and-fallthrough.
       log('file-read', `Image processor loader failed, trying next: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
@@ -461,14 +461,14 @@ export function loadImageProcessor(): any {
 
 /**
  * Max pixel dimensions the provider accepts for an image. Larger images are
- * downscaled (aspect-preserving) before encoding. Mirrors Claude Code's
+ * downscaled (aspect-preserving) before encoding. Mirrors the reference's
  * IMAGE_MAX_WIDTH / IMAGE_MAX_HEIGHT.
  */
 export const IMAGE_MAX_WIDTH = 2000;
 export const IMAGE_MAX_HEIGHT = 2000;
 /**
  * Target raw (pre-base64) byte size for an encoded image: base64 inflates by 4/3,
- * so the raw budget is 3/4 of the 5 MB base64 API ceiling. Mirrors Claude Code's
+ * so the raw budget is 3/4 of the 5 MB base64 API ceiling. Mirrors the reference's
  * IMAGE_TARGET_RAW_SIZE.
  */
 export const IMAGE_TARGET_RAW_SIZE = Math.floor((API_IMAGE_MAX_BASE64_SIZE * 3) / 4);
@@ -496,7 +496,7 @@ export interface CompressedImage {
 /**
  * Thrown when an image cannot be reduced below the provider's size/pixel limits
  * and compression itself failed — the caller surfaces this as an actionable error
- * instead of emitting an unusable image block. Mirrors Claude Code's ImageResizeError.
+ * instead of emitting an unusable image block. Mirrors the reference's ImageResizeError.
  */
 export class ImageResizeError extends Error {
   constructor(message: string) {
@@ -521,7 +521,7 @@ function readPngDimensions(buf: Buffer): { width: number; height: number } | nul
  * JPEG quality; downscale to the pixel cap when size alone is not enough. On any
  * sharp failure, allow the original through only when it is within BOTH the base64
  * API ceiling AND the pixel-dimension cap, otherwise throw ImageResizeError.
- * Mirrors Claude Code's compressImageBuffer (utils/imageResizer.ts).
+ * Mirrors the reference's compressImageBuffer (utils/imageResizer.ts).
  */
 export async function compressImageBuffer(
   imageBuffer: Buffer,
@@ -580,7 +580,7 @@ export async function compressImageBuffer(
     }
     const resizeOpts = { fit: 'inside' as const, withoutEnlargement: true };
     // Progress breadcrumb so an operator tracing a degraded/slow image read can
-    // see which dimension the compressor is targeting. Mirrors Claude Code's
+    // see which dimension the compressor is targeting. Mirrors the reference's
     // logForDebugging(`Resizing to ${w}x${h}`) (utils/imageResizer.ts).
     log('file-read', `Resizing image to ${width}x${height}`);
     const resized = await sharp(imageBuffer).resize(width, height, resizeOpts).toBuffer();
@@ -610,7 +610,7 @@ export async function compressImageBuffer(
     // Visible degradation signal: the native/sharp image processor could not load
     // or process the buffer, so image handling fell back to passing the raw bytes
     // through (or rejecting them). Surfaced at WARN so an operator gets a signal
-    // that image compression degraded. Mirrors Claude Code's console.warn fallback
+    // that image compression degraded. Mirrors the reference's console.warn fallback
     // notice in getImageProcessor (imageProcessor.ts).
     log('file-read', `Image processor unavailable or failed: ${err instanceof Error ? err.message : String(err)}`, undefined, 'warn');
     // Compression failed. Only allow the raw image through when it is within BOTH
@@ -638,7 +638,7 @@ export async function compressImageBuffer(
 /**
  * Compress an image buffer to fit within a token budget. Converts the token limit
  * to a byte limit (base64 ≈ 0.125 tokens/char; raw ≈ 0.75·base64) and defers to
- * compressImageBuffer. Mirrors Claude Code's compressImageBufferWithTokenLimit.
+ * compressImageBuffer. Mirrors the reference's compressImageBufferWithTokenLimit.
  */
 export async function compressImageBufferWithTokenLimit(
   imageBuffer: Buffer,
@@ -654,7 +654,7 @@ export async function compressImageBufferWithTokenLimit(
  * Build a short metadata note describing an image's source and (when it was
  * downscaled) the coordinate scale factor from displayed → original pixels, so a
  * model reasoning about pixel coordinates can map them back. Returns null when no
- * useful metadata is available. Mirrors Claude Code's createImageMetadataText.
+ * useful metadata is available. Mirrors the reference's createImageMetadataText.
  */
 export function createImageMetadataText(dims: ImageDimensions, sourcePath?: string): string | null {
   const { originalWidth, originalHeight, displayWidth, displayHeight } = dims;
@@ -687,7 +687,7 @@ export async function encodeImageFile(
   const imageBuffer = await fs.promises.readFile(absPath);
   // A 0-byte image would otherwise slip through the under-limit fast path and yield
   // an empty base64 payload the provider rejects with an opaque "image cannot be
-  // empty". Fail fast with an actionable error. Mirrors Claude Code's empty-buffer guard.
+  // empty". Fail fast with an actionable error. Mirrors the reference's empty-buffer guard.
   if (imageBuffer.length === 0) {
     throw new ImageResizeError(`Image file is empty (0 bytes): ${absPath}`);
   }
@@ -698,7 +698,7 @@ export async function encodeImageFile(
   let mediaType = sniffed || MEDIA_TYPES[ext] || 'application/octet-stream';
   let buffer = imageBuffer;
   // Providers reject BMP — transcode it to PNG (lossless, preserves alpha) when
-  // sharp is available before the generic compression pass. Mirrors Claude Code's
+  // sharp is available before the generic compression pass. Mirrors the reference's
   // WSL2/Windows clipboard BMP handling; left untouched when sharp is unavailable.
   if (mediaType === 'image/bmp') {
     try {
@@ -767,7 +767,7 @@ export function buildFileImagesOutput(kind: FileImagesKind, text: string, images
 
 /**
  * Parse a file_read output that carries extracted images, returning the kind, the
- * text, and the image blocks. Returns null for any other output. Mirrors Claude
+ * text, and the image blocks. Returns null for any other output. Mirrors the reference
  * Code's notebook/PDF image-output extraction.
  */
 export function parseFileImagesOutput(output: string): { kind: FileImagesKind; text: string; images: ImageContent[] } | null {
@@ -813,7 +813,7 @@ export function parseImageToolMetadata(output: string): string | null {
  * Actionable stub returned when a FULL re-read hits the unchanged-file cache.
  * Beyond stating the fact, it tells the model what to DO — reuse the earlier
  * Read tool_result instead of looping on re-reads — so a model does not re-issue
- * the read or stall. Mirrors Claude Code's FILE_UNCHANGED_STUB (FileReadTool/prompt.ts).
+ * the read or stall. Mirrors the reference's FILE_UNCHANGED_STUB (FileReadTool/prompt.ts).
  */
 export const FILE_UNCHANGED_STUB =
   'File unchanged since last read. The content from the earlier Read tool_result in this conversation is still current — refer to that instead of re-reading.';
@@ -821,7 +821,7 @@ export const FILE_UNCHANGED_STUB =
 /**
  * Marker prefixing the current working directory in a file-not-found error, so
  * the model (and any UI renderer keying off the marker) can self-correct a wrong
- * relative/absolute path assumption. Mirrors Claude Code's FILE_NOT_FOUND_CWD_NOTE
+ * relative/absolute path assumption. Mirrors the reference's FILE_NOT_FOUND_CWD_NOTE
  * (utils/file.ts).
  */
 export const FILE_NOT_FOUND_CWD_NOTE = 'Note: your current working directory is';
@@ -831,7 +831,7 @@ export const FILE_NOT_FOUND_CWD_NOTE = 'Note: your current working directory is'
  * rendered file content has consistent, tab-width-independent indentation — a
  * terminal expands a raw `\t` to a variable number of cells (commonly 8), which
  * misaligns the line-number gutter. Fast-paths the common tab-free case to avoid
- * the per-line scan. Mirrors Claude Code's convertLeadingTabsToSpaces (utils/file.ts).
+ * the per-line scan. Mirrors the reference's convertLeadingTabsToSpaces (utils/file.ts).
  */
 export function convertLeadingTabsToSpaces(content: string): string {
   if (!content.includes('\t')) return content;
@@ -839,7 +839,7 @@ export function convertLeadingTabsToSpaces(content: string): string {
   return content.replace(/^\t+/gm, (tabs) => '  '.repeat(tabs.length));
 }
 
-/** Pad width used for the arrow line-number style (`     N→`), matching Claude Code. */
+/** Pad width used for the arrow line-number style (`     N→`), matching the reference. */
 const ARROW_PREFIX_WIDTH = 6;
 
 /**
@@ -851,7 +851,7 @@ const ARROW_PREFIX_WIDTH = 6;
  *     already ≥6 digits), the legacy padded-arrow format.
  * The inverse (stripping EITHER prefix) is {@link stripLineNumberPrefix} in
  * file-cache-seed.ts, so a transcript-seeded re-read round-trips regardless of the
- * style the output was produced in. Mirrors Claude Code's addLineNumbers()
+ * style the output was produced in. Mirrors the reference's addLineNumbers()
  * (utils/file.ts) compact/padded-arrow branches.
  */
 export function formatLineNumber(
@@ -873,7 +873,7 @@ export function formatLineNumber(
  * range, tail, notebook):
  *   - within budget → the output unchanged;
  *   - over budget + `errorOnBudget` → a hard {@link ToolResult} error carrying the
- *     actionable {@link fileReadTokenBudgetMessage} (Claude parity), so the model
+ *     actionable {@link fileReadTokenBudgetMessage} (the reference parity), so the model
  *     gets a targeted-re-read nudge instead of a file silently cut mid-structure;
  *   - over budget + default → the content truncated to the budget via
  *     {@link sliceToReadTokenBudget} with the caller's `truncationNote` appended
@@ -900,7 +900,7 @@ export function applyReadTokenBudget(
  * Options that shape the Read tool's self-description/schema so it HONESTLY
  * reflects the runtime's real capabilities and the operator's prompt-shaping
  * knobs. Defaults mirror a fully-capable runtime with all guidance on, so the
- * advertised description equals the historical static string. Mirrors Claude
+ * advertised description equals the historical static string. Mirrors the reference
  * Code's prompt.ts (isPDFSupported) + limits.ts (includeMaxSizeInPrompt /
  * targetedRangeNudge) description gating.
  */
@@ -919,7 +919,7 @@ export function resolveFileReadDescriptionOptions(
 /**
  * Build the Read tool's description. The PDF clause is included ONLY when the
  * runtime can actually read PDFs, so the tool never advertises a capability that
- * would fail with "Error reading PDF". Mirrors Claude Code's isPDFSupported()
+ * would fail with "Error reading PDF". Mirrors the reference's isPDFSupported()
  * gating of the PDF instruction block.
  */
 export function buildFileReadDescription(opts: FileReadDescriptionOptions): string {
@@ -938,7 +938,7 @@ export function buildFileReadDescription(opts: FileReadDescriptionOptions): stri
  * (gated by {@link FileReadPromptFlags.targetedRangeNudge}) and the concrete
  * 256KB size-cap figure in `allow_large` (gated by
  * {@link FileReadPromptFlags.includeMaxSizeInPrompt}) are surfaced only when the
- * corresponding knob is on. Mirrors Claude Code's limits.ts prompt toggles.
+ * corresponding knob is on. Mirrors the reference's limits.ts prompt toggles.
  */
 export function buildFileReadInputSchema(opts: FileReadDescriptionOptions): ToolDefinition['inputSchema'] {
   const offsetNudge = opts.targetedRangeNudge
@@ -1019,7 +1019,7 @@ export const fileReadTool: ToolDefinition = {
     // Resolve the effective size/token caps: env override > per-call context
     // override (threaded via outputBudget) > hardcoded default. Strict per-field
     // validation in getFileReadingLimits guarantees no 0/NaN/Infinity cap, so a
-    // malformed operator value can never disable the guard. (PARITY: Claude
+    // malformed operator value can never disable the guard. (PARITY: the reference
     // Code getDefaultFileReadingLimits.)
     const limits = getFileReadingLimits({
       maxTokens: context.outputBudget?.fileReadMaxTokens,
@@ -1032,7 +1032,7 @@ export const fileReadTool: ToolDefinition = {
     const lineNumberStyle = getLineNumberStyle();
     // Over-budget behavior for a read that exceeds the token budget: default OFF
     // (silently truncate — AMI's partial-content differentiator); truthy opts into
-    // Claude-parity hard-error-with-nudge. See getFileReadErrorOnBudget.
+    // the reference-parity hard-error-with-nudge. See getFileReadErrorOnBudget.
     const errorOnBudget = getFileReadErrorOnBudget();
 
     if (!filePath || filePath.trim().length === 0) {
@@ -1072,7 +1072,7 @@ export const fileReadTool: ToolDefinition = {
       // (EACCES/EPERM) is a permission problem, not a missing path — surface it
       // distinctly (with cwd context) rather than the misleading "not found", and
       // skip the ENOENT-only screenshot/not-found recovery below (retrying an
-      // alternate name for a file that exists makes no sense). Mirrors Claude
+      // alternate name for a file that exists makes no sense). Mirrors the reference
       // Code's errno-distinguished file validation (BriefTool/attachments.ts).
       const errno = (accessErr as NodeJS.ErrnoException | undefined)?.code;
       if (errno === 'EACCES' || errno === 'EPERM') {
@@ -1097,7 +1097,7 @@ export const fileReadTool: ToolDefinition = {
           // does not exist (the model rooted the path at a misspelled directory
           // component), suggestSimilarPaths can only scan that missing parent and
           // returns nothing. Walk up to the nearest existing ancestor and correct
-          // the misspelled directory segment there. Mirrors Claude Code's
+          // the misspelled directory segment there. Mirrors the reference's
           // findSimilarFile dropped/mistyped-folder recovery (utils/file.ts).
           const corrected = suggestPathCorrection(resolved, context.cwd);
           if (corrected.kind === 'missing-dir' && corrected.suggestions.length > 0) {
@@ -1106,13 +1106,13 @@ export const fileReadTool: ToolDefinition = {
         }
         // Always surface the cwd so the model (and UI renderers keying off the
         // marker) can self-correct a wrong relative/absolute path assumption —
-        // the note is UNCONDITIONAL (Claude Code parity: FILE_NOT_FOUND_CWD_NOTE
+        // the note is UNCONDITIONAL (the reference parity: FILE_NOT_FOUND_CWD_NOTE
         // is appended to every not-found error regardless of a suggestion).
         suggestions += `\n${FILE_NOT_FOUND_CWD_NOTE} ${context.cwd}.`;
         // PARITY (dropped-repo-folder recovery): when the model built an absolute
         // path as a SIBLING of the project root instead of inside it (reachable
         // when a broader read root is permitted), surface the corrected path
-        // under cwd. Mirrors Claude Code's suggestPathUnderCwd note.
+        // under cwd. Mirrors the reference's suggestPathUnderCwd note.
         const underCwd = suggestPathUnderCwd(resolved, context.cwd);
         if (underCwd) {
           suggestions += ` Did you mean ${underCwd}?`;
@@ -1145,7 +1145,7 @@ export const fileReadTool: ToolDefinition = {
         // PARITY (symlink read transparency): a read that silently follows a
         // symlink can confuse an operator auditing the debug log ("why was this
         // other file read?"). Record the hop (requested link -> real target) at
-        // debug level so the resolution is diagnosable. Mirrors Claude Code's
+        // debug level so the resolution is diagnosable. Mirrors the reference's
         // `logForDebugging("Reading through symlink: ...")` (utils/fileRead.ts).
         log('file-read', `Reading through symlink: ${resolved} -> ${realTarget}`);
       }
@@ -1242,7 +1242,7 @@ export const fileReadTool: ToolDefinition = {
       context.filesRead?.add(resolved);
       // Coordinate-mapping metadata: when the image was downscaled, tell the model
       // the scale factor so pixel coordinates it reasons about map back to the
-      // original. Mirrors Claude Code's createImageMetadataText injection.
+      // original. Mirrors the reference's createImageMetadataText injection.
       const metadata = dimensions ? createImageMetadataText(dimensions, resolved) : null;
       return {
         output: JSON.stringify({
@@ -1261,7 +1261,7 @@ export const fileReadTool: ToolDefinition = {
     if (isPDFExtension(ext)) {
       // A 0-byte PDF carries no content: short-circuit with a distinct `empty`
       // classification BEFORE the %PDF- header probe (which would otherwise report
-      // the less-accurate "missing %PDF- header"). Mirrors Claude Code's
+      // the less-accurate "missing %PDF- header"). Mirrors the reference's
       // originalSize === 0 → reason:'empty' guard (utils/pdf.ts).
       if (stat.size === 0) {
         return { output: classifyPdfError('PDF file is empty (0 bytes)'), isError: true };
@@ -1269,7 +1269,7 @@ export const fileReadTool: ToolDefinition = {
       // Guard PDF size BEFORE loading the whole file into memory. file-read exempts
       // .pdf from the generic MAX_READ_SIZE partial-view cap, so without this a huge
       // PDF would be read whole via fs.readFile → unbounded memory (DoS). Mirrors
-      // Claude's PDF_TARGET_RAW_SIZE (20MB) with a structured too_large rejection.
+      // the reference's PDF_TARGET_RAW_SIZE (20MB) with a structured too_large rejection.
       if (stat.size > PDF_TARGET_RAW_SIZE) {
         return {
           output: `Error: PDF too large (${formatFileSize(stat.size)}) — exceeds the ${(PDF_TARGET_RAW_SIZE / 1024 / 1024).toFixed(0)} MB limit. Use the pages parameter to extract a specific page range.`,
@@ -1284,7 +1284,7 @@ export const fileReadTool: ToolDefinition = {
         const pdfBuffer = await fs.promises.readFile(resolved);
         // Validate the %PDF- magic header before handing the bytes to the parser:
         // a file renamed to .pdf (or a corrupt/truncated download) otherwise fails
-        // deep inside the parser with an opaque error. Mirrors Claude Code's pre-ingest check.
+        // deep inside the parser with an opaque error. Mirrors the reference's pre-ingest check.
         if (pdfBuffer.subarray(0, 5).toString('latin1') !== '%PDF-') {
           return { output: `Error: ${resolved} is not a valid PDF (missing %PDF- header).`, isError: true };
         }
@@ -1307,7 +1307,7 @@ export const fileReadTool: ToolDefinition = {
         await parser.destroy();
         // Page-count guard: a FULL (un-ranged) read of a very long PDF would dump
         // an unbounded amount of text into context. Require the pages parameter to
-        // scope the read instead. Mirrors Claude Code's API_PDF_MAX_PAGES (100).
+        // scope the read instead. Mirrors the reference's API_PDF_MAX_PAGES (100).
         if (!pageRange && typeof pdf.total === 'number' && pdf.total > API_PDF_MAX_PAGES) {
           return {
             output: `Error: PDF has ${pdf.total} pages — exceeds the ${API_PDF_MAX_PAGES}-page limit for a full read. Use the pages parameter to extract a specific range (max 20 pages per request).`,
@@ -1318,7 +1318,7 @@ export const fileReadTool: ToolDefinition = {
         const rangeNote = pageRange ? ` (pages ${pageRange.start}-${pageRange.end})` : '';
         // Scanned/image-only PDFs yield no extractable text. Fall back to rendering the
         // pages to images via pdftoppm (when installed) so a vision model can still read
-        // them. Mirrors Claude Code's pdftoppm page-to-image fallback.
+        // them. Mirrors the reference's pdftoppm page-to-image fallback.
         if (!text) {
           const pageImages = await renderPdfPagesToImages(resolved, {
             firstPage: pageRange ? pageRange.start : 1,
@@ -1350,14 +1350,14 @@ export const fileReadTool: ToolDefinition = {
         const parts: string[] = [];
         const kernelName = nb.metadata?.kernelspec?.display_name || nb.metadata?.kernelspec?.name || 'unknown';
         // Per-cell code language comes from the notebook's language_info.name
-        // (defaulting to 'python'), mirroring Claude Code's readNotebook. It is
+        // (defaulting to 'python'), mirroring the reference's readNotebook. It is
         // only annotated on code cells, and only when it is not the default.
         const codeLanguage: string = nb.metadata?.language_info?.name || 'python';
         parts.push(`File: ${resolved} (Jupyter Notebook, ${cells.length} cells, kernel: ${kernelName})`);
 
         // Single-cell read by id: `cell_id` selects exactly one cell (its explicit
         // id, or its synthetic `cell-N` index id) and includes that cell's full
-        // outputs regardless of the large-output guard. Mirrors Claude Code's
+        // outputs regardless of the large-output guard. Mirrors the reference's
         // readNotebook(path, cellId). Overrides offset/limit windowing.
         const cellIdArg = input.cell_id !== undefined ? String(input.cell_id) : undefined;
         let indices: number[];
@@ -1393,7 +1393,7 @@ export const fileReadTool: ToolDefinition = {
 
         // Image outputs (image/png, image/jpeg) rendered by a cell are returned as
         // real multimodal blocks alongside the text so a vision model can see plots/
-        // figures. Mirrors Claude Code's notebook image-output extraction.
+        // figures. Mirrors the reference's notebook image-output extraction.
         const notebookImages: ImageContent[] = [];
         for (const idx of indices) {
           const cell = cells[idx];
@@ -1401,7 +1401,7 @@ export const fileReadTool: ToolDefinition = {
           const src = Array.isArray(cell.source) ? cell.source.join('') : (cell.source || '');
           // Code cells carry two extra metadata fields in the header: the kernel
           // execution_count (when present) and the code language (only when it is
-          // not the default 'python'). Mirrors Claude Code's per-cell metadata.
+          // not the default 'python'). Mirrors the reference's per-cell metadata.
           const isCode = cell.cell_type === 'code';
           const execNote = isCode && typeof cell.execution_count === 'number'
             ? ` [exec: ${cell.execution_count}]`
@@ -1414,7 +1414,7 @@ export const fileReadTool: ToolDefinition = {
           if (cell.outputs && cell.outputs.length > 0) {
             // Per-cell large-output guard: sum text + image payload sizes; when a cell's
             // combined outputs exceed the threshold, replace them with a jq escape-hatch
-            // hint rather than inlining a huge blob. Mirrors Claude Code's isLargeOutputs.
+            // hint rather than inlining a huge blob. Mirrors the reference's isLargeOutputs.
             let outSize = 0;
             for (const out of cell.outputs) {
               const t = Array.isArray(out.text) ? out.text.join('') : (out.text || '');
@@ -1530,7 +1530,7 @@ export const fileReadTool: ToolDefinition = {
     // the accurate total line count (bounded memory — it accumulates nothing when
     // maxLines is 0), then the range [totalLines-N, totalLines) is streamed with the
     // same byte-budget-safe path a normal range read uses, so the returned lines keep
-    // their TRUE 1-based numbers. Mirrors Claude Code's tailFile last-N-from-end read.
+    // their TRUE 1-based numbers. Mirrors the reference's tailFile last-N-from-end read.
     if (!isBomText && tail !== undefined) {
       fileCache.trackMtime(resolved, stat.mtimeMs);
       const counted = await readFileInRange(resolved, 0, 0, limits.maxSizeBytes, context.abortSignal, { truncateOnByteLimit: true });
@@ -1564,7 +1564,7 @@ export const fileReadTool: ToolDefinition = {
     // (UTF-16/BOM files bypass streaming and are fully decoded below).
     if (!isBomText && (input.offset !== undefined || input.limit !== undefined)) {
       // Dedup an IDENTICAL repeat range read (same offset+limit) on an unchanged
-      // file — re-streaming the same window wastes tokens. Mirrors Claude Code's
+      // file — re-streaming the same window wastes tokens. Mirrors the reference's
       // range dedup short-circuit (a brand-new range still falls through below).
       if (fileCache.isRangeUnchanged(resolved, offset, limit)) {
         context.filesRead?.add(resolved);
@@ -1707,7 +1707,7 @@ export const fileReadTool: ToolDefinition = {
     // units — so a CJK/emoji-dense file (3-4 bytes per code unit) is no longer
     // under-counted 3-4x and can no longer slip its whole payload past the budget.
     // Pure ASCII is byte-for-code-unit identical, so ASCII reads are unchanged.
-    // Mirrors Claude Code's byte-based roughTokenCountEstimationForFileType.
+    // Mirrors the reference's byte-based roughTokenCountEstimationForFileType.
     const estimatedTokens = estimateReadTokensForFileType(output, ext);
     const budgeted = applyReadTokenBudget(output, estimatedTokens, limits.maxTokens, ext, errorOnBudget, `\n\n[... truncated: file exceeds ${limits.maxTokens} token budget (${estimatedTokens} estimated tokens). Use offset/limit to read specific sections.]`);
     if (budgeted.isError) return budgeted;
@@ -1722,7 +1722,7 @@ export const fileReadTool: ToolDefinition = {
       // tags (file_read has no wrapper of its own) so the caveat carries
       // system-level trust weight rather than reading as ordinary file text a
       // planted memory could spoof. Future-mtime clamp + the >1-day gate live in
-      // the single canonical helper. Mirrors Claude Code's memoryFreshnessNote.
+      // the single canonical helper. Mirrors the reference's memoryFreshnessNote.
       output = memoryFreshnessReminder(stat.mtimeMs) + output;
     }
 
@@ -1783,7 +1783,7 @@ export function parsePageRange(pages: string): { start: number; end: number; err
   // Open-ended "N-": read from page N onward. We cannot know the document's last
   // page until it is parsed, and every request is bounded by the 20-page window,
   // so interpret "N-" as a 20-page window starting at N (page N through N+19).
-  // Mirrors Claude Code's open-ended parsePDFPageRange (firstPage N, lastPage ∞),
+  // Mirrors the reference's open-ended parsePDFPageRange (firstPage N, lastPage ∞),
   // clamped to AMI's per-request page cap.
   // eslint-disable-next-line security/detect-unsafe-regex -- anchored, single \d group + literal '-'
   const openMatch = trimmed.match(/^(\d+)-$/);
@@ -1816,7 +1816,7 @@ export function parsePageRange(pages: string): { start: number; end: number; err
  * and rejects non-numeric, fractional, or out-of-range values with an actionable
  * error instead of silently casting them into arithmetic (which produced empty or
  * garbage windows). Returns `{}` (use the default) when the param is omitted.
- * Mirrors Claude Code's semanticNumber(z.number().int()...) schema coercion.
+ * Mirrors the reference's semanticNumber(z.number().int()...) schema coercion.
  */
 export function coerceReadLineParam(
   value: unknown,
@@ -1841,7 +1841,7 @@ export function coerceReadLineParam(
 }
 
 /**
- * Machine-readable taxonomy of why a PDF read failed. Mirrors Claude Code's
+ * Machine-readable taxonomy of why a PDF read failed. Mirrors the reference's
  * `PDFError.reason` discriminated union (utils/pdf.ts) so a failure can be
  * classified by cause (empty 0-byte file, over-size, password/encryption,
  * corrupted bytes, renderer unavailable) rather than collapsed into one opaque
@@ -1858,7 +1858,7 @@ export type PdfErrorReason =
 /**
  * Classify a PDF-parse failure message into a {@link PdfErrorReason}. The reason
  * is the single source of truth the user-facing message in {@link classifyPdfError}
- * switches on, so the two never drift. Mirrors Claude Code's pdf.ts stderr-regex
+ * switches on, so the two never drift. Mirrors the reference's pdf.ts stderr-regex
  * branches: `/password/i` → password_protected, `/damaged|corrupt/i` → corrupted,
  * plus empty/too-large/unavailable detection; anything else → unknown.
  */
@@ -1868,14 +1868,14 @@ export function classifyPdfErrorReason(message: string): PdfErrorReason {
   // user knows the bytes themselves are bad and a re-download/regeneration is
   // needed. Matches `damaged`/`corrupt` (incl. corrupted/corruption); bare
   // "invalid" is intentionally excluded so a benign parser message like
-  // "Invalid xref table" stays the generic unknown error. Mirrors Claude Code's
+  // "Invalid xref table" stays the generic unknown error. Mirrors the reference's
   // pdf.ts corrupted branch.
   if (/damaged|corrupt(ed|ion)?/i.test(message)) return 'corrupted';
   // A 0-byte / empty document, surfaced distinctly so the model knows the file
-  // itself carries no content (not a parser fault). Mirrors Claude's `empty` reason.
+  // itself carries no content (not a parser fault). Mirrors the reference's `empty` reason.
   if (/\bempty\b|0 bytes|zero[- ]?length/i.test(message)) return 'empty';
   if (/too large|exceeds the|maximum.*size|size limit/i.test(message)) return 'too_large';
-  // The optional renderer/parser dependency is missing. Mirrors Claude's `unavailable`.
+  // The optional renderer/parser dependency is missing. Mirrors the reference's `unavailable`.
   if (/not installed|unavailable|cannot find module|poppler|pdftoppm/i.test(message)) return 'unavailable';
   return 'unknown';
 }
@@ -1884,7 +1884,7 @@ export function classifyPdfErrorReason(message: string): PdfErrorReason {
  * Classify a PDF-parse failure into an actionable, model-facing error string via
  * the typed {@link classifyPdfErrorReason} taxonomy. Each reason yields a distinct
  * message (e.g. password-protected → "provide an unprotected version") instead of
- * being buried in a generic "Error reading PDF" string. Mirrors Claude Code's
+ * being buried in a generic "Error reading PDF" string. Mirrors the reference's
  * per-reason PDF error messages (utils/pdf.ts).
  */
 export function classifyPdfError(message: string): string {

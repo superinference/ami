@@ -1,8 +1,8 @@
 /**
- * Background subagent live-turn retention + phase tracking (PARITY with Claude
+ * Background subagent live-turn retention + phase tracking (PARITY with the reference
  * Code's DreamTask live-display state, src/tasks/DreamTask/DreamTask.ts).
  *
- * Claude keeps a bounded ring buffer of a forked agent's most recent assistant
+ * the reference keeps a bounded ring buffer of a forked agent's most recent assistant
  * turns for live display (`MAX_TURNS = 30`, `turns.slice(-(MAX_TURNS-1)).concat(turn)`)
  * and a two-value `DreamPhase` (`'starting' | 'updating'`) flipped from "started
  * but idle" to "actively mutating files" on the first file-mutating (`Edit`/`Write`)
@@ -27,10 +27,10 @@ export const FILE_MUTATING_TOOLS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Cross-framework tool-name aliases (PARITY): Claude Code emits `Edit`/`Write`/
+ * Cross-framework tool-name aliases (PARITY): the reference emits `Edit`/`Write`/
  * `MultiEdit`/`NotebookEdit` tool names; AMI's canonical names are the snake_case
  * forms above. Normalizing here lets the phase flip correctly whether the event
- * stream carries AMI or Claude tool names.
+ * stream carries AMI or the reference tool names.
  */
 const CLAUDE_MUTATING_ALIASES: ReadonlySet<string> = new Set([
   'Edit',
@@ -41,15 +41,15 @@ const CLAUDE_MUTATING_ALIASES: ReadonlySet<string> = new Set([
 
 /**
  * True when a tool call mutates files (so a background agent's phase should flip
- * from 'starting' to 'updating'). Accepts both AMI canonical and Claude Code tool
- * names. Mirrors Claude's "first Edit/Write tool_use" phase trigger.
+ * from 'starting' to 'updating'). Accepts both AMI canonical and the reference tool
+ * names. Mirrors the reference's "first Edit/Write tool_use" phase trigger.
  */
 export function isFileMutatingTool(toolName: string): boolean {
   return FILE_MUTATING_TOOLS.has(toolName) || CLAUDE_MUTATING_ALIASES.has(toolName);
 }
 
 /**
- * Default live-display turn-retention cap — parity with Claude Code's
+ * Default live-display turn-retention cap — parity with the reference's
  * `MAX_TURNS = 30` in DreamTask.ts. Only the N most recent assistant turns are
  * kept in memory for live display of a long-running background agent.
  */
@@ -77,12 +77,12 @@ export function resolveLiveTurnRetention(explicit?: number): number {
   );
 }
 
-/** A background agent's sub-phase (parity: Claude's `DreamPhase`). */
+/** A background agent's sub-phase (parity: the reference's `DreamPhase`). */
 export type BackgroundLivePhase = 'starting' | 'updating';
 
 /**
  * A single retained assistant turn, with tool uses collapsed to a count (parity:
- * Claude's `DreamTurn = { text, toolUseCount }`). The prompt is never included.
+ * the reference's `DreamTurn = { text, toolUseCount }`). The prompt is never included.
  */
 export interface LiveTurn {
   text: string;
@@ -122,7 +122,7 @@ export class BackgroundLiveTurns {
   /**
    * Record a tool_use for the turn in progress: increment the current turn's
    * tool-use count and flip the phase to 'updating' the first time a file-mutating
-   * tool runs (parity: Claude flips on the first Edit/Write tool_use).
+   * tool runs (parity: the reference flips on the first Edit/Write tool_use).
    */
   recordToolUse(toolName: string): void {
     this._currentToolUseCount++;
@@ -134,7 +134,7 @@ export class BackgroundLiveTurns {
   /**
    * Commit the in-progress assistant turn into the bounded ring buffer and reset
    * the per-turn tool counter. A pure no-op turn (empty text AND no tool uses) is
-   * skipped entirely, mirroring Claude's `addDreamTurn` early-return so an empty
+   * skipped entirely, mirroring the reference's `addDreamTurn` early-return so an empty
    * turn never evicts a meaningful one from the retention window.
    */
   commitTurn(text: string): void {

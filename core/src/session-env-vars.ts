@@ -2,7 +2,7 @@
  * Session-scoped environment variables set by the user via the `/env` slash
  * command. These are applied ONLY to child processes spawned by the `bash`
  * tool (merged into the subprocess env) — never to the REPL/engine process
- * itself. This mirrors Claude Code's `sessionEnvVars` affordance
+ * itself. This mirrors the reference's `sessionEnvVars` affordance
  * (src/utils/sessionEnvVars.ts) where `/env NAME=VALUE` overrides are injected
  * into the shell provider's `getEnvironmentOverrides()` for spawned commands.
  *

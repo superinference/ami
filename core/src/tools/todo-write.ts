@@ -5,7 +5,7 @@ type TodoStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled';
 
 /** Optional per-item bookkeeping metadata. An item flagged `_internal` is tracked
  *  in the store but hidden from the user-facing list and excluded from the
- *  completion/clear computation (parity: Claude's useTasksV2 / TaskListTool
+ *  completion/clear computation (parity: the reference's useTasksV2 / TaskListTool
  *  `t => !t.metadata?._internal` filter). */
 interface TodoMetadata {
   _internal?: boolean;
@@ -101,7 +101,7 @@ const VALID_STATUSES: readonly TodoStatus[] = ['pending', 'in_progress', 'comple
 const ALLOWED_TOP_KEYS = new Set(['todos', 'merge']);
 const ALLOWED_ITEM_KEYS = new Set(['id', 'content', 'status', 'activeForm', 'metadata']);
 
-/** Hard cap on the serialized todo result size (parity with Claude's maxResultSizeChars). */
+/** Hard cap on the serialized todo result size (parity with the reference's maxResultSizeChars). */
 export const TODO_MAX_RESULT_CHARS = 100_000;
 
 /**
@@ -143,7 +143,7 @@ export function validateTodoInput(input: Record<string, unknown>): string | null
 }
 
 /**
- * Parity with Claude's `activeForm: z.string().min(1)` contract: the
+ * Parity with the reference's `activeForm: z.string().min(1)` contract: the
  * present-continuous label is what the live-progress UI renders while an item is
  * in progress, so every item that ends up `in_progress` must carry a non-empty
  * `activeForm`. Checked on the RESOLVED (post-merge) list so AMI's merge
@@ -162,7 +162,7 @@ export function validateInProgressActiveForm(items: readonly TodoItem[]): string
 
 /**
  * Scan a restored transcript (newest-first) for the most recent `todo_write`
- * tool call and return its parsed, normalized todos. Parity with Claude's
+ * tool call and return its parsed, normalized todos. Parity with the reference's
  * `extractTodosFromTranscript` (sessionRestore.ts): the model's todo list must
  * survive a session restart even without on-disk task persistence. A malformed /
  * unparseable call, or no call at all, yields an empty list (never throws).
@@ -210,7 +210,7 @@ export function rehydrateTodosFromTranscript(
 export const todoWriteTool: ToolDefinition = {
   name: 'todo_write',
   // Terse, intent-focused discovery phrase (synonyms not in the long
-  // description) so tool_search can surface this by purpose. Parity: Claude's
+  // description) so tool_search can surface this by purpose. Parity: the reference's
   // TodoWriteTool.searchHint ('manage the session task checklist').
   searchHint: 'manage the session task checklist plan progress',
   description:
@@ -251,7 +251,7 @@ export const todoWriteTool: ToolDefinition = {
           },
           required: ['content', 'status'],
           // Strict object: reject unknown per-item keys at the advertised-schema
-          // layer too (mirrors validateTodoInput and Claude's z.strictObject).
+          // layer too (mirrors validateTodoInput and the reference's z.strictObject).
           additionalProperties: false,
         },
         description: 'Array of todo items. By default REPLACES the current list.',
@@ -261,7 +261,7 @@ export const todoWriteTool: ToolDefinition = {
     required: ['todos'],
   },
   isReadOnly: false,
-  // Declarative per-tool result-size cap (parity: Claude's TodoWriteTool
+  // Declarative per-tool result-size cap (parity: the reference's TodoWriteTool
   // `maxResultSizeChars: 100_000`). execute() reads this field so the knob is the
   // single authoritative bound on the echoed-back summary, matching todoReadTool
   // and the mcp-resources tools.
@@ -276,7 +276,7 @@ export const todoWriteTool: ToolDefinition = {
     // Parity: route the boolean `merge` arg through coerceBool so a model/provider
     // that serializes it as the STRING "false" (or "true") is handled correctly — a
     // naive `(input.merge as boolean)` treats the non-empty string "false" as truthy
-    // and wrongly merges. (Claude's semanticBoolean wrapper applied uniformly.)
+    // and wrongly merges. (the reference's semanticBoolean wrapper applied uniformly.)
     const merge = coerceBool(input.merge);
     const existing = sessionTodos.get(key) ?? [];
     const oldTodos = [...existing];
@@ -313,12 +313,12 @@ export const todoWriteTool: ToolDefinition = {
     // T6: nudge for verification only at a precise close-out condition — the
     // main thread (not a subagent) finishing a 3+ item list that contains no
     // verification step of its own. Trivial (1-2 item) lists and lists that
-    // already include a verify task never trigger it (parity with Claude).
+    // already include a verify task never trigger it (parity with the reference).
     // Internal tasks never count toward the threshold or completion.
     const allCompleted = visible.length > 0 && visible.every(t => t.status === 'completed');
     const hasVerifyStep = visible.some(t => /verif/i.test(t.content));
     if (allCompleted && visible.length >= 3 && !hasVerifyStep && !context?.agentId) {
-      // Directive, actionable nudge (parity: Claude's TaskUpdate/TodoWrite
+      // Directive, actionable nudge (parity: the reference's TaskUpdate/TodoWrite
       // close-out note) — name the concrete next action and forbid self-declared
       // success, rather than a vague "consider reviewing".
       summary +=
@@ -354,7 +354,7 @@ export const todoWriteTool: ToolDefinition = {
 /**
  * Render the current (visible) todo list as a text block, or a "no todos" line
  * when empty. Shared by {@link todoReadTool}. Internal/hidden tasks are filtered
- * out (parity: Claude's TaskListTool `t => !t.metadata?._internal`).
+ * out (parity: the reference's TaskListTool `t => !t.metadata?._internal`).
  */
 export function formatTodoReadOutput(key: string = keyFor()): string {
   const items = getTodos(key).filter(t => !isInternal(t));
@@ -369,7 +369,7 @@ export function formatTodoReadOutput(key: string = keyFor()): string {
 
 /**
  * Read-only sibling of {@link todoWriteTool}: re-read the current session's todo
- * list at any time WITHOUT mutating it (parity: Claude's TaskListTool —
+ * list at any time WITHOUT mutating it (parity: the reference's TaskListTool —
  * `searchHint 'list all tasks'`, `isReadOnly`, `isConcurrencySafe`). Lets the
  * model (or an introspection surface) observe progress without a no-op write.
  */

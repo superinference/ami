@@ -8,7 +8,7 @@ import { countCharInString } from '../utils/string';
 import { validateBoundedIntEnvVar } from '../config';
 
 // [parity] Expanded runner set so compaction kicks in for the JS/TS, Python,
-// Go, Rust, Elixir, Swift and Dart ecosystems Claude Code recognizes — not just
+// Go, Rust, Elixir, Swift and Dart ecosystems the reference recognizes — not just
 // the original handful. Word-boundary anchored to avoid matching substrings
 // (e.g. `ava` never matches `java`).
 const TEST_RUNNER_RE =
@@ -25,12 +25,12 @@ const FAIL_TEXT_RE =
 // wants more failing context — can widen them without a rebuild. Each is parsed
 // through the single canonical `validateBoundedIntEnvVar`, so an absent/mistyped/
 // negative value falls back to the default and an over-limit value is capped,
-// mirroring Claude's `getMaxOutputLength`/`validateBoundedIntEnvVar`
+// mirroring the reference's `getMaxOutputLength`/`validateBoundedIntEnvVar`
 // (utils/shell/outputLimits.ts) rather than flowing through verbatim.
 const SUITE_CAP_DEFAULT = 12_000;
 const SIZE_GATE_DEFAULT = 8_000;
 const BODY_LINES_DEFAULT = 120;
-// Upper bounds: the char caps share Claude's bash output ceiling (150_000); the
+// Upper bounds: the char caps share the reference's bash output ceiling (150_000); the
 // body-line cap is bounded well above any realistic failing-test list.
 const CHAR_CAP_UPPER_LIMIT = 150_000;
 const BODY_LINES_UPPER_LIMIT = 100_000;
@@ -65,7 +65,7 @@ function bodyLines(): number {
 /**
  * Count the lines elided when `text` is head-sliced at `cap`, +1 (the partial
  * final line), without allocating the dropped tail. Shared by every truncation
- * path so the quantitative marker can never drift between sites. Parity: Claude's
+ * path so the quantitative marker can never drift between sites. Parity: the reference's
  * `remainingLines = countCharInString(content, '\n', maxOutputLength) + 1`.
  */
 function droppedLineCount(text: string, cap: number): number {
@@ -116,7 +116,7 @@ function capSuite(text: string): string {
   if (text.length > cap) {
     // Quantify how much failing output was dropped so the model/caller can decide
     // whether to re-read the full log from disk, instead of an opaque marker.
-    // Parity: Claude's formatOutput computes
+    // Parity: the reference's formatOutput computes
     // `remainingLines = countCharInString(content, '\n', maxOutputLength) + 1`
     // and emits `... [N lines truncated] ...`. countCharInString's `start`
     // argument counts only the elided tail without allocating a slice.
@@ -206,7 +206,7 @@ export function compactTestLog(output: string): string {
     // [parity] Too few interesting lines to build a failing-only view, but the log
     // is over the size gate — head-slice it AND append a quantitative truncation
     // marker so the model knows content was cut and roughly how much, instead of a
-    // silent hard slice. Claude's formatOutput never returns a silent cut. When the
+    // silent hard slice. the reference's formatOutput never returns a silent cut. When the
     // log is exactly at the gate nothing is actually dropped, so no marker is added.
     return output.length > gate
       ? output.slice(0, gate) + `\n...[${droppedLineCount(output, gate)} lines truncated]`

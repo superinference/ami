@@ -4,7 +4,7 @@
  * channel) prepends to an inbound user message so the model (and the transcript)
  * can see the message's provenance.
  *
- * Parity: Claude Code's channel schema —
+ * Parity: the reference's channel schema —
  *   - `services/mcp/channelNotification.ts` `wrapChannelMessage()` (producer)
  *   - `components/messages/UserChannelMessage.tsx` `CHANNEL_RE` / `USER_ATTR_RE`
  *     / `displayServerName()` (consumer).
@@ -22,7 +22,7 @@ import {
   unescapeXml,
 } from './xml-escape';
 
-/** The XML tag name of a channel wrapper. Parity: Claude's `CHANNEL_TAG`. */
+/** The XML tag name of a channel wrapper. Parity: the reference's `CHANNEL_TAG`. */
 export const CHANNEL_TAG = 'channel';
 
 /**
@@ -30,7 +30,7 @@ export const CHANNEL_TAG = 'channel';
  * would break out of the attribute structure. Only accept keys that look like
  * plain identifiers — stricter than the XML spec (which also allows `:`/`.`/`-`),
  * but channel servers only send `chat_id`, `user`, `thread_ts`, `message_id` in
- * practice. Parity: Claude's `SAFE_META_KEY`. Aliased to the canonical
+ * practice. Parity: the reference's `SAFE_META_KEY`. Aliased to the canonical
  * {@link SAFE_XML_ATTR_NAME} so there is ONE source of the safe-attribute-name
  * charset shared by every tag-wrapping site (no duplicated regex).
  */
@@ -40,7 +40,7 @@ export const SAFE_CHANNEL_META_KEY = SAFE_XML_ATTR_NAME;
  * Serialize a channel message. `source` is always written first; every safe meta
  * key is appended as an escaped attribute (unsafe keys are dropped) via the shared
  * {@link renderXmlAttrs} primitive. The body is framed with one newline on each
- * side so the parser can strip exactly that frame. Parity: Claude's
+ * side so the parser can strip exactly that frame. Parity: the reference's
  * `wrapChannelMessage`.
  */
 export function wrapChannelMessage(
@@ -64,7 +64,7 @@ const ATTR_RE = /([a-zA-Z_][a-zA-Z0-9_]*)="([^"]*)"/g;
  * Parse a channel wrapper out of `text`. Returns the structured
  * {@link ChannelMessageMeta} (source + decoded attributes + body), or `null` when
  * `text` is not a channel message. Attribute values are XML-unescaped so they
- * round-trip through {@link wrapChannelMessage}. Parity: Claude's `CHANNEL_RE` +
+ * round-trip through {@link wrapChannelMessage}. Parity: the reference's `CHANNEL_RE` +
  * `USER_ATTR_RE` extraction in `UserChannelMessage`.
  */
 export function parseChannelMessage(text: string): ChannelMessageMeta | null {
@@ -87,7 +87,7 @@ export function parseChannelMessage(text: string): ChannelMessageMeta | null {
 
 /**
  * Plugin-provided channel servers get names like `plugin:slack-channel:slack`;
- * show just the leaf segment after the last `:`. Parity: Claude's
+ * show just the leaf segment after the last `:`. Parity: the reference's
  * `displayServerName`.
  */
 export function displayChannelServerName(name: string): string {

@@ -117,7 +117,7 @@ export const listDirTool: ToolDefinition = {
     // user forbade reading — its name alone leaks the existence of a sensitive file
     // (e.g. `.env`, a credential dir) via the listing. Mirrors how grep/glob exclude
     // these from search output, reusing the shared matcher so the exclusion matches
-    // exactly what a read of the entry would be denied for. Parity: Claude feeds
+    // exactly what a read of the entry would be denied for. Parity: the reference feeds
     // getFileReadIgnorePatterns into its directory/file enumeration too.
     const readIgnore = context.readIgnorePatterns ?? [];
 

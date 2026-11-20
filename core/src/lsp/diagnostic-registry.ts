@@ -1,16 +1,16 @@
 /**
  * LSP diagnostic registry — pending async delivery + cross-turn deduplication.
  *
- * Mirrors Claude Code's `LSPDiagnosticRegistry` (references
+ * Mirrors the reference's `LSPDiagnosticRegistry` (references
  * services/lsp/LSPDiagnosticRegistry.ts). This is a DIFFERENT service from the
  * baseline/diff {@link DiagnosticTracker} in `diagnostic-tracking.ts` (which
- * mirrors Claude's `diagnosticTracking.ts`): the tracker surfaces the delta a
+ * mirrors the reference's `diagnosticTracking.ts`): the tracker surfaces the delta a
  * single edit introduced, while THIS registry collects diagnostics pushed
  * asynchronously by language servers (`textDocument/publishDiagnostics`) and
  * delivers each distinct diagnostic to the conversation AT MOST ONCE across the
  * whole session.
  *
- * Flow (parity with Claude's AsyncHookRegistry-style pattern):
+ * Flow (parity with the reference's AsyncHookRegistry-style pattern):
  *   1. a server publishes diagnostics → the LSP client calls
  *      {@link LSPDiagnosticRegistry.registerPendingLSPDiagnostic};
  *   2. a drain ({@link LSPDiagnosticRegistry.checkForLSPDiagnostics}, wired to the
@@ -37,14 +37,14 @@ import {
 
 /**
  * Max distinct file URIs whose delivered-diagnostic key set the registry retains
- * for cross-turn dedup. Mirrors Claude Code's `MAX_DELIVERED_FILES = 500`
+ * for cross-turn dedup. Mirrors the reference's `MAX_DELIVERED_FILES = 500`
  * (LSPDiagnosticRegistry.ts L46) — an LRU bound that "prevents unbounded memory
  * growth in long sessions" that touch thousands of distinct files.
  */
 export const MAX_DELIVERED_FILES = 500;
 
 /**
- * A pending diagnostic notification, exactly Claude Code's `PendingLSPDiagnostic`
+ * A pending diagnostic notification, exactly the reference's `PendingLSPDiagnostic`
  * record schema (LSPDiagnosticRegistry.ts L12-21): the originating server, its
  * diagnostic files, the receive timestamp, and whether its attachment has already
  * been delivered to the conversation.
@@ -74,7 +74,7 @@ export interface DeliveredLSPDiagnostics {
 
 /**
  * Pending-diagnostic registry + cross-turn delivered-key cache. Instance-scoped
- * (rather than Claude's module globals) so tests exercise it in isolation and a
+ * (rather than the reference's module globals) so tests exercise it in isolation and a
  * session reset simply drops the instance; the process-wide consumer path uses the
  * {@link getLSPDiagnosticRegistry} singleton.
  */
@@ -88,7 +88,7 @@ export class LSPDiagnosticRegistry {
    * used; once the retained count exceeds {@link maxFiles} the least-recently-used
    * entries are evicted (Map preserves insertion order). Keyed by the NORMALIZED
    * path (not the raw URI) so a `file://` URI from the server and a filesystem path
-   * from an edit hook compare equal — a robustness superset over Claude's raw-URI
+   * from an edit hook compare equal — a robustness superset over the reference's raw-URI
    * keying, which only matches when callers pass the exact same URI string.
    */
   private readonly delivered = new Map<string, Set<string>>();

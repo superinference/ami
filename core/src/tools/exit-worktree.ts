@@ -27,14 +27,14 @@ export const _exitWorktreeHooks = {
   existsSync: fs.existsSync as typeof fs.existsSync,
   rmSync: fs.rmSync as typeof fs.rmSync,
   // Lock-release delay (ms) awaited AFTER `git worktree remove` and BEFORE
-  // `git branch -D <worktree-branch>` (parity: Claude sleeps ~100ms so git has
+  // `git branch -D <worktree-branch>` (parity: the reference sleeps ~100ms so git has
   // released the worktree's locks, avoiding a "cannot delete branch, locked"
   // race). Exposed on the hook object so tests can set it to 0 (fast) or assert
   // it was awaited, without a real 100ms wait in every removal test.
   branchDeleteDelayMs: 100,
   sleep: (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)),
   // Recoverable stash-to-clean-state used by the non-destructive `stash` action
-  // (parity: Claude's stashToCleanState). Routed through the hook object so a test
+  // (parity: the reference's stashToCleanState). Routed through the hook object so a test
   // can simulate a stash failure deterministically without a real dirty tree.
   stash: stashToCleanState,
 };
@@ -87,7 +87,7 @@ export const exitWorktreeTool: ToolDefinition = {
     },
     required: ['action'],
   },
-  // Structured result shape (parity: Claude's ExitWorktreeTool outputSchema). A
+  // Structured result shape (parity: the reference's ExitWorktreeTool outputSchema). A
   // frontend / resume path can validate the machine-readable fields it carries
   // alongside the human text before rendering. Object-root (ToolInputSchema) so it
   // passes the provider's object-root-only exposure guard.
@@ -107,7 +107,7 @@ export const exitWorktreeTool: ToolDefinition = {
     required: ['action', 'originalCwd', 'worktreePath', 'message'],
   },
   isReadOnly: false,
-  // Human-friendly display name for renderers / discovery surfaces (parity: Claude's
+  // Human-friendly display name for renderers / discovery surfaces (parity: the reference's
   // ExitWorktreeTool `userFacingName() => 'Exiting worktree'`, UI.tsx L7-9). The snake_case
   // tool id `exit_worktree` is otherwise what a reader sees; this relabels it to the readable
   // activity phrase the model's turn is performing. Surfaced end-to-end via `ami --introspect`
@@ -115,7 +115,7 @@ export const exitWorktreeTool: ToolDefinition = {
   // the affordance is discoverable without reading source. Static (input-independent), matching
   // the reference. [FUNCTIONAL CHANGE: additive affordance metadata, no behavior change.]
   userFacingName: () => 'Exiting worktree',
-  // Per-input irreversible-operation classification (parity: Claude's
+  // Per-input irreversible-operation classification (parity: the reference's
   // ExitWorktreeTool.isDestructive(input) — `input.action === 'remove'`). Only
   // `remove` destroys work (deletes the worktree AND its branch WITHOUT merging);
   // `keep` preserves everything and `merge` integrates committed work first. The
@@ -123,7 +123,7 @@ export const exitWorktreeTool: ToolDefinition = {
   // prompt in `ask` mode so an irreversible discard is never silently auto-approved.
   isDestructive: (input) => input.action === 'remove',
 
-  // Compact projection fed to the auto-mode security classifier (parity: Claude's
+  // Compact projection fed to the auto-mode security classifier (parity: the reference's
   // ExitWorktreeTool `toAutoClassifierInput(input) => input.action`). The
   // auto-approval decision keys on the keep/merge/remove/stash action rather than
   // the full argument blob; a non-string/omitted action projects to '' (skip).
@@ -164,7 +164,7 @@ export const exitWorktreeTool: ToolDefinition = {
       return { output: 'No active worktree session (not inside a .ami/worktrees/ path). No filesystem changes made.', isError: false };
     }
 
-    // Concurrency-safe cwd restore (parity: Claude only restores the working dir it
+    // Concurrency-safe cwd restore (parity: the reference only restores the working dir it
     // actually changed — restoreSessionToOriginalCwd's `projectRootIsWorktree`
     // guard, utils/cwd.ts). AMI runs subagents concurrently in ONE process
     // (task.ts), so an UNCONDITIONAL `process.chdir(originalCwd)` here would yank
@@ -193,7 +193,7 @@ export const exitWorktreeTool: ToolDefinition = {
       };
     }
 
-    // Session-ownership scope guard for DESTRUCTIVE actions (parity: Claude's
+    // Session-ownership scope guard for DESTRUCTIVE actions (parity: the reference's
     // ExitWorktree only acts on a worktree created by enter_worktree IN THIS
     // SESSION; with no active session it is a clean no-op, filesystem unchanged).
     // AMI previously gated the destructive `remove`/`merge` purely on the
@@ -244,7 +244,7 @@ export const exitWorktreeTool: ToolDefinition = {
       }
       // Do NOT fire executeWorktreeRemove hook — we are keeping the worktree.
       // Surface the tmux reattach command when the kept worktree owns a tmux
-      // session (parity: Claude's ExitWorktreeTool keep branch — "Tmux session <n>
+      // session (parity: the reference's ExitWorktreeTool keep branch — "Tmux session <n>
       // is still running; reattach with: tmux attach -t <n>"). The session is LEFT
       // running on keep; only a destructive remove tears it down.
       const tmuxName = session?.tmuxSessionName;
@@ -254,7 +254,7 @@ export const exitWorktreeTool: ToolDefinition = {
       const keptMsg = `Worktree kept${branchLabel}: your work is saved at ${worktreePath}. Resume with: cd ${worktreePath}${returned}${tmuxNote}`;
       return {
         output: cap(keptMsg),
-        // Structured result (parity: Claude's ExitWorktreeTool outputSchema) carried
+        // Structured result (parity: the reference's ExitWorktreeTool outputSchema) carried
         // on metadata alongside the human text so a resume/frontend path can read the
         // machine-readable fields without parsing prose. "keep" discards nothing.
         metadata: {
@@ -276,7 +276,7 @@ export const exitWorktreeTool: ToolDefinition = {
     // over-count pre-existing local-only base commits and wrongly refuse remove.
     const changes = countWorktreeChanges(worktreePath, worktreePath, { baseCommit: existing?.originalHeadCommit });
 
-    // Non-destructive "stash" path (parity: Claude's stashToCleanState / the
+    // Non-destructive "stash" path (parity: the reference's stashToCleanState / the
     // "Stash changes and continue" affordance): instead of discarding the
     // worktree's uncommitted work, save it to a recoverable git stash (which
     // survives the worktree's removal — refs/stash lives in the shared git dir),
@@ -326,7 +326,7 @@ export const exitWorktreeTool: ToolDefinition = {
         };
       }
       if (changes.uncommitted > 0 || (!wantMerge && changes.unpushed > 0)) {
-        // Single consequence-explaining summary up front (parity with Claude's
+        // Single consequence-explaining summary up front (parity with the reference's
         // WorktreeExitDialog): classify EVERY at-risk state together — "N
         // uncommitted files and M commits on <branch>" — so the model/user sees
         // the full cost of removal before confirming, instead of a sequence of
@@ -338,7 +338,7 @@ export const exitWorktreeTool: ToolDefinition = {
         if (changes.uncommitted > 0) {
           parts.push(pluralize(changes.uncommitted, 'uncommitted file'));
           // Enumerate the concrete at-risk paths, split tracked vs untracked
-          // (parity: Claude merges getFileStatus().tracked/.untracked before a
+          // (parity: the reference merges getFileStatus().tracked/.untracked before a
           // destructive confirm) so the user sees exactly what — and which kind —
           // would be lost, not just a count.
           const fileStatus = getWorktreeFileStatus(worktreePath) as { tracked: string[]; untracked: string[] } | null;
@@ -441,7 +441,7 @@ export const exitWorktreeTool: ToolDefinition = {
     }
 
     // Tear down the worktree's tmux session (if any) BEFORE deleting the worktree
-    // dir (parity: Claude's ExitWorktreeTool remove branch — `if (tmuxSessionName)
+    // dir (parity: the reference's ExitWorktreeTool remove branch — `if (tmuxSessionName)
     // await killTmuxSession(...)` before cleanupWorktree). A destructive exit
     // (remove / merge / stash all delete the worktree) must never orphan the
     // background tmux session rooted at the now-deleted path. Best-effort: a
@@ -452,7 +452,7 @@ export const exitWorktreeTool: ToolDefinition = {
     }
 
     // Run the destructive removal from the REPO ROOT, never from inside the
-    // worktree we are about to delete (parity: Claude runs `git worktree remove`
+    // worktree we are about to delete (parity: the reference runs `git worktree remove`
     // with cwd = gitRoot — "Run from the main repo root, not the worktree (which
     // we're about to delete)"). Deleting the process/child cwd out from under git
     // is unreliable on some platforms and is the reason the rmSync+prune fallback
@@ -467,7 +467,7 @@ export const exitWorktreeTool: ToolDefinition = {
         }
         _exitWorktreeHooks.exec(['worktree', 'prune'], { cwd: repoRoot, stdio: 'ignore' });
       } catch {
-        // Soft-failure (parity: Claude's WorktreeExitDialog "Worktree cleanup
+        // Soft-failure (parity: the reference's WorktreeExitDialog "Worktree cleanup
         // failed, exiting anyway"): an unrecoverable teardown error must not trap
         // the session inside the worktree it asked to leave. Record it, then still
         // restore the original cwd and clear the session below, and return a
@@ -478,7 +478,7 @@ export const exitWorktreeTool: ToolDefinition = {
     }
 
     // Delete the (now-unused) worktree branch as part of teardown. Wait a short
-    // lock-release window first (parity with Claude): `git worktree remove` can
+    // lock-release window first (parity with the reference): `git worktree remove` can
     // leave the worktree's locks briefly held, and `git branch -D` of the branch
     // that worktree had checked out would then fail with "cannot delete, locked".
     // Skip when the worktree could not be removed — its branch is still checked out.

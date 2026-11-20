@@ -12,7 +12,7 @@ export interface CronJob {
   prompt: string;
   /** Optional human-readable label chosen by the caller so a job is identifiable by
    *  purpose (not just its opaque auto-generated id) in list/get/delete flows.
-   *  Mirrors Claude's required trigger `name` field (src/skills/bundled/scheduleRemoteAgents.ts).
+   *  Mirrors the reference's required trigger `name` field (src/skills/bundled/scheduleRemoteAgents.ts).
    *  AMI keeps it OPTIONAL (superset): an unnamed job still works and is addressed by id. */
   name?: string;
   recurring: boolean;
@@ -30,7 +30,7 @@ export interface CronJob {
   /** When true, the 5-field cron expression is interpreted in UTC instead of the
    *  host's local wall clock, so the job fires on the same absolute instant no
    *  matter which timezone the session runs in (server/remote-trigger parity).
-   *  Undefined/false = local time (the default). Mirrors Claude's `{ utc }` cron
+   *  Undefined/false = local time (the default). Mirrors the reference's `{ utc }` cron
    *  handling for server/CCR-defined schedules (src/utils/cron.ts). */
   utc?: boolean;
   /** Optional per-job run budget. A recurring job is retired (stops firing and is
@@ -38,12 +38,12 @@ export interface CronJob {
   maxRuns?: number;
   /** How many times this job has fired. Only tracked when `maxRuns` is set. */
   runCount?: number;
-  /** Optional per-job MODEL override (parity with Claude Code's scheduled-job
+  /** Optional per-job MODEL override (parity with the reference's scheduled-job
    *  `session_context.model`, scheduleRemoteAgents.ts:L206/L289). When set, the fired
    *  prompt instructs the run to use this model instead of whatever the session
    *  currently has. Undefined = inherit the session model. Surfaced in the fire notice. */
   model?: string;
-  /** Optional per-job ALLOWED-TOOLS whitelist (parity with Claude Code's scheduled-job
+  /** Optional per-job ALLOWED-TOOLS whitelist (parity with the reference's scheduled-job
    *  `allowed_tools`, scheduleRemoteAgents.ts:L210). When set, the fired prompt is
    *  restricted to this toolset. Undefined = inherit the session tools. Surfaced in the
    *  fire notice. */
@@ -79,7 +79,7 @@ export interface CronJitterConfig {
   /** Minimum backward (early) jitter (ms) for one-shot jobs: a non-pinned one-shot
    *  always fires at least this far ahead of its nominal time so it never lands
    *  exactly on a round instant shared by the herd. Must be ≤ oneShotMaxMs; 0
-   *  disables the floor (pure 0..max spread). Mirrors Claude's CronJitterConfig
+   *  disables the floor (pure 0..max spread). Mirrors the reference's CronJitterConfig
    *  oneShotFloorMs (src/utils/cronJitterConfig.ts). */
   oneShotFloorMs: number;
   /** One-shot jitter only applies when the fire minute is divisible by this (preserves :00/:30 pins). */
@@ -97,7 +97,7 @@ export const DEFAULT_CRON_JITTER: CronJitterConfig = {
 /**
  * PARITY (additive): the host's resolved IANA timezone name (e.g.
  * "America/New_York"), or "local" as a fallback when the runtime does not expose
- * Intl timezone data. Mirrors Claude's `Intl.DateTimeFormat().resolvedOptions().timeZone`
+ * Intl timezone data. Mirrors the reference's `Intl.DateTimeFormat().resolvedOptions().timeZone`
  * surfacing so cron output/guidance can state WHICH timezone a non-UTC schedule is
  * interpreted in — a bare "9:00 AM" cannot otherwise be told apart from UTC.
  */
@@ -130,7 +130,7 @@ export function cronRuntimeBehaviorNote(cfg: CronJitterConfig = DEFAULT_CRON_JIT
   );
 }
 
-/** Cross-field validation of a jitter config (mirrors Claude's zod `.refine` on
+/** Cross-field validation of a jitter config (mirrors the reference's zod `.refine` on
  *  CronJitterConfig): every knob must be a finite, non-negative number and the
  *  one-shot floor can never exceed the one-shot cap (an inverted window would make
  *  oneShotBackJitter produce a negative/empty span). Throws a clear error on an
@@ -183,7 +183,7 @@ export interface CronLockRecord {
  *  record — unparseable JSON, a non-object, or a missing/mis-typed field — so every
  *  caller treats a corrupt or partially-written lock as "no valid owner" (stale)
  *  rather than trusting ad-hoc field casts on untrusted on-disk JSON. Mirrors
- *  Claude's zod-validated readLock (src/utils/cronTasksLock.ts). */
+ *  the reference's zod-validated readLock (src/utils/cronTasksLock.ts). */
 export function parseCronLock(raw: string): CronLockRecord | null {
   let data: unknown;
   try { data = JSON.parse(raw); } catch { return null; }
@@ -207,7 +207,7 @@ export { isFsInaccessible };
  *  ACTUAL gap between its next two fires — so at the defaults an hourly job spreads
  *  across minutes while a per-minute job spreads by only a few seconds — capped by
  *  cfg.recurringCapMs. A null/zero gap (no second match, e.g. a pinned yearly date)
- *  carries no herd risk, so it gets no jitter. Mirrors Claude's jitteredNextCronRunMs
+ *  carries no herd risk, so it gets no jitter. Mirrors the reference's jitteredNextCronRunMs
  *  (src/utils/cronTasks.ts), which proportions jitter against `t2 - t1` rather than a
  *  crude per-pattern period estimate. */
 function computeJitter(gapMs: number | null, jobId: string, cfg: CronJitterConfig = DEFAULT_CRON_JITTER): number {
@@ -274,7 +274,7 @@ function validateCronField(spec: string, min: number, max: number): string | nul
  *  is closed only by a fence at least as long as its opener, so a fence sized to
  *  `max(3, longestRun + 1)` guarantees an injected ``` inside the body can never
  *  close the fence early and un-wrap any trailing guidance text (prompt-injection
- *  containment). Mirrors Claude's content-derived fence sizing (src/utils/cronScheduler.ts).
+ *  containment). Mirrors the reference's content-derived fence sizing (src/utils/cronScheduler.ts).
  *  Single canonical fence helper — reused by every scheduled-prompt wrapper so the
  *  sizing logic exists in exactly one place. */
 export function fenceFor(body: string): string {
@@ -315,7 +315,7 @@ export class CronScheduler {
   private busyCheck: (() => boolean) | null = null;
   /** Invoked once with each recurring job that is auto-expired (aged past its
    *  maxAgeDays window) so the consumer can surface a USER-VISIBLE notice that the
-   *  schedule has stopped — not just the internal coreLog. Mirrors Claude's guidance
+   *  schedule has stopped — not just the internal coreLog. Mirrors the reference's guidance
    *  to tell the user a recurring task has auto-expired (src/tools/ScheduleCronTool/
    *  prompt.ts). Registered via {@link startTicker}; null = no notice (log only). */
   private onExpire: ((job: CronJob) => void) | null = null;
@@ -323,7 +323,7 @@ export class CronScheduler {
    *  fires immediately (even mid-turn) instead of waiting for the next idle tick —
    *  a latency nicety for always-on assistant sessions that already have scheduled
    *  tasks at startup. Settable at runtime (setAssistantMode) or via the
-   *  AMI_CRON_ASSISTANT_MODE env var, polled each tick. Mirrors Claude's
+   *  AMI_CRON_ASSISTANT_MODE env var, polled each tick. Mirrors the reference's
    *  assistantMode knob on the scheduler (src/hooks/useScheduledTasks.ts). */
   private assistantMode = false;
   /** Last session id we logged a "lock held by" contention line for. Suppresses
@@ -338,7 +338,7 @@ export class CronScheduler {
    *  the moment it flips back. This is the CALLBACK form of the env-var
    *  {@link CronScheduler.isDisabled} gate: a consumer (e.g. a feature gate, or a
    *  teammate session that must let the lead own scheduled-task firing) can stop
-   *  this scheduler instance without an env var. Mirrors Claude's isKilled() option
+   *  this scheduler instance without an env var. Mirrors the reference's isKilled() option
    *  (src/utils/cronScheduler.ts). Null = never killed by callback. */
   private killSwitch: (() => boolean) | null = null;
   /** Optional per-task predicate applied before ANY side effect. A job for which
@@ -346,14 +346,14 @@ export class CronScheduler {
    *  fired, never stamped, never deleted/expired, never surfaced as missed, and
    *  absent from getNextFireTime(). Lets one scheduler be scoped to a subset of the
    *  tasks sharing a scheduled_tasks.json (e.g. a subagent session that should only
-   *  fire its OWN jobs). Mirrors Claude's per-task filter option
+   *  fire its OWN jobs). Mirrors the reference's per-task filter option
    *  (src/utils/cronScheduler.ts). Null = every job is visible. */
   private taskFilter: ((job: CronJob) => boolean) | null = null;
   /** Optional liveness resolver for a job's owning teammate/sub-agent (agentId).
    *  When set and it reports a job's agentId is gone, a due recurring cron owned by
    *  that vanished teammate is pruned (with a diagnostic) instead of firing into
    *  nowhere every tick. Null = no target tracking (jobs always fire). Mirrors
-   *  Claude's onFireTask orphaned-cron cleanup (src/hooks/useScheduledTasks.ts). */
+   *  the reference's onFireTask orphaned-cron cleanup (src/hooks/useScheduledTasks.ts). */
   private agentAliveCheck: ((agentId: string) => boolean) | null = null;
 
   constructor(cwd: string, sessionId?: string, jitterConfig: CronJitterConfig = DEFAULT_CRON_JITTER) {
@@ -386,7 +386,7 @@ export class CronScheduler {
    *  new jobs are silently degraded to session-only (in-memory) rather than
    *  persisted to disk — the whole scheduler keeps working, but the model-chosen
    *  prompt is never written to scheduled_tasks.json. Returns true when disk
-   *  persistence is allowed (the default). Mirrors Claude's isDurableCronEnabled()
+   *  persistence is allowed (the default). Mirrors the reference's isDurableCronEnabled()
    *  gate and reuses the same truthy-env convention as isDisabled(). */
   static isDurableEnabled(): boolean {
     return !(
@@ -408,7 +408,7 @@ export class CronScheduler {
    *  already-enqueued (but not yet consumed) run would still execute the stale
    *  prompt. The engine registers a drain that removes those pending runs for the
    *  id and returns how many were dropped, so a cancel is a true abort, not just
-   *  "stop future scheduling". Mirrors Claude's killShellTasks drain
+   *  "stop future scheduling". Mirrors the reference's killShellTasks drain
    *  (dequeueAllMatching) alongside clearing the timer. */
   private cancelDrain: ((id: string) => number) | null = null;
   setCancelDrain(fn: ((id: string) => number) | null): void {
@@ -479,7 +479,7 @@ export class CronScheduler {
 
   /** Resolve the effective jitter config for a tick. An operator may retune jitter
    *  LIVE (no restart) via env vars; each is applied over the construction baseline
-   *  and reverts the moment the var is cleared. Mirrors Claude's getJitterConfig()
+   *  and reverts the moment the var is cleared. Mirrors the reference's getJitterConfig()
    *  being polled once per tick. Invalid/negative values fall back to the baseline. */
   private resolveRuntimeJitter(): CronJitterConfig {
     const base = this.baseJitter;
@@ -526,7 +526,7 @@ export class CronScheduler {
     }
     // FUNCTIONAL: expose the per-job expiry window at creation. Must be a
     // non-negative integer number of days; 0 means "never expire" (unlimited),
-    // mirroring Claude's recurringMaxAgeMs===0 sentinel. A fractional/negative
+    // mirroring the reference's recurringMaxAgeMs===0 sentinel. A fractional/negative
     // value would silently truncate or disable expiry, so reject it up front.
     if (opts.maxAgeDays !== undefined && (!Number.isInteger(opts.maxAgeDays) || opts.maxAgeDays < 0)) {
       throw new Error(`maxAgeDays must be a non-negative integer (got ${opts.maxAgeDays}); use 0 for unlimited.`);
@@ -535,7 +535,7 @@ export class CronScheduler {
     // would orphan on restart — the teammate does not persist across sessions, so
     // the job's stored agentId would point at a nonexistent owner that can never
     // again fire, scope, or authorize it. Reject the request up front (session-only
-    // durable-less jobs are fine for a teammate). Mirrors Claude's CronCreateTool
+    // durable-less jobs are fine for a teammate). Mirrors the reference's CronCreateTool
     // errorCode-4 "durable cron in teammate context" rejection.
     if ((opts.durable ?? false) && opts.agentId) {
       throw new Error(
@@ -683,7 +683,7 @@ export class CronScheduler {
   /** Epoch ms of the soonest scheduled fire across all loaded jobs, or null when
    *  nothing is pending (no jobs, or none with a computed nextRun). Lets a caller
    *  decide whether to keep an idle session warm for an imminent fire or let it go
-   *  idle. Mirrors Claude's createCronScheduler().getNextFireTime(). */
+   *  idle. Mirrors the reference's createCronScheduler().getNextFireTime(). */
   getNextFireTime(): number | null {
     let min = Infinity;
     for (const job of this.jobs.values()) {
@@ -834,7 +834,7 @@ export class CronScheduler {
     // the scheduler started. Poll it every tick so an already-running scheduler
     // stops firing (and ageing) the moment the gate flips, without being torn
     // down — the timer keeps running and firing resumes if the gate clears.
-    // Mirrors Claude's isKilled() option (polled once per check() tick). The env
+    // Mirrors the reference's isKilled() option (polled once per check() tick). The env
     // gate and the injectable callback kill-switch ({@link setKillSwitch}) are both
     // polled here so either can stop an already-running scheduler mid-session.
     if (this.isKilled()) return;
@@ -857,7 +857,7 @@ export class CronScheduler {
       // Orphan cleanup: a recurring cron owned by a teammate/sub-agent that has
       // disappeared would otherwise fire into nowhere every tick. When a liveness
       // resolver is registered and reports the owner is gone, log a diagnostic and
-      // prune the job instead of firing it. Mirrors Claude's onFireTask orphaned-
+      // prune the job instead of firing it. Mirrors the reference's onFireTask orphaned-
       // cron removal (src/hooks/useScheduledTasks.ts).
       if (job.agentId && this.agentAliveCheck && !this.agentAliveCheck(job.agentId)) {
         coreLog('cron', `teammate ${job.agentId} gone, removing orphaned cron ${job.id}`);
@@ -1047,7 +1047,7 @@ export class CronScheduler {
    *  so a missed prompt never silently re-runs autonomously. Each prompt is wrapped
    *  in a backtick-run-safe fence (fenceFor) so an embedded ``` cannot break out and
    *  un-wrap the trailing guidance (prompt-injection containment), and carries a
-   *  `[<schedule>, created <timestamp>]` meta line. Mirrors Claude's
+   *  `[<schedule>, created <timestamp>]` meta line. Mirrors the reference's
    *  buildMissedTaskNotification (src/utils/cronScheduler.ts). Returns '' for an
    *  empty list so callers can treat "no missed tasks" uniformly. */
   buildMissedTaskNotification(jobs: CronJob[]): string {
@@ -1072,7 +1072,7 @@ export class CronScheduler {
    *  later call — dedup + anti-re-fire guard), and returns a single ask-before-run
    *  notification, or null when nothing was missed. Recurring missed jobs are
    *  intentionally left untouched — they resume firing naturally on the next tick.
-   *  Mirrors Claude's load(initial) one-shot-only missed-task surfacing (surface,
+   *  Mirrors the reference's load(initial) one-shot-only missed-task surfacing (surface,
    *  delete-before-notify). This is the wired consumer of detectMissedTasks +
    *  buildMissedTaskNotification. */
   takeMissedOneShotNotification(): string | null {
@@ -1122,7 +1122,7 @@ export class CronScheduler {
 
     // A field that matches EVERY value in its range (e.g. "1-31" for day-of-month,
     // "0-6"/"0-7"/"*/1" for day-of-week) is a semantic wildcard, not a restriction —
-    // so the dom/dow OR-matching below must treat it as unrestricted. Mirrors Claude's
+    // so the dom/dow OR-matching below must treat it as unrestricted. Mirrors the reference's
     // expand-to-set then length===rangeSize wildcard detection (src/utils/cron.ts).
     const domRestricted = !fieldCoversFullRange(domSpec, 1, 31);
     const dowRestricted = !fieldCoversFullRange(dowSpec, 0, 6);
@@ -1181,14 +1181,14 @@ export class CronScheduler {
     if (minPlain && hourPlain) {
       // A UTC job's hour:minute are UTC; render them in the host's local time (with
       // a short TZ label) so the user sees when it actually fires here. A local job
-      // renders its wall-clock time verbatim. Mirrors Claude's formatLocalTime vs
+      // renders its wall-clock time verbatim. Mirrors the reference's formatLocalTime vs
       // formatUtcTimeAsLocal split (src/utils/cron.ts).
       const timeStr = formatClockTime(parseInt(hour, 10), parseInt(min, 10), utc);
       // When a fixed daily time is NOT further restricted by day-of-month/month,
       // read the whole schedule as a single fluent phrase that leads with the day
       // context — "every day at 9:00 am", "every Mon at 9:00 am",
       // "Weekdays at 9:00 am (Mon to Fri)" — instead of the mechanical
-      // "at 9:00 am, on Mon". Mirrors Claude's cronToHuman day+time phrasing while
+      // "at 9:00 am, on Mon". Mirrors the reference's cronToHuman day+time phrasing while
       // keeping AMI's lowercase am/pm style and the Mon-to-Fri expansion (superset).
       if (dom === '*' && mon === '*') {
         if (dow === '*') return `every day at ${timeStr}`;
@@ -1199,7 +1199,7 @@ export class CronScheduler {
           const dowIndex = parseInt(singleDow[0], 10);
           // For a UTC job the weekday is a UTC weekday; a midnight-crossing TZ offset
           // can land it on a different LOCAL day, so resolve the actual local weekday
-          // from the UTC instant (parity with Claude's utc dayIndex recomputation).
+          // from the UTC instant (parity with the reference's utc dayIndex recomputation).
           const dayName = utc ? localWeekdayForUtc(dowIndex, parseInt(hour, 10), parseInt(min, 10), names) : names[dowIndex];
           return `every ${dayName} at ${timeStr}`;
         }
@@ -1209,7 +1209,7 @@ export class CronScheduler {
       // "every N hours at :MM": an hour STEP paired with a fixed minute. The :MM
       // suffix is dropped when the minute is :00 (the common top-of-hour case), so
       // "0 */2 * * *" reads "every 2 hours" while "30 */2 * * *" reads
-      // "every 2 hours at :30". Mirrors Claude's cronToHuman every-N-hours branch.
+      // "every 2 hours at :30". Mirrors the reference's cronToHuman every-N-hours branch.
       const n = parseInt(hourStepMatch[1], 10);
       const m = parseInt(min, 10);
       const suffix = m === 0 ? '' : ` at :${String(m).padStart(2, '0')}`;
@@ -1230,7 +1230,7 @@ export class CronScheduler {
       const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
       // The Monday-through-Friday range reads best as "Weekdays"; keep AMI's
       // explicit day expansion alongside it (superset) so the prose names the
-      // concept Claude labels while still showing the underlying range.
+      // concept the reference labels while still showing the underlying range.
       if (dow === '1-5') {
         pieces.push('on Weekdays (Mon to Fri)');
         return pieces.join(', ') || 'every minute';
@@ -1282,7 +1282,7 @@ export class CronScheduler {
       // A missing or inaccessible file is the normal empty state and is silent;
       // an UNEXPECTED read fault (I/O error, EISDIR, a directory where the file
       // should be, …) is a real failure and must leave a diagnostic trail instead
-      // of vanishing identically to "no tasks yet". Mirrors Claude's readCronTasks
+      // of vanishing identically to "no tasks yet". Mirrors the reference's readCronTasks
       // isFsInaccessible→silent vs logError split (src/utils/cronTasks.ts).
       if (!isFsInaccessible(err)) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -1376,7 +1376,7 @@ export function to12Hour(hour: number, minute: number): string {
  *  time verbatim (AMI's lowercase am/pm style). In UTC mode the pair is treated as
  *  UTC and rendered in the host's local timezone with a short TZ label (e.g.
  *  "9:00 am PST") so a server/remote-defined schedule shows when it fires HERE.
- *  Mirrors Claude's formatLocalTime / formatUtcTimeAsLocal split (src/utils/cron.ts). */
+ *  Mirrors the reference's formatLocalTime / formatUtcTimeAsLocal split (src/utils/cron.ts). */
 export function formatClockTime(hour: number, minute: number, utc: boolean): string {
   if (!utc) return to12Hour(hour, minute);
   const d = new Date();
@@ -1390,7 +1390,7 @@ export function formatClockTime(hour: number, minute: number, utc: boolean): str
 /** The LOCAL weekday short-name for a schedule whose day-of-week + hour:minute are
  *  expressed in UTC. A UTC midnight-crossing offset can push a "Monday 23:00 UTC"
  *  fire onto Sunday or Tuesday locally, so resolve the weekday from the actual UTC
- *  instant. Mirrors Claude's utc dayIndex recomputation (src/utils/cron.ts). */
+ *  instant. Mirrors the reference's utc dayIndex recomputation (src/utils/cron.ts). */
 function localWeekdayForUtc(dowIndex: number, hour: number, minute: number, names: string[]): string {
   const ref = new Date();
   const daysToAdd = (dowIndex - ref.getUTCDay() + 7) % 7;
@@ -1458,7 +1458,7 @@ export function matchField(value: number, spec: string, min: number, max: number
  *  in [min,max] — e.g. "1-31" for day-of-month, "0-6"/"0-7"/"*​/1" for day-of-week.
  *  Such a field is a semantic wildcard: day-of-month/day-of-week OR-matching must
  *  treat it as unrestricted, otherwise "0 9 1-31 * 1" (every DOM AND Monday) would
- *  wrongly fire every day instead of only on Mondays. Mirrors Claude's expand-to-set
+ *  wrongly fire every day instead of only on Mondays. Mirrors the reference's expand-to-set
  *  then length===rangeSize wildcard detection (src/utils/cron.ts). */
 export function fieldCoversFullRange(spec: string, min: number, max: number): boolean {
   if (spec === '*') return true;

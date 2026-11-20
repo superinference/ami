@@ -1,7 +1,7 @@
 /**
  * in-process-transport.ts — a bidirectional, in-process MCP transport pair.
  *
- * Parity with Claude Code's `services/mcp/InProcessTransport.ts` (the linked
+ * Parity with the reference's `services/mcp/InProcessTransport.ts` (the linked
  * client/server transport pair) and `SdkControlTransport.ts` (in-process / SDK
  * control transport): two linked {@link InProcessTransport} objects where `send()`
  * on one delivers to the other's `onmessage`, so an MCP server and client can run

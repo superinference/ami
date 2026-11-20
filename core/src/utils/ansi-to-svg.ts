@@ -1,7 +1,7 @@
 /**
  * Render ANSI-escaped terminal text to a standalone, shareable SVG string.
  *
- * AMI's counterpart to Claude Code's `ansiToSvg()` share affordance
+ * AMI's counterpart to the reference's `ansiToSvg()` share affordance
  * (references/claude/claude-code-main/src/utils/ansiToSvg.ts): a terminal
  * surface (a `/stats` dashboard, a conversation transcript, any captured tool
  * output) is turned into a self-contained vector image that renders identically
@@ -40,7 +40,7 @@ import { escapeXmlAttr, escapeXmlText } from '../xml-escape';
 
 /**
  * Tunable rendering knobs for {@link ansiToSvg}. Every field is optional; the
- * documented defaults below match Claude Code's `AnsiToSvgOptions` so an exported
+ * documented defaults below match the reference's `AnsiToSvgOptions` so an exported
  * image reads the same as the reference share affordance.
  */
 export interface AnsiToSvgOptions {

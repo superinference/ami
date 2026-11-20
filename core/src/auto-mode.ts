@@ -1,7 +1,7 @@
 /**
  * Auto-mode (YOLO) natural-language classifier rules.
  *
- * Parity with Claude Code's `settings.autoMode` / `yoloClassifier`: when the user
+ * Parity with the reference's `settings.autoMode` / `yoloClassifier`: when the user
  * runs fully-autonomous ("auto"/YOLO) mode, a security classifier decides whether
  * each tool call is auto-approved or bounced back for confirmation. The classifier
  * reads THREE declarative, plain-English rule categories as part of its system
@@ -28,7 +28,7 @@ import { classifySafetyCheckFailure, type SafetyClassifierFailure } from './erro
 
 /**
  * The three classifier prompt sections, as REQUIRED arrays (empty when a section
- * has no rules). The JSON-dump / effective-config shape. Parity: Claude's
+ * has no rules). The JSON-dump / effective-config shape. Parity: the reference's
  * `AutoModeRules`.
  */
 export interface AutoModeRules {
@@ -41,7 +41,7 @@ export interface AutoModeRules {
  * Built-in default classifier rules used when the user has not overridden a
  * section. Conservative by design: auto-approve clearly read-only / local-only
  * work, soft-deny anything that leaves the machine or mutates shared state, and
- * describe the baseline environment. Parity: Claude's
+ * describe the baseline environment. Parity: the reference's
  * `getDefaultExternalAutoModeRules()` (which parses these out of the bundled
  * external permissions template); AMI inlines them as data.
  */
@@ -81,7 +81,7 @@ export function getDefaultExternalAutoModeRules(): AutoModeRules {
 
 /**
  * Resolve the EFFECTIVE classifier rules from a user {@link AutoModeConfig},
- * applying Claude's per-section REPLACE semantics: a non-empty user section
+ * applying the reference's per-section REPLACE semantics: a non-empty user section
  * REPLACES that section's defaults entirely; an empty or absent section falls
  * through to the defaults. (It is a replace, NOT a merge — the user owns a
  * section once they define it.) Parity: `autoModeConfigHandler` /
@@ -112,7 +112,7 @@ function renderSection(items: string[]): string {
  * classifier (an LLM, invoked by the engine) reads this to decide, per tool call,
  * whether to auto-approve or require user confirmation. Pure + deterministic so it
  * can be snapshot-tested and diffed; the LLM call that consumes it lives in the
- * orchestration layer. Parity: Claude's external auto-mode system prompt with the
+ * orchestration layer. Parity: the reference's external auto-mode system prompt with the
  * three `<user_*_to_replace>` sections substituted.
  */
 export function buildAutoModeClassifierPrompt(rules: AutoModeRules): string {
@@ -151,7 +151,7 @@ export function buildAutoModeClassifierPromptFromConfig(config?: AutoModeConfig 
 /**
  * Why an elevated "auto"/autonomy permission mode is unavailable when the user
  * tries to switch into it (e.g. the Shift+Tab carousel wraps past the auto slot).
- * Parity: Claude's `AutoModeUnavailableReason` (permissionSetup.ts L1045):
+ * Parity: the reference's `AutoModeUnavailableReason` (permissionSetup.ts L1045):
  *  - `settings`        — auto mode is turned off by a (user or managed) settings flag;
  *  - `circuit-breaker` — auto mode is suspended because too many actions were denied
  *                        (the permission denial circuit breaker has tripped);
@@ -176,7 +176,7 @@ export interface AutoModeAvailabilityState {
 
 /**
  * Classify WHY auto mode is unavailable for the given state, or `null` when it is
- * available. Checks in Claude's fixed precedence (settings disable → circuit
+ * available. Checks in the reference's fixed precedence (settings disable → circuit
  * breaker → model capability), mirroring `getAutoModeUnavailableReason`.
  */
 export function classifyAutoModeUnavailableReason(
@@ -190,7 +190,7 @@ export function classifyAutoModeUnavailableReason(
 
 /**
  * Human-readable, reason-tagged notification text for an unavailable auto mode,
- * shown once when the user tries to switch into it. Parity: Claude's
+ * shown once when the user tries to switch into it. Parity: the reference's
  * `getAutoModeUnavailableNotification`.
  */
 export function getAutoModeUnavailableNotification(reason: AutoModeUnavailableReason): string {
@@ -234,7 +234,7 @@ export interface AutoModeClassifierOutcome {
 
 /**
  * Resolve an {@link AutoModeClassifierOutcome} to the fail-safe permission
- * decision. The contract mirrors Claude Code's documented classifier-failure
+ * decision. The contract mirrors the reference's documented classifier-failure
  * handling: a check that could not produce a verdict falls back to normal
  * PROMPTING — it is NEVER silently auto-approved (fail-open is unsafe) and NEVER
  * hard-denied (fail-closed would block legitimate work). Only an explicit

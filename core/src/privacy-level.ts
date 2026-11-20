@@ -5,7 +5,7 @@
 // Single canonical resolver for AMI's privacy posture. Every outbound /
 // nonessential-traffic site (analytics/OTLP telemetry, model-capability refresh,
 // cost reporting, …) consults these helpers so the standard opt-out env vars
-// actually suppress egress. Mirrors Claude Code's `utils/privacyLevel` contract
+// actually suppress egress. Mirrors the reference's `utils/privacyLevel` contract
 // (default < no-telemetry < essential-traffic; most-restrictive signal wins),
 // extended with AMI-native env-var names.
 
@@ -38,7 +38,7 @@ export const ESSENTIAL_TRAFFIC_VARS = [
 
 /**
  * Resolve the effective privacy level from the standard opt-out env vars,
- * taking the MOST restrictive signal (mirrors Claude's getPrivacyLevel):
+ * taking the MOST restrictive signal (mirrors the reference's getPrivacyLevel):
  *  - DISABLE_TELEMETRY / DO_NOT_TRACK → no-telemetry
  *  - *_DISABLE_NONESSENTIAL_TRAFFIC  → essential-traffic (strictest)
  */
@@ -79,7 +79,7 @@ export function getEssentialTrafficOnlyReason(env: NodeJS.ProcessEnv = process.e
 /**
  * Nonessential outbound product features that must fail CLOSED when their
  * per-feature enablement cannot be resolved (a policy/config "cache miss") while
- * essential-traffic-only mode is active. Mirrors Claude's
+ * essential-traffic-only mode is active. Mirrors the reference's
  * `ESSENTIAL_TRAFFIC_DENY_ON_MISS`: a lookup failure (missing managed policy,
  * network timeout resolving an org restriction) must NEVER silently re-enable a
  * nonessential egress for a restricted (e.g. HIPAA) org — it defaults to denied
@@ -100,7 +100,7 @@ export const ESSENTIAL_TRAFFIC_DENY_ON_MISS = new Set<string>([
 
 /**
  * Decide whether a nonessential feature may run when its per-feature enablement
- * CANNOT be resolved from policy/config (a "cache miss"). Mirrors Claude's
+ * CANNOT be resolved from policy/config (a "cache miss"). Mirrors the reference's
  * `isPolicyAllowed` default — fail OPEN (return `true`) — with the one exception
  * that a feature in {@link ESSENTIAL_TRAFFIC_DENY_ON_MISS} fails CLOSED (returns
  * `false`) while essential-traffic-only mode is active, so an unresolved lookup

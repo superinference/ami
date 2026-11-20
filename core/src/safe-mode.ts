@@ -12,7 +12,7 @@ export interface SafeModeConfig {
 /**
  * Config keys that silently shell out to arbitrary commands on load (credential
  * helpers), a trust/escalation signal when deciding workspace trust. Mirrors
- * Claude's TrustDialog apiKeyHelper / aws / gcp / otel command-helper scan.
+ * the reference's TrustDialog apiKeyHelper / aws / gcp / otel command-helper scan.
  */
 const CONFIG_COMMAND_HELPER_KEYS = [
   'apiKeyHelper',
@@ -31,7 +31,7 @@ function stringArray(v: unknown): string[] {
 }
 
 /** Does a permission `allow` rule pre-grant the bash tool? Delegates to the single
- *  canonical {@link isBashToolAllowRule} matcher (Claude-Code `Bash`/`Bash(…)` +
+ *  canonical {@link isBashToolAllowRule} matcher (the reference `Bash`/`Bash(…)` +
  *  AMI's lowercase `bash`) so the safe-mode scanner and the workspace trust audit
  *  never diverge on what counts as a shell grant. */
 function isBashAllowRule(rule: string): boolean {
@@ -41,7 +41,7 @@ function isBashAllowRule(rule: string): boolean {
 /**
  * Structured, per-capability breakdown of the concrete arbitrary-code-execution /
  * escalation vectors a project's own settings configure. Each field is its own
- * detector, mirroring Claude's TrustDialog/utils.ts fine-grained risk-signal scan,
+ * detector, mirroring the reference's TrustDialog/utils.ts fine-grained risk-signal scan,
  * so a caller can both DECIDE trust and DISCLOSE to the user exactly which risks
  * are present (and, when scanned per source file, which file introduced each).
  */
@@ -64,7 +64,7 @@ export interface ConfigRiskSignals {
  * helpers, hooks, bash-granting permission rules, non-allowlisted env vars, and
  * declared MCP servers. Pure and side-effect free. Broadens the single-boolean
  * trust check into the full TrustDialog vector set so the trust gate can both
- * decide and explain. Mirrors Claude's TrustDialog/utils.ts detectors.
+ * decide and explain. Mirrors the reference's TrustDialog/utils.ts detectors.
  */
 export function scanConfigRiskSignals(settings: Record<string, unknown> | null | undefined): ConfigRiskSignals {
   const signals: ConfigRiskSignals = { commandHelpers: [], hooks: false, bashPermissions: [], dangerousEnvVars: [], mcpServers: [] };
@@ -112,7 +112,7 @@ export function hasAnyRiskSignal(signals: ConfigRiskSignals): boolean {
  * `.ami/settings.local.json`) and return the per-source risk breakdown, keeping
  * only the sources that carry at least one signal. Lets the trust boundary
  * disclose WHICH file introduces each dangerous capability before honoring it —
- * Claude's per-source TrustDialog attribution.
+ * the reference's per-source TrustDialog attribution.
  */
 export function scanConfigRiskSignalsBySource(
   sources: Record<string, Record<string, unknown> | null | undefined>,
@@ -136,7 +136,7 @@ export function scanConfigRiskSignalsBySource(
  * warrant forcing safe mode even inside an otherwise-trusted root; broader
  * capability signals (hooks, bash-allow, MCP) are surfaced via scanConfigRiskSignals
  * for the trust/disclosure decision rather than the unconditional override.
- * Mirrors Claude's TrustDialog getApiKeyHelperSources / hasDangerousEnvVars.
+ * Mirrors the reference's TrustDialog getApiKeyHelperSources / hasDangerousEnvVars.
  */
 export function detectConfigEscalationVectors(settings: Record<string, unknown> | null | undefined): string[] {
   const signals = scanConfigRiskSignals(settings);
@@ -161,7 +161,7 @@ function normalizeTrustNode(p: string): string {
  * accepted)? Walks UP from `cwd` through every parent directory, stopping at the
  * filesystem-root boundary (where `path.dirname(x) === x`), and returns true as
  * soon as a trusted root is hit — so trusting a parent directory implies trust of
- * every descendant. Mirrors Claude's `computeTrustDialogAccepted` / `isPathTrusted`
+ * every descendant. Mirrors the reference's `computeTrustDialogAccepted` / `isPathTrusted`
  * ancestor walk exactly (an explicit parent traversal with a root boundary, rather
  * than a prefix test that could be fooled by sibling paths sharing a name prefix).
  */
@@ -181,7 +181,7 @@ export function isTrustedByAncestor(cwd: string, trustedRoots: string[]): boolea
 
 /** Settings files (relative to a project cwd) that are honored as project-local
  *  trust surfaces. Both AMI-native (`.ami`) and Claude-compatible (`.claude`) forms
- *  and their `.local` overrides are scanned, mirroring Claude's project/local split. */
+ *  and their `.local` overrides are scanned, mirroring the reference's project/local split. */
 export const PROJECT_SETTINGS_SOURCES = [
   '.ami/settings.json',
   '.ami/settings.local.json',
@@ -217,14 +217,14 @@ export interface TrustIndicators {
    *  trust indicators (inheritance), mirroring computeTrustDialogAccepted. */
   trustedRoots?: string[];
   /** `cwd` has a PERSISTED folder-trust grant resolved from the config waterfall
-   *  (Claude-parity `hasTrustDialogAccepted` / `trustedProjectPaths`, walked up the
+   *  (the reference-parity `hasTrustDialogAccepted` / `trustedProjectPaths`, walked up the
    *  ancestor chain by `config.isPathTrusted`). Supplied by the caller so the pure
    *  decision here stays side-effect free while still honoring durable, cross-session
    *  trust: when true the SOFT trust signals (untrusted/cloned project) are suppressed
    *  exactly like an in-memory `trustedRoots` match — so a user who recorded trust for
    *  this folder (or a parent) is not forced to re-establish it every session. The HARD
    *  config/hook/bash/env escalation signals still engage even in a trusted folder
-   *  (deliberate AMI superset over Claude's all-or-nothing trust). */
+   *  (deliberate AMI superset over the reference's all-or-nothing trust). */
   persistentlyTrusted?: boolean;
 }
 
@@ -259,7 +259,7 @@ function readJsonSettings(file: string): Record<string, unknown> | null {
  * configure, deriving the {@link TrustIndicators} the trust gate consumes. This is
  * the wiring that turns the per-capability detectors (which previously only ran on
  * caller-supplied objects) into an effective pre-flight check against the real files,
- * mirroring Claude's TrustDialog scanning project+local settings before honoring them.
+ * mirroring the reference's TrustDialog scanning project+local settings before honoring them.
  *
  * Only the high-risk secret-exfiltration vectors (credential/command helpers +
  * non-allowlisted env vars) set `hasConfigEscalation` (which forces safe mode even
@@ -280,7 +280,7 @@ export function scanProjectSettingsForTrust(cwd: string): SafeModeScanResult {
     new Set(Object.values(sources).flatMap(s => detectConfigEscalationVectors(s))),
   );
   const hasUntrustedMcp = Object.values(bySource).some(sig => sig.mcpServers.length > 0);
-  // Granular, independently-detected trust inputs (parity: Claude's TrustDialog
+  // Granular, independently-detected trust inputs (parity: the reference's TrustDialog
   // per-category risk signals). Each is surfaced on the derived indicators so the
   // trust gate can both DECIDE on any single dangerous source and DISCLOSE exactly
   // which category is present — not just the coarse escalation/MCP pair.
@@ -304,7 +304,7 @@ export function scanProjectSettingsForTrust(cwd: string): SafeModeScanResult {
  * True when `cwd` resolves to the user's home directory. Running an agent from
  * $HOME would otherwise grant project-local trust over the entire home tree, so the
  * home dir is treated as untrusted-by-default (safe mode ON) and its trust is
- * session-only — never persisted. Parity with Claude Code's TrustDialog home-dir
+ * session-only — never persisted. Parity with the reference's TrustDialog home-dir
  * special case (acceptance kept in memory only, never written to disk). Never throws.
  */
 export function isHomeDirectory(cwd: string): boolean {
@@ -328,7 +328,7 @@ const BLOCKED_IN_SAFE_MODE = new Set<BlockedResource>([
   'plugins',
   // Project-supplied env vars outside the SAFE_ENV_VARS allowlist (PATH/LD_PRELOAD/
   // NODE_OPTIONS/… hijack vectors) are an arbitrary-code-execution surface; safe mode
-  // treats them as a first-class blocked resource (parity with Claude's TrustDialog
+  // treats them as a first-class blocked resource (parity with the reference's TrustDialog
   // dangerous-env-var trust signal), surfaced alongside the other blocked categories.
   'dangerous_env_vars',
 ]);
@@ -360,7 +360,7 @@ export function resourceTier(resource: BlockedResource): ResourceTier {
 /**
  * Human-readable description of each project-local resource the trust boundary
  * governs — what it is and why it is risky. Lets a frontend explain to the user
- * exactly what safe mode is withholding, mirroring Claude's TrustDialog risk
+ * exactly what safe mode is withholding, mirroring the reference's TrustDialog risk
  * disclosure (which enumerates each execution vector in prose).
  */
 export const RESOURCE_DESCRIPTIONS: Record<BlockedResource, string> = {
@@ -378,7 +378,7 @@ export const RESOURCE_DESCRIPTIONS: Record<BlockedResource, string> = {
  * The concrete risk each governed resource poses when honored from an untrusted
  * project — the "why it is withheld" paired with the {@link RESOURCE_DESCRIPTIONS}
  * "what it is". Distinct from the label so a frontend can show both the resource
- * and the specific threat, mirroring Claude's TrustDialog per-vector risk prose.
+ * and the specific threat, mirroring the reference's TrustDialog per-vector risk prose.
  */
 export const RESOURCE_WHY: Record<BlockedResource, string> = {
   prompt_override: 'Can silently rewrite the agent\'s instructions to act against you',
@@ -393,7 +393,7 @@ export const RESOURCE_WHY: Record<BlockedResource, string> = {
 
 /**
  * Actionable next-step shown with the blocked-resource notice: how to review the
- * project and opt back in once trusted. Parity with Claude's TrustDialog
+ * project and opt back in once trusted. Parity with the reference's TrustDialog
  * "Security guide" affordance / "take a moment to review what's in this folder".
  */
 export const SAFE_MODE_GUIDANCE =
@@ -414,7 +414,7 @@ export interface BlockedResourceInfo {
  * Structured disclosure of every project-local resource the trust boundary affects
  * under safe mode, each with its {@link ResourceTier} and human-readable label.
  * A frontend renders this to tell the user precisely what is blocked vs restricted
- * and why — the data behind the `/safe-mode` view. Mirrors Claude's TrustDialog
+ * and why — the data behind the `/safe-mode` view. Mirrors the reference's TrustDialog
  * per-vector risk enumeration.
  */
 export function describeBlocked(): BlockedResourceInfo[] {
@@ -440,11 +440,11 @@ export interface SafeModeDecision {
  * turned on, instead of a generic "safe mode active".
  *
  * Every independently-detected dangerous source is OR-combined — ANY one present
- * engages safe mode (parity with Claude's TrustDialog, which forces a trust
+ * engages safe mode (parity with the reference's TrustDialog, which forces a trust
  * decision when ANY of hooks / bash execution / credential helpers / dangerous
  * env vars / MCP servers is present). Trust inheritance — an in-memory
  * {@link TrustIndicators.trustedRoots} ancestor match OR a persisted
- * {@link TrustIndicators.persistentlyTrusted} folder-trust grant (Claude-parity
+ * {@link TrustIndicators.persistentlyTrusted} folder-trust grant (the reference-parity
  * `hasTrustDialogAccepted` / `trustedProjectPaths`) — still suppresses the
  * untrusted-project / cloned-from-unknown flags for a cwd inside an already-trusted
  * root; the hard config/hook/bash/env escalation signals engage safe mode even
@@ -517,7 +517,7 @@ export class SafeModeGuard {
    * resource returns `blocked` (recorded as blocked), a partially-blocked resource
    * returns `restricted` (recorded separately) so the caller can honor it in a
    * degraded/read-only way instead of silently treating it as fully allowed, and
-   * anything else returns `allowed`. Mirrors Claude's distinction between denied and
+   * anything else returns `allowed`. Mirrors the reference's distinction between denied and
    * restricted project capabilities.
    */
   checkTier(resource: BlockedResource, path?: string): ResourceTier {

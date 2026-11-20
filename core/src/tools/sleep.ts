@@ -12,7 +12,7 @@ const DURATION_SUFFIX_MS: Record<string, number> = {
 /**
  * Parse a human-friendly duration token into milliseconds, or null if it is not
  * a plain duration. Mirrors the shell `sleep` affordance (`5s`, `2m`, `1h`) that
- * Claude Code advertises in its sleep CommandSpec: a decimal NUMBER with an
+ * the reference advertises in its sleep CommandSpec: a decimal NUMBER with an
  * optional unit suffix `ms|s|m|h`. A BARE number is interpreted as SECONDS to
  * match how a human invokes `sleep 5` — distinct from the millisecond-valued
  * `duration_ms` field. Returns null for anything that is not a single duration
@@ -77,7 +77,7 @@ export const sleepTool: ToolDefinition = {
     const reason = (input.reason as string) || '';
 
     // Parity (functional): accept either the millisecond-valued `duration_ms` or a
-    // human-friendly `duration` string (`5s`, `2m`, `1h`) matching Claude Code's
+    // human-friendly `duration` string (`5s`, `2m`, `1h`) matching the reference's
     // shell-`sleep` affordance. `duration_ms` wins when both are supplied.
     let rawDuration: number | null = null;
     if (typeof input.duration_ms === 'number') {
@@ -118,7 +118,7 @@ export const sleepTool: ToolDefinition = {
     // Parity (functional): early-wake polling. When the engine supplies
     // `hasQueuedInput`, poll it so a message queued mid-sleep wakes the agent
     // promptly (≤ one poll interval) instead of blocking the full duration —
-    // mirroring Claude's SleepTool polling hasCommandsInQueue() and waking <1s.
+    // mirroring the reference's SleepTool polling hasCommandsInQueue() and waking <1s.
     const POLL_INTERVAL_MS = 250;
     const hasQueuedInput =
       typeof context.hasQueuedInput === 'function' ? context.hasQueuedInput : undefined;

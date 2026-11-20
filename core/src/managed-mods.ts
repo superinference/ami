@@ -14,7 +14,7 @@ export interface ModInfo {
   source?: 'local' | 'inline' | 'remote';
   path?: string;
   /**
-   * The mod's own default enabled state when NO explicit setting mentions it (Claude
+   * The mod's own default enabled state when NO explicit setting mentions it (the reference
    * parity: a plugin/mod definition's `defaultEnabled`). It lets a mod author ship a mod
    * that is installed-but-disabled-by-default (`defaultEnabled: false`) — or forced-on —
    * instead of every mod being unconditionally on. It is the MIDDLE tier of the
@@ -27,7 +27,7 @@ export interface ModInfo {
 export interface ManagedModsPolicy {
   allowManagedModsOnly: boolean;
   /**
-   * The managed per-mod enablement map. BOOLEAN-AUTHORITATIVE (Claude parity:
+   * The managed per-mod enablement map. BOOLEAN-AUTHORITATIVE (the reference parity:
    * managedPlugins.ts:L16-L20): a boolean value is the ONLY enablement signal —
    * `true` locks the mod enabled/vouches for it under {@link allowManagedModsOnly},
    * `false` force-disables it unconditionally ({@link isModBlockedByPolicy}). The
@@ -40,7 +40,7 @@ export interface ManagedModsPolicy {
   prependPlugins?: string[];
   appendPlugins?: string[];
   /**
-   * Operator-configured cross-marketplace trust allowlist (Claude parity:
+   * Operator-configured cross-marketplace trust allowlist (the reference parity:
    * `allowCrossMarketplaceDependenciesOn`). Marketplace names an org explicitly
    * trusts for user-tier mods under {@link allowManagedModsOnly}. Without this an org
    * could only vouch for the reserved `local`/`inline` sources; a specific trusted
@@ -54,7 +54,7 @@ export interface ManagedModsPolicy {
 /**
  * The reserved marketplace tokens that identify a trusted LOCAL/INLINE copy when a mod
  * carries no typed {@link ModInfo.source}. Membership is EXACT (case-insensitive) —
- * never a prefix — mirroring Claude's `ALLOWED_OFFICIAL_MARKETPLACE_NAMES.has(...)`
+ * never a prefix — mirroring the reference's `ALLOWED_OFFICIAL_MARKETPLACE_NAMES.has(...)`
  * exact-set check. An exact set cannot be spoofed by a remote marketplace that merely
  * STARTS WITH `local`/`inline` (e.g. `local-attacker`, `inline-exfil`), which the old
  * `startsWith` prefix test wrongly trusted.
@@ -62,7 +62,7 @@ export interface ManagedModsPolicy {
 const RESERVED_LOCAL_MARKETPLACE_NAMES = new Set(['local', 'inline']);
 
 /**
- * Unconditional org force-disable predicate (Claude parity: `isPluginBlockedByPolicy`).
+ * Unconditional org force-disable predicate (the reference parity: `isPluginBlockedByPolicy`).
  * A managed `enabledPlugins[id] === false` entry force-disables that plugin/mod at
  * EVERY scope and chokepoint — install, enable, AND load — INDEPENDENT of
  * `allowManagedModsOnly`. Any other value (`true`, a `string[]` allow-array, or an
@@ -75,7 +75,7 @@ export function isModBlockedByPolicy(id: string, policy: ManagedModsPolicy | nul
 }
 
 /**
- * The effective enabled state of a mod, resolved via Claude's 3-level enablement
+ * The effective enabled state of a mod, resolved via the reference's 3-level enablement
  * waterfall (builtinPlugins.ts:72-76 `userSetting !== undefined ? userSetting === true :
  * (definition.defaultEnabled ?? true)`):
  *
@@ -83,7 +83,7 @@ export function isModBlockedByPolicy(id: string, policy: ManagedModsPolicy | nul
  *      (`true` = on, `false` = off). The value is boolean-AUTHORITATIVE: the legacy
  *      `string[]` allow-array form is NOT an enablement setting here (it vouches for a
  *      source under {@link isModAllowed}, it does not set on/off), so it is ignored and the
- *      waterfall falls through — mirroring Claude's boolean-only `enabledPlugins` handling.
+ *      waterfall falls through — mirroring the reference's boolean-only `enabledPlugins` handling.
  *   2. **the mod's own default** — {@link ModInfo.defaultEnabled} (a mod may ship
  *      disabled-by-default), consulted when no boolean setting mentions the id.
  *   3. **hardcoded `true`** — a mod with neither a setting nor a declared default is on.
@@ -103,12 +103,12 @@ export function resolveModEnabled(mod: ModInfo, policy: ManagedModsPolicy | null
  * value is a boolean (`true` OR `false`). A pinned-enabled and a pinned-disabled mod
  * are equally immutable — the user may not enable/disable/remove either. The legacy
  * owner/repo ARRAY (allow-array) form is explicitly NOT protected (it vouches for a
- * source, it does not lock the name). Parity: Claude's `getManagedPluginNames`.
+ * source, it does not lock the name). Parity: the reference's `getManagedPluginNames`.
  *
  * Each boolean-pinned id locks BOTH its full `name@marketplace` form AND the bare
- * `name` extracted from the FIRST `@` (Claude's `pluginId.split('@')[0]`). Locking the
+ * `name` extracted from the FIRST `@` (the reference's `pluginId.split('@')[0]`). Locking the
  * bare name too means a pin such as `my-mod@local` also immobilizes a `my-mod` install
- * from any other marketplace — a strict superset of Claude's bare-name lock that also
+ * from any other marketplace — a strict superset of the reference's bare-name lock that also
  * keeps AMI's id-form lock, so a bare pin (no `@`) still protects its name.
  */
 export function getManagedPluginNames(policy: ManagedModsPolicy | null | undefined): Set<string> {
@@ -118,7 +118,7 @@ export function getManagedPluginNames(policy: ManagedModsPolicy | null | undefin
     if (typeof value !== 'boolean') continue; // arrays vouch for a source, they don't lock a name
     names.add(id);
     const at = id.indexOf('@');
-    if (at > 0) names.add(id.slice(0, at)); // bare name from the FIRST '@' (Claude parity)
+    if (at > 0) names.add(id.slice(0, at)); // bare name from the FIRST '@' (the reference parity)
   }
   return names;
 }
@@ -143,7 +143,7 @@ export function isLocalOrInlineSource(mod: ModInfo): boolean {
 /**
  * Whether a marketplace is on the org's configurable cross-marketplace trust allowlist
  * ({@link ManagedModsPolicy.allowedMarketplaces}). Matching is EXACT and case-insensitive,
- * mirroring Claude's exact-set membership checks — a prefix cannot slip past. Returns
+ * mirroring the reference's exact-set membership checks — a prefix cannot slip past. Returns
  * false when the marketplace, the policy, or the allowlist is absent.
  */
 export function isMarketplaceAllowlisted(
@@ -173,7 +173,7 @@ export function isModAllowed(mod: ModInfo, policy: ManagedModsPolicy): { allowed
   }
 
   // User-tier mod — check if org explicitly enabled it. The managed `enabledPlugins`
-  // policy is BOOLEAN-AUTHORITATIVE (Claude parity: managedPlugins.ts:L16-L20 —
+  // policy is BOOLEAN-AUTHORITATIVE (the reference parity: managedPlugins.ts:L16-L20 —
   // `if (typeof value !== 'boolean' …) continue`): ONLY a boolean `true` entry vouches
   // for a user-tier mod. The ambiguous legacy `string[]` form (a version list or
   // owner/repo allow-array) is NOT an enablement signal here — an array entry falls

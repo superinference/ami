@@ -1,5 +1,5 @@
 /**
- * Canonical time primitives — parity with Claude Code's `utils/sleep.ts`.
+ * Canonical time primitives — parity with the reference's `utils/sleep.ts`.
  *
  * This is the ONE shared home for the two timing building blocks every backoff /
  * retry / poll / timeout-guard loop needs, so none of them re-implement the
@@ -15,7 +15,7 @@
  */
 
 /**
- * Options bag selecting how {@link sleep} reacts to an abort. Mirrors Claude
+ * Options bag selecting how {@link sleep} reacts to an abort. Mirrors the reference
  * Code's `utils/sleep.ts` selectable abort semantics so each caller picks exactly
  * the behavior it needs instead of being forced into one.
  */
@@ -31,7 +31,7 @@ export interface SleepOptions {
 /**
  * Abort-responsive sleep. Resolves after `ms`, or settles early when `signal`
  * aborts. By DEFAULT an abort SILENTLY RESOLVES (the caller checks
- * `signal.aborted` after the await — no try/catch needed), matching Claude Code's
+ * `signal.aborted` after the await — no try/catch needed), matching the reference's
  * `sleep`. Pass `{ throwOnAbort: true }` to reject instead so a deep retry loop is
  * cancelled, or `{ abortError }` to reject with a specific error class (implies
  * `throwOnAbort`). The default rejection is a DOMException `AbortError`, which

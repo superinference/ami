@@ -1,7 +1,7 @@
 /**
  * Generic async serialization wrapper.
  *
- * Parity with Claude Code's `utils/sequential.ts`. {@link sequential} wraps an
+ * Parity with the reference's `utils/sequential.ts`. {@link sequential} wraps an
  * arbitrary async function so concurrent invocations run strictly ONE AT A TIME
  * in FIFO order, while every caller still gets its OWN resolved value back (or
  * its own rejection). It preserves the caller's `this` context, guards against

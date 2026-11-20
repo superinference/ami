@@ -13,7 +13,7 @@
  * such a blob straight into the AWS/Bedrock client surfaces later as an opaque 403
  * with no hint that the credential material itself was malformed.
  *
- * {@link isValidAwsStsOutput} is a faithful port of Claude Code's typeguard
+ * {@link isValidAwsStsOutput} is a faithful port of the reference's typeguard
  * (utils/aws.ts): it asserts the STS output is an object carrying a `Credentials`
  * object whose `AccessKeyId` / `SecretAccessKey` / `SessionToken` are present,
  * string-typed, and non-empty. {@link assertValidStsEnvCredentials} reconstructs
@@ -48,7 +48,7 @@ export interface AwsStsOutput {
 /**
  * Typeguard validating that `value` is a well-formed AWS STS output: an object
  * with a `Credentials` object whose `AccessKeyId`, `SecretAccessKey`, and
- * `SessionToken` are all present, string-typed, and non-empty. Mirrors Claude
+ * `SessionToken` are all present, string-typed, and non-empty. Mirrors the reference
  * Code's `isValidAwsStsOutput` (utils/aws.ts) — including the explicit
  * empty-string rejection (`.length > 0`) — so malformed/partial credential blobs
  * are caught before the secret material is trusted.
@@ -93,7 +93,7 @@ export function readStsEnvCredentials(
 // ---------------------------------------------------------------------------
 // AWS shared-credentials (~/.aws/credentials) INI source + cache invalidation.
 //
-// Claude Code reads long-term/SSO credentials through the AWS SDK credential
+// the reference reads long-term/SSO credentials through the AWS SDK credential
 // provider chain and exposes `clearAwsIniCache()` — a wrapper over
 // `fromIni({ ignoreCache: true })` — so a user who rotates or re-authenticates
 // mid-session has the edited `~/.aws/credentials` picked up WITHOUT a restart
@@ -133,7 +133,7 @@ let awsIniCache: Map<string, Record<string, AwsIniCredentials>> | null = null;
 /**
  * Invalidate the shared-credentials INI cache so the next
  * {@link readAwsIniCredentials} re-reads `~/.aws/credentials` from disk. Mirrors
- * Claude Code's `clearAwsIniCache()` (utils/aws.ts) — call it after the user
+ * the reference's `clearAwsIniCache()` (utils/aws.ts) — call it after the user
  * re-authenticates or rotates credentials mid-session.
  */
 export function clearAwsIniCache(): void {

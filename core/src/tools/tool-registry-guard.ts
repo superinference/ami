@@ -41,7 +41,7 @@ export function validateToolName(name: string): string | null {
 
 /**
  * PARITY (additive): canonical form of a tool name used for reserved-prefix and
- * cross-source collision matching. Mirrors the intent of Claude Code's
+ * cross-source collision matching. Mirrors the intent of the reference's
  * `normalizeNameForMCP` (services/mcp/normalization.ts): because
  * {@link validateToolName} has already rejected any out-of-charset name by the
  * time matching runs, canonicalization only has to fold the two spoof vectors a
@@ -100,7 +100,7 @@ export function validateToolDefinition(tool: RegistrableToolLike): string | null
  * org-specific built-in namespace, and TRUST extra sources so a verified
  * first-party plugin may claim a reserved prefix exactly like `core`/`builtin`.
  * Both are off by default (empty), preserving AMI's existing behavior. Grounded in
- * Claude Code's config-driven tool filtering (tools.ts) — surfaced here as
+ * the reference's config-driven tool filtering (tools.ts) — surfaced here as
  * registration-gate configuration rather than a fixed-at-compile-time set.
  */
 export interface ToolRegistryGuardOptions {
@@ -326,7 +326,7 @@ export class ToolRegistryGuard {
 
   /**
    * PARITY (additive): resolve a name (possibly an alias) to the canonical registered
-   * tool name, or `undefined` when nothing answers to it. Mirrors Claude Code's
+   * tool name, or `undefined` when nothing answers to it. Mirrors the reference's
    * alias-aware tool dispatch and gives callers a single unknown-tool check.
    */
   resolveToolName(name: string): string | undefined {
@@ -377,7 +377,7 @@ export interface NameableToolLike {
 
 /**
  * PARITY (additive): does `tool` answer to `name` — by its primary name or any
- * declared `aliases` entry? Mirrors Claude's `toolMatchesName`, giving renamed
+ * declared `aliases` entry? Mirrors the reference's `toolMatchesName`, giving renamed
  * tools a back-compat dispatch path (e.g. a model/old transcript calling the
  * deprecated `KillShell` for `task_kill`).
  */
@@ -388,7 +388,7 @@ export function toolMatchesName(tool: NameableToolLike, name: string): boolean {
 /**
  * PARITY (additive): resolve a tool from a set by primary name or alias. An exact
  * (name-or-alias) match wins; a case-insensitive (name-or-alias) match is the
- * fallback so AMI keeps its existing case-insensitive tolerance. Mirrors Claude's
+ * fallback so AMI keeps its existing case-insensitive tolerance. Mirrors the reference's
  * `findToolByName`. Returns `undefined` when nothing answers to `name`.
  */
 export function findToolByName<T extends NameableToolLike>(
@@ -425,7 +425,7 @@ export function filterAvailableTools<
     // from any tier, so an operator `deny` knob applies only to the non-protected pool.
     if (protectedSet.has(tool.name)) return true;
     // PARITY (additive): operator-configurable blanket deny of a tool/source from the
-    // advertised pool, mirroring Claude Code's `filterToolsByDenyRules` (tools.ts) —
+    // advertised pool, mirroring the reference's `filterToolsByDenyRules` (tools.ts) —
     // a denied tool is stripped before the model ever sees it.
     if (denied && denied(tool.name)) return false;
     if (typeof tool.isEnabled !== 'function') return true;

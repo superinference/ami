@@ -50,7 +50,7 @@ function redactLogPath(p: string): string {
 
 /**
  * Deny-by-default allowlist of file extensions that `@include` / `@path` imports
- * are permitted to inline into instructions/memory. Parity with Claude Code's
+ * are permitted to inline into instructions/memory. Parity with the reference's
  * `TEXT_FILE_EXTENSIONS` (utils/claudemd.ts `parseMemoryFileContent`): a crafted
  * CLAUDE.md/AGENTS.md could otherwise slurp a binary blob (an image, PDF, archive,
  * shared object, `.so.1`, `.dat`, or any novel binary format) into the system
@@ -112,7 +112,7 @@ const TEXT_FILE_EXTENSIONS = new Set([
  * Whether an `@include`/`@path` target may be inlined, by extension. Deny by
  * default: an EXTENSIONLESS file (`Dockerfile`, `Makefile`, `LICENSE`) is allowed,
  * but a file carrying an extension that is NOT a known text type is skipped.
- * Mirrors Claude Code's `if (ext && !TEXT_FILE_EXTENSIONS.has(ext))` gate, so a
+ * Mirrors the reference's `if (ext && !TEXT_FILE_EXTENSIONS.has(ext))` gate, so a
  * multi-dotted binary like `libatomic.so.1` (extname `.1`) is correctly refused.
  */
 export function isTextImportPath(filePath: string): boolean {
@@ -142,7 +142,7 @@ export type MemoryType = (typeof MEMORY_TYPES)[number];
 
 /**
  * Memory scope — WHERE a memory is stored, orthogonal to its {@link MemoryType}.
- * Mirrors Claude Code's two-directory model (teamMemPrompts.ts `## Memory scope`):
+ * Mirrors the reference's two-directory model (teamMemPrompts.ts `## Memory scope`):
  * - `private`: known only to you and the current user; stored in the private
  *   auto-memory root. This is the default.
  * - `team`: shared with and contributed to by everyone working in this project
@@ -157,14 +157,14 @@ export type MemoryScope = (typeof MEMORY_SCOPES)[number];
  * {@link MemoryManager.memoryScopeForPath}. Distinct from the authoring
  * {@link MemoryScope} (`private`/`team`): this is the classifier used by
  * permission/telemetry/collapse logic to recognize a path, and names the
- * personal store `personal` (the auto-memory root) to mirror Claude Code's
+ * personal store `personal` (the auto-memory root) to mirror the reference's
  * `memoryScopeForPath` return type (utils/memoryFileDetection.ts). `null` means
  * the path is not inside any memory store.
  */
 export type MemoryPathScope = 'personal' | 'team';
 
 /**
- * Per-type memory taxonomy guidance surfaced in the system prompt. Mirrors Claude
+ * Per-type memory taxonomy guidance surfaced in the system prompt. Mirrors the reference
  * Code's `TYPES_SECTION_INDIVIDUAL` (memdir/memoryTypes.ts): each type carries a
  * rich <description>, <when_to_save> trigger, <how_to_use> cue, a <body_structure>
  * scaffold for the save-heavy types, and two eval-validated worked examples. This
@@ -238,7 +238,7 @@ const MEMORY_TYPES_GUIDANCE = [
 
 /**
  * `### What NOT to save` list with per-item reasons + the eval-validated
- * explicit-save gate (Claude Code `WHAT_NOT_TO_SAVE_SECTION`). The gate prevents
+ * explicit-save gate (the reference `WHAT_NOT_TO_SAVE_SECTION`). The gate prevents
  * "save this week's PR list" turning memory into an activity log even when the
  * user explicitly asks.
  */
@@ -254,7 +254,7 @@ const WHAT_NOT_TO_SAVE_GUIDANCE = [
 ].join('\n');
 
 /**
- * `### Memory scope` block distinguishing the two storage scopes (Claude Code
+ * `### Memory scope` block distinguishing the two storage scopes (the reference
  * teamMemPrompts.ts `## Memory scope`). The model must DECIDE, per memory, whether
  * it is private (only this user) or team (shared with everyone in this project dir,
  * synced at session start) — and it must never put secrets in a shared team memory.
@@ -270,7 +270,7 @@ const MEMORY_SCOPE_GUIDANCE = [
 
 /**
  * `### When to access memories` block including the eval-validated "ignore
- * memory" anti-pattern bullet (Claude Code `WHEN_TO_ACCESS_SECTION`): when the
+ * memory" anti-pattern bullet (the reference `WHEN_TO_ACCESS_SECTION`): when the
  * user says to ignore memory, proceed as if the index were empty rather than
  * acknowledging-then-overriding.
  */
@@ -282,7 +282,7 @@ const WHEN_TO_ACCESS_GUIDANCE = [
 ].join('\n');
 
 /**
- * `### Before recommending from memory` verification checklist (Claude Code
+ * `### Before recommending from memory` verification checklist (the reference
  * `TRUSTING_RECALL_SECTION`): a memory naming a function/file/flag is a claim
  * about when it was written, not proof it exists now — verify before acting.
  */
@@ -299,7 +299,7 @@ const BEFORE_RECOMMENDING_GUIDANCE = [
 ].join('\n');
 
 /**
- * `### Memory and other forms of persistence` block (Claude Code
+ * `### Memory and other forms of persistence` block (the reference
  * memdir/memdir.ts `buildMemoryLines` + teamMemPrompts.ts). Memory is for
  * information useful in FUTURE conversations; a Plan (reaching alignment on a
  * non-trivial approach) and Tasks (breaking the current conversation's work into
@@ -315,7 +315,7 @@ const PERSISTENCE_GUIDANCE = [
 ].join('\n');
 
 /**
- * Frontmatter example with the body-structure scaffold (Claude Code
+ * Frontmatter example with the body-structure scaffold (the reference
  * `MEMORY_FRONTMATTER_EXAMPLE`) — shows the model the exact shape of a good
  * saved memory, including the **Why:** / **How to apply:** body scaffolding for
  * feedback/project types.
@@ -342,7 +342,7 @@ export interface LargeMemoryFile {
 
 /**
  * A user-facing memory/instruction-file HEALTH diagnostic produced by
- * {@link MemoryManager.buildMemoryDiagnostics}. Parity with Claude Code's
+ * {@link MemoryManager.buildMemoryDiagnostics}. Parity with the reference's
  * `buildMemoryDiagnostics` (utils/status.tsx) + the doctor context warnings
  * (utils/doctorContextWarnings.ts) + the large-memory-file status notice
  * (utils/statusNoticeDefinitions.tsx): an oversized / soon-to-be-truncated /
@@ -369,7 +369,7 @@ export interface MemoryDiagnostic {
   /**
    * `true` when the offending file is AMI-MANAGED memory (inside the auto-memory
    * tree — stored/session/team memory), `false` when it is a USER-MANAGED
-   * instruction file (CLAUDE.md / AGENTS.md / `.ami/rules/*`). Mirrors Claude
+   * instruction file (CLAUDE.md / AGENTS.md / `.ami/rules/*`). Mirrors the reference
    * Code's `isAutoManagedMemoryFile` classification so a UI can route a managed
    * file to `/memory` and an instruction file to a plain editor.
    */
@@ -379,7 +379,7 @@ export interface MemoryDiagnostic {
 /**
  * A machine-readable summary of everything the memory/instruction loader pulled
  * into context for a cwd, produced by {@link MemoryManager.getMemoryLoadSummary}.
- * Parity with Claude Code's `memory_files_completed` / `tengu_claudemd__initial_load`
+ * Parity with the reference's `memory_files_completed` / `tengu_claudemd__initial_load`
  * introspection events (utils/claudemd.ts:L1014-L1040): rather than the context cost
  * of loaded instruction/memory files being invisible, the counts (overall + per
  * source level), total content size and load duration are SURFACED — to `/doctor`
@@ -415,7 +415,7 @@ export interface MemoryEntry {
  * frontmatter metadata WITHOUT the (potentially large) body. Produced by
  * {@link MemoryManager.scanMemoryHeaders} for listing/manifest surfaces that only
  * need names/descriptions/types (e.g. the `/memory` menu) and must not pay to read
- * every body. Parity with Claude Code's `MemoryHeader` (memdir/memoryScan.ts).
+ * every body. Parity with the reference's `MemoryHeader` (memdir/memoryScan.ts).
  */
 export interface MemoryHeader {
   path: string;
@@ -428,7 +428,7 @@ export interface MemoryHeader {
 
 /**
  * How many leading lines to read when scanning a memory file for its YAML
- * frontmatter header only (parity with Claude Code's `FRONTMATTER_MAX_LINES`,
+ * frontmatter header only (parity with the reference's `FRONTMATTER_MAX_LINES`,
  * memdir/memoryScan.ts). A header scan reads a bounded prefix instead of the whole
  * file so a manifest/listing over many memories stays cheap and can never be forced
  * to slurp a runaway body.
@@ -437,7 +437,7 @@ export const FRONTMATTER_MAX_LINES = 30;
 
 /**
  * The unified memory-source taxonomy — WHERE an instruction/memory originated,
- * as a first-class label distinct from its {@link MemoryType}. Parity with Claude
+ * as a first-class label distinct from its {@link MemoryType}. Parity with the reference
  * Code's `MEMORY_TYPE_VALUES` (utils/memory/types.ts): User, Project, Local,
  * Managed, AutoMem and (feature-gated) TeamMem. AMI previously collapsed Local
  * (`*.local.md`), AutoMem (auto-captured stored memory) and Team (shared store)
@@ -490,7 +490,7 @@ const LOCAL_VARIANTS = [
 /**
  * Per-source provenance/trust labels appended to each instruction-file section
  * header so the model can see WHERE an instruction came from and whether editing
- * it is shared or private. Parity with Claude Code's `getClaudeMds` descriptive
+ * it is shared or private. Parity with the reference's `getClaudeMds` descriptive
  * suffixes (utils/claudemd.ts) — AMI previously emitted a bare relative-path header.
  */
 const PROVENANCE_PROJECT = 'project instructions, checked into the codebase';
@@ -504,7 +504,7 @@ const MAX_PARENT_SCAN_DEPTH = 3;
 const MAX_INSTRUCTION_FILE_SIZE = 10_240;
 
 /**
- * Hard caps on the MEMORY.md entrypoint index (mirrors Claude Code's
+ * Hard caps on the MEMORY.md entrypoint index (mirrors the reference's
  * MAX_ENTRYPOINT_LINES / MAX_ENTRYPOINT_BYTES). The entrypoint is injected into
  * the system prompt on every turn, so an unbounded index is a context-stuffing /
  * cost vector. {@link truncateEntrypointContent} enforces both, naming the cap it
@@ -515,7 +515,7 @@ export const MAX_ENTRYPOINT_BYTES = 25_000;
 
 /**
  * Hard cap on how many stored-memory topic files are loaded into context in a
- * single turn (parity: Claude Code's memory-scan cap). Beyond this the newest
+ * single turn (parity: the reference's memory-scan cap). Beyond this the newest
  * files win (loaded AFTER the recency sort); the overflow is SURFACED in the
  * generated memory context (see {@link MemoryManager.getMemoryContext}) rather
  * than silently dropped, so the model learns its index outgrew the budget and
@@ -532,7 +532,7 @@ export const MAX_MEMORY_FILES = 200;
 export const MEMORY_INDEX_FILENAME = 'MEMORY.md';
 
 /**
- * Two-step save guidance teaching the MEMORY.md index pattern (Claude Code
+ * Two-step save guidance teaching the MEMORY.md index pattern (the reference
  * memdir/memdir.ts `## How to save memories`). A memory is NOT a single dump: it
  * is a topic file PLUS a one-line pointer in the always-loaded MEMORY.md index.
  * Without this the model writes memory bodies straight into the index (which is
@@ -555,7 +555,7 @@ const TWO_STEP_SAVE_GUIDANCE = [
 
 /**
  * Recommended maximum character count for a single memory file (parity with
- * Claude Code's `MAX_MEMORY_CHARACTER_COUNT`, utils/claudemd.ts). Files over this
+ * the reference's `MAX_MEMORY_CHARACTER_COUNT`, utils/claudemd.ts). Files over this
  * are not silently clipped — {@link MemoryManager.getLargeMemoryFiles} surfaces
  * them and {@link MemoryManager.getMemoryContext} emits a visible performance
  * warning so the user can split/trim rather than having context silently crowded.
@@ -565,7 +565,7 @@ export const MAX_MEMORY_CHARACTER_COUNT = 40_000;
 /**
  * Environment variable that redirects the ENTIRE auto-memory directory to an
  * explicit absolute path, bypassing the computed `{config}/projects/{slug}/memory`
- * location. Parity with Claude Code's full-path memory override
+ * location. Parity with the reference's full-path memory override
  * (`CLAUDE_COWORK_MEMORY_PATH_OVERRIDE` / `CLAUDE_CODE_REMOTE_MEMORY_DIR`,
  * memdir/paths.ts): lets an SDK/host mount memory on a space-scoped volume where
  * the per-session cwd would otherwise fragment the project key. The value is
@@ -593,7 +593,7 @@ export function resolveMemoryDirOverride(env: NodeJS.ProcessEnv = process.env): 
 
 /**
  * Glob exclude-list for instruction (CLAUDE.md / AGENTS.md / *.local.md) files.
- * Parity with Claude Code's `claudeMdExcludes` setting (utils/claudemd.ts
+ * Parity with the reference's `claudeMdExcludes` setting (utils/claudemd.ts
  * `isClaudeMdExcluded`): a user can opt specific instruction files OUT of the
  * auto-load (e.g. a vendored `**\/node_modules/**\/CLAUDE.md`). Only USER /
  * PROJECT / LOCAL instruction files are eligible — team-managed `.ami/rules/`
@@ -661,7 +661,7 @@ export function resolveExternalMemoryImportConsent(
 
 /**
  * Extra memory guidelines injected verbatim into the memory-guidance prompt
- * block. Parity with Claude Code's `CLAUDE_COWORK_MEMORY_EXTRA_GUIDELINES`
+ * block. Parity with the reference's `CLAUDE_COWORK_MEMORY_EXTRA_GUIDELINES`
  * (memdir.ts `extraGuidelines`): a host/SDK can append organization-specific
  * memory rules without patching the prompt builder. The value is memory-content
  * sanitized (system-tag neutralization + invisible-char stripping) so a hostile
@@ -678,7 +678,7 @@ export function resolveMemoryExtraGuidelines(env: NodeJS.ProcessEnv = process.en
 /**
  * Tunable parameters of the BM25 memory-relevance scorer ({@link computeRelevanceScore}),
  * the ranking {@link MemoryManager.selectRelevantMemories} uses to pick which stored
- * memories to surface for a query. Parity with Claude Code's relevance-selection
+ * memories to surface for a query. Parity with the reference's relevance-selection
  * config knobs (memdir/findRelevantMemories.ts: model/max_tokens/output_format are
  * exposed so the selection step is tunable rather than hard-coded); AMI's recall is
  * a local BM25 pass, so the equivalent knobs are the BM25 constants themselves.
@@ -731,7 +731,7 @@ export function resolveMemoryRelevanceConfig(env: NodeJS.ProcessEnv = process.en
  * SUPERINFERENCE.md …) from ADDITIONAL directories — the extra roots a user grants
  * read access to via `--add-dir` / `--context-file` (the engine's
  * `allowedReadRoots`), beyond cwd and its parents — also contribute their
- * instructions to the system prompt. Parity with Claude Code's
+ * instructions to the system prompt. Parity with the reference's
  * `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD` (utils/claudemd.ts): a granted
  * read-access dir does NOT silently inject its instruction file by default — the
  * user must opt in with a truthy value. When OFF, the additional directories still
@@ -755,7 +755,7 @@ export function additionalInstructionDirsEnabled(env: NodeJS.ProcessEnv = proces
  * (`EACCES`/`EPERM`/`EISDIR`/`EIO`/`EEXIST`/…) means the path exists but is
  * genuinely inaccessible or malformed — NOT the same as "empty" — so callers
  * surface it via {@link logUnexpectedReadError} before falling back. Mirrors
- * Claude Code's errno-discriminated memory reads (SessionMemory/sessionMemoryUtils).
+ * the reference's errno-discriminated memory reads (SessionMemory/sessionMemoryUtils).
  */
 export function isExpectedMissing(err: unknown): boolean {
   const code = errnoCode(err);
@@ -780,7 +780,7 @@ function logUnexpectedReadError(err: unknown, filePath: string): void {
 }
 
 /**
- * Owner-only permissions for the auto-memory tree. Parity with Claude Code's
+ * Owner-only permissions for the auto-memory tree. Parity with the reference's
  * session-memory hardening (0o700 dir / 0o600 file): memory can hold personal
  * context (user profile, preferences, project state) and must not be group- or
  * world-readable. The mode is passed to mkdir/writeFile AND re-applied with an
@@ -798,7 +798,7 @@ function ensureMemoryDirMode(dir: string): void {
   try {
     fs.mkdirSync(dir, { recursive: true, mode: MEMORY_DIR_MODE });
   } catch (err) {
-    // Defensive mkdir with errno classification (parity with Claude Code's
+    // Defensive mkdir with errno classification (parity with the reference's
     // error-code-discriminated memory write path): a read-only mount (EROFS),
     // permission-denied (EACCES/EPERM), or a path colliding with an existing
     // FILE (EEXIST/ENOTDIR) is diagnosed — naming the (home-redacted) dir and
@@ -813,7 +813,7 @@ function ensureMemoryDirMode(dir: string): void {
 /**
  * Create `filePath` as an empty, owner-only file IF it does not already exist,
  * PRESERVING the content of an existing file. Uses the exclusive-create `wx`
- * flag (parity with Claude Code's `writeFile(path, '', { flag: 'wx' })` in
+ * flag (parity with the reference's `writeFile(path, '', { flag: 'wx' })` in
  * commands/memory/memory.tsx): the write atomically fails with `EEXIST` when the
  * file is already present, which is the ONE expected error and is swallowed so
  * the existing content survives; any OTHER errno (EACCES, EROFS, ENOENT on a
@@ -839,7 +839,7 @@ function createFileIfAbsent(filePath: string): boolean {
 /**
  * Environment variable that force-disables ALL auto-memory behavior (the stored-
  * memory / team-memory prompt injection, the oversized-file health warning, and
- * the memory save/recall guidance block). Parity with Claude Code's
+ * the memory save/recall guidance block). Parity with the reference's
  * `CLAUDE_CODE_DISABLE_AUTO_MEMORY` (memdir/paths.ts `isAutoMemoryEnabled`):
  * project/user INSTRUCTION files (CLAUDE.md / AGENTS.md) are NOT auto-memory and
  * always load; only the persistent memory system is gated.
@@ -848,7 +848,7 @@ const DISABLE_AUTO_MEMORY_ENV = 'AMI_DISABLE_AUTO_MEMORY';
 
 /**
  * Whether the auto-memory system is enabled. Priority chain (first that applies
- * wins), mirroring Claude Code's `isAutoMemoryEnabled`:
+ * wins), mirroring the reference's `isAutoMemoryEnabled`:
  *   1. `AMI_DISABLE_AUTO_MEMORY` env var — a truthy value ({@link isEnvTruthy})
  *      forces OFF; an explicitly-falsy value (`0`/`false`/`no`/`off`) forces ON,
  *      overriding a settings opt-out. An unset/blank value defers downstream.
@@ -870,7 +870,7 @@ export function isAutoMemoryEnabled(
 }
 
 /**
- * The independently-gateable instruction/memory SOURCE tiers. Parity with Claude
+ * The independently-gateable instruction/memory SOURCE tiers. Parity with the reference
  * Code's per-source `isSettingSourceEnabled('userSettings' | 'projectSettings' |
  * 'localSettings')` gate (utils/claudemd.ts): a host/SDK can disable whole
  * instruction sources (e.g. a sandboxed run that must ignore checked-in project
@@ -893,7 +893,7 @@ const MEMORY_SOURCE_DISABLE_ENV: Record<MemorySource, string> = {
 
 /**
  * Whether a given instruction/memory SOURCE tier should load. Priority chain
- * (first that applies wins), mirroring {@link isAutoMemoryEnabled} and Claude
+ * (first that applies wins), mirroring {@link isAutoMemoryEnabled} and the reference
  * Code's per-source `isSettingSourceEnabled`:
  *   1. The tier's `AMI_DISABLE_{USER,PROJECT,LOCAL}_MEMORY` env var — a truthy
  *      value ({@link isEnvTruthy}) forces the tier OFF; an explicitly-falsy value
@@ -919,7 +919,7 @@ export function isMemorySourceEnabled(
 const ENABLE_TEAM_MEMORY_ENV = 'AMI_ENABLE_TEAM_MEMORY';
 
 /**
- * Whether the shared TEAM-memory capability is enabled. Parity with Claude
+ * Whether the shared TEAM-memory capability is enabled. Parity with the reference
  * Code's `feature('TEAMMEM')` gate (utils/memory/types.ts, teamMemoryOps.ts):
  * team memory is OFF by default (it writes into VCS-shared files, so it is opt-in)
  * and is turned on with a truthy {@link ENABLE_TEAM_MEMORY_ENV} env value. Gates
@@ -1052,7 +1052,7 @@ function worktreeMainRootFromPointer(dir: string): string | null {
 
 /**
  * Detect the NESTED-WORKTREE case that `loadProjectInstructions` must handle for parity
- * with Claude Code's nested-worktree de-duplication (utils/claudemd.ts): a git worktree
+ * with the reference's nested-worktree de-duplication (utils/claudemd.ts): a git worktree
  * (`.git` pointer file) that lives physically INSIDE its own main repo tree — e.g. AMI's
  * `<main>/.claude/worktrees/<name>/`. Walking up from `cwd` would stop at the worktree's
  * `.git` and so MISS the main repo's gitignored Local files (CLAUDE.local.md), which only
@@ -1109,7 +1109,7 @@ function normalizeForScanning(text: string): string {
 
 /**
  * Strip block-level HTML comments (`<!-- … -->`) from instruction/memory
- * content before it is injected into the prompt. Parity with Claude Code's
+ * content before it is injected into the prompt. Parity with the reference's
  * `stripHtmlComments` (utils/claudemd.ts): authorial notes written as HTML
  * comments are editorial, not instructions, and should not reach the model.
  *
@@ -1172,7 +1172,7 @@ function* prosePlainLines(content: string): Generator<string> {
 /**
  * One node in a memory/instruction `@include` hierarchy: the imported file, the
  * file that imported it (`null` for the root entrypoint), and its nesting depth
- * (0 = root). Parity with Claude Code's `MemoryFileInfo.parent`
+ * (0 = root). Parity with the reference's `MemoryFileInfo.parent`
  * (utils/claudemd.ts), which models `@includes` as SEPARATE parent-tracked
  * entries rather than inline substitution.
  */
@@ -1188,7 +1188,7 @@ export interface MemoryImportNode {
 /**
  * Render a parent-before-child {@link MemoryImportNode} list as indented tree
  * rows: the root on its own line, each nested import as `"  "×(depth-1) + "L
- * <path>"`. Parity with Claude Code's MemoryFileSelector nested `L <path>` view.
+ * <path>"`. Parity with the reference's MemoryFileSelector nested `L <path>` view.
  * Paths inside `cwd` are shown workspace-relative (`./…`); anything else is
  * home-abbreviated so a user-global entrypoint stays legible.
  */
@@ -1259,7 +1259,7 @@ export function matchesPaths(pathGlobs: string[], currentFile: string): boolean 
  * glob list. Matched against the raw path, its forward-slash form, AND the
  * symlink-resolved realpath (both forms) so an exclude written against a logical
  * path still matches when the cwd resolves through a symlink (e.g. `/tmp` →
- * `/private/tmp`). Parity with Claude Code's `isClaudeMdExcluded`
+ * `/private/tmp`). Parity with the reference's `isClaudeMdExcluded`
  * realpath-expanded matching.
  */
 function isInstructionExcluded(filePath: string, excludes: string[]): boolean {
@@ -1286,7 +1286,7 @@ export function parseFrontmatterList(value: string): string[] {
 }
 
 /**
- * Normalize a rule's `paths:` globs the way Claude Code's `parseFrontmatterPaths`
+ * Normalize a rule's `paths:` globs the way the reference's `parseFrontmatterPaths`
  * does (utils/claudemd.ts): if EVERY pattern is the match-all `**` (after ignoring a
  * trailing `/**`, since `path` and `path/**` denote the same membership), the rule is
  * UNCONDITIONAL — `null` is returned so the caller loads it eagerly instead of routing
@@ -1336,7 +1336,7 @@ export function memoryAgeDays(mtimeMs: number, now: number = Date.now()): number
  * plain-markdown note for a surface that emits the body directly to the model;
  * this variant is for the file_read code path and takes the file mtime so the
  * age is computed via the single canonical {@link memoryAgeDays} clamp. Mirrors
- * Claude Code's memdir/memoryAge.memoryFreshnessNote(mtimeMs).
+ * the reference's memdir/memoryAge.memoryFreshnessNote(mtimeMs).
  */
 export function memoryFreshnessReminder(mtimeMs: number): string {
   const ageDays = memoryAgeDays(mtimeMs);
@@ -1366,7 +1366,7 @@ export type { RelativeTimeStyle, RelativeTimeOptions };
  * Parse YAML-like frontmatter from a markdown string.
  * Returns the extracted fields and the body after the frontmatter block.
  *
- * Delimiter matching is LINE-ANCHORED (parity with + superset of Claude Code's
+ * Delimiter matching is LINE-ANCHORED (parity with + superset of the reference's
  * `FRONTMATTER_REGEX` `/^---\s*\n([\s\S]*?)---\s*\n?/`): both the opening and the
  * closing `---` must occupy a line by themselves (trailing whitespace allowed).
  * This fixes two defects of a naive `startsWith('---')` + `indexOf('---', 3)`:
@@ -1377,13 +1377,13 @@ export type { RelativeTimeStyle, RelativeTimeOptions };
  *
  * @param sourcePath optional path of the file being parsed; when a block opens
  *   with `---` but is never closed (malformed frontmatter) a `warn` diagnostic is
- *   logged naming the file, mirroring Claude Code's `logForDebugging(...Failed to
+ *   logged naming the file, mirroring the reference's `logForDebugging(...Failed to
  *   parse YAML frontmatter in ${sourcePath})`, instead of silently swallowing it.
  */
 /**
  * Strip a single layer of matching surrounding quotes from a scalar YAML value,
  * unescaping that quote style's escapes. Parity with a real YAML parser's scalar
- * handling (Claude Code `frontmatterParser`): a value serialized quoted to defeat
+ * handling (the reference `frontmatterParser`): a value serialized quoted to defeat
  * YAML injection (see {@link sanitizeFrontmatterValue}, e.g. `"a: b"`) must read
  * back as `a: b`, not `"a: b"`. Double-quoted values unescape `\"` and `\\`;
  * single-quoted values unescape the YAML `''` → `'`. A value without matching
@@ -1478,7 +1478,7 @@ export function parseFrontmatter(raw: string, sourcePath?: string): {
       // A line that is neither a `key: value` pair nor an empty/comment line is
       // malformed YAML. AMI previously skipped it SILENTLY, so a typo'd header
       // (e.g. a bare `description` with no colon) vanished with no signal. Surface
-      // it (named) rather than dropping it quietly — parity with Claude Code's
+      // it (named) rather than dropping it quietly — parity with the reference's
       // yaml.ts error surfacing on malformed input. Blank lines, `# comments` and
       // stray `- list items` (which the block-sequence loop consumes) are benign.
       const probe = line.trim();
@@ -1514,7 +1514,7 @@ export function parseFrontmatter(raw: string, sourcePath?: string): {
     }
 
     // YAML block SEQUENCE: `key:` on its own line followed by indented `- item`
-    // entries (parity with Claude Code block-list frontmatter values such as
+    // entries (parity with the reference block-list frontmatter values such as
     // `allowed-tools:` / `arguments:`). Collected into a comma-joined scalar so
     // the existing {@link parseFrontmatterList} consumer yields the items. Only
     // triggers when the inline value is empty (a `key: value` scalar wins).
@@ -1619,7 +1619,7 @@ export function memoryFileSlug(name: string): string {
  * correct ONLY when this is an UPDATE of the same memory (the existing file's
  * frontmatter `name` matches `incomingName`, case-insensitively); otherwise a
  * numeric suffix (`foo_bar-2.md`, `-3`, …) is chosen so the unrelated memory is
- * preserved. Mirrors Claude Code's non-destructive (wx + EEXIST) memory write.
+ * preserved. Mirrors the reference's non-destructive (wx + EEXIST) memory write.
  */
 function resolveNonClobberingPath(dir: string, filename: string, incomingName: string): string {
   // Normalize the same way the on-disk name is serialized (whitespace-collapse,
@@ -1661,7 +1661,7 @@ function resolveNonClobberingPath(dir: string, filename: string, incomingName: s
 export function computeIndexAppend(existing: string, entry: string): string | null {
   const clamped = clampIndexEntry(entry);
   if (existing.includes(clamped)) return null;
-  // Near-duplicate guard (parity: Claude's consolidation prompt resolves drift by
+  // Near-duplicate guard (parity: the reference's consolidation prompt resolves drift by
   // "merging new signal into existing topic files rather than creating
   // near-duplicates"). The index is one pointer PER topic file: if a row already
   // points at the same target file — even under a different title or hook — adding
@@ -1691,7 +1691,7 @@ export function indexEntryTarget(entry: string): string | null {
 
 /**
  * Recommended maximum length of a single MEMORY.md index pointer line. Parity
- * with Claude Code's consolidation index rule ("if an index line is over ~200
+ * with the reference's consolidation index rule ("if an index line is over ~200
  * chars, it's carrying content that belongs in the topic file"). The whole-index
  * line/byte caps still apply on load ({@link truncateEntrypointContent}).
  */
@@ -1741,7 +1741,7 @@ function readFileHeadBounded(filePath: string, maxLines: number): string {
  * Async sibling of {@link readFileHeadBounded}: read the bounded frontmatter
  * window via `fs/promises` so many memory headers can be read concurrently, and
  * forward an optional {@link AbortSignal} so a slow/large scan is cancellable
- * mid-flight (parity: Claude Code's `readFileInRange(..., signal)` used by
+ * mid-flight (parity: the reference's `readFileInRange(..., signal)` used by
  * `scanMemoryFiles`). The signal is checked once the handle is open (the point a
  * large read would block); the handle is always closed, even on abort/failure.
  */
@@ -1807,7 +1807,7 @@ function buildMemoryHeader(
  * unlike the private store — there is no per-author limit on how many accumulate.
  * Without an aggregate cap a repo carrying many team-memory files could stuff the
  * context unbounded (each body is already {@link MAX_MEMORY_FILE_BYTES}-capped, but
- * count was not). Parity with Claude Code's memdir hard caps on untrusted memory
+ * count was not). Parity with the reference's memdir hard caps on untrusted memory
  * content reaching the prompt; mirrors the primary store's 200-file ceiling in
  * {@link MemoryManager.loadMemories}. */
 const MAX_TEAM_MEMORY_FILES = 200;
@@ -1824,7 +1824,7 @@ function tokenize(text: string): string[] {
  * than plain usage/API documentation. When a tool is in active use, its usage
  * reference is noise (the conversation already demonstrates it) — but warnings
  * matter MOST precisely then, so a reference memory matching this is never
- * suppressed. Mirrors Claude Code's findRelevantMemories recentTools rule.
+ * suppressed. Mirrors the reference's findRelevantMemories recentTools rule.
  */
 const TOOL_WARNING_SIGNAL_RE =
   /\b(warn(?:ing)?s?|gotchas?|caveats?|pitfalls?|cautions?|bugs?|broken|fails?|failure|limitations?|avoid|deprecat\w*|known[ -]issues?|do ?n['’]?t)\b/i;
@@ -1876,7 +1876,7 @@ function computeRelevanceScore(
 }
 
 // ---------------------------------------------------------------------------
-// Per-agent persistent memory (parity: Claude Code AgentTool/agentMemory.ts).
+// Per-agent persistent memory (parity: the reference AgentTool/agentMemory.ts).
 // A spawned agent that declares a `memory` scope in its definition gets its OWN
 // file-based memory store, namespaced by agent type and separate from the global
 // auto-memory. Scopes: `user` (cross-project, global config dir), `project`
@@ -1886,7 +1886,7 @@ function computeRelevanceScore(
 
 /**
  * Environment variable redirecting LOCAL-scope agent memory to an external mount
- * (parity: Claude Code's `CLAUDE_CODE_REMOTE_MEMORY_DIR`). When set, local agent
+ * (parity: the reference's `CLAUDE_CODE_REMOTE_MEMORY_DIR`). When set, local agent
  * memory persists to `<dir>/projects/<project-slug>/agent-memory-local/<agentType>/`
  * — namespaced per project so one mount can serve many repos — instead of the
  * in-repo `.ami/agent-memory-local/`. Only local scope is redirected; `user` and
@@ -1900,7 +1900,7 @@ const AGENT_MEMORY_DISPLAY_NAME = 'Persistent Agent Memory';
 
 /**
  * Sanitize an agent type name for use as a single on-disk directory component.
- * Parity with Claude Code's `sanitizeAgentTypeForPath`: colons (invalid on
+ * Parity with the reference's `sanitizeAgentTypeForPath`: colons (invalid on
  * Windows, used by plugin-namespaced agent types like `my-plugin:my-agent`) map
  * to dashes. AMI additionally neutralizes path separators and `..` traversal runs
  * so an attacker-controlled agent type can never escape its memory directory.
@@ -1923,10 +1923,10 @@ function localAgentMemoryDir(dirName: string, gitRoot: string, env: NodeJS.Proce
 
 /**
  * Absolute directory holding a given agent type's persistent memory for `scope`.
- * Parity with Claude Code's `getAgentMemoryDir`. `project`/`local` scopes key on
+ * Parity with the reference's `getAgentMemoryDir`. `project`/`local` scopes key on
  * the CANONICAL git root (not raw cwd) so every worktree of a repo shares one
  * agent-memory store rather than fragmenting it per-worktree (AMI's memory-keying
- * convention; a superset over Claude's raw-cwd keying).
+ * convention; a superset over the reference's raw-cwd keying).
  */
 export function getAgentMemoryDir(
   agentType: string,
@@ -1964,7 +1964,7 @@ const AGENT_MEMORY_SCOPE_NOTE: Record<AgentMemoryScope, string> = {
 
 /**
  * Build the "Persistent Agent Memory" prompt block for a memory-enabled agent
- * (parity: Claude Code's `loadAgentMemoryPrompt` + `buildMemoryPrompt`). Seeds
+ * (parity: the reference's `loadAgentMemoryPrompt` + `buildMemoryPrompt`). Seeds
  * the agent-memory directory (best-effort mkdir), reads and size-caps the existing
  * MEMORY.md entrypoint, and assembles the save/type/persistence guidance (reusing
  * the SAME guidance constants as the global auto-memory prompt — no duplicate
@@ -2158,7 +2158,7 @@ export class MemoryManager {
   }
 
   /**
-   * Inline Claude-Code-style `@path` imports in instruction content. A bare
+   * Inline the reference-style `@path` imports in instruction content. A bare
    * `@relative/or/~/absolute/path` (at line start or after whitespace, outside
    * fenced code) is replaced with the referenced file's content, recursively.
    * Tokens that do not resolve to a real file (e.g. `@param`, `@scope/pkg`) are
@@ -2174,12 +2174,12 @@ export class MemoryManager {
       // Skip INDENTED CODE BLOCKS (≥4 leading spaces or a leading tab). In Markdown
       // these are code, not prose, so an `@path` written inside one is documentation
       // of the import syntax, not an import to resolve — inlining it would be wrong.
-      // Parity with Claude Code's lexer-token `@include` extraction, which skips
+      // Parity with the reference's lexer-token `@include` extraction, which skips
       // `code` tokens (indented code blocks AND inline code spans alike); AMI's
       // line-based resolver previously tracked only triple-backtick fences.
       if (/^(?: {4}|\t)/.test(lines[i])) continue;
       // Mask INLINE CODE SPANS (`` `…` ``) so an `@path` inside backticks is not
-      // inlined (parity with Claude Code's markdown-lexer import extraction, which
+      // inlined (parity with the reference's markdown-lexer import extraction, which
       // skips code spans as well as fenced blocks). NUL sentinels can't occur in a
       // code span and are fully restored after the @-replace.
       const spans: string[] = [];
@@ -2190,7 +2190,7 @@ export class MemoryManager {
       // The @-path char class allows an ESCAPED SPACE (`\ `) and a `#fragment`
       // suffix so `@my\ file.md` and `@notes.md#section` are captured whole; the
       // escape is unescaped and the fragment stripped before resolution (parity
-      // with Claude Code's safeResolvePath).
+      // with the reference's safeResolvePath).
       line = line.replace(new RegExp(AT_IMPORT_PATTERN, 'g'), (full, pre, p) => {
         // Shared security-cleared resolution (unescape, fragment-strip, confinement
         // + approved-external escape hatch) — see {@link resolveAtImportPath}.
@@ -2213,7 +2213,7 @@ export class MemoryManager {
         if (seen.has(real)) return `${pre}[circular import: ${path.basename(resolved)}]`;
         try {
           if (!fs.statSync(real).isFile()) return full;
-          // Deny-by-default extension gate (parity with @include + Claude Code):
+          // Deny-by-default extension gate (parity with @include + the reference):
           // never inline a binary blob (image/PDF/archive/.so.1) into instructions
           // via `@logo.png` / `@dump.bin`. Extensionless files stay allowed.
           if (!isTextImportPath(real)) {
@@ -2224,7 +2224,7 @@ export class MemoryManager {
           imported = this.resolveAtImports(imported, real, depth + 1, seen);
           seen.delete(real);
           // Fire the InstructionsLoaded hook PER successfully-inlined @-import with
-          // loadReason 'include' (parity: Claude Code reports a distinct 'include'
+          // loadReason 'include' (parity: the reference reports a distinct 'include'
           // load reason for @-included children, not just the top-level files), so a
           // hook can see which files were pulled in via an import vs. loaded directly.
           if (this._hookCallback) this._hookCallback('instructionsLoaded', { filePath: real, loadReason: 'include' });
@@ -2242,7 +2242,7 @@ export class MemoryManager {
   /**
    * Build the `@include` hierarchy rooted at `filePath` as a flat, PARENT-BEFORE-CHILD
    * (pre-order DFS) list of {@link MemoryImportNode} — each tagged with the file that
-   * imported it and its nesting depth. Parity with Claude Code's `processMemoryFile`
+   * imported it and its nesting depth. Parity with the reference's `processMemoryFile`
    * (utils/claudemd.ts), which models `@includes` as SEPARATE parent-tracked entries
    * (main file first, then its imports) rather than AMI's inline substitution — giving
    * an OBSERVABLE import graph with per-file provenance (surfaced via `/memory`) without
@@ -2288,7 +2288,7 @@ export class MemoryManager {
 
   /**
    * Import-hierarchy views for the user + project instruction entrypoints, as
-   * pre-formatted indented tree rows (parity: Claude Code MemoryFileSelector's nested
+   * pre-formatted indented tree rows (parity: the reference MemoryFileSelector's nested
    * `L <path>` view). Only an entrypoint that actually `@`-imports another file yields
    * a tree, so a flat CLAUDE.md/AGENTS.md contributes nothing. Reuses
    * {@link enumerateInstructionCandidates} (no duplicate entrypoint discovery) and
@@ -2316,11 +2316,11 @@ export class MemoryManager {
     const root = path.parse(currentDir).root;
     let depth = 0;
 
-    // Per-tier enable gates (parity: Claude Code's per-source isSettingSourceEnabled).
+    // Per-tier enable gates (parity: the reference's per-source isSettingSourceEnabled).
     const projectEnabled = isMemorySourceEnabled('project');
     const localEnabled = isMemorySourceEnabled('local');
 
-    // Nested-worktree de-duplication (parity: Claude Code utils/claudemd.ts): when cwd
+    // Nested-worktree de-duplication (parity: the reference utils/claudemd.ts): when cwd
     // is a git worktree nested inside its own main repo, the plain upward walk stops at
     // the worktree's `.git` and MISSES the main repo's gitignored Local files. Once the
     // walk passes the worktree root we continue up to the canonical main root in a
@@ -2339,7 +2339,7 @@ export class MemoryManager {
             loaded.add(found);
             const content = this.resolveAtImports(sanitizeContent(raw, found), found);
             const relativePath = path.relative(this.cwd, found) || path.basename(found);
-            // Per-source provenance/trust label (parity: Claude Code's getClaudeMds
+            // Per-source provenance/trust label (parity: the reference's getClaudeMds
             // descriptive suffixes) — tells the model whether editing this file is
             // version-controlled/shared vs. local, surfacing WHERE the instruction
             // came from rather than a bare path header.
@@ -2347,7 +2347,7 @@ export class MemoryManager {
             const label = `${prefix}${relativePath} (${PROVENANCE_PROJECT})`;
             sections.push(`## ${label}\n\n${content}`);
             // Differentiated InstructionsLoaded load reason + memory_type (parity:
-            // Claude Code reports session_start for the first/own load and
+            // the reference reports session_start for the first/own load and
             // nested_traversal for a parent-dir file, each tagged memory_type Project)
             // so a hook can tell WHY/HOW each instruction file was pulled in.
             if (this._hookCallback) this._hookCallback('instructionsLoaded', {
@@ -2359,7 +2359,7 @@ export class MemoryManager {
         } catch (err) {
           // ENOENT/ENOTDIR (absent) is the silent fallback; a genuine error
           // (EACCES/EIO on a file the user expects loaded) is surfaced via the
-          // shared errno classifier instead of vanishing (parity: Claude Code's
+          // shared errno classifier instead of vanishing (parity: the reference's
           // handleMemoryFileReadError).
           logUnexpectedReadError(err, found);
         }
@@ -2416,7 +2416,7 @@ export class MemoryManager {
       depth++;
     }
 
-    // ADDITIONAL directories (parity: Claude Code's CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD
+    // ADDITIONAL directories (parity: the reference's CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD
     // branch). When opted in and the project tier is enabled, each extra read-root the
     // user granted via `--add-dir` / `--context-file` contributes its highest-priority
     // instruction file too — deduped against what the cwd/parent walk already loaded,
@@ -2436,7 +2436,7 @@ export class MemoryManager {
           const label = `(added dir) ${relativePath} (${PROVENANCE_PROJECT})`;
           sections.push(`## ${label}\n\n${content}`);
           // Distinct load reason so a hook can tell an --add-dir instruction file
-          // apart from a cwd/parent one (parity: Claude's additional-directory branch).
+          // apart from a cwd/parent one (parity: the reference's additional-directory branch).
           if (this._hookCallback) this._hookCallback('instructionsLoaded', {
             filePath: found,
             loadReason: 'additional_directory',
@@ -2527,7 +2527,7 @@ export class MemoryManager {
     let files: string[];
 
     try {
-      // RECURSIVE scan (parity: Claude Code memdir/memoryScan.ts `readdir(dir,
+      // RECURSIVE scan (parity: the reference memdir/memoryScan.ts `readdir(dir,
       // { recursive: true })`) so memories organized into topic SUBDIRECTORIES are
       // discovered, not just the flat top level. Returned paths are relative to
       // memoryDir and may contain a subdir segment. Exclusions:
@@ -2596,7 +2596,7 @@ export class MemoryManager {
    * Single-pass, header-ONLY scan of the stored-memory directory: for every memory
    * file, read a BOUNDED prefix ({@link FRONTMATTER_MAX_LINES} lines) to parse its
    * frontmatter and reuse the mtime/size from the SAME stat call — never slurping the
-   * body. Parity with Claude Code's `scanMemoryFiles` (memdir/memoryScan.ts): a
+   * body. Parity with the reference's `scanMemoryFiles` (memdir/memoryScan.ts): a
    * listing/manifest surface (the `/memory` menu) that only needs names, descriptions
    * and types must not pay to read every body, and a runaway body can never force a
    * giant read. Returns headers sorted newest-first, capped like {@link loadMemories};
@@ -2632,7 +2632,7 @@ export class MemoryManager {
 
   /**
    * Async, PARALLEL, CANCELLABLE sibling of {@link scanMemoryHeaders}, matching
-   * Claude Code's `scanMemoryFiles(dir, signal)` exactly (memdir/memoryScan.ts):
+   * the reference's `scanMemoryFiles(dir, signal)` exactly (memdir/memoryScan.ts):
    *
    *   - **Parallel reads** — every header is read concurrently via
    *     `Promise.allSettled`, so a large store's headers load in one I/O wave
@@ -2640,7 +2640,7 @@ export class MemoryManager {
    *     fully sequential).
    *   - **Per-file graceful failure** — a rejected read (unreadable file, or one
    *     dropped by an abort) is filtered out; a single bad file never aborts the
-   *     whole scan (parity with Claude's `filter(r => r.status === 'fulfilled')`).
+   *     whole scan (parity with the reference's `filter(r => r.status === 'fulfilled')`).
    *   - **Cancellation** — an optional {@link AbortSignal} is forwarded into each
    *     read ({@link readFileHeadBoundedAsync}); once aborted, in-flight reads
    *     reject and are dropped, so a slow scan can be cancelled mid-flight (gap:
@@ -2683,7 +2683,7 @@ export class MemoryManager {
 
   /**
    * Return the stored memory files whose raw content exceeds the recommended
-   * {@link MAX_MEMORY_CHARACTER_COUNT} limit. Parity with Claude Code's
+   * {@link MAX_MEMORY_CHARACTER_COUNT} limit. Parity with the reference's
    * `getLargeMemoryFiles` (utils/claudemd.ts): an oversized memory file is
    * SURFACED (see {@link getMemoryContext}) rather than silently clipped, so the
    * user can split or trim it before it degrades performance / crowds the context
@@ -2766,7 +2766,7 @@ export class MemoryManager {
 
   /**
    * Build the user-facing memory/instruction-file health diagnostics for the
-   * `/doctor` surface. Parity with Claude Code's `buildMemoryDiagnostics`
+   * `/doctor` surface. Parity with the reference's `buildMemoryDiagnostics`
    * (utils/status.tsx) + `checkClaudeMdFiles` (utils/doctorContextWarnings.ts):
    * every oversized memory or instruction file is SURFACED with its char count
    * and a `/memory to edit` remediation pointer instead of being silently clipped.
@@ -2872,7 +2872,7 @@ export class MemoryManager {
    * @param memoryType - Memory type category (defaults to 'project')
    * @param scope - Storage scope (defaults to 'private'); 'team' routes the file
    *                into the shared `team/` sub-directory read by {@link loadTeamMemories}.
-   * @param addToIndex - When true, perform Claude Code's TWO-STEP save: after
+   * @param addToIndex - When true, perform the reference's TWO-STEP save: after
    *                writing the topic file, also append a one-line pointer
    *                (`- [name](file.md) — description`) to the memory directory's
    *                `MEMORY.md` index (parity with memdir.ts's two-step pattern +
@@ -2953,7 +2953,7 @@ export class MemoryManager {
    * ~/.claude/, resolving @path imports. Returns '' when none exist.
    */
   loadUserGlobalInstructions(): string {
-    // Per-tier enable gate (parity: Claude Code's isSettingSourceEnabled('userSettings')):
+    // Per-tier enable gate (parity: the reference's isSettingSourceEnabled('userSettings')):
     // the user-global instruction tier can be independently disabled.
     if (!isMemorySourceEnabled('user')) return '';
     const sections: string[] = [];
@@ -2975,7 +2975,7 @@ export class MemoryManager {
    * Delete a stored memory by name — the write-side inverse of
    * {@link saveMemory}. Backs the `forget_memory` tool so the model can honour a
    * "forget X" request instead of only being told to "remove outdated memories"
-   * with no way to do it (parity with Claude Code's extractMemories "if they ask
+   * with no way to do it (parity with the reference's extractMemories "if they ask
    * you to forget something, find and remove the relevant entry" affordance).
    *
    * Removes the topic file(s) matching `name` in BOTH the private root and the
@@ -3068,7 +3068,7 @@ export class MemoryManager {
   }
 
   /**
-   * `### Searching past context` guidance (Claude Code memdir/memdir.ts
+   * `### Searching past context` guidance (the reference memdir/memdir.ts
    * `buildSearchingPastContextSection`). Gives the model the concrete shell
    * commands to recall prior work: a recursive grep over its own memory topic
    * files (`*.md`) and, as a last resort, over the per-project session transcript
@@ -3104,7 +3104,7 @@ export class MemoryManager {
     // autoMemoryEnabled setting), the persistent memory system is suppressed from
     // the prompt entirely — no stored/team memories, no health warning, no memory
     // guidance. Project/user INSTRUCTION files above are NOT auto-memory and still
-    // load. Mirrors Claude Code's isAutoMemoryEnabled dropping the memory section.
+    // load. Mirrors the reference's isAutoMemoryEnabled dropping the memory section.
     if (!isAutoMemoryEnabled(process.env, opts?.autoMemoryEnabled)) {
       return sections.join('\n\n');
     }
@@ -3133,7 +3133,7 @@ export class MemoryManager {
           const ageTag = m.freshness ? `, ${m.freshness}` : '';
           const desc = m.description ? ` — ${m.description}` : '';
           // Exact ISO-8601 mtime alongside the coarse freshness bucket (parity:
-          // Claude Code's formatMemoryManifest, memdir/memoryScan.ts) — gives the
+          // the reference's formatMemoryManifest, memdir/memoryScan.ts) — gives the
           // recall selector a precise, sortable time anchor so two memories in the
           // same freshness bucket ("3 days ago") are still distinguishable by recency.
           const isoTag = typeof m.mtimeMs === 'number' ? `, ${new Date(m.mtimeMs).toISOString()}` : '';
@@ -3165,7 +3165,7 @@ export class MemoryManager {
       sections.push(`## Team Memories\n\n${teamMemories.join('\n\n')}`);
     }
 
-    // Empty-memory affordance (parity with Claude Code's buildMemoryPrompt
+    // Empty-memory affordance (parity with the reference's buildMemoryPrompt
     // `## MEMORY.md … currently empty` branch): when the project already has
     // instruction context but no stored/team memories yet, tell the model the
     // persistent memory system exists and is simply empty, so it knows it can
@@ -3182,7 +3182,7 @@ export class MemoryManager {
     // Index-clipped diagnostic: when more memory topic files exist than the
     // per-turn cap, only the newest MAX_MEMORY_FILES are loaded and the rest are
     // dropped from context. Surface this (never silently) so the model knows its
-    // index outgrew the budget and can consolidate — mirrors Claude Code's
+    // index outgrew the budget and can consolidate — mirrors the reference's
     // visible entrypoint truncation warning (truncateEntrypointContent).
     if (totalMemoryFiles > memories.length) {
       sections.push(
@@ -3260,7 +3260,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
    * `opts.alreadySurfaced` — paths already shown in prior turns are filtered out
    * BEFORE scoring/short-circuit, so the fixed result budget is spent on fresh
    * candidates instead of re-picking files the caller will discard (mirrors
-   * Claude Code's findRelevantMemories `alreadySurfaced`).
+   * the reference's findRelevantMemories `alreadySurfaced`).
    *
    * `opts.recentTools` — when a tool is in active use, its pure usage/API
    * reference memory is noise (the conversation already demonstrates it), so
@@ -3347,7 +3347,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
 
   /**
    * Emit a PII-free memory recall-shape diagnostic for one {@link selectRelevantMemories}
-   * call. Parity with Claude Code's `logMemoryRecallShape`
+   * call. Parity with the reference's `logMemoryRecallShape`
    * (memdir/findRelevantMemories.ts): the event fires on EVERY recall — including
    * one that ran but selected nothing — because the selection-rate denominator
    * needs the "ran, picked nothing" case, which is encoded with a `-1` age
@@ -3388,7 +3388,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
 
   loadTeamMemories(): string[] {
     // Config off-switch: when a tier sets `teamMemoryEnabled: false`, the shared
-    // team-memory subtree is never read/rendered (parity: Claude's TEAMMEM enable gate).
+    // team-memory subtree is never read/rendered (parity: the reference's TEAMMEM enable gate).
     if (!this.teamMemoryLoadingEnabled()) return [];
     const teamDir = path.join(this.getMemoryDir(), 'team');
     if (!fs.existsSync(teamDir)) return [];
@@ -3398,7 +3398,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
   private loadMemoriesFromDir(dir: string): string[] {
     try {
       const out: string[] = [];
-      // RECURSIVE scan (parity: Claude Code memdir/memoryScan.ts `readdir(dir,
+      // RECURSIVE scan (parity: the reference memdir/memoryScan.ts `readdir(dir,
       // { recursive: true })`) so team memories organized into topic SUBDIRECTORIES
       // are discovered, not just the flat top level. The MEMORY.md index is a table
       // of contents, not a memory body — exclude it by BASENAME at ANY depth (mirrors
@@ -3431,7 +3431,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
         // both land in this session's system prompt AND propagate to everyone.
         // Scan shared files BEFORE loading; on a hit, SKIP the file entirely (never
         // surface it to the model) and emit a user-facing `memorySecretWarning` so
-        // the credential can be removed. Mirrors Claude Code's destination-scoped
+        // the credential can be removed. Mirrors the reference's destination-scoped
         // team-memory secret guard (teamMemorySync/index.ts + teamMemSecretGuard.ts):
         // detection is scoped to the SHARED store — private memory is already
         // credential-redacted on write (see saveMemory), so this does not double-scan it.
@@ -3473,7 +3473,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
     // memory to an explicit mount regardless of cwd/project key.
     const override = resolveMemoryDirOverride();
     if (override) return override;
-    // Auto-memory lives GLOBALLY under ~/.ami/projects/<slug>/memory (like Claude Code's
+    // Auto-memory lives GLOBALLY under ~/.ami/projects/<slug>/memory (like the reference's
     // ~/.claude/projects/<slug>/memory). The slug is keyed on the CANONICAL git root,
     // not the raw cwd, so every worktree and subdirectory of one repo shares a single
     // auto-memory directory instead of fragmenting it per `cd`/per worktree.
@@ -3492,7 +3492,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
 
   /**
    * Snapshot of the shared TEAM-memory subsystem for introspection surfaces
-   * (`/memory`, `/doctor`). Parity with Claude Code's team-memory entrypoint
+   * (`/memory`, `/doctor`). Parity with the reference's team-memory entrypoint
    * reporting (memdir/teamMemPaths.ts `isTeamMemoryEnabled` + `getTeamMemPath` /
    * `getTeamMemEntrypoint`): tells the user WHETHER the team store is active, WHERE
    * it lives, its always-loaded `MEMORY.md` entrypoint, and HOW MANY shared memory
@@ -3512,7 +3512,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
 
   /**
    * Count persisted memory topic files split by scope, for the save-confirmation
-   * summary surfaced by the `write_memory` tool. Mirrors Claude Code's
+   * summary surfaced by the `write_memory` tool. Mirrors the reference's
    * teamMemSaved count split (team vs private). The `MEMORY.md` index is a table
    * of contents, not a memory body, so it is excluded by basename at any depth;
    * files under the nested `team/` sub-tree are counted as team, everything else
@@ -3546,7 +3546,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
    * Whether the workspace is inside a git repository — the cwd or any ancestor
    * carries a `.git` entry (a directory in a normal clone, a `gitdir:` pointer FILE
    * in a linked worktree / submodule; both recognized by {@link isGitRoot}). Parity
-   * with Claude Code's `projectIsInGitRepo` (utils/git.ts): used to describe whether
+   * with the reference's `projectIsInGitRepo` (utils/git.ts): used to describe whether
    * editing the project instruction file is version-controlled/shared or purely
    * local. Walks to the filesystem root (unbounded by the instruction-scan depth) so
    * a repo rooted several levels up is still detected.
@@ -3563,7 +3563,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
 
   /**
    * Describe the project instruction file for the `/memory` surface, branching the
-   * verb on git membership (parity with Claude Code's MemoryFileSelector
+   * verb on git membership (parity with the reference's MemoryFileSelector
    * `${isGit ? 'Checked in at' : 'Saved in'} ./CLAUDE.md`): a checked-in file's
    * edits are version-controlled/shared, a non-repo file's edits are purely local.
    * Returns the discovered file's relative path, the `checkedIn` boolean, and a
@@ -3589,7 +3589,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
   /**
    * Enumerate the canonical USER and PROJECT instruction-file entrypoints with an
    * `exists` flag — so the `/memory` surface can offer a "(new)" affordance for an
-   * absent one, telling the user they CAN create it (parity with Claude Code's
+   * absent one, telling the user they CAN create it (parity with the reference's
    * MemoryFileSelector, which synthesizes non-existent User/Project CLAUDE.md rows
    * labeled `(new)`). When a tier already has an instruction file it is reported as
    * existing at its real discovered path (reusing {@link findInstructionFile} — the
@@ -3618,7 +3618,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
    * Is `absPath` inside the auto-memory tree at all (private root OR the nested
    * team sub-dir)? Traversal-safe: the boundary check normalizes/expands and
    * symlink-resolves via the shared {@link isPathWithin} primitive, so a
-   * `..`-laden or symlinked path cannot spoof membership. Mirrors Claude Code's
+   * `..`-laden or symlinked path cannot spoof membership. Mirrors the reference's
    * `isAutoMemPath` (memdir/paths.ts) / `isAgentMemoryPath` (AgentTool/
    * agentMemory.ts) `normalize().startsWith(dir + sep)` membership predicate,
    * reusing AMI's one canonical containment helper instead of a second
@@ -3630,7 +3630,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
 
   /**
    * Is `absPath` a MEMORY FILE (a `.md` inside the auto-memory tree)? Parity with
-   * Claude Code's `isMemoryFilePath` (utils/claudemd.ts): recognizes a path as a
+   * the reference's `isMemoryFilePath` (utils/claudemd.ts): recognizes a path as a
    * memory file so an edit to it can trigger a memory-section refresh. Narrows
    * {@link isMemoryPath} to markdown so a sibling non-memory artifact in the dir
    * is not misclassified.
@@ -3641,7 +3641,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
 
   /**
    * Is `absPath` inside the shared TEAM memory sub-dir? Traversal-safe (shared
-   * {@link isPathWithin}). Parity with Claude Code's `isTeamMemFile`
+   * {@link isPathWithin}). Parity with the reference's `isTeamMemFile`
    * (memdir/teamMemPaths.ts via utils/teamMemoryOps.ts): the classifier a
    * search/write/edit guard uses to recognize an operation that targets shared
    * team memory and must be routed through the stricter (secret-scanned) path.
@@ -3655,7 +3655,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
    * every store. TEAM IS CHECKED FIRST because the team dir is nested inside the
    * memory root (`<memoryDir>/team`), so a team path also satisfies
    * {@link isMemoryPath}; the team-before-personal order is the invariant that
-   * keeps a shared path from being mislabeled `personal`. Mirrors Claude Code's
+   * keeps a shared path from being mislabeled `personal`. Mirrors the reference's
    * `memoryScopeForPath` (utils/memoryFileDetection.ts).
    */
   memoryScopeForPath(absPath: string): MemoryPathScope | null {
@@ -3668,7 +3668,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
    * Human-readable "scope (resolved path)" label for a memory location, for the
    * `/memory` surface and diagnostics. With no argument, describes the default
    * private store; with a path, names the store the path resolves to (or
-   * `External` when it is outside every memory store). Mirrors Claude Code's
+   * `External` when it is outside every memory store). Mirrors the reference's
    * `getMemoryScopeDisplay` (AgentTool/agentMemory.ts) which renders a
    * capitalized scope plus its directory.
    */
@@ -3692,7 +3692,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
    * {@link INSTRUCTION_FILES}, their `.local.md` variants, or a rule file under
    * `.ami/rules/` or `.claude/rules/`)? These are NOT part of the auto-memory
    * system and should keep full-diff / direct-edit treatment. Mirrors the
-   * "excludes" half of Claude Code's `isAutoManagedMemoryFile`
+   * "excludes" half of the reference's `isAutoManagedMemoryFile`
    * (utils/memoryFileDetection.ts). Matching is on the basename for the named
    * instruction files and on the normalized path for the rules sub-tree.
    */
@@ -3708,7 +3708,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
   /**
    * Is `absPath` an AMI-MANAGED memory file — a file the memory system writes and
    * curates (stored memory, session memory, team memory, daily logs) rather than
-   * a human-authored instruction file? Parity with Claude Code's
+   * a human-authored instruction file? Parity with the reference's
    * `isAutoManagedMemoryFile` (utils/memoryFileDetection.ts): a path inside the
    * auto-memory tree ({@link isMemoryFilePath}, which already spans the private
    * root and the nested team sub-dir) that is NOT a user-managed instruction file
@@ -3723,13 +3723,13 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
 
   /**
    * Classify a TOOL USE as targeting TEAM memory, returning the kind of
-   * operation or `null` when it does not. Parity with Claude Code's
+   * operation or `null` when it does not. Parity with the reference's
    * `isTeamMemorySearch` + `isTeamMemoryWriteOrEdit` (utils/teamMemoryOps.ts): a
    * read/search tool (`file_read`, `grep`, `glob`) whose `path`/`file_path`
    * targets a team file is `'search'`; a mutation tool (`file_edit`) whose
    * `file_path`/`path` targets a team file is `'write'`. Gated by
    * {@link isTeamMemoryEnabled} — when the team-memory capability is off this is
-   * always `null` (matching Claude Code's `feature('TEAMMEM')` gate), so no
+   * always `null` (matching the reference's `feature('TEAMMEM')` gate), so no
    * surface treats an op as team-scoped unless the user opted in.
    */
   classifyTeamMemoryToolUse(
@@ -3753,7 +3753,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
 
   /**
    * Notify that a tool use MUTATED a shared team-memory file, so a live sync /
-   * reload can fire. Parity with Claude Code's `sessionFileAccessHooks`
+   * reload can fire. Parity with the reference's `sessionFileAccessHooks`
    * PostToolUse path, which — for Edit/Write ONLY (never Read) on an
    * `isTeamMemFile` path — calls `teamMemWatcher.notifyTeamMemoryWrite()` to
    * re-sync the shared store. AMI previously loaded team memories only at
@@ -3762,7 +3762,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
    * sync service / UI) exactly when a shared memory file is edited or written.
    *
    * Returns `true` when a notification fired. Fires only when ALL hold:
-   *   - team memory is enabled ({@link isTeamMemoryEnabled}, Claude's `TEAMMEM` gate);
+   *   - team memory is enabled ({@link isTeamMemoryEnabled}, the reference's `TEAMMEM` gate);
    *   - the tool is a mutation (`file_edit` or `file_write`) — a `file_read`
    *     (or any non-mutating tool) NEVER notifies, mirroring the reference's
    *     Edit/Write-only switch arms;
@@ -3788,7 +3788,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
 
   /**
    * Absolute path of the DATE-PARTITIONED daily memory log for `date` (default:
-   * today): `<memoryDir>/logs/YYYY/MM/YYYY-MM-DD.md`. Parity with Claude Code's
+   * today): `<memoryDir>/logs/YYYY/MM/YYYY-MM-DD.md`. Parity with the reference's
    * `getAutoMemDailyLogPath` (memdir/paths.ts): rather than only maintaining the
    * live MEMORY.md index, the agent can APPEND timestamped working notes to a
    * per-day log that a later consolidation pass distills. The month is
@@ -3823,7 +3823,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
   /**
    * Create `absPath` as an empty file IF it does not already exist, without
    * clobbering an existing file (EEXIST-safe `wx` write via
-   * {@link createFileIfAbsent}). Parity with Claude Code's `handleSelectMemoryFile`
+   * {@link createFileIfAbsent}). Parity with the reference's `handleSelectMemoryFile`
    * (commands/memory/memory.tsx): the `/memory` surface synthesizes rows for
    * absent User/Project memory files so the user can create one from the menu;
    * selecting such a row creates the file (preserving content if it raced into
@@ -3877,7 +3877,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
     try { fs.chmodSync(filePath, MEMORY_FILE_MODE); } catch { /* best effort */ }
 
     // No-PII introspection surface for the auto-extracted session-memory WRITE path
-    // (parity with Claude Code's `tengu_session_memory_file_read` /
+    // (parity with the reference's `tengu_session_memory_file_read` /
     // `sessionMemory.ts` content-length tracking, services/SessionMemory): record
     // HOW MANY facts were persisted and the resulting file size — never the fact
     // text or the path — so an operator can observe session-memory growth.
@@ -3893,7 +3893,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
    * slug so a hostile id cannot escape the memory directory. Single source of the
    * session-memory path shared by {@link saveSessionMemory} / {@link loadSessionMemory};
    * also the introspection accessor a `/memory`-style surface uses to show WHERE the
-   * current conversation's auto-extracted notes live (parity with Claude Code's
+   * current conversation's auto-extracted notes live (parity with the reference's
    * `getSessionMemoryPath`, services/SessionMemory/sessionMemoryUtils.ts).
    */
   getSessionMemoryPath(sessionId: string): string {
@@ -3960,7 +3960,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
 
     // No-PII introspection event for the session-memory LOAD path — emitted only on
     // a successful read (an ENOENT/other fallback returns early above), mirroring
-    // Claude Code's `logEvent('tengu_session_memory_loaded', { content_length })`
+    // the reference's `logEvent('tengu_session_memory_loaded', { content_length })`
     // (services/SessionMemory/sessionMemoryUtils.ts): it makes the reinjection of
     // persisted session memory into the conversation observable (how much was
     // reloaded + how many facts) without logging any fact text or the path.
@@ -4238,7 +4238,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
   }
 
   /**
-   * Reusable predicate (parity: Claude Code `isMemoryFileAccess`): given a tool
+   * Reusable predicate (parity: the reference `isMemoryFileAccess`): given a tool
    * name and its raw input, report whether the call touches a memory or session
    * file for THIS workspace. Lets a consumer re-label generic
    * `file_read`/`grep`/`glob`/`file_edit` activity as a memory operation.
@@ -4249,7 +4249,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
 
   /**
    * Classify a tool call to its session-file type (`'session_memory'` |
-   * `'session_transcript'` | `null`) for THIS workspace. Parity with Claude
+   * `'session_transcript'` | `null`) for THIS workspace. Parity with the reference
    * Code's `getSessionFileTypeFromInput`.
    */
   classifyToolSessionFile(toolName: string, toolInput: unknown): SessionFileType | null {
@@ -4262,7 +4262,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
    * {@link countMemoryFileAccessFromEntries} (same predicate as
    * {@link detectMemoryFileAccess}), resolving the workspace's memory/transcript
    * dirs. `normalizeToolName` maps persisted (reference-journal) tool names into
-   * the AMI domain the predicate speaks. Parity: Claude Code's
+   * the AMI domain the predicate speaks. Parity: the reference's
    * `countMemoryFileAccessFromEntries`.
    */
   countMemoryFileAccessFromEntries(
@@ -4276,7 +4276,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
    * Does a grep/glob PATTERN target auto-managed memory files only (never a
    * user-managed instruction file)? Thin wrapper over the canonical
    * {@link isAutoManagedMemoryPattern} so a consumer can classify a glob-only
-   * search (no concrete path) as a memory operation. Parity: Claude Code's
+   * search (no concrete path) as a memory operation. Parity: the reference's
    * `isAutoManagedMemoryPattern`.
    */
   isAutoManagedMemoryPattern(pattern: string): boolean {
@@ -4311,7 +4311,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
 
     // 2. Project-level instruction files
     const excludes = this.memoryExcludes();
-    // Per-tier enable gates (parity: Claude Code's per-source isSettingSourceEnabled);
+    // Per-tier enable gates (parity: the reference's per-source isSettingSourceEnabled);
     // identical gating to loadProjectInstructions so the two discovery passes agree.
     const projectEnabled = isMemorySourceEnabled('project');
     const localEnabled = isMemorySourceEnabled('local');
@@ -4335,7 +4335,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
       }
 
       // 3. Local-level override variants (`*.local.md`) — gitignored, project-local,
-      //    distinct from a hand-authored user-global instruction (parity: Claude's
+      //    distinct from a hand-authored user-global instruction (parity: the reference's
       //    'Local' memory scope, utils/memory/types.ts).
       if (localEnabled) for (const localFile of LOCAL_VARIANTS) {
         const localPath = path.join(currentDir, localFile);
@@ -4369,7 +4369,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
     }
 
     // 5. Auto-captured stored memories (the `memory/` store) — tagged 'automem'
-    //    (parity: Claude's 'AutoMem' scope) so they are distinguishable from a
+    //    (parity: the reference's 'AutoMem' scope) so they are distinguishable from a
     //    hand-authored user-global instruction in provenance surfaces.
     const memories = this.loadMemories();
     for (const mem of memories) {
@@ -4377,7 +4377,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
     }
 
     // 6. Shared team-memory store — a FIRST-CLASS 'team' scope, loaded ONLY when
-    //    the team-memory capability is enabled (parity: Claude's feature('TEAMMEM')
+    //    the team-memory capability is enabled (parity: the reference's feature('TEAMMEM')
     //    gate on the 'TeamMem' scope, utils/memory/types.ts). Each shared file is
     //    already symlink-contained + secret-scanned by loadTeamMemories.
     if (isTeamMemoryEnabled()) {
@@ -4396,7 +4396,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
    * load took. Reuses {@link collectInstructionSources} (the one canonical discovery
    * pass covering managed/project/local/user/automem/team) so the summary can never
    * diverge from what is actually loaded, then emits a no-PII `memory_load_summary`
-   * diagnostic (parity with Claude Code's `memory_files_completed` /
+   * diagnostic (parity with the reference's `memory_files_completed` /
    * `tengu_claudemd__initial_load` events, utils/claudemd.ts:L1014-L1040) for machine
    * monitoring. The returned {@link MemoryLoadSummary} is rendered by `/doctor` so the
    * user can see the context cost of what memory contributes each turn.
@@ -4419,7 +4419,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
       byLevel,
     };
     // No-PII introspection surface (paths/content are never logged — only counts,
-    // size and timing), mirroring Claude Code's diagnostics event so an operator can
+    // size and timing), mirroring the reference's diagnostics event so an operator can
     // monitor memory context cost without leaking what was loaded.
     logForDiagnosticsNoPII('info', 'memory_load_summary', {
       file_count: summary.fileCount,

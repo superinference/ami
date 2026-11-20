@@ -20,7 +20,7 @@
  *  - a lost server returns to `ready` → `'recovered'` (once, only after a real drop);
  *  - `reconnect-failed` → `'failed'`.
  *
- * Parity: Claude Code's IDE/MCP connection status indicator
+ * Parity: the reference's IDE/MCP connection status indicator
  * (`hooks/notifs/useIDEStatusIndicator`).
  */
 
@@ -42,7 +42,7 @@ export interface McpConnectionChange {
 
 /**
  * Format a connection-change notice as a one-line provenance string with explicit
- * server attribution and an optional ` (detail)` suffix. Mirrors Claude's status
+ * server attribution and an optional ` (detail)` suffix. Mirrors the reference's status
  * indicator line.
  */
 export function formatMcpConnectionChange(change: McpConnectionChange): string {

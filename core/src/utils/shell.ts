@@ -30,7 +30,7 @@ export const shellHooks = {
   /**
    * Synchronous `stat`, used by {@link createShellSnapshot} to verify the capture
    * artifact really exists on disk after the capture shell exits 0 and to record
-   * its byte size — parity with Claude Code's post-creation `stat().size` check
+   * its byte size — parity with the reference's post-creation `stat().size` check
    * (ShellSnapshot.ts), which distinguishes an exit-0-but-file-missing/empty case
    * from a genuine success. Replaceable in tests via `mock.method(shellHooks, 'statSync', …)`.
    */
@@ -38,7 +38,7 @@ export const shellHooks = {
   /**
    * Synchronous `readdir`, used by {@link createShellSnapshot} to log the
    * snapshot directory's contents when the artifact is missing after a
-   * successful-exit capture (parity with Claude Code's `readdir(snapshotsDir)`
+   * successful-exit capture (parity with the reference's `readdir(snapshotsDir)`
    * diagnostic in the `tengu_shell_unknown_error` path). Replaceable in tests.
    */
   readdirSync: fs.readdirSync as typeof fs.readdirSync,
@@ -72,7 +72,7 @@ export const shellHooks = {
    * {@link SHELL_DEBUG_ENV} is set, so default runs produce no output. Surfaces
    * the snapshot-missing login-shell fallback, the `-l` login-flag skip, and the
    * snapshot-source decision — an opt-in introspection surface for the shell
-   * command-assembly decisions (parity with Claude Code's `logForDebugging` in
+   * command-assembly decisions (parity with the reference's `logForDebugging` in
    * bashProvider.ts). Tests replace it via `mock.method(shellHooks, 'onShellDebug', …)`.
    */
   onShellDebug: ((message: string): void => {
@@ -81,7 +81,7 @@ export const shellHooks = {
     }
   }),
   /**
-   * Per-shell async environment-override seam (parity with Claude Code's
+   * Per-shell async environment-override seam (parity with the reference's
    * `ShellProvider.getEnvironmentOverrides(command)`, shellProvider.ts:L28-32).
    * Computes extra env vars for the resolved shell family just before spawn and
    * MAY perform async initialization (the reference cites tmux socket setup for
@@ -108,7 +108,7 @@ export interface SlowCommandInfo {
  * non-negative number, any {@link execCommand} whose wall-clock duration reaches
  * that many milliseconds is reported through {@link shellHooks.onSlowCommand}.
  * Unset / blank / non-numeric / negative disables it (no diagnostic). Mirrors
- * Claude Code's `slowLogging` exec wrapper (execFileNoThrowPortable.ts:L70),
+ * the reference's `slowLogging` exec wrapper (execFileNoThrowPortable.ts:L70),
  * surfacing exec calls that silently run slow — an opt-in introspection surface
  * per AMI's introspection-on-every-change invariant.
  */
@@ -151,7 +151,7 @@ function reportSlowExecIfSlow(command: string, startedAt: number): void {
  * {@link shellHooks.onSlowCommand} sink the async path uses — no second diagnostic
  * mechanism. The command's return value and any thrown error pass through
  * unchanged; reporting runs in `finally`, so a slow command that also throws (e.g.
- * a non-zero exit) is still flagged. This is the sync counterpart of Claude Code's
+ * a non-zero exit) is still flagged. This is the sync counterpart of the reference's
  * `execSync_DEPRECATED` slowLogging boundary (execSyncWrapper.ts). Prefer the async
  * {@link execCommand} where possible; use this only for genuinely synchronous call
  * sites that cannot be made async.
@@ -184,7 +184,7 @@ export const execFileSyncWatched = ((file: string, args?: readonly string[], opt
 // ---------------------------------------------------------------------------
 // Shared never-throw file+args exec wrapper (execFileNoThrow)
 //
-// Parity with Claude Code's `execFileNoThrow` / `execFileNoThrowWithCwd`
+// Parity with the reference's `execFileNoThrow` / `execFileNoThrowWithCwd`
 // (execFileNoThrow.ts): ONE canonical wrapper over `child_process.execFile`
 // (argv form, NO shell by default → injection-safe) that:
 //   - ALWAYS resolves, never throws — a non-zero exit, a spawn ENOENT, a
@@ -274,7 +274,7 @@ export function quoteWindowsShellArg(arg: string): string {
  * timeout, or an abort are mapped to the result instead of throwing. When a shell
  * is used (explicit `shell`, or an auto-detected Windows `.bat`/`.cmd`), the file
  * and args are assembled into a single escaped command string so arguments can't
- * be reinterpreted as shell metacharacters. Parity with Claude Code's
+ * be reinterpreted as shell metacharacters. Parity with the reference's
  * `execFileNoThrowWithCwd` (execFileNoThrow.ts), implemented on Node's own
  * `child_process` so core/ stays dependency-free.
  */
@@ -364,7 +364,7 @@ export function execFileNoThrow(
 
 /**
  * Base directory for AMI's internal temp files, honoring an operator override.
- * Mirrors Claude Code's `CLAUDE_CODE_TMPDIR` knob (Shell.ts:L204-207): an
+ * Mirrors the reference's `CLAUDE_CODE_TMPDIR` knob (Shell.ts:L204-207): an
  * environment with custom temp requirements (read-only `/tmp`, a size-limited
  * tmpfs, a dedicated scratch volume) relocates every AMI-created temp file by
  * setting `AMI_TMPDIR` (`CLAUDE_CODE_TMPDIR` accepted as a fallback for parity).
@@ -388,7 +388,7 @@ export const DEFAULT_TIMEOUT_MS = 120_000;
  * that don't pass an explicit {@link ExecCommandOptions.timeout}. AMI's baseline
  * is 2 minutes — conservative for long builds/test suites. Setting
  * `AMI_DEFAULT_TIMEOUT_MS` (or `CLAUDE_CODE_SHELL_TIMEOUT` for parity) lets an
- * operator match Claude Code's 30-minute default (Shell.ts:L44) or any other
+ * operator match the reference's 30-minute default (Shell.ts:L44) or any other
  * value. An unset / blank / non-numeric / non-positive value keeps the baseline,
  * so default behavior is unchanged. An opt-in introspection surface per AMI's
  * introspection-on-every-change invariant.
@@ -417,7 +417,7 @@ const DEFAULT_STALL_TIMEOUT_MS = 45_000;
 /**
  * Hard ceiling (bytes) on the complete command output persisted to disk when a
  * caller opts in with {@link ExecCommandOptions.persistFullOutput}. Mirrors
- * Claude Code's `MAX_PERSISTED_SIZE` (BashTool.tsx:L732): the full stream is
+ * the reference's `MAX_PERSISTED_SIZE` (BashTool.tsx:L732): the full stream is
  * streamed to a file so the model can `file_read` the WHOLE output (including the
  * middle AMI's in-memory head+tail window drops), truncated only at this 64MB
  * boundary so a runaway producer can't exhaust the disk.
@@ -483,7 +483,7 @@ function createOutputBuffer(): { push: (chunk: string) => void; value: () => str
 /**
  * Default cadence (ms) of the {@link ExecCommandOptions.onProgress} heartbeat.
  * Only armed when a caller supplies `onProgress`; a caller may override it with
- * {@link ExecCommandOptions.progressIntervalMs}. Mirrors Claude Code's
+ * {@link ExecCommandOptions.progressIntervalMs}. Mirrors the reference's
  * progress-poll loop that fires even on a silent command so the loop can wake
  * and decide to background a long runner (TaskOutput.ts:L119-125).
  */
@@ -494,7 +494,7 @@ const DEFAULT_PROGRESS_INTERVAL_MS = 5_000;
  * the {@link ExecCommandOptions.onProgress} tail slices. Bounds progress memory
  * on a huge-output command; the exact total byte count is tracked separately so
  * the line count is extrapolated from this sample when the output exceeds it
- * (parity with Claude Code's `PROGRESS_TAIL_BYTES`, TaskOutput.ts).
+ * (parity with the reference's `PROGRESS_TAIL_BYTES`, TaskOutput.ts).
  */
 const PROGRESS_TAIL_CHARS = 65_536;
 
@@ -502,14 +502,14 @@ const PROGRESS_TAIL_CHARS = 65_536;
  * Compute the last-5-lines and last-100-lines tail slices plus the total line
  * count of `text`, by walking backwards over newline characters. This is the
  * shaping that feeds {@link ExecCommandOptions.onProgress}'s structured args
- * (parity with Claude Code's TaskOutput poller, TaskOutput.ts:L126-149). The
+ * (parity with the reference's TaskOutput poller, TaskOutput.ts:L126-149). The
  * line count is EXACT here (AMI buffers the full command output in memory),
- * which is a superset of Claude's tail-sample extrapolation — no estimation
+ * which is a superset of the reference's tail-sample extrapolation — no estimation
  * error — while the caller still applies a monotone `Math.max` so the counter
  * never moves backwards between ticks.
  *
  * The backward walk counts a final "no more newline" step as the first line, so
- * `"a\nb\nc"` yields `totalLines === 3` (3 lines, 2 newlines), matching Claude's
+ * `"a\nb\nc"` yields `totalLines === 3` (3 lines, 2 newlines), matching the reference's
  * loop exactly. An empty string yields `totalLines === 0` and empty slices.
  */
 export function computeProgressSlices(text: string): { last5: string; last100: string; totalLines: number } {
@@ -539,7 +539,7 @@ const PROMPT_PATTERNS = [
   /Continue\?/i,
   /Proceed\?/i,
   // Any line ending in "?" (covers directed questions — "Do you want to
-  // continue?", "Overwrite?", "Shall I proceed?" — more broadly than Claude's
+  // continue?", "Overwrite?", "Shall I proceed?" — more broadly than the reference's
   // enumerated prompt list, which only matches specific directed-question stems).
   /\?\s*$/,
   /:\s*$/,
@@ -660,7 +660,7 @@ export type InteractiveShellType = 'zsh' | 'bash' | 'fish' | 'unknown';
  * `process.env.SHELL`) into `'zsh' | 'bash' | 'fish' | 'unknown'`. Lets callers
  * tailor setup/affordance guidance (PATH export, alias syntax) to the user's
  * actual shell — fish's `set -x PATH` differs from bash/zsh's `export PATH`.
- * Parity with Claude Code's `getShellType()` (localInstaller.ts:L156-162),
+ * Parity with the reference's `getShellType()` (localInstaller.ts:L156-162),
  * including its `zsh → bash → fish` precedence. Also consolidates the
  * shell-family detection {@link resolveShell} needs (single source for the
  * bash-vs-zsh preference), so there is one canonical classifier.
@@ -680,7 +680,7 @@ const shellResolutionCache = new Map<string, string | null>();
 function resolveShell(override: string, envShell: string): string | null {
   // 1. Explicit override (AMI_SHELL / CLAUDE_CODE_SHELL) wins when it names a
   //    supported shell type and is actually executable. Emit introspective
-  //    feedback on both outcomes (parity with Claude Code's Shell.ts override
+  //    feedback on both outcomes (parity with the reference's Shell.ts override
   //    logging) through the opt-in {@link shellHooks.onShellDebug} surface so a
   //    user can see which shell ran — or that their override was rejected and why.
   if (override) {
@@ -725,10 +725,10 @@ export function findSuitableShell(): string | null {
 // ---------------------------------------------------------------------------
 // Shell-environment snapshot (user aliases / functions / options / PATH)
 //
-// Parity with Claude Code's ShellSnapshot.ts + bashProvider.ts snapshot sourcing.
+// Parity with the reference's ShellSnapshot.ts + bashProvider.ts snapshot sourcing.
 // A command run through `bash -c '<cmd>'` does NOT see the user's interactive
 // aliases/functions (those live in ~/.bashrc / ~/.zshrc, which a non-login,
-// non-interactive shell never sources). Claude captures them ONCE per session
+// non-interactive shell never sources). the reference captures them ONCE per session
 // into a snapshot file and `source`s it before each command, so model-run
 // commands behave like the user's interactive shell WITHOUT paying a full
 // login-shell startup per command. AMI mirrors this as an OPT-IN capability
@@ -739,7 +739,7 @@ export function findSuitableShell(): string | null {
 // - disabled → current behavior (login only when `AMI_LOGIN_SHELL` is set).
 // Aliases are re-applied via `eval` (a second parse pass) because the shell
 // parses a whole command line before executing, so an alias sourced on the same
-// line would not expand — the exact reason Claude wraps the user command in
+// line would not expand — the exact reason the reference wraps the user command in
 // `eval` after sourcing the snapshot.
 // ---------------------------------------------------------------------------
 
@@ -749,7 +749,7 @@ export function findSuitableShell(): string | null {
  * user's shell config (aliases, functions, options, PATH) once per session and
  * sources it before every command so model-run commands see the user's
  * interactive environment. Unset/blank/falsey leaves the current behavior
- * unchanged. Mirrors Claude Code's always-on snapshot (ShellSnapshot.ts); AMI
+ * unchanged. Mirrors the reference's always-on snapshot (ShellSnapshot.ts); AMI
  * makes it opt-in to keep the default command environment deterministic.
  */
 export const SHELL_SNAPSHOT_ENV = 'AMI_SHELL_SNAPSHOT';
@@ -757,7 +757,7 @@ export const SHELL_SNAPSHOT_ENV = 'AMI_SHELL_SNAPSHOT';
 /**
  * Env knob that enables verbose shell-command-assembly debug logging through
  * {@link shellHooks.onShellDebug} (snapshot-missing login fallback, `-l` skip,
- * snapshot-source decision). Unset/blank disables it. Parity with Claude Code's
+ * snapshot-source decision). Unset/blank disables it. Parity with the reference's
  * `logForDebugging` tracing in bashProvider.ts.
  */
 export const SHELL_DEBUG_ENV = 'AMI_SHELL_DEBUG';
@@ -774,7 +774,7 @@ const SNAPSHOT_CREATION_TIMEOUT_MS = 10_000;
 /**
  * The user shell config file a snapshot sources, chosen from the shell family:
  * zsh → `~/.zshrc`, bash → `~/.bashrc`, anything else → `~/.profile`. Parity
- * with Claude Code's `getConfigFile` (ShellSnapshot.ts).
+ * with the reference's `getConfigFile` (ShellSnapshot.ts).
  */
 function snapshotConfigFile(shellPath: string): string {
   const fileName = shellPath.includes('zsh')
@@ -791,7 +791,7 @@ function snapshotConfigFile(shellPath: string): string {
  * ARGV0-dispatch trick for multi-call / busybox-style binaries (one executable
  * that dispatches on `argv[0]`): to behave as ripgrep, such a binary must see
  * `argv[0] === 'rg'` even when spawned from a wrapper path. The four ordered
- * branches mirror Claude Code's `createArgv0ShellFunction` (ShellSnapshot.ts):
+ * branches mirror the reference's `createArgv0ShellFunction` (ShellSnapshot.ts):
  *   1. zsh sets `argv[0]` via the `ARGV0` env var;
  *   2. Windows/msys/cygwin bash where `exec -a` is unavailable → `ARGV0` env var;
  *   3. a subshell (`$BASHPID != $$`) can `exec -a` directly;
@@ -825,12 +825,12 @@ function createArgv0ShellFunction(
 /**
  * Build the shell snippet that makes a model-typed `rg` in a bash/zsh command
  * dispatch to the SAME ripgrep binary AMI's grep/glob tools use, so interactive
- * `rg` and tool `rg` behave identically. Parity with Claude Code's
+ * `rg` and tool `rg` behave identically. Parity with the reference's
  * `createRipgrepShellIntegration` (ShellSnapshot.ts), adapted to AMI:
  *
  * - **system mode** (bare PATH `rg`, the default) → `null`: the model's typed
  *   `rg` already resolves the same PATH binary, so there is nothing to dispatch
- *   and no snippet is emitted (Claude likewise only integrates when it has its
+ *   and no snippet is emitted (the reference likewise only integrates when it has its
  *   own binary / ARGV0 dispatch).
  * - **config/builtin mode with `argv0`** (a multi-call ripgrep binary) → an
  *   {@link createArgv0ShellFunction} ARGV0-dispatch function.
@@ -838,11 +838,11 @@ function createArgv0ShellFunction(
  *   configured path (plus any config-level `args`), each component POSIX-quoted.
  *
  * The definition is guarded by a `command -v rg` probe (run in a subshell after
- * `unalias rg` so a user alias cannot shadow the probe — parity with Claude's
+ * `unalias rg` so a user alias cannot shadow the probe — parity with the reference's
  * `(unalias rg 2>/dev/null; command -v rg)`): a real system `rg` on PATH wins,
  * matching the user's interactive shell. AMI emits a function (not an alias) for
  * both cases so dispatch works without relying on `expand_aliases` ordering —
- * an intentional, more-robust superset of Claude's alias form.
+ * an intentional, more-robust superset of the reference's alias form.
  *
  * Returns `null` when no integration is needed (system mode), so callers can
  * skip embedding it. Consumed by {@link buildSnapshotScript}, which appends the
@@ -870,7 +870,7 @@ export function buildRipgrepShellIntegration(config: RipgrepConfig = resolveRipg
 /**
  * The capture script that, when run by the user's shell as a login shell, writes
  * a sourceable snapshot of their functions, shell options, aliases and PATH to
- * `$SNAPSHOT_FILE`. Faithful to Claude Code's `getSnapshotScript` /
+ * `$SNAPSHOT_FILE`. Faithful to the reference's `getSnapshotScript` /
  * `getUserSnapshotContent`: zsh and bash use their respective introspection
  * (`typeset` vs `declare`, `setopt` vs `shopt`), completion functions
  * (single-underscore prefix) are filtered out while `__`-prefixed helpers are
@@ -881,7 +881,7 @@ function buildSnapshotScript(shellPath: string, configFileExists: boolean): stri
   const isZsh = shellPath.includes('zsh');
   // zsh function bodies are written verbatim; bash function bodies are base64-encoded
   // and wrapped in `eval "$(… base64 -d)"` so special characters survive the capture
-  // intact — parity with Claude Code's `getUserSnapshotContent` (ShellSnapshot.ts:L203-232).
+  // intact — parity with the reference's `getUserSnapshotContent` (ShellSnapshot.ts:L203-232).
   // `declare -f`/`typeset -f >/dev/null` runs first to force-autoload lazy functions;
   // single-underscore completion funcs are filtered (`grep -vE '^_[^_]'`) while
   // double-underscore helpers (e.g. __pyenv_init) are kept.
@@ -934,7 +934,7 @@ if [ ! -f "$SNAPSHOT_FILE" ]; then echo "snapshot not created" >&2; exit 1; fi`;
  * the sourceable snapshot file, or `null` if capture failed (missing shell,
  * timeout, permission error — the caller then falls back to a login shell).
  * Runs the user's shell as a login shell (`-l`) so profile/rc files are sourced,
- * then records the resulting aliases/functions/options/PATH. Parity with Claude
+ * then records the resulting aliases/functions/options/PATH. Parity with the reference
  * Code's `createAndSaveSnapshot`, except it is synchronous (so {@link execCommand}
  * can assemble the command string before spawning) and returns `null` instead of
  * throwing on failure.
@@ -954,7 +954,7 @@ export function createShellSnapshot(shellPath: string): string | null {
       stdio: ['ignore', 'ignore', 'ignore'],
       env: { ...process.env, AMI_SNAPSHOT_FILE: file, GIT_EDITOR: 'true' },
     });
-    // Post-creation verification (parity with Claude Code's `stat().size` check,
+    // Post-creation verification (parity with the reference's `stat().size` check,
     // ShellSnapshot.ts:L521-568): the capture shell can exit 0 yet leave no artifact
     // (e.g. a `>| "$SNAPSHOT_FILE"` that silently failed, or the tmpdir was swept
     // mid-capture). Distinguish that exit-0-but-missing case from a real success,
@@ -991,12 +991,12 @@ export function createShellSnapshot(shellPath: string): string | null {
 }
 
 // Memoize the snapshot per shell path so capture (a login-shell subprocess) runs
-// at most once per session per shell — parity with Claude's one-snapshot-per-session.
+// at most once per session per shell — parity with the reference's one-snapshot-per-session.
 const shellSnapshotCache = new Map<string, string | null>();
 
 /**
  * Memoized {@link createShellSnapshot}. The snapshot is captured once per shell
- * path per session. Parity with Claude Code's per-session snapshot promise.
+ * path per session. Parity with the reference's per-session snapshot promise.
  */
 export function getCachedShellSnapshot(shellPath: string): string | null {
   const cached = shellSnapshotCache.get(shellPath);
@@ -1014,14 +1014,14 @@ export function resetShellSnapshotCache(): void {
 // ---------------------------------------------------------------------------
 // Cross-shell provider abstraction (PowerShell as a first-class shell type)
 //
-// Mirrors Claude Code's `src/utils/shell/*` provider split (shellProvider.ts
+// Mirrors the reference's `src/utils/shell/*` provider split (shellProvider.ts
 // SHELL_TYPES/ShellType, powershellProvider.ts invocation flags + exit-code
 // normalization, powershellDetection.ts pwsh-over-powershell preference + snap
 // avoidance + memoized cache, resolveDefaultShell.ts safe default). AMI keeps
 // bash/zsh as the POSIX default and treats PowerShell as an OPT-IN shell family
 // selected per call ({@link ExecCommandOptions.shellType}) or globally via the
 // `AMI_DEFAULT_SHELL` / `CLAUDE_CODE_SHELL_TYPE` env knob — never auto-flipping
-// Windows to PowerShell (parity with Claude's resolveDefaultShell, which does
+// Windows to PowerShell (parity with the reference's resolveDefaultShell, which does
 // not auto-flip either).
 // ---------------------------------------------------------------------------
 
@@ -1029,14 +1029,14 @@ export function resetShellSnapshotCache(): void {
 export const SHELL_TYPES = ['bash', 'powershell'] as const;
 export type ShellType = (typeof SHELL_TYPES)[number];
 
-/** Platform-independent default shell family (parity: Claude never auto-flips to PowerShell). */
+/** Platform-independent default shell family (parity: the reference never auto-flips to PowerShell). */
 export const DEFAULT_SHELL_TYPE: ShellType = 'bash';
 
 /**
  * Resolve the default shell family for commands that do not name one, from the
  * `AMI_DEFAULT_SHELL` (or `CLAUDE_CODE_SHELL_TYPE` for parity) env knob. An
  * unset / blank / unrecognized value safely falls back to {@link DEFAULT_SHELL_TYPE}
- * (`'bash'`) — mirrors Claude Code's `resolveDefaultShell()` safe fallback.
+ * (`'bash'`) — mirrors the reference's `resolveDefaultShell()` safe fallback.
  */
 export function resolveDefaultShell(): ShellType {
   const raw = (process.env.AMI_DEFAULT_SHELL || process.env.CLAUDE_CODE_SHELL_TYPE || '').trim().toLowerCase();
@@ -1046,7 +1046,7 @@ export function resolveDefaultShell(): ShellType {
 // ---------------------------------------------------------------------------
 // Per-shell async environment overrides (getEnvironmentOverrides)
 //
-// Parity with Claude Code's `ShellProvider.getEnvironmentOverrides(command)`
+// Parity with the reference's `ShellProvider.getEnvironmentOverrides(command)`
 // (shellProvider.ts:L28-32): an async hook that computes extra env vars for the
 // resolved shell family just before spawn and MAY perform async initialization.
 // The reference cites tmux socket setup for bash — deferring the cost until a
@@ -1067,7 +1067,7 @@ export function resolveDefaultShell(): ShellType {
 
 /**
  * Per-shell environment overrides merged into the spawn env by {@link execCommand}
- * just before launch. Parity with Claude Code's
+ * just before launch. Parity with the reference's
  * `ShellProvider.getEnvironmentOverrides(command)`.
  *
  * Returns a plain record synchronously for the common case (so the executor's
@@ -1090,7 +1090,7 @@ export function getEnvironmentOverrides(
 
 /**
  * The hardened, non-interactive PowerShell invocation flags + command. Shared so
- * the flag set lives in exactly one place (parity with Claude Code's
+ * the flag set lives in exactly one place (parity with the reference's
  * `buildPowerShellArgs` in powershellProvider.ts):
  * - `-NoProfile` skips the user/system profile scripts (deterministic env, no
  *   slow or side-effecting startup), and
@@ -1103,7 +1103,7 @@ export function buildPowerShellArgs(command: string): string[] {
 
 /**
  * Append PowerShell exit-code normalization to a command so the spawned process
- * exits with the correct code (parity with Claude Code's powershellProvider.ts
+ * exits with the correct code (parity with the reference's powershellProvider.ts
  * cwd-tracking `exit $_ec`).
  *
  * On Windows PowerShell 5.1 a native exe that merely writes to a PS-redirected
@@ -1134,7 +1134,7 @@ function realpathSafe(p: string): string {
 /**
  * True when `execPath` resolves inside the current working directory subtree — a
  * planted `pwsh`/`powershell`/`git.exe`/`git.bat` in (or under) the CWD that
- * could hijack execution. Parity with Claude Code's `where.exe` cwd-shadowing
+ * could hijack execution. Parity with the reference's `where.exe` cwd-shadowing
  * security filter (windowsPaths.ts:L65: `pathDir === cwd ||
  * normalizedPath.startsWith(cwd + sep)`): a candidate sitting directly in the CWD
  * OR under one of its subdirectories is rejected so a malicious binary dropped
@@ -1170,7 +1170,7 @@ function whichSync(cmd: string): string | null {
 
 /**
  * Resolve a PowerShell executable (uncached). Prefers `pwsh` (PowerShell 7+)
- * over `powershell` (Windows PowerShell 5.1) — parity with Claude Code's
+ * over `powershell` (Windows PowerShell 5.1) — parity with the reference's
  * `findPowerShell` (powershellDetection.ts). An explicit `AMI_POWERSHELL_PATH` /
  * `CLAUDE_CODE_POWERSHELL_PATH` override wins. On Linux, when PATH (or its
  * symlink target) points `pwsh` at a `/snap/` launcher, the known apt/rpm
@@ -1206,7 +1206,7 @@ let cachedPowerShellPath: string | null | undefined;
 
 /**
  * Memoized {@link findPowerShell}. Detection only runs once per session (it
- * shells out to `which`/`where.exe`). Parity with Claude Code's
+ * shells out to `which`/`where.exe`). Parity with the reference's
  * `getCachedPowerShellPath`.
  */
 export function getCachedPowerShellPath(): string | null {
@@ -1224,10 +1224,10 @@ export function resetPowerShellCache(): void {
 //
 // On Windows AMI runs user bash commands through git-bash's `bash.exe` — the
 // same POSIX semantics the bash security guards assume — NOT `cmd`. Parity with
-// Claude Code's windowsPaths.ts (findExecutable + findGitBashPath): an explicit
+// the reference's windowsPaths.ts (findExecutable + findGitBashPath): an explicit
 // AMI_GIT_BASH_PATH / CLAUDE_CODE_GIT_BASH_PATH override wins, else git's default
 // install locations are probed, else `where.exe` resolves `git` with a
-// cwd-shadow security filter and `bash.exe` is derived from it. Unlike Claude
+// cwd-shadow security filter and `bash.exe` is derived from it. Unlike the reference
 // (which `process.exit(1)`s when none is found), AMI returns `null` so
 // {@link execCommand} surfaces an actionable launch failure instead of killing
 // the whole process — a library-safe divergence.
@@ -1240,7 +1240,7 @@ const GIT_BASH_PATH_ENV = ['AMI_GIT_BASH_PATH', 'CLAUDE_CODE_GIT_BASH_PATH'] as 
  * Default git-for-Windows install locations probed before `where.exe` (64-bit
  * before 32-bit). The `cmd\git.exe` entry is used — not `mingw64\bin\git.exe`,
  * whose directory is the "raw" tools without the environment setup git-bash
- * expects. Parity with Claude Code's `findExecutable` default locations.
+ * expects. Parity with the reference's `findExecutable` default locations.
  */
 const GIT_DEFAULT_LOCATIONS = [
   'C:\\Program Files\\Git\\cmd\\git.exe',
@@ -1253,7 +1253,7 @@ const GIT_DEFAULT_LOCATIONS = [
  * candidate that resolves inside the current working directory tree is rejected
  * ({@link isCwdShadowed}) so a `git.exe`/`git.bat` planted alongside the project
  * can never be run in place of the real tool. Returns the first trusted hit, or
- * `null`. Parity with Claude Code's `findExecutable` (windowsPaths.ts:L29-80).
+ * `null`. Parity with the reference's `findExecutable` (windowsPaths.ts:L29-80).
  */
 export function findExecutable(executable: string): string | null {
   if (executable === 'git') {
@@ -1271,7 +1271,7 @@ export function findExecutable(executable: string): string | null {
     // SECURITY: skip any candidate inside the cwd tree (a planted git.exe/.bat).
     // Each rejection is traced through the opt-in {@link shellHooks.onShellDebug}
     // introspection surface so a user debugging why their git/shell was not picked
-    // up can see the security filter firing — parity with Claude Code's
+    // up can see the security filter firing — parity with the reference's
     // `logForDebugging('Skipping potentially malicious executable …')`
     // (windowsPaths.ts:L64-68).
     for (const candidate of candidates) {
@@ -1295,7 +1295,7 @@ export function findExecutable(executable: string): string | null {
  * an existing file; otherwise the real `git.exe` is located
  * ({@link findExecutable}) and `<git>/cmd/git.exe` is mapped to its sibling
  * `<git>/bin/bash.exe`. Returns `null` when no trusted bash can be found
- * (callers surface an actionable error). Parity with Claude Code's
+ * (callers surface an actionable error). Parity with the reference's
  * `findGitBashPath` (windowsPaths.ts:L98-125), except AMI returns `null` instead
  * of exiting the process.
  */
@@ -1305,7 +1305,7 @@ export function findGitBashPath(): string | null {
     if (shellHooks.existsSync(override)) return override;
     // The user explicitly configured a git-bash path that does not exist — trace
     // the bad value they supplied (distinct from the "not found at all" case) so
-    // a typo is self-evident. Parity with Claude Code echoing back
+    // a typo is self-evident. Parity with the reference echoing back
     // `CLAUDE_CODE_GIT_BASH_PATH` (windowsPaths.ts:L104-106).
     shellHooks.onShellDebug(`Configured git-bash path "${override}" does not exist`);
     return null;
@@ -1326,7 +1326,7 @@ export function findGitBashPath(): string | null {
  * on Windows. When the user set an explicit git-bash path env var
  * ({@link GIT_BASH_PATH_ENV}) the bad value is echoed back so a typo is obvious —
  * a message distinct from the "no git-bash installed at all" case. Parity with
- * Claude Code distinguishing the explicitly-configured-but-missing path
+ * the reference distinguishing the explicitly-configured-but-missing path
  * (windowsPaths.ts:L104-106) from git-bash-not-found (L120-122). Used by
  * {@link execCommand} to surface an actionable exit-126 launch failure instead of
  * exiting the process.
@@ -1343,7 +1343,7 @@ let cachedGitBashPath: string | null | undefined;
 
 /**
  * Memoized {@link findGitBashPath}. Discovery shells out to `where.exe`, so it
- * runs once per session. Parity with Claude Code's `memoize(findGitBashPath)`.
+ * runs once per session. Parity with the reference's `memoize(findGitBashPath)`.
  */
 export function getCachedGitBashPath(): string | null {
   if (cachedGitBashPath === undefined) cachedGitBashPath = findGitBashPath();
@@ -1373,7 +1373,7 @@ export interface ExecCommandOptions {
    * (`'ignore'` by default so interactive prompts are detected-and-killed by
    * stall detection). `'inherit'` connects the parent terminal's stdin; `'pipe'`
    * opens a pipe the caller drives. Ignored when `input` is set (that path always
-   * pipes). Parity with Claude Code's exec wrapper `stdin` option
+   * pipes). Parity with the reference's exec wrapper `stdin` option
    * (execFileNoThrow.ts:L22).
    */
   stdin?: 'ignore' | 'inherit' | 'pipe';
@@ -1381,7 +1381,7 @@ export interface ExecCommandOptions {
    * When `false`, a command that exits with a non-zero code resolves with empty
    * `stdout`/`stderr` (only the exit code/signal are kept). Useful for
    * probe/detection commands whose noisy output on failure should be discarded.
-   * Defaults to `true` (output always preserved). Parity with Claude Code's
+   * Defaults to `true` (output always preserved). Parity with the reference's
    * `preserveOutputOnError` (execFileNoThrow.ts:L17). A timeout/abort/launch
    * failure (`exitCode === null`) always keeps its output so the caller can see
    * why it failed.
@@ -1390,7 +1390,7 @@ export interface ExecCommandOptions {
   /**
    * Shell family to run the command through (`'bash'` | `'powershell'`). When
    * omitted, {@link resolveDefaultShell} picks it from the `AMI_DEFAULT_SHELL`
-   * env knob (default `'bash'`). Parity with Claude Code's `exec({ shellType })`
+   * env knob (default `'bash'`). Parity with the reference's `exec({ shellType })`
    * (Shell.ts). PowerShell is spawned with hardened, non-interactive flags and
    * exit-code normalization (see {@link buildPowerShellArgs} /
    * {@link withPowerShellExitCode}).
@@ -1399,7 +1399,7 @@ export interface ExecCommandOptions {
   /**
    * Explicit shell executable path, overriding auto-resolution for this call.
    * For `'bash'` it replaces {@link findSuitableShell}; for `'powershell'` it
-   * replaces {@link getCachedPowerShellPath}. Parity with Claude Code's
+   * replaces {@link getCachedPowerShellPath}. Parity with the reference's
    * configurable `shellPath` provider parameter (shellProvider.ts). When blank,
    * the resolver / env override is used.
    */
@@ -1408,7 +1408,7 @@ export interface ExecCommandOptions {
    * When `true`, skip shell-environment snapshot sourcing for this call even if
    * {@link SHELL_SNAPSHOT_ENV} is enabled (the command runs with a plain
    * non-login shell). Used for probe/internal commands that must not inherit the
-   * user's aliases/functions. Parity with Claude Code's `createBashShellProvider({
+   * user's aliases/functions. Parity with the reference's `createBashShellProvider({
    * skipSnapshot })` (bashProvider.ts). No effect when snapshots are disabled.
    */
   skipSnapshot?: boolean;
@@ -1421,7 +1421,7 @@ export interface ExecCommandOptions {
    * output (`totalLines > 100`). It fires EVEN when no new output arrived since
    * the last tick (empty `lastLines`/`allLines`) so a caller's progress loop
    * wakes on a silent long-running command and can decide to background it.
-   * Parity with Claude Code's `ExecOptions.onProgress` (Shell.ts:L161-169) +
+   * Parity with the reference's `ExecOptions.onProgress` (Shell.ts:L161-169) +
    * the always-tick poller (TaskOutput.ts:L119-149). `onData` still streams raw
    * chunks for callers that only want the bytes.
    */
@@ -1435,7 +1435,7 @@ export interface ExecCommandOptions {
   /**
    * When `false`, the command's final working directory (captured via `pwd -P`
    * on the bash path) is written into {@link ExecCommandResult.cwd} so a caller
-   * can persist a `cd` across invocations (parity with Claude Code's
+   * can persist a `cd` across invocations (parity with the reference's
    * `ExecOptions.preventCwdChanges` / `nativeCwdFilePath`, Shell.ts:L170,
    * L385-414). Defaults to NOT tracking (undefined/`true`) so AMI's existing
    * per-call `cwd` contract and all current callers are unchanged — a caller
@@ -1452,7 +1452,7 @@ export interface ExecCommandOptions {
    * {@link ExecCommandResult.fullOutputSize}, but ONLY when the captured output
    * actually overflowed the in-memory window (otherwise the inline result is
    * already complete and the temp file is discarded, so small commands pay no
-   * retrieval surface). Defaults to off. Parity with Claude Code's
+   * retrieval surface). Defaults to off. Parity with the reference's
    * persist-complete-output-to-disk model (BashTool.tsx:L725-753).
    */
   persistFullOutput?: boolean;
@@ -1474,7 +1474,7 @@ export interface ExecCommandResult {
    * mid-command, i.e. `abortSignal.reason === 'interrupt'`) resolved this call
    * WITHOUT killing the process — it is left running so the caller can background
    * it and keep its in-flight/partial work. A hard abort (any other reason)
-   * still kills the process tree and leaves this unset. Parity with Claude
+   * still kills the process tree and leaves this unset. Parity with the reference
    * Code's `#abortHandler` interrupt branch (ShellCommand.ts:L186-193).
    */
   backgrounded?: boolean;
@@ -1651,7 +1651,7 @@ export function execCommand(
     // The shell family (`effectiveShellType`) was resolved up-front (an explicit
     // per-call `shellType` wins, otherwise the operator default
     // `AMI_DEFAULT_SHELL` → `'bash'`). PowerShell is opt-in and never
-    // auto-selected (parity with Claude's resolveDefaultShell).
+    // auto-selected (parity with the reference's resolveDefaultShell).
     const explicitShellPath = (shellPath || '').trim();
 
     let shell: string;
@@ -1713,7 +1713,7 @@ export function execCommand(
       // capture the user's aliases/functions/options/PATH once per session and
       // source them before the command so model-run commands match the user's
       // interactive shell. Aliases only expand on a second parse pass, so the
-      // command is wrapped in `eval` after the source (parity with Claude Code's
+      // command is wrapped in `eval` after the source (parity with the reference's
       // bashProvider). When the snapshot is requested but unavailable (creation
       // failed or the file vanished mid-session) we gracefully fall back to a
       // login shell (`-l`) so the profile/rc files are at least sourced.
@@ -1732,7 +1732,7 @@ export function execCommand(
         : normalizedCommand;
       if (snapshotPath) shellHooks.onShellDebug('Sourcing shell snapshot; spawning without login (-l skipped)');
 
-      // Optional command wrapping via a configured shell prefix. The Claude-Code
+      // Optional command wrapping via a configured shell prefix. The reference
       // name (CLAUDE_CODE_SHELL_PREFIX) is accepted as a fallback for parity.
       const prefix = process.env.AMI_SHELL_PREFIX || process.env.CLAUDE_CODE_SHELL_PREFIX;
       const finalCommand = prefix ? formatShellPrefixCommand(prefix, assembledCommand) : assembledCommand;
@@ -1746,7 +1746,7 @@ export function execCommand(
       // Opt-in cwd tracking (preventCwdChanges === false): after the user command
       // runs, write the shell's final working directory to a temp file WITHOUT
       // disturbing the command's own exit code, so a `cd` can be persisted across
-      // invocations (parity with Claude Code's nativeCwdFilePath / `pwd -P`,
+      // invocations (parity with the reference's nativeCwdFilePath / `pwd -P`,
       // Shell.ts:L385-414). Read back + unlinked in finish().
       let trackedCommand = finalCommand;
       if (trackCwd) {
@@ -1872,7 +1872,7 @@ export function execCommand(
       // still running (abortSignal.reason === 'interrupt'). Do NOT kill — resolve
       // and leave the process running so the caller can background it and keep
       // its in-flight/partial work. Any other abort reason is a hard abort that
-      // kills the whole process tree. Parity: Claude Code's #abortHandler
+      // kills the whole process tree. Parity: the reference's #abortHandler
       // interrupt branch (ShellCommand.ts:L186-193).
       if (abortSignal?.reason === 'interrupt') {
         finish(null, null, true);
@@ -2060,7 +2060,7 @@ export const PS_TABLE_CMD = 'ps -A -o pid=,ppid=';
 
 /**
  * Default hard timeout (ms) for the single process-table read backing the
- * ancestor walk (parity with Claude Code's getAncestorPidsAsync 3000ms cap), so a
+ * ancestor walk (parity with the reference's getAncestorPidsAsync 3000ms cap), so a
  * hung `ps`/`wmic` can never stall the caller.
  */
 export const ANCESTOR_WALK_TIMEOUT_MS = 3000;
@@ -2068,10 +2068,10 @@ export const ANCESTOR_WALK_TIMEOUT_MS = 3000;
 /**
  * Default hard timeout (ms) for the single process-table read backing the
  * DESCENDANT walk ({@link collectProcessTree}) used by {@link killTree} (parity
- * with Claude Code's getChildPids 1000ms cap), so a hung `ps` during a
+ * with the reference's getChildPids 1000ms cap), so a hung `ps` during a
  * kill/cleanup/shutdown can never stall the kill path. On timeout the read
  * throws and collectProcessTree degrades to `[rootPid]` — the same empty-result
- * fallback Claude's getChildPids applies.
+ * fallback the reference's getChildPids applies.
  */
 export const DESCENDANT_WALK_TIMEOUT_MS = 1000;
 
@@ -2113,7 +2113,7 @@ export function readParentPidMap(timeoutMs = ANCESTOR_WALK_TIMEOUT_MS): Map<numb
 
 /**
  * Walk the ANCESTOR (parent) chain of `startPid` UPWARD, returning ancestor pids
- * from immediate parent to furthest ancestor — parity with Claude Code's
+ * from immediate parent to furthest ancestor — parity with the reference's
  * getAncestorPidsAsync (genericProcessUtils.ts:L36-L86). Three defensive bounds:
  *   - a `maxDepth` cap (default 10) so a corrupt/cyclic ppid link can't loop
  *     forever (a visited-set ALSO breaks a cycle before the cap is reached),
@@ -2158,7 +2158,7 @@ export function collectAncestorPids(
  *
  * The underlying `ps` read is bounded by a hard `timeoutMs`
  * ({@link DESCENDANT_WALK_TIMEOUT_MS}) — matching the bounded ancestor walk
- * ({@link readParentPidMap}) and Claude Code's 1000ms getChildPids cap — so a
+ * ({@link readParentPidMap}) and the reference's 1000ms getChildPids cap — so a
  * hung `ps` can never stall the kill path; on timeout the throw degrades to the
  * `[rootPid]` fallback.
  */

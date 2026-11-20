@@ -36,7 +36,7 @@ export function stripDisplayTags(text: string): string {
 
 /**
  * Like {@link stripDisplayTags} but returns the EMPTY string when the message is
- * ALL tags (no human-authored prose survives the strip). Parity: Claude's
+ * ALL tags (no human-authored prose survives the strip). Parity: the reference's
  * `stripDisplayTagsAllowEmpty` (utils/displayTags.ts:31-39), used so a title
  * deriver can DETECT a command-only / pure-injected-tag message (e.g. a bare
  * `/clear`, a lone `<session-start-hook>…</session-start-hook>`, or a
@@ -61,7 +61,7 @@ export function stripDisplayTagsAllowEmpty(text: string): string {
  * Unlike {@link XML_TAG_BLOCK_PATTERN} (which strips ANY lowercase block), this
  * matches ONLY the injected-context families above so genuine user-typed markup —
  * lowercase HTML like `<code>foo</code>`, a `<div>`, a `<pre>` snippet — survives
- * untouched. Parity with Claude's `IDE_CONTEXT_TAGS_PATTERN`
+ * untouched. Parity with the reference's `IDE_CONTEXT_TAGS_PATTERN`
  * (references/claude/claude-code-main/src/utils/displayTags.ts:41-43), widened to
  * the tag set AMI actually appends. The `command-[\w-]*` / `local-command-[\w-]*`
  * arms cover the whole marker family with one bounded alternative; the
@@ -77,7 +77,7 @@ const INJECTED_CONTEXT_TAGS_PATTERN = /<(system-reminder|system|ide_opened_file|
  * HTML. Used on the up-arrow recall / resubmit path so a prompt restored for
  * re-editing drops any injected context block (a `<system-reminder>` or IDE/command
  * marker that was concatenated into the stored turn) while keeping the human-authored
- * prose and markup exactly as typed. Parity: Claude's `stripIdeContextTags`
+ * prose and markup exactly as typed. Parity: the reference's `stripIdeContextTags`
  * (utils/displayTags.ts:45-51). Returns the trimmed remainder (possibly empty, so a
  * caller can detect an all-injected turn and skip it).
  */
@@ -98,7 +98,7 @@ function escapeTagName(tag: string): string {
  * parameterized complement to the strip helpers above: where {@link stripDisplayTags}
  * REMOVES wrapper blocks, this PULLS a named channel out of message content — e.g.
  * the command name/args/output markers a local slash-command turn carries
- * (`<command-name>`, `<bash-input>`, `<local-command-stdout>`). Parity: Claude's
+ * (`<command-name>`, `<bash-input>`, `<local-command-stdout>`). Parity: the reference's
  * `extractTag` (references/claude/claude-code-main/src/utils/messages.ts:633-687),
  * used by `UserLocalCommandOutputMessage` to render local-command stdout/stderr.
  *

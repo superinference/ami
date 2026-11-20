@@ -22,7 +22,7 @@ export interface RateLimitOverage {
   resetsAt: number | null;
 }
 
-/** Raw utilization of a single rate-limit window (parity: Claude's RawWindowUtilization). */
+/** Raw utilization of a single rate-limit window (parity: the reference's RawWindowUtilization). */
 export interface RawWindowUtilization {
   /** Utilization fraction in [0, 1]. */
   utilization: number;
@@ -31,7 +31,7 @@ export interface RawWindowUtilization {
 }
 
 /**
- * Raw per-window utilization snapshot, tracked on EVERY response (parity: Claude's
+ * Raw per-window utilization snapshot, tracked on EVERY response (parity: the reference's
  * getRawUtilization). Exposed to statusline scripts and diagnostics so a window's
  * burn can be surfaced without waiting for a warning threshold to fire.
  */
@@ -47,7 +47,7 @@ export interface RateLimitStatus {
   tokensPercent: number;
   shouldWarn: boolean;
   /**
-   * Coarse rate-limit tier (parity: Claude's getRateLimitMessage models distinct
+   * Coarse rate-limit tier (parity: the reference's getRateLimitMessage models distinct
    * warning/rejected tiers, not a single boolean). Always present:
    * - `'ok'` — utilization is below the warn threshold.
    * - `'warning'` — approaching the limit (`shouldWarn`, below the at-limit tier).
@@ -107,7 +107,7 @@ export interface RateLimitTrackerOptions {
    */
   errorThreshold?: number;
   /**
-   * Proactive early-warning ladders keyed by unified-window (parity: Claude's
+   * Proactive early-warning ladders keyed by unified-window (parity: the reference's
    * EARLY_WARNING_CONFIGS). Defaults to {@link DEFAULT_EARLY_WARNING_CONFIGS}.
    * Supply custom windows/thresholds to tune when a proactive heads-up fires;
    * an empty array disables proactive early warnings entirely.
@@ -133,7 +133,7 @@ function clampFraction(value: number | undefined, fallback: number): number {
 }
 
 // Burn-rate threshold: warn when utilization is high relative to how little of
-// the reset window has elapsed (mirrors Claude's getTimeRelativeEarlyWarning
+// the reset window has elapsed (mirrors the reference's getTimeRelativeEarlyWarning
 // conservative 5h-window tier). We derive the window from observed resets rather
 // than a fixed provider window, so only the conservative tier is applied — the
 // aggressive 7d-style low tiers would false-positive on a single observation
@@ -227,7 +227,7 @@ export class RateLimitTracker {
 
   getStatus(): RateLimitStatus {
     const now = Date.now();
-    // Stale post-reset-window guard (parity: Claude's getRateLimitMessage
+    // Stale post-reset-window guard (parity: the reference's getRateLimitMessage
     // suppresses an `allowed_warning` carrying stale low-usage data "after week
     // reset"). getStatus derives everything from the last-seen remaining/limit, so
     // once a bucket's reset window has elapsed (resetAt>0 && now>=resetAt) the real
@@ -258,7 +258,7 @@ export class RateLimitTracker {
     const bucketWarn = reqWarn || tokWarn;
 
     // Proactive early warning from the unified per-window utilization headers
-    // (parity: Claude's getEarlyWarningFromHeaders). Uses the FIXED provider
+    // (parity: the reference's getEarlyWarningFromHeaders). Uses the FIXED provider
     // window, so the aggressive 7-day tiers — which the observed-window burn-rate
     // heuristic above cannot evaluate — can fire here.
     const earlyWarn = computeEarlyWarning(this.unifiedWindows, this.earlyWarningConfigs);
@@ -328,7 +328,7 @@ export class RateLimitTracker {
    * update (unlike {@link RateLimitStatus.warnMessage}, which only materializes
    * once a warning threshold fires). Each bucket reports a utilization fraction in
    * [0, 1] plus its reset instant (Unix epoch SECONDS); a bucket never observed is
-   * omitted. Surfaced to statusline scripts/diagnostics (parity: Claude's
+   * omitted. Surfaced to statusline scripts/diagnostics (parity: the reference's
    * getRawUtilization), so the current burn is visible without a warning pending.
    */
   getRawUtilization(): RawUtilization {

@@ -9,7 +9,7 @@ import * as tls from 'node:tls';
  * private CA that is not in the system trust store. AMI reads the certificate,
  * private key, optional key passphrase, and optional CA bundle from env vars and
  * presents / trusts them on outbound HTTPS connections (direct and through a
- * proxy). Mirrors Claude Code's CLAUDE_CODE_CLIENT_CERT / _KEY / _KEY_PASSPHRASE
+ * proxy). Mirrors the reference's CLAUDE_CODE_CLIENT_CERT / _KEY / _KEY_PASSPHRASE
  * knobs, as an additive superset (CA bundle, inline PEM, secure TLS floor).
  */
 
@@ -49,7 +49,7 @@ export const SYSTEM_CA_NODE_OPTIONS = ['--use-system-ca', '--use-openssl-ca'] as
 /**
  * True when `flag` is present in the Node runtime options — either as a process
  * `execArgv` entry or inside the `NODE_OPTIONS` env string (bare `--flag` or
- * `--flag=value` forms). Mirrors Claude Code's `hasNodeOption` so the
+ * `--flag=value` forms). Mirrors the reference's `hasNodeOption` so the
  * `--use-system-ca` / `--use-openssl-ca` toggles are honored regardless of how
  * Node was launched. Pure + injectable for tests.
  */
@@ -75,7 +75,7 @@ export interface CATrustDeps {
  * Assemble the CA trust bundle to pin on a CUSTOM undici dispatcher (proxy /
  * mTLS agent). Setting `ca` on an agent REPLACES Node's default store, so when
  * any custom trust material is in play this returns the bundled Mozilla roots as
- * the base and ADDS to them, never replacing — mirroring Claude Code's
+ * the base and ADDS to them, never replacing — mirroring the reference's
  * getCACertificates (caCerts.ts / mtls.ts / proxy.ts). Composed of, in order:
  *   1. bundled roots (`tls.rootCertificates`) — the default store, preserved;
  *   2. the OS/system trust store (`tls.getCACertificates('system')`) when

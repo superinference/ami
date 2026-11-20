@@ -18,9 +18,9 @@ export const cronDeleteTool: ToolDefinition = {
     'Pass ignoreMissing:true to treat an already-deleted / unknown id as a no-op (idempotent) ' +
     'instead of an error.',
   // PARITY (additive): long-form when-to-use guidance kept ALONGSIDE the terse
-  // description (Claude splits CRON_DELETE_DESCRIPTION vs buildCronDeletePrompt).
+  // description (the reference splits CRON_DELETE_DESCRIPTION vs buildCronDeletePrompt).
   // Surfaced to the model when AMI's tools are exposed over MCP (mcp-server.ts
-  // appends `prompt` to `description`). Mirrors Claude's durable-aware wording:
+  // appends `prompt` to `description`). Mirrors the reference's durable-aware wording:
   // a cancel removes the job previously scheduled by cron_create from the durable
   // on-disk store OR the in-memory session store, depending on how it was created.
   prompt:
@@ -61,7 +61,7 @@ export const cronDeleteTool: ToolDefinition = {
     // Exactly one selector (id | ids | all) is required; enforced in execute so the
     // mutual-exclusivity / "pick one" error is surfaced cleanly.
   },
-  // PARITY (additive): declared structured-result schema (Claude's CronDeleteTool
+  // PARITY (additive): declared structured-result schema (the reference's CronDeleteTool
   // outputSchema). Object-rooted so the provider advertises it
   // (toolDefinitionsToOpenAI exposes object-root outputSchema only). Lets a
   // programmatic / SDK / resume caller branch on the deleted id(s) + count +
@@ -196,7 +196,7 @@ export const cronDeleteTool: ToolDefinition = {
     const unauthorized: Array<{ id: string; message: string }> = [];
     // Count of already-enqueued/in-flight runs aborted alongside the deletes, so a
     // cancel is a true abort (drain pending work) not just "stop future scheduling"
-    // — mirrors Claude's killShellTasks dequeueAllMatching alongside clearing timers.
+    // — mirrors the reference's killShellTasks dequeueAllMatching alongside clearing timers.
     let inFlightCancelled = 0;
     for (const id of ids) {
       try {
@@ -229,10 +229,10 @@ export const cronDeleteTool: ToolDefinition = {
           return { output: `Job "${id}" was already deleted (nothing to do).`, metadata: { deleted: 0, deletedIds: [], alreadyDeleted: true } };
         }
         // Name the entity so the message matches the "scheduled job" vocabulary of
-        // the description (parity: Claude's `No scheduled job with id '<id>'`).
+        // the description (parity: the reference's `No scheduled job with id '<id>'`).
         return { output: `Error: no scheduled job with id "${id}" (not found).`, isError: true, metadata: { errorCode: 1 } };
       }
-      // Verb aligned with the tool's "Cancel" description (parity: Claude's
+      // Verb aligned with the tool's "Cancel" description (parity: the reference's
       // `Cancelled job <id>.`).
       return {
         output: `Cancelled job ${id}.${inFlightNote}`,

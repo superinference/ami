@@ -14,7 +14,7 @@ import { escapeRegExp } from '../utils/string';
  * Optional numeric tool-arg: tolerate a model-quoted number ("5") via the shared
  * `coerceNumber`, but preserve "not supplied" as `undefined` (an absent context /
  * head-limit knob must stay absent, not collapse to a default). Garbage coerces to
- * `undefined` rather than injecting a bogus value. Mirrors Claude Code's
+ * `undefined` rather than injecting a bogus value. Mirrors the reference's
  * semanticNumber tolerance without masking bad input via a bare Number().
  */
 function optionalNumber(v: unknown): number | undefined {
@@ -27,7 +27,7 @@ function optionalNumber(v: unknown): number | undefined {
  * Optional boolean tool-arg: tolerate the string literals "true"/"false" (what
  * providers often serialize) while keeping "not supplied" distinguishable as
  * `undefined` — `line_numbers` defaults to true ONLY when absent, so it must not
- * collapse to false. Mirrors Claude Code's semanticBoolean.
+ * collapse to false. Mirrors the reference's semanticBoolean.
  */
 function optionalBool(v: unknown): boolean | undefined {
   if (v === undefined || v === null) return undefined;
@@ -38,7 +38,7 @@ const MAX_LINES = 250;
 const RG_TIMEOUT = 20_000;
 /** On WSL, filesystem I/O over the /mnt bridge is far slower — bump the default. */
 const WSL_RG_TIMEOUT = 60_000;
-/** Env override for the search timeout, in seconds. Mirrors Claude Code's CLAUDE_CODE_*. */
+/** Env override for the search timeout, in seconds. Mirrors the reference's CLAUDE_CODE_*. */
 const GREP_TIMEOUT_ENV = 'AMI_GREP_TIMEOUT_SECONDS';
 
 /** True when running under WSL (slow /mnt bridge). Re-exported from the canonical
@@ -48,7 +48,7 @@ export { isWSL };
 
 /**
  * Resolve the search timeout in ms: an explicit AMI_GREP_TIMEOUT_SECONDS override
- * wins, else 60s on WSL (slow /mnt), else the 20s default. Mirrors Claude Code's
+ * wins, else 60s on WSL (slow /mnt), else the 20s default. Mirrors the reference's
  * platform-aware, env-overridable ripgrep timeout.
  */
 export function grepTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
@@ -69,7 +69,7 @@ const KILL_GRACE_MS = 2_000;
 // flush/clean up on), then escalate to the uncatchable SIGKILL if it is still
 // alive after this delay. SIGTERM alone may not kill ripgrep when it is blocked in
 // uninterruptible I/O (deep filesystem traversal). Kept below KILL_GRACE_MS so the
-// forced kill is attempted before we give up and resolve. Mirrors Claude Code's
+// forced kill is attempted before we give up and resolve. Mirrors the reference's
 // SIGTERM-before-SIGKILL escalation.
 const SIGKILL_ESCALATION_MS = 1_000;
 
@@ -194,7 +194,7 @@ Usage:
       glob: {
         type: 'string',
         description:
-          'Alias for include (Claude Code canonical name). Glob pattern to filter files, e.g. "*.{ts,tsx}".',
+          'Alias for include (the reference canonical name). Glob pattern to filter files, e.g. "*.{ts,tsx}".',
       },
       fixed_strings: {
         type: 'boolean',
@@ -247,23 +247,23 @@ Usage:
       },
       '-A': {
         type: 'number',
-        description: 'Alias for after_context (Claude Code canonical name). Lines of context after each match (rg -A). Requires output_mode: "content".',
+        description: 'Alias for after_context (the reference canonical name). Lines of context after each match (rg -A). Requires output_mode: "content".',
       },
       '-B': {
         type: 'number',
-        description: 'Alias for before_context (Claude Code canonical name). Lines of context before each match (rg -B). Requires output_mode: "content".',
+        description: 'Alias for before_context (the reference canonical name). Lines of context before each match (rg -B). Requires output_mode: "content".',
       },
       '-C': {
         type: 'number',
-        description: 'Alias for context_lines (Claude Code canonical name). Lines of context before and after each match (rg -C). Requires output_mode: "content".',
+        description: 'Alias for context_lines (the reference canonical name). Lines of context before and after each match (rg -C). Requires output_mode: "content".',
       },
       '-n': {
         type: 'boolean',
-        description: 'Alias for line_numbers (Claude Code canonical name). Show line numbers (rg -n). Requires output_mode: "content".',
+        description: 'Alias for line_numbers (the reference canonical name). Show line numbers (rg -n). Requires output_mode: "content".',
       },
       '-i': {
         type: 'boolean',
-        description: 'Alias for case_insensitive (Claude Code canonical name). Case-insensitive matching (rg -i).',
+        description: 'Alias for case_insensitive (the reference canonical name). Case-insensitive matching (rg -i).',
       },
     },
     required: ['pattern'],
@@ -273,23 +273,23 @@ Usage:
   // Curated discovery phrase weighted by `tool_search` above the prose description:
   // surfaces capability synonyms NOT already in the name/description ("contents",
   // "regex") so the model can find grep by intent even when it is deferred. Parity:
-  // Claude Code's GrepTool `searchHint: 'search file contents with regex (ripgrep)'`.
+  // the reference's GrepTool `searchHint: 'search file contents with regex (ripgrep)'`.
   searchHint: 'search file contents with regex (ripgrep)',
 
   async execute(
     input: Record<string, unknown>,
     context: ToolContext,
   ): Promise<ToolResult> {
-    // `glob` is Claude Code's canonical name for the file-filter param; accept both.
+    // `glob` is the reference's canonical name for the file-filter param; accept both.
     const include = (input.include ?? input.glob) as string | undefined;
     const outputMode = (input.output_mode as string) || 'files_with_matches';
     // Numeric/boolean params are coerced from the string literals providers often
     // serialize (`"true"`, `"5"`) — a model emitting `"head_limit":"5"` must behave
     // like `5`, and `"case_insensitive":"false"` must be false (not truthy). Mirrors
-    // Claude Code's semanticNumber/semanticBoolean coercion.
-    // Accept Claude Code's canonical single-letter aliases (-A/-B/-C/-n/-i) as
+    // the reference's semanticNumber/semanticBoolean coercion.
+    // Accept the reference's canonical single-letter aliases (-A/-B/-C/-n/-i) as
     // synonyms for AMI's descriptive names, so a tool call authored against the
-    // Claude schema runs unchanged. The descriptive name wins when both are given.
+    // the reference schema runs unchanged. The descriptive name wins when both are given.
     const fixedStrings = coerceBool(input.fixed_strings);
     const lineNumbers = optionalBool(input.line_numbers ?? input['-n']);
     const caseInsensitive = coerceBool(input.case_insensitive ?? input['-i']);
@@ -340,7 +340,7 @@ Usage:
     const rgCommand = rgConfig.command;
     // File-READ deny globs the permission layer wants excluded from search output, so a
     // file the user forbade reading never surfaces (its path OR its matching lines) in any
-    // output mode. Threaded into every search path (rg, grep, in-process). Parity: Claude's
+    // output mode. Threaded into every search path (rg, grep, in-process). Parity: the reference's
     // getFileReadIgnorePatterns → `--glob !pattern` injection.
     const readIgnore = context.readIgnorePatterns ?? [];
     const rgArgs = buildRgArgs(cleanedPattern, resolved, include, outputMode, caseInsensitive, contextLines, multiline, fileType, beforeContext, afterContext, fetchLimit, lineNumbers, fixedStrings, readIgnore);
@@ -597,15 +597,15 @@ function buildRgArgs(
   args.push('--hidden');
   // Exclude VCS metadata stores from searches. `.sl` is Sapling — without it a grep
   // over a Sapling checkout would walk the internal object store (noise + possible
-  // leakage of packed content). Mirrors Claude Code's full VCS exclusion set.
+  // leakage of packed content). Mirrors the reference's full VCS exclusion set.
   args.push('--glob', '!.git', '--glob', '!.svn', '--glob', '!.hg', '--glob', '!.bzr', '--glob', '!.jj', '--glob', '!.sl');
   // Superseded plugin versions relocated to the hidden `.orphaned/` hold dir
   // (common's plugin-orphan-cache) hold stale SKILL.md/source until reclaimed;
-  // never return matches from them (parity: Claude's getGlobExclusionsForPluginCache).
+  // never return matches from them (parity: the reference's getGlobExclusionsForPluginCache).
   args.push('--glob', `!${ORPHANED_PLUGIN_HOLD_DIRNAME}`);
   // Read-deny exclusions: hide files the permission layer forbids reading from EVERY
   // output mode (including content, which would otherwise print their lines). Negated
-  // globs anchored per ripgrep's cwd-relative ignore rule. Parity: Claude GrepTool.
+  // globs anchored per ripgrep's cwd-relative ignore rule. Parity: the reference GrepTool.
   if (readIgnore) {
     for (const p of readIgnore) args.push('--glob', toRgIgnoreGlob(p));
   }
@@ -636,7 +636,7 @@ function buildRgArgs(
   // multi-threaded engine whenever a sort is requested, so sorting in rg slowed
   // every search AND reordered content/count output. Instead, content/count keep
   // ripgrep's natural (parallel) order and files_with_matches is sorted newest-first
-  // in JS via sortFilesWithMatchesByMtime (stat + mtime). Mirrors Claude Code's
+  // in JS via sortFilesWithMatchesByMtime (stat + mtime). Mirrors the reference's
   // GrepTool, which runs rg parallel and does the mtime sort in JS.
 
   if (include) {
@@ -646,7 +646,7 @@ function buildRgArgs(
   if (fileType) args.push('--type', fileType);
   // context_lines (-C) takes precedence: when a symmetric context is set, the
   // independent before/after knobs are ignored so the two can't fight over the
-  // same window. Mirrors Claude Code's GrepTool precedence.
+  // same window. Mirrors the reference's GrepTool precedence.
   if (!(contextLines && contextLines > 0)) {
     if (beforeContext != null) args.push('-B', String(beforeContext));
     if (afterContext != null) args.push('-A', String(afterContext));
@@ -716,7 +716,7 @@ export function stripTrailingCR(line: string): string {
 
 /**
  * Split a raw stdout chunk into COMPLETE lines while carrying the partial trailing
- * line forward as a remainder across chunk boundaries. Mirrors Claude Code's
+ * line forward as a remainder across chunk boundaries. Mirrors the reference's
  * `ripGrepStream` chunk handling (ripgrep.ts): prepend the prior remainder, split
  * on `\n`, pop the last (possibly partial) segment back into `remainder`, and strip
  * a trailing CR from each complete line. A searcher writes result lines as they are
@@ -752,7 +752,7 @@ export function runSearch(
     // still accumulating the authoritative buffered `stdout` the final result is
     // parsed from. A partial trailing line is carried in `progressRemainder` across
     // chunk boundaries and flushed only on a clean close — never a torn tail from a
-    // killed/aborted/timed-out process. Mirrors Claude Code's `ripGrepStream`.
+    // killed/aborted/timed-out process. Mirrors the reference's `ripGrepStream`.
     const onProgress = context.onProgress;
     let progressRemainder = '';
     const streamProgress = (chunk: string): void => {
@@ -802,7 +802,7 @@ export function runSearch(
     // alone may not kill ripgrep when it is blocked in uninterruptible I/O. On
     // Windows SIGTERM throws, so use the default signal there. Either way we settle
     // after a grace period even if 'close' never fires (a wedged process may not emit
-    // it — the "search never returns" hang). Mirrors Claude Code's escalation.
+    // it — the "search never returns" hang). Mirrors the reference's escalation.
     const killThenSettle = (outcome: SearchOutcome) => {
       try {
         if (grepHooks.platform === 'win32') {
@@ -854,7 +854,7 @@ export function runSearch(
         // memory without limit. Keep the first MAX_SEARCH_OUTPUT_BYTES and stop
         // accumulating. Unlike the stdout cap we do NOT kill the child — stderr
         // is diagnostic, not the result, and the search may still complete with
-        // useful stdout. Mirrors Claude Code's dual stdout/stderr buffer cap.
+        // useful stdout. Mirrors the reference's dual stdout/stderr buffer cap.
         stderr = stderr.slice(0, MAX_SEARCH_OUTPUT_BYTES);
         stderrTruncated = true;
       }
@@ -868,7 +868,7 @@ export function runSearch(
       // Critical errors mean the searcher is broken, not "binary missing" — surface
       // them instead of silently falling through to the next searcher (which would
       // hide a real permission problem). ENOENT (binary not installed) still falls
-      // back. Mirrors Claude Code's CRITICAL_ERROR_CODES distinction.
+      // back. Mirrors the reference's CRITICAL_ERROR_CODES distinction.
       if (err.code === 'EACCES' || err.code === 'EPERM') {
         settle({ output: null, searchError: `${command}: ${err.code} ${err.message ?? ''}`.trim() });
         return;
@@ -931,7 +931,7 @@ export function runSearch(
  * via its own candidate sort — the in-process walk). A failed `stat` (file
  * deleted/denied between the search and the stat) sorts as mtime 0 (last). Under
  * `NODE_ENV==='test'` the order is filename-only so fixtures written in the same
- * instant are deterministic. Mirrors Claude Code's GrepTool mtime sort.
+ * instant are deterministic. Mirrors the reference's GrepTool mtime sort.
  */
 export function sortFilesWithMatchesByMtime(
   output: string,
@@ -960,7 +960,7 @@ export function sortFilesWithMatchesByMtime(
  * On timeout, salvage any already-collected matches instead of discarding them:
  * drop the last (possibly truncated) line, format the rest, and append a timeout
  * note. Returns null when nothing usable was collected (caller errors out instead).
- * Mirrors Claude Code's return-partial-results-on-timeout behavior.
+ * Mirrors the reference's return-partial-results-on-timeout behavior.
  */
 function partialOnTimeout(
   output: string | null,
@@ -989,7 +989,7 @@ function partialOnTimeout(
  * first `:<digits>` boundary. A naive `line.split(':')[0]` mis-parses Windows
  * drive-letter paths (`C:\dir\file.ts:5:text` → `C`), inflating the per-file count.
  * files_with_matches mode emits bare paths with no `:N`, so the whole line is the
- * path. Mirrors Claude Code's drive-safe `^(.*?):(\d+):` parse (GlobalSearchDialog).
+ * path. Mirrors the reference's drive-safe `^(.*?):(\d+):` parse (GlobalSearchDialog).
  */
 export function grepLineFilePath(line: string): string {
   const m = line.match(/^(.*?):\d+(?::|$)/);

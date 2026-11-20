@@ -38,7 +38,7 @@ export const agenticFetchTool: ToolDefinition = {
     // returns the NaN fallback for every non-numeric shape (empty/garbage string,
     // boolean, array, object), so those now error rather than injecting a bogus
     // page count; only a real finite number or a numeric string literal is
-    // accepted. Mirrors Claude Code's semanticNumber (strict decimal coercion,
+    // accepted. Mirrors the reference's semanticNumber (strict decimal coercion,
     // reject-on-garbage) using AMI's canonical coerce helper.
     let maxPages = 3;
     if (input.max_pages !== undefined && input.max_pages !== null) {

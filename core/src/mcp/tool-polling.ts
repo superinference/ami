@@ -4,7 +4,7 @@
  * Besides pushing `notifications/resources/updated` (handled by
  * {@link ./resource-update-notice}), an MCP integration can surface a *second*
  * inbound update kind to the model: a periodically re-invoked ("polled") tool whose
- * output has changed since the last poll. Claude Code renders this through the same
+ * output has changed since the last poll. the reference renders this through the same
  * `UserResourceUpdateMessage` component as a distinct
  * `<mcp-polling-update type="tool" server="…" tool="…"><reason>…</reason>` block.
  *
@@ -22,7 +22,7 @@
  *    flight is surfaced exactly once.
  *  - {@link formatToolPollingNotice} renders the one-line provenance string.
  *
- * Parity: Claude Code's `UserResourceUpdateMessage` polling branch
+ * Parity: the reference's `UserResourceUpdateMessage` polling branch
  * (`components/messages/UserResourceUpdateMessage.tsx`).
  */
 

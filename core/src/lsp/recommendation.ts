@@ -15,7 +15,7 @@
  * `lspRecommendationIgnoredCount`) by adding the parts that were missing:
  *   1. {@link getMatchingLspPlugins} — the staged, cheapest-first filter pipeline
  *      (extension match → never-list → already-installed → binary-gate → dedup →
- *      official-first ordering), mirroring Claude Code's
+ *      official-first ordering), mirroring the reference's
  *      `getMatchingLspPlugins` (utils/plugins/lspRecommendation.ts).
  *   2. {@link applyLspRecommendationResponse} — the pure reducer that turns a user's
  *      4-value response (`yes | no | never | disable`) into config-field updates,
@@ -42,7 +42,7 @@ import {
 } from '../types';
 
 /**
- * A user's answer to an LSP-plugin recommendation, mirroring Claude Code's 4-value
+ * A user's answer to an LSP-plugin recommendation, mirroring the reference's 4-value
  * menu response schema (LspRecommendationMenu.tsx `onResponse`):
  *   - `yes`     — install the plugin now,
  *   - `no`      — defer (counts as an ignore; auto-dismiss/timeout maps here too),
@@ -115,7 +115,7 @@ export interface MatchLspPluginsOptions {
 
 /**
  * The lowercased file extension (WITH leading dot) of a path, or `''` when the
- * file has none. Mirrors Claude Code's `extname(filePath).toLowerCase()` + the
+ * file has none. Mirrors the reference's `extname(filePath).toLowerCase()` + the
  * no-extension early return.
  */
 export function lspFileExtension(filePath: string): string {
@@ -125,7 +125,7 @@ export function lspFileExtension(filePath: string): string {
 
 /**
  * Find the LSP plugins that should be recommended for `filePath`, applying the
- * SAME staged, deliberately cheapest-first filter pipeline as Claude Code's
+ * SAME staged, deliberately cheapest-first filter pipeline as the reference's
  * `getMatchingLspPlugins`:
  *   0. GLOBAL gate — if recommendations are disabled (explicit off-switch OR the
  *      ignored-count reached {@link MAX_LSP_RECOMMENDATION_IGNORED_COUNT}) → `[]`.
@@ -204,7 +204,7 @@ export function getTopLspRecommendation(
 /**
  * Apply a user's 4-value {@link LspRecommendationResponse} to the recommendation
  * config, returning a NEW config object (never mutates the input). Mirrors the
- * side effects of Claude Code's `useLspPluginRecommendation` hook:
+ * side effects of the reference's `useLspPluginRecommendation` hook:
  *   - `yes`     — no suppression change (install is handled by the caller),
  *   - `no`      — increment `lspRecommendationIgnoredCount` (anti-nag backoff; the
  *                 menu's 30s auto-dismiss/timeout also maps here),
@@ -256,7 +256,7 @@ export function formatLspRecommendationHint(rec: LspPluginRecommendation): strin
 
 /**
  * Per-session anti-nag state for the proactive, edit-triggered recommendation
- * loop. Mirrors Claude Code's `useLspPluginRecommendation` runtime refs:
+ * loop. Mirrors the reference's `useLspPluginRecommendation` runtime refs:
  *   - a `checkedFiles` Set so each file path is examined AT MOST ONCE per session
  *     (the hook's `checkedFilesRef`), and
  *   - a once-per-session cap so AT MOST ONE recommendation is shown

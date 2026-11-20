@@ -106,7 +106,7 @@ export function classifyEnvSecret(
 /**
  * Minimum value length for a partial-reveal preview. Values shorter than this are
  * fully masked (too short to preview without disclosing most of the secret), matching
- * Claude's `REDACT_MIN_LENGTH`. Longer values keep a prefix/suffix for correlation.
+ * the reference's `REDACT_MIN_LENGTH`. Longer values keep a prefix/suffix for correlation.
  */
 export const REDACT_MIN_LENGTH = 16;
 /** Characters of a long secret kept at the start when previewing. */
@@ -117,7 +117,7 @@ export const REDACT_PREVIEW_SUFFIX = 4;
 /**
  * Self-describing redaction marker for a secret class, e.g. 'api_key' →
  * '[REDACTED_API_KEY]', 'gcp_service_account' → '[REDACTED_GCP_SERVICE_ACCOUNT]'.
- * Mirrors Claude's category-specific labels so a human triaging a redacted diagnostic
+ * Mirrors the reference's category-specific labels so a human triaging a redacted diagnostic
  * can tell WHAT kind of secret was hidden — without the value itself ever leaking.
  */
 export function redactionMarker(cls: EnvSecretClass): string {
@@ -128,7 +128,7 @@ export function redactionMarker(cls: EnvSecretClass): string {
  * Mask a secret value. By default returns the typed class marker (full redaction).
  * With `preview`, a value at least {@link REDACT_MIN_LENGTH} long is reduced to
  * `prefix(8)...suffix(4)` so it stays correlatable in debug output without disclosing
- * the body; shorter values still fully mask to the class marker. Mirrors Claude's
+ * the body; shorter values still fully mask to the class marker. Mirrors the reference's
  * `redactSecrets` threshold/slice behavior while keeping full masking as the safe default.
  */
 export function redactSecretValue(value: string, cls: EnvSecretClass, preview = false): string {
@@ -210,7 +210,7 @@ export class EnvAccessGuard {
     const raw = process.env[name];
     // Redact when EITHER the name is sensitive OR the value looks like a secret,
     // so a secret under an innocuous name (e.g. MY_CONFIG=sk-ant…) is still hidden.
-    // The marker is a typed, self-describing '[REDACTED_<CLASS>]' token (mirrors Claude's
+    // The marker is a typed, self-describing '[REDACTED_<CLASS>]' token (mirrors the reference's
     // category-specific labels); `redactedAs` carries the same class for programmatic use.
     // With `preview`, long secrets render as prefix…suffix so they stay correlatable in
     // debug output without disclosing the body (full masking remains the default).

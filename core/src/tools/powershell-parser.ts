@@ -1,5 +1,5 @@
 /**
- * PowerShell AST-based command structural analysis — Claude Code parity.
+ * PowerShell AST-based command structural analysis — the reference parity.
  *
  * On Windows AMI tells the model to use PowerShell, yet the only command
  * security it had was the bash/zsh/cmd-oriented regex layer in
@@ -9,7 +9,7 @@
  * hashtable-embedded redirections — was never *structurally* analysed, so
  * PowerShell-specific permission bypasses went undetected.
  *
- * This module mirrors Claude Code's `utils/powershell/parser.ts`. It parses a
+ * This module mirrors the reference's `utils/powershell/parser.ts`. It parses a
  * PowerShell command with the native .NET AST parser (spawning `pwsh`/
  * `powershell` with `Parser::ParseInput` via `-EncodedCommand`) into a
  * structured {@link ParsedPowerShellCommand}, and provides the pure-TS analysis
@@ -30,7 +30,7 @@
  * parse pipeline is exercisable without a real `pwsh` on the host.
  *
  * [FUNCTIONAL CHANGE] New module — structural PowerShell command analysis
- * (Claude Code parity, parser.ts). Additive: the existing regex-based
+ * (the reference parity, parser.ts). Additive: the existing regex-based
  * `detectPowerShellExecution` text heuristics are retained alongside it.
  */
 
@@ -227,7 +227,7 @@ export type RawParsedOutput = {
 
 // ---------------------------------------------------------------------------
 // Parse timeout knob — read inside the impl, not top-level, so env ordering is
-// respected. Default 5s mirrors Claude Code's DEFAULT_PARSE_TIMEOUT_MS.
+// respected. Default 5s mirrors the reference's DEFAULT_PARSE_TIMEOUT_MS.
 // ---------------------------------------------------------------------------
 
 const DEFAULT_PARSE_TIMEOUT_MS = 5_000;

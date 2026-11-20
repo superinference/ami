@@ -4,7 +4,7 @@ import { normalizeToLf } from './tool-utils';
 /**
  * A single search-and-replace edit, as accepted by the `file_edit` tool's
  * `edits[]` batch form. Mirrors the shape used by {@link applySequentialEdits}
- * and Claude Code's `FileEdit` type.
+ * and the reference's `FileEdit` type.
  */
 export interface FileEditLike {
   old_string: string;
@@ -20,7 +20,7 @@ export interface FileEditLike {
  * drifting apply implementation. Throws a deterministic, normalized `Error` when
  * an edit cannot be applied (empty needle, not found, or an ambiguous match
  * without `replace_all`), so two edit sets that fail the same way compare equal
- * (parity with Claude Code's `getPatchForEdits`, whose thrown message is part of
+ * (parity with the reference's `getPatchForEdits`, whose thrown message is part of
  * the equivalence contract). Edits are normalized to LF first so CRLF-vs-LF
  * differences never masquerade as a semantic divergence.
  */
@@ -67,7 +67,7 @@ function editInputsEqual(a: FileEditLike, b: FileEditLike): boolean {
  * Decide whether two edit sets are EQUIVALENT — they produce the same file from
  * the same starting `originalContent`, OR they both fail identically.
  *
- * Parity with Claude Code's `areFileEditsEquivalent` (FileEditTool/utils.ts):
+ * Parity with the reference's `areFileEditsEquivalent` (FileEditTool/utils.ts):
  *   1. Fast path — literal input equality (same length, same old/new/replace_all
  *      pairwise), no apply needed.
  *   2. Semantic path — apply both sets to `originalContent` and compare the

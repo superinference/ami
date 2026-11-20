@@ -187,7 +187,7 @@ export class ToolAnalytics {
   /**
    * Per-tool context-bloat remediation hints: for each tool whose result tokens
    * occupy more than {@link HINT_THRESHOLD} of total context, emit targeted,
-   * copy-pasteable advice and an estimated token saving. Mirrors Claude's
+   * copy-pasteable advice and an estimated token saving. Mirrors the reference's
    * contextSuggestions (Bash 50% / Read+Grep 30% / WebFetch 40% / generic 30%).
    */
   getContextHints(totalContextTokens: number): ContextHint[] {
@@ -244,7 +244,7 @@ export class ToolAnalytics {
 
   /**
    * Aggregate tool-usage summary across all tools in a single object — the
-   * session-level view Claude Code surfaces alongside the per-tool breakdown.
+   * session-level view the reference surfaces alongside the per-tool breakdown.
    * All rates are 0 when nothing has been recorded (no NaN).
    */
   getOverallStats(): OverallToolStats {

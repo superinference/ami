@@ -38,7 +38,7 @@ import { log } from '../logger';
 /**
  * Open flags for a sub-agent's output-capture file. `O_NOFOLLOW` refuses to open
  * the file if the predictable `<taskId>.output` path has been replaced by a
- * symlink (parity: Claude Code's `O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW` on
+ * symlink (parity: the reference's `O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW` on
  * command-output fds — "to prevent symlink-following attacks from the sandbox").
  * A sandboxed/malicious sub-agent could otherwise pre-plant a symlink at that
  * path and redirect the captured output into an attacker-chosen file (e.g.
@@ -53,7 +53,7 @@ export const OUTPUT_FILE_OPEN_FLAGS =
 const AUTO_BG_MS = 120_000;
 
 /** Master env knob that enables auto-backgrounding of long-running foreground
- *  subagents (parity: Claude's `CLAUDE_AUTO_BACKGROUND_TASKS`). */
+ *  subagents (parity: the reference's `CLAUDE_AUTO_BACKGROUND_TASKS`). */
 export const AUTO_BACKGROUND_TASKS_ENV = 'AMI_AUTO_BACKGROUND_TASKS';
 /** Optional override of the auto-background threshold in ms (default AUTO_BG_MS). */
 export const AUTO_BACKGROUND_MS_ENV = 'AMI_AUTO_BACKGROUND_MS';
@@ -61,7 +61,7 @@ export const AUTO_BACKGROUND_MS_ENV = 'AMI_AUTO_BACKGROUND_MS';
 /**
  * Resolve the auto-background threshold in milliseconds, or `0` when disabled.
  *
- * Mirrors Claude Code's `getAutoBackgroundMs()` (AgentTool.tsx:72-77): a
+ * Mirrors the reference's `getAutoBackgroundMs()` (AgentTool.tsx:72-77): a
  * foreground subagent that is still actively working past this threshold is
  * automatically promoted to a background task so the parent turn is never blocked
  * indefinitely (AMI's only other bound is the 10-min *inactivity* stall timeout,
@@ -106,12 +106,12 @@ export function parsePositiveIntInput(raw: unknown): number | undefined {
 }
 
 /** Turn budget for a `fork` child when its agent definition sets none (mirrors
- *  Claude Code's FORK_AGENT maxTurns:200 — a context-inheriting clone needs a
+ *  the reference's FORK_AGENT maxTurns:200 — a context-inheriting clone needs a
  *  generous ceiling because it continues the parent's full task). */
 export const DEFAULT_FORK_MAX_TURNS = 200;
 
 /**
- * Env knob that enables IMPLICIT FORK (parity: Claude Code's `FORK_SUBAGENT`
+ * Env knob that enables IMPLICIT FORK (parity: the reference's `FORK_SUBAGENT`
  * feature gate + the schema mutation that makes `subagent_type` optional and
  * defaults an omitted type to a fork, forkSubagent.ts:L22-39). When truthy, a
  * `task` call that supplies NEITHER an explicit `mode` NOR a `subagent_type`
@@ -134,7 +134,7 @@ export function isForkSubagentEnabled(env: NodeJS.ProcessEnv = process.env): boo
  * `mode` always wins. Otherwise, when implicit-fork is enabled
  * ({@link isForkSubagentEnabled}) AND the call names no `subagent_type` (so there
  * is no authoritative agent identity to honor), an omitted mode resolves to
- * `fork` — the context-inheriting clone (parity: Claude's omit-subagent_type →
+ * `fork` — the context-inheriting clone (parity: the reference's omit-subagent_type →
  * fork). With implicit-fork off, or when a `subagent_type` is present, an omitted
  * mode stays `general`, preserving AMI's existing default.
  */
@@ -150,7 +150,7 @@ export function resolveSpawnMode(
 
 /**
  * Recursion guard directive stapled into a `fork` child's first user turn
- * (mirrors Claude Code's fork boilerplate rule #1 in `buildChildMessage`,
+ * (mirrors the reference's fork boilerplate rule #1 in `buildChildMessage`,
  * forkSubagent.ts:L178). A fork child inherits the parent's full coding stance —
  * which tells the model to "default to delegating/forking" — AND, at depth 0,
  * keeps the `task` tool in its pool. Without an explicit counter-instruction a
@@ -167,7 +167,7 @@ export const FORK_NO_SUBSPAWN_DIRECTIVE =
  * turn, ALONGSIDE {@link FORK_NO_SUBSPAWN_DIRECTIVE} (which owns the no-subspawn
  * rule — this constant deliberately omits it to avoid duplicating that guidance).
  * Mirrors the non-negotiable worker rules + fixed plain-text report schema of
- * Claude Code's `buildChildMessage` (forkSubagent.ts:L171-198): begin the reply
+ * the reference's `buildChildMessage` (forkSubagent.ts:L171-198): begin the reply
  * with `Scope:`, no preamble/meta-commentary, no text emitted between tool calls,
  * commit modified files and include the commit hash in the report, stay strictly
  * within scope, cap at ~500 words, and report-then-stop in a fixed label format
@@ -211,7 +211,7 @@ export const GIT_HARDENING_ARGS = [
  * Generate a high-entropy, symlink-attack-resistant task/agent ID: 8 random
  * bytes rendered as 16 hex chars (2^64 combinations). The ID derives an on-disk
  * output path, so weak entropy (the old `randomBytes(4)` = 2^32) would make a
- * brute-force symlink race on that path feasible; 8 bytes closes it (Claude Code
+ * brute-force symlink race on that path feasible; 8 bytes closes it (the reference
  * uses a 36-char alphabet for the same 8-byte entropy — hex keeps every existing
  * `agent-[a-f0-9]+` consumer working while matching the entropy floor).
  */
@@ -231,7 +231,7 @@ const AGENT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
  * derives an on-disk output path (`<taskId>.output`), the file-cache key, and the
  * process-manager/registry key, so a model-chosen id must be a single path-safe
  * segment: it may NOT contain a path separator (`/` or `\`), a `..` traversal, be
- * empty, or exceed {@link AGENT_ID_MAX_LENGTH}. Mirrors Claude Code's separation of a
+ * empty, or exceed {@link AGENT_ID_MAX_LENGTH}. Mirrors the reference's separation of a
  * stable machine `agentId` from the display `agentName` (utils/teammate.ts:L44-45):
  * the caller pins a durable addressing id distinct from the human `name`, so a
  * display rename never changes the resume/output identity. A value failing this is
@@ -248,10 +248,10 @@ export function isSafeAgentId(id: string): boolean {
  * The taskId a spawn registers under: on RESUME, reuse the ORIGINAL agent's taskId
  * (carried by {@link resolveResumeTarget}) instead of minting a new one; on a fresh
  * spawn, use a caller-supplied stable {@link isSafeAgentId} `agent_id` when present,
- * else generate a new random id. Mirrors Claude Code's task framework, where a resume
+ * else generate a new random id. Mirrors the reference's task framework, where a resume
  * re-registers under the SAME task id — carrying forward the agent's prior state and
  * output stream rather than double-registering a second background entry for what is
- * one continued agent (framework.ts:L74-117) — PLUS Claude's stable caller-assigned
+ * one continued agent (framework.ts:L74-117) — PLUS the reference's stable caller-assigned
  * `agentId` distinct from the display name (utils/teammate.ts:L44-45): a caller that
  * wants a durable, predictable address (to resume/collect the agent later without
  * first reading back a random id) supplies `agent_id`, and the display `name` can
@@ -300,7 +300,7 @@ export const SUBAGENT_SYSTEM_PROMPT =
 
 /**
  * Minimum number of distinct searches an `explore`-mode sub-agent should run
- * before it concludes something is absent or reports back (mirrors Claude Code's
+ * before it concludes something is absent or reports back (mirrors the reference's
  * EXPLORE_AGENT_MIN_QUERIES). It guards the UNDER-exploration edge: the lean
  * prompt's "do not over-explore" is only an upper bound; without a floor an
  * explorer can return prematurely after a single miss and wrongly conclude a
@@ -333,7 +333,7 @@ const agentSessionRegistry = new Map<string, string>();
 // WORKTREE created for an `isolation:"worktree"` spawn, or an explicit `cwd`
 // override). Lets `resume` restore the agent to the SAME files it was editing
 // instead of silently reverting to the parent cwd and stranding its in-progress
-// work. Only populated when the agent ran outside the parent cwd. Mirrors Claude
+// work. Only populated when the agent ran outside the parent cwd. Mirrors the reference
 // Code's per-agent worktree restoration on resume.
 const agentCwdRegistry = new Map<string, string>();
 
@@ -341,7 +341,7 @@ const agentCwdRegistry = new Map<string, string>();
  * The identity/defaults a spawned agent ran under, keyed by taskId. Lets a later
  * `resume` restore the ORIGINAL agent's identity (its `subagent_type`, model,
  * permission mode, and description) when the resume call does not re-supply them,
- * instead of silently re-deriving a generic general-purpose agent. Mirrors Claude
+ * instead of silently re-deriving a generic general-purpose agent. Mirrors the reference
  * Code's resumeAgent metadata restore (resumeAgent.ts:L99-114): a resumed agent
  * keeps its agentType/description/model/permissionMode from the persisted record.
  * In-memory (process-lifetime) — cross-process durability is a separate concern.
@@ -385,7 +385,7 @@ export function getAgentNameById(taskId: string): string | undefined {
 }
 
 /**
- * Resolve a human-readable DISPLAY LABEL for a (background) agent, mirroring Claude
+ * Resolve a human-readable DISPLAY LABEL for a (background) agent, mirroring the reference
  * Code's `useSwarmBanner` reverse-lookup precedence (useSwarmBanner.ts:L105-L122):
  * prefer the agent's registered addressable `@name` — reverse-looked-up from the
  * agent registry by its `taskId` ({@link getAgentNameById}) — then its task
@@ -418,7 +418,7 @@ export function resetAgentRegistry(): void {
 }
 
 /** On-disk snapshot of the agent registries so a `resume` can resolve a
- *  previously-spawned agent across PROCESS RESTARTS (parity: Claude's
+ *  previously-spawned agent across PROCESS RESTARTS (parity: the reference's
  *  readAgentMetadata / getAgentTranscript, which resolve a resumable agent from the
  *  on-disk store rather than an in-memory map). Written per project-state dir. */
 interface PersistedAgentRegistry {
@@ -480,7 +480,7 @@ export interface ResumeResolution {
 
 /**
  * Resolve a `resume` target — an agent NAME, a taskId, OR a raw sessionId — to the
- * sub-engine session to reload. Mirrors Claude Code's resume, which resolves a
+ * sub-engine session to reload. Mirrors the reference's resume, which resolves a
  * resumable agent from the on-disk store and accepts the agent id directly. A raw
  * sessionId is accepted by reverse-scanning the taskId→sessionId index so a caller
  * holding only the persisted sessionId can still continue the run. Call
@@ -505,9 +505,9 @@ export function resolveResumeTarget(target: string): ResumeResolution | undefine
  * key), but a model reusing a base name would silently overwrite the earlier
  * agent's registry entry, orphaning it. On collision we append an incrementing
  * numeric suffix (`name-2`, `name-3`, …) so every spawned agent keeps a distinct,
- * addressable identity (mirrors Claude Code's generateUniqueTeammateName).
+ * addressable identity (mirrors the reference's generateUniqueTeammateName).
  *
- * STATUS-AWARE RECLAMATION (parity: Claude Code's findTeammateTaskByAgentId prefers
+ * STATUS-AWARE RECLAMATION (parity: the reference's findTeammateTaskByAgentId prefers
  * the RUNNING task over a stale killed/completed one, InProcessTeammateTask.tsx:L92-108):
  * a name whose current holder has already TERMINATED (completed/failed/killed) is
  * reclaimed verbatim for the new live agent rather than being pushed to a suffixed
@@ -540,7 +540,7 @@ const AGENT_NAME_RESERVED_CHARS = /[@*]/g;
 
 /**
  * Sanitize a caller-supplied agent `name` so it is safe to use as a routing /
- * mailbox key (mirrors Claude Code's sanitizeAgentName, which strips the `@`
+ * mailbox key (mirrors the reference's sanitizeAgentName, which strips the `@`
  * team separator). The agent name becomes the send_message / resume address and
  * is baked into the team-scoped identity, so a name containing `@` would corrupt
  * `agentName@teamName` parsing and a name of (or containing) `*` would collide
@@ -563,7 +563,7 @@ export const DEFAULT_MAX_CONCURRENT_AGENTS = 10;
 
 /**
  * Universal baseline denylist applied to EVERY sub-agent regardless of its mode
- * or explicit tool allowlist (mirrors Claude Code's ALL_AGENT_DISALLOWED_TOOLS /
+ * or explicit tool allowlist (mirrors the reference's ALL_AGENT_DISALLOWED_TOOLS /
  * CUSTOM_AGENT_DISALLOWED_TOOLS — the one source-of-truth set unioned into every
  * agent's denylist):
  *  - plan_mode is interactive-only — its "exit" awaits a user approval that never
@@ -583,14 +583,14 @@ export const ALL_AGENT_DISALLOWED_TOOLS = new Set([
 
 /**
  * Extra tools DENIED to any NON-built-in (user/project/plugin) agent definition, on
- * top of the universal {@link ALL_AGENT_DISALLOWED_TOOLS} floor. Mirrors Claude Code's
+ * top of the universal {@link ALL_AGENT_DISALLOWED_TOOLS} floor. Mirrors the reference's
  * `CUSTOM_AGENT_DISALLOWED_TOOLS`, which `filterToolsForAgent` subtracts whenever an
  * agent's `source !== 'built-in'` (i.e. a definition loaded from a possibly untrusted
  * cloned repo's `.ami/agents/` or `.claude/agents/`). Such a definition must not be
  * able to grant ITSELF a stricter class of powerful tools regardless of what its own
  * `tools` whitelist (even `['*']`) requests — in particular the nested-spawn `task`
  * tool, so an untrusted agent cannot fan out an unsupervised recursion of further
- * agents (Claude denies AgentTool to non-ant agents the same way). Built-in agents
+ * agents (the reference denies AgentTool to non-ant agents the same way). Built-in agents
  * are trusted and keep the full set; this floor is additive and cannot be overridden
  * by an agent-def allowlist. Applied via {@link applyCustomAgentDenylist}.
  */
@@ -601,7 +601,7 @@ export const CUSTOM_AGENT_DISALLOWED_TOOLS = new Set([
 
 /**
  * Subtract {@link CUSTOM_AGENT_DISALLOWED_TOOLS} from a resolved tool set when the
- * agent definition is NOT built-in (parity: Claude's source-trust tool gate). A
+ * agent definition is NOT built-in (parity: the reference's source-trust tool gate). A
  * built-in agent is trusted and keeps its tools unchanged; a user/project/plugin
  * definition — which may originate from an untrusted repo — is floored so its own
  * `tools` whitelist cannot grant it a denied powerful tool. Returns the (possibly
@@ -617,7 +617,7 @@ export function applyCustomAgentDenylist(
 
 /**
  * Link a child subagent's {@link AbortController} to the PARENT turn's abort signal so
- * a parent abort CASCADES to the child (parity: Claude's `createChildAbortController`
+ * a parent abort CASCADES to the child (parity: the reference's `createChildAbortController`
  * in `registerAsyncAgent`). Applied to BOTH the foreground AND the background /
  * auto-backgrounded spawn paths — previously only the foreground path forwarded the
  * parent abort, leaving a detached background subagent (and its nested grandchildren)
@@ -665,7 +665,7 @@ const PERMISSION_MODE_RANK: Record<string, number> = {
 /**
  * Clamp a requested subagent permission mode so it can only make the subagent MORE
  * restrictive than its parent, never escalate past the parent's stance (parity:
- * Claude's runAgent permission clamp — an agent definition's permissionMode is not
+ * the reference's runAgent permission clamp — an agent definition's permissionMode is not
  * honored when it would be more permissive than the parent's mode). When `parentMode`
  * is unknown (bare/test contexts that do not thread it) the requested mode is returned
  * unchanged, so this is a purely additive hardening that never regresses existing
@@ -679,7 +679,7 @@ export function clampPermissionMode(requested: string, parentMode: string | unde
 }
 
 /**
- * The sentinel permission-mode value a FORK child inherits (parity: Claude Code's
+ * The sentinel permission-mode value a FORK child inherits (parity: the reference's
  * `FORK_AGENT.permissionMode = 'bubble'`, forkSubagent.ts:L67). `'bubble'` is NOT a
  * real engine permission mode — it means "do not pin a mode of my own; bubble every
  * permission decision up to the parent's live stance". A fork is an in-context clone,
@@ -704,7 +704,7 @@ export function resolveBubblePermissionMode(
 }
 
 /**
- * Privacy-safe agent-type label for analytics/attribution (parity: Claude Code's
+ * Privacy-safe agent-type label for analytics/attribution (parity: the reference's
  * subagent-context `isBuiltIn` collapse, agentContext.ts:L41-42). A BUILT-IN agent
  * type (explore/general/coordinator/fork or a bundled roster agent) is a public,
  * non-sensitive identifier and is reported verbatim. A USER-DEFINED (custom
@@ -721,7 +721,7 @@ export function collapseAgentTypeForAnalytics(
 
 /**
  * Explicit allowlist (SOURCE OF TRUTH) of the tools an ASYNC / background
- * sub-agent (`run_in_background: true`) may use — mirrors Claude Code's
+ * sub-agent (`run_in_background: true`) may use — mirrors the reference's
  * ASYNC_AGENT_ALLOWED_TOOLS (`constants/tools.ts`). A detached background agent
  * runs with no live parent turn to supervise it, so it is restricted to
  * self-contained read / search / edit / planning tools and must NOT get:
@@ -755,13 +755,13 @@ export const ASYNC_AGENT_ALLOWED_TOOLS = new Set([
 /**
  * Positive allowlist for a `coordinator`-mode sub-agent — an orchestration-only
  * lead that may delegate and report but may NOT touch the filesystem or shell.
- * Mirrors Claude Code's `COORDINATOR_MODE_ALLOWED_TOOLS`
+ * Mirrors the reference's `COORDINATOR_MODE_ALLOWED_TOOLS`
  * (`constants/tools.ts`: {AgentTool, TaskStop, SendMessage, SyntheticOutput}),
  * mapped to AMI's tool names:
  *  - `task`              ← AGENT_TOOL_NAME        (spawn/delegate to workers)
  *  - `send_message`      ← SEND_MESSAGE_TOOL_NAME (coordinate with teammates)
  *  - `structured_output` ← SYNTHETIC_OUTPUT_TOOL_NAME (produce the final result)
- * Claude's TaskStop / TaskOutput are deliberately NOT included: AMI's universal
+ * the reference's TaskStop / TaskOutput are deliberately NOT included: AMI's universal
  * floor ({@link ALL_AGENT_DISALLOWED_TOOLS}) makes `task_kill` / `task_output`
  * lead-only (a sub-agent calling them would terminate/collect the PARENT's tasks,
  * not its own), so they are never grantable to a spawned coordinator. The result
@@ -774,12 +774,12 @@ export const COORDINATOR_MODE_ALLOWED_TOOLS = new Set([
 /**
  * The read-only tool class an `explore`-mode sub-agent is restricted to — search,
  * read, web lookup, AND read-only shell (`bash`), no edit/orchestration (mirrors
- * Claude Code's read-only Explore agent tool bucket). Extracted to a named const
+ * the reference's read-only Explore agent tool bucket). Extracted to a named const
  * so {@link AGENT_MODES} can describe the explore pool as data and
  * {@link filterToolsForAgent} resolves it from the single source rather than an
  * inline literal.
  *
- * `bash` is included so an explorer can run the read-only shell operations Claude's
+ * `bash` is included so an explorer can run the read-only shell operations the reference's
  * Explore agent keeps — `git status`/`git log`/`git diff`, `ls`, `cat`, `head`,
  * `tail`, `find`, `grep` (exploreAgent.ts:L47-48) — which the explore system prompt
  * already instructs it to use ("fall back to read-only `find`/`grep` via bash").
@@ -806,13 +806,13 @@ export interface AgentModeSpec {
 /**
  * Discoverable SOURCE OF TRUTH for per-mode agent tool availability — the data
  * behind {@link filterToolsForAgent} / {@link filterToolsForAsyncAgent}. Mirrors
- * Claude Code's named per-context tool sets (`constants/tools.ts`:
+ * the reference's named per-context tool sets (`constants/tools.ts`:
  * EXPLORE/COORDINATOR/ASYNC_AGENT_ALLOWED_TOOLS) collected into one introspectable
  * map so "what can a <mode> agent use" has exactly one answer.
  *
  * Two rules hold across EVERY mode and are therefore NOT encoded per-entry:
  *  - MCP tools (`mcp__*`) are unconditionally available in every mode (parity:
- *    Claude's `mcp__` bypass, agentToolUtils.ts:L82-85) — see {@link isMcpTool}.
+ *    the reference's `mcp__` bypass, agentToolUtils.ts:L82-85) — see {@link isMcpTool}.
  *  - the universal {@link ALL_AGENT_DISALLOWED_TOOLS} floor is subtracted last by
  *    the caller, so no allowlist here can reintroduce a baseline-denied tool.
  */
@@ -838,7 +838,7 @@ export const COORDINATOR_SUBAGENT_SYSTEM_PROMPT =
 
 /**
  * Internal worker-coordination tools filtered OUT of the worker-capability
- * affordance shown to a coordinator (mirrors Claude Code's `INTERNAL_WORKER_TOOLS`
+ * affordance shown to a coordinator (mirrors the reference's `INTERNAL_WORKER_TOOLS`
  * in `coordinator/coordinatorMode.ts`). These are plumbing the workers use to talk
  * to the team / emit their final result — not capabilities the coordinator should
  * reason about when deciding WHAT concrete work a worker can do. Removing them from
@@ -852,7 +852,7 @@ export const INTERNAL_WORKER_TOOLS = new Set([
 /**
  * Team-essential coordination tools that a named teammate must ALWAYS retain so it
  * stays reachable and can coordinate — even when its agent definition narrows the
- * toolset with an explicit `tools` allowlist (mirrors Claude Code's
+ * toolset with an explicit `tools` allowlist (mirrors the reference's
  * inProcessRunner force-union of SEND_MESSAGE + TEAM_CREATE/DELETE +
  * TASK_CREATE/GET/LIST/UPDATE onto a restricted agent's declared allowlist,
  * inProcessRunner.ts:L979-995). Without this a lead could spawn a teammate scoped
@@ -893,9 +893,9 @@ export function ensureTeammateCoordinationTools(
 /**
  * Agent-coordination + scheduling tools RESERVED for an in-process teammate (a
  * NAMED sub-agent spawned into a team) — never granted to a plain general/agent-def
- * sub-agent, including an untrusted one. Mirrors Claude Code's
+ * sub-agent, including an untrusted one. Mirrors the reference's
  * `IN_PROCESS_TEAMMATE_ALLOWED_TOOLS` (`constants/tools.ts`: TaskCreate/Get/List/
- * Update, SendMessage, and the AGENT_TRIGGERS-gated cron tools), which Claude
+ * Update, SendMessage, and the AGENT_TRIGGERS-gated cron tools), which the reference
  * injects selectively via an `isInProcessTeammate()` check instead of handing them
  * to every async agent. AMI registers these in the one default registry, so without
  * this gate a solo `mode:"general"` delegation (or any custom agent def) silently
@@ -930,7 +930,7 @@ export function filterTeammateOnlyTools(
 
 /**
  * Build the runtime worker-capability affordance injected into a `coordinator`-mode
- * sub-agent's context (mirrors Claude Code's `getCoordinatorUserContext`). A
+ * sub-agent's context (mirrors the reference's `getCoordinatorUserContext`). A
  * coordinator cannot touch the filesystem/shell itself — it only delegates — so it
  * must know EXACTLY which tools its spawned workers have and which MCP servers they
  * can reach, or it will mis-delegate (e.g. ask a worker to do something no worker
@@ -939,7 +939,7 @@ export function filterTeammateOnlyTools(
  * ({@link INTERNAL_WORKER_TOOLS}), sorted deterministically so the block is stable
  * across spawns (cache-friendly). Connected MCP servers are appended by name when
  * present. The NAMED agent types the coordinator may delegate to (via each worker's
- * `subagent_type`) are appended too when known — mirroring Claude Code's practice of
+ * `subagent_type`) are appended too when known — mirroring the reference's practice of
  * injecting the available config surface (MCP servers + plugin/agent catalog) into an
  * agent's runtime context so it can delegate to the specialist it actually has rather
  * than guessing. Without this a coordinator (whose own prompt is the lean subagent
@@ -989,7 +989,7 @@ export function availableAgentTypeNames(context: ToolContext): string[] {
 
 /**
  * Resolve the project-instruction (CLAUDE.md/AGENTS.md) context a NAMED subagent
- * OPTS INTO via its `omitClaudeMd` knob (parity with Claude's agent `omitClaudeMd`,
+ * OPTS INTO via its `omitClaudeMd` knob (parity with the reference's agent `omitClaudeMd`,
  * inverted — see {@link AgentDefinition.omitClaudeMd}). AMI's default subagent prompt
  * is deliberately lean: it carries NEITHER the project CLAUDE.md/AGENTS.md NOR the
  * session-start git status (a token-saving superset perk). This knob lets an agent
@@ -1035,7 +1035,7 @@ export function connectedMcpServerNames(context: ToolContext): string[] {
 
 /**
  * Poll cadence + ceiling for the pre-spawn required-MCP-server readiness gate.
- * Parity with Claude Code's AgentTool requiredMcpServers wait (AgentTool.tsx:L376-391):
+ * Parity with the reference's AgentTool requiredMcpServers wait (AgentTool.tsx:L376-391):
  * poll every 500ms for up to 30s while a required server is still connecting.
  */
 export const REQUIRED_MCP_POLL_INTERVAL_MS = 500;
@@ -1103,7 +1103,7 @@ export interface RequiredMcpGateOptions {
  * requirement is satisfied (or there are no requirements), and
  * `{ ready: false, error }` — carrying the unsatisfied server patterns, the list of
  * connected servers, and a `/mcp` configure hint — when a required server is
- * failed/missing (or still pending after the ceiling). Mirrors Claude Code's
+ * failed/missing (or still pending after the ceiling). Mirrors the reference's
  * AgentTool requiredMcpServers readiness gate (AgentTool.tsx:L367-410). The state
  * reader is injected (not the manager) so this stays a pure, testable building block.
  */
@@ -1172,7 +1172,7 @@ export function resolveSubagentModel(requested: string | undefined, parentModel:
   // branch), so exact provider model IDs are never lower-cased or trimmed away.
   const normalized = requested.trim().toLowerCase();
   // 'inherit' is an explicit sentinel meaning "run on the SAME model as the main
-  // conversation" (Claude's default subagent model). Resolve it to the parent's
+  // conversation" (the reference's default subagent model). Resolve it to the parent's
   // exact model string — never to a generic alias default — so a parent on
   // claude-opus-4-8 that spawns task({ model: 'inherit' }) keeps the child there.
   if (normalized === INHERIT_MODEL_SENTINEL) return parentModel;
@@ -1187,7 +1187,7 @@ export function resolveSubagentModel(requested: string | undefined, parentModel:
  * ToolContext._subagentDefaultModel) into a concrete model id. Applied ONLY when a
  * spawn names no model from any higher-priority source (operator env override →
  * per-call `model` → agent-definition model → explore fast default). Tri-state,
- * parity with Claude Code's getDefaultTeammateModel (tools/shared/spawnMultiAgent.ts:L72-82):
+ * parity with the reference's getDefaultTeammateModel (tools/shared/spawnMultiAgent.ts:L72-82):
  *   - `null`      → user picked "Default (follow leader)" in /config → inherit the
  *                   PARENT's exact model (`parentModel`), so a config choice never
  *                   downgrades an otherwise-inheriting subagent;
@@ -1221,7 +1221,7 @@ export function resolveSubagentDefaultModel(
  * model configured ANYWHERE runs on a concrete provider-correct fast model instead
  * of dispatching an empty model string. AMI KEEPS its parent-inheritance perk (a
  * non-empty `currentModel` passes through untouched); this only ADDS the hardcoded
- * default for the genuinely-unset case — parity with Claude Code's
+ * default for the genuinely-unset case — parity with the reference's
  * getHardcodedTeammateModelFallback without regressing the inherit behavior.
  */
 export function defaultSubagentModelFallback(
@@ -1234,14 +1234,14 @@ export function defaultSubagentModelFallback(
 
 /** Operator override for the model an `explore`-mode sub-agent runs on. Set to a
  *  model id/alias to force one, or the `inherit` sentinel to keep the parent's
- *  model (behavior-only knob — mirrors Claude Code's `USER_TYPE==='ant' ? inherit
+ *  model (behavior-only knob — mirrors the reference's `USER_TYPE==='ant' ? inherit
  *  : haiku` gate on the explore agent's model). */
 export const EXPLORE_MODEL_ENV = 'AMI_EXPLORE_MODEL';
 
 /**
  * The model a mode-only `explore` sub-agent should default to when the caller set
  * no explicit model (no per-call `model`, no agent-def model, no
- * SUPERINFERENCE_SUBAGENT_MODEL override). Mirrors Claude Code's explore agent,
+ * SUPERINFERENCE_SUBAGENT_MODEL override). Mirrors the reference's explore agent,
  * which pins external runs to the fast/cheap `haiku` model for speed because
  * read-only exploration does not need the main model's capability. Returns the
  * resolved fast model id, or `undefined` to keep the parent's model.
@@ -1249,9 +1249,9 @@ export const EXPLORE_MODEL_ENV = 'AMI_EXPLORE_MODEL';
  * Rules:
  *  - {@link EXPLORE_MODEL_ENV} wins when set: `inherit` → keep parent (undefined);
  *    any other value → that model id/alias (alias-resolved).
- *  - A NON-Claude parent (e.g. a GPT/Gemini run) keeps its own model — forcing a
- *    Claude `haiku` onto a different provider's session would be wrong. Only a
- *    Claude-family (or absent) parent is auto-downshifted to the fast model.
+ *  - A NON-the reference parent (e.g. a GPT/Gemini run) keeps its own model — forcing a
+ *    the reference `haiku` onto a different provider's session would be wrong. Only a
+ *    the reference-family (or absent) parent is auto-downshifted to the fast model.
  */
 export function defaultExploreModel(
   parentModel: string | undefined,
@@ -1280,7 +1280,7 @@ const INCOMPLETE_ASSISTANT_SENTINEL_RE =
 
 /**
  * Whether a message is an assistant turn that did not complete cleanly (an
- * interrupted/in-progress turn). Mirrors Claude Code's `stop_reason === null`
+ * interrupted/in-progress turn). Mirrors the reference's `stop_reason === null`
  * discriminator in `buildSideQuestionFallbackParams`; since AMI messages have no
  * `stop_reason`, it detects the in-band interrupt sentinels instead.
  */
@@ -1294,7 +1294,7 @@ export function isIncompleteAssistantMessage(msg: Message): boolean {
 
 /**
  * Drop a TRAILING in-progress/interrupted assistant message before a conversation
- * is forked into a sub-agent (mirrors Claude Code's
+ * is forked into a sub-agent (mirrors the reference's
  * `buildSideQuestionFallbackParams`, which discards the last message when it is an
  * assistant turn with `stop_reason === null`). A fork can be requested mid-turn,
  * and an unterminated/interrupted assistant block would otherwise leak a corrupt
@@ -1315,7 +1315,7 @@ export function stripIncompleteTrailingMessages(messages: Message[]): Message[] 
  * child's provider would raise an orphaned-tool_use API error. Build the set of
  * answered tool-call ids (every `tool` message's `tool_call_id`) and drop any
  * assistant message with an unanswered call, keeping everything else intact.
- * Mirrors Claude Code's `filterIncompleteToolCalls` (runAgent.ts).
+ * Mirrors the reference's `filterIncompleteToolCalls` (runAgent.ts).
  */
 export function filterIncompleteToolCalls(messages: Message[]): Message[] {
   const answered = new Set<string>();
@@ -1337,7 +1337,7 @@ export function filterIncompleteToolCalls(messages: Message[]): Message[] {
  * turn when ANY of its tool_calls is unanswered, which strands the tool_results of
  * its OTHER (answered) calls — a result block with no preceding tool_use. A provider
  * rejects an orphaned tool_result just as it rejects an orphaned tool_use, so the
- * seed must be reconciled in BOTH directions before it is replayed. Mirrors Claude
+ * seed must be reconciled in BOTH directions before it is replayed. Mirrors the reference
  * Code's `filterOrphanedToolResults` (resumeAgent.ts:L70-74), the sibling of its
  * `filterUnresolvedToolUses`.
  */
@@ -1362,7 +1362,7 @@ export function filterOrphanedToolResults(messages: Message[]): Message[] {
  * tool_use ({@link filterIncompleteToolCalls}), then drop the tool_results that
  * dropping those turns ORPHANED ({@link filterOrphanedToolResults}). The last step
  * is what the prior fork seed (which only ran the first two) omitted, leaking an
- * orphaned-tool_result into the child's provider request. Mirrors Claude Code's
+ * orphaned-tool_result into the child's provider request. Mirrors the reference's
  * resume/fork transcript reconciliation (`filterUnresolvedToolUses` +
  * `filterOrphanedToolResults`, resumeAgent.ts:L70-74) so the child never inherits a
  * half-answered tool exchange.
@@ -1379,7 +1379,7 @@ export function sanitizeTranscriptForReplay(messages: Message[]): Message[] {
  * ({@link INCOMPLETE_ASSISTANT_SENTINEL_RE}: a server-error or tool-call interrupt).
  * A run that ends on such a message was CANCELLED mid-flight, not completed; the
  * parent must treat it as a failure (so it does not act on a truncated half-answer),
- * mirroring Claude Code's post-loop check that re-throws `AbortError` when the final
+ * mirroring the reference's post-loop check that re-throws `AbortError` when the final
  * message is a synthetic interruption (AgentTool.tsx:L1205-1218). AMI messages carry
  * no `stop_reason`, so the in-band sentinel is the discriminator.
  */
@@ -1390,7 +1390,7 @@ export function isInterruptedFinalText(text: string | undefined): boolean {
 /**
  * Pick a sub-agent's returned deliverable: the text of its FINAL assistant turn
  * (`lastTurnText`) when one carried text, else the accumulated text fallback.
- * Mirrors Claude Code's `finalizeAgentTool` (agentToolUtils.ts:L297-317), which
+ * Mirrors the reference's `finalizeAgentTool` (agentToolUtils.ts:L297-317), which
  * returns the last assistant message's text and — when that final turn is a pure
  * tool_use block — walks backward to the most recent turn that had text. Tracking
  * the last text-bearing `turn_complete` performs that backward walk incrementally,
@@ -1403,7 +1403,7 @@ export function selectFinalAnswer(lastTurnText: string | undefined, accumulated:
 
 /**
  * Wrap a named agent's `criticalSystemReminder` into a reinforced constraint block
- * appended to its authoritative system prompt (mirrors Claude Code's
+ * appended to its authoritative system prompt (mirrors the reference's
  * `criticalSystemReminder_EXPERIMENTAL`, verificationAgent.ts:L150-151). A hard
  * constraint ("you CANNOT write files", "you MUST end with VERDICT:") belongs in a
  * short, strongly-flagged reminder distinct from the agent's main prose so the
@@ -1417,7 +1417,7 @@ export function buildCriticalReminderBlock(reminder: string | undefined): string
 
 /**
  * Prompt-cache introspection clause folded into a foreground sub-agent's
- * completion stats footer (mirrors Claude Code's per-fork cacheRead / cacheHitRate
+ * completion stats footer (mirrors the reference's per-fork cacheRead / cacheHitRate
  * line, forkedAgent.ts:L606-654). A sub-agent that reuses the parent's cached
  * prefix is far cheaper; surfacing how many prompt tokens were served from cache —
  * and the hit rate when known — makes that observable to the parent/model instead
@@ -1430,14 +1430,14 @@ export function buildCacheStatsClause(cacheReadTokens: number, cacheHitRate: num
   return `, ${cacheReadTokens} cached tokens${rate}`;
 }
 
-/** Max recent tool activities retained for the live-progress trail (parity: Claude
+/** Max recent tool activities retained for the live-progress trail (parity: the reference
  *  Code's MAX_RECENT_ACTIVITIES window on a backgrounded task's progress object). */
 export const MAX_RECENT_ACTIVITIES = 5;
 
 /**
  * One-line label for a tool call recorded into a sub-agent's recent-activity trail:
  * the tool name plus a short, single-line summary of its most salient input
- * (`bash(git status)`, `file_read(src/app.ts)`), mirroring Claude Code's progress
+ * (`bash(git status)`, `file_read(src/app.ts)`), mirroring the reference's progress
  * `recentActivities` entries which carry the tool name AND its input. The input hint
  * is the first present of the common salient fields (command / file_path / path /
  * pattern / query / url), trimmed, de-newlined, and capped so the trail stays compact.
@@ -1459,7 +1459,7 @@ export function describeActivity(toolName: string, input: Record<string, unknown
 
 /**
  * Render a sub-agent's recent-activity trail into a human-readable clause for a
- * completion/stall notice (parity: surfacing Claude Code's progress
+ * completion/stall notice (parity: surfacing the reference's progress
  * `recentActivities` so the last few tool actions are observable). Returns an empty
  * string when there is nothing to show, so callers can append unconditionally.
  */
@@ -1469,7 +1469,7 @@ export function buildRecentActivityTrail(activities: readonly string[]): string 
 }
 
 /**
- * Render a sub-agent's live-display state (PARITY: Claude's DreamTask phase + turn
+ * Render a sub-agent's live-display state (PARITY: the reference's DreamTask phase + turn
  * buffer) into a clause for a terminated/capped completion notice: the sub-phase
  * ('starting' = began but never changed files, 'updating' = actively mutating
  * files) plus a short snippet of the most recent retained assistant turn from the
@@ -1539,7 +1539,7 @@ export function removeWorktreeIfClean(baseCwd: string, worktreePath: string, run
     // `--no-optional-locks`: a read-only status/rev-list must not take git's
     // optional index lock, so this background cleanliness check can never contend
     // with a concurrent git operation the user is running in the worktree (parity:
-    // Claude prefixes all read-only status reads with --no-optional-locks,
+    // the reference prefixes all read-only status reads with --no-optional-locks,
     // utils/git.ts getIsClean/getChangedFiles).
     const status = child_process.execFileSync('git', [...GIT_HARDENING_ARGS, '--no-optional-locks', 'status', '--porcelain'], { cwd: worktreePath, encoding: 'utf-8', timeout: 5000 }).trim();
     const unpushed = child_process.execFileSync('git', [...GIT_HARDENING_ARGS, '--no-optional-locks', 'rev-list', 'HEAD', '--not', '--remotes'], { cwd: worktreePath, encoding: 'utf-8', timeout: 5000 }).trim();
@@ -1574,7 +1574,7 @@ export function readWorktreeBranch(worktreePath: string): string | undefined {
 /**
  * Completion notice telling the model WHERE an isolated-worktree subagent's changes
  * live (path + branch), appended when the worktree is RETAINED because it has
- * uncommitted changes or unpushed commits (mirrors Claude Code's
+ * uncommitted changes or unpushed commits (mirrors the reference's
  * `<worktree><worktree_path>…</worktree_path><worktree_branch>…</worktree_branch></worktree>`
  * completion section). Without it the model only hears "cleaned up" for empty
  * worktrees and has to rediscover where a change-bearing worktree landed. The
@@ -1639,7 +1639,7 @@ export type AgentCapContext = Parameters<typeof checkAgentCaps>[0];
  * check-and-reserve as one indivisible synchronous operation at the commit point makes
  * the shared spawn-bookkeeping mutation serialized: the first concurrent spawn to reach
  * it consumes the last slot, and the next sees the already-incremented count and is
- * rejected. This is AMI's in-process analog of Claude Code's serialized teammate-spawn
+ * rejected. This is AMI's in-process analog of the reference's serialized teammate-spawn
  * critical section (the pane-backend `acquirePaneCreationLock` / `TmuxBackend`
  * `paneCreationLock` try/finally mutex) — AMI spawns sub-engines in-process rather than
  * into terminal panes, so the shared state to protect is the spawn counter, not a pane
@@ -1660,7 +1660,7 @@ export function shouldAllowNestedTask(currentDepth: number, maxDepth: number): b
 
 /**
  * Mark a finished teammate idle AND fire the TeammateIdle lifecycle hook so a
- * hook can react to an idle teammate (Claude Code's TeammateIdle event —
+ * hook can react to an idle teammate (the reference's TeammateIdle event —
  * teammate_name / team_name). Only fires when the id resolves to a real team
  * member; best-effort/fire-and-forget so hook failures never break teardown.
  */
@@ -1670,7 +1670,7 @@ export function markTeammateIdle(
   terminalStatus?: 'completed' | 'failed' | 'killed',
 ): void {
   setTeamMemberActive(taskId, false);
-  // Mark the teammate idle on the process manager (parity: Claude Code's
+  // Mark the teammate idle on the process manager (parity: the reference's
   // InProcessTeammateTask isIdle) so a leader awaiting its idle transition via
   // waitForIdle (e.g. a graceful task_kill) is woken event-driven. No-op when the
   // task is already terminal / not a running agent.
@@ -1682,10 +1682,10 @@ export function markTeammateIdle(
   // Proactive push to the team lead (PARITY, additive): a teammate that finishes
   // its turn automatically tells the lead its status, so the lead never has to
   // poll. A CLEAN finish (completed / unspecified) pushes an idle/available notice
-  // (Claude's Stop hook writing createIdleNotification(agentName,
+  // (the reference's Stop hook writing createIdleNotification(agentName,
   // { idleReason: 'available' })); an ABNORMAL exit (killed / failed) instead
   // pushes a teammate_terminated notice so the lead can release the dead agent's
-  // orphaned work (Claude's killTeammate injecting teammate_terminated into the
+  // orphaned work (the reference's killTeammate injecting teammate_terminated into the
   // lead's inbox) — reporting a crashed agent as "available" would be wrong.
   // Best-effort — a messaging failure must never break teardown. Lazy require
   // avoids a static import cycle (send-message lazy-requires task). A no-op when
@@ -1704,7 +1704,7 @@ export function markTeammateIdle(
 
 /**
  * Max attempts to construct a background sub-agent's engine before pruning it as a
- * dead child. Parity: Claude Code's bounded prune-and-retry for a teammate-spawn
+ * dead child. Parity: the reference's bounded prune-and-retry for a teammate-spawn
  * resource (utils/swarm/backends/ITermBackend.ts:L131-208 — a momentarily-dead
  * target is retried a bounded number of times, and only a PERSISTENT failure is
  * treated as systemic). One retry (two attempts) distinguishes a transient
@@ -1717,7 +1717,7 @@ export const BACKGROUND_SPAWN_MAX_ATTEMPTS = 2;
  * (a momentarily-dead resource) does not immediately abort the spawn, while a
  * persistent failure still surfaces after {@link BACKGROUND_SPAWN_MAX_ATTEMPTS}
  * attempts (a systemic error). Rethrows the LAST error when every attempt fails.
- * Mirrors Claude's dead-target detection: retry a bounded number of times, then
+ * Mirrors the reference's dead-target detection: retry a bounded number of times, then
  * give up so the caller can prune the roster rather than hang on a dead child.
  */
 export function buildSubEngineWithRetry(
@@ -1749,7 +1749,7 @@ export interface PruneDeadAgentParams {
  * Tear down a background sub-agent whose engine FAILED TO CONSTRUCT (a dead child),
  * reversing the roster/registry bookkeeping already recorded at spawn time so no
  * phantom `'running'` agent is left behind in the process-manager roster or the
- * resumable-agent registry. Parity: Claude's dead-target prune — a spawn whose
+ * resumable-agent registry. Parity: the reference's dead-target prune — a spawn whose
  * backend resource is dead is removed from the running-agent map rather than left
  * dangling. Steps: unlink the parent->child abort cascade, mark the process-manager
  * entry `failed`, fire the teammate-terminated notice + TeammateIdle hook, release
@@ -1773,7 +1773,7 @@ export function pruneDeadBackgroundAgent(p: PruneDeadAgentParams): void {
 
 /**
  * Notice prepended to a subagent that runs in an isolated git worktree (mirrors
- * Claude Code's buildWorktreeNotice). It tells the child three concrete things:
+ * the reference's buildWorktreeNotice). It tells the child three concrete things:
  * (1) paths in any inherited/parent context refer to the PARENT's cwd and must be
  * translated to the worktree root, (2) re-read files before editing since the
  * parent may have modified them, and (3) its changes are isolated to the worktree.
@@ -1784,7 +1784,7 @@ export function buildWorktreeNotice(parentCwd: string, worktreeCwd: string): str
 
 /**
  * Validate a model-requested subagent `cwd` override against the parent's trusted
- * permission boundary (mirrors Claude deriving the agent's working-dir set from the
+ * permission boundary (mirrors the reference deriving the agent's working-dir set from the
  * PARENT's toolPermissionContext rather than a model-chosen path). The override is
  * accepted only when it is an absolute, existing directory that resolves within the
  * parent cwd OR one of the already-approved additional working directories. Returns
@@ -1835,7 +1835,7 @@ export const EXPLORE_BASH_WRITE_REFUSAL =
 
 /**
  * Wrap the `bash` tool for a read-only `explore`-mode sub-agent so it RETAINS bash
- * for read-only operations (parity: Claude Code's Explore agent keeps Bash but
+ * for read-only operations (parity: the reference's Explore agent keeps Bash but
  * prohibits mutations — exploreAgent.ts:L47-48) while structurally REFUSING any
  * command that is not provably read-only. The verdict reuses the canonical
  * {@link isReadOnlyBashCommand} classifier (bash-cache.ts — fail-closed: anything it
@@ -1885,7 +1885,7 @@ export function filterToolsForAgent(
 
   const filtered = allTools.filter(t => {
     // MCP tools (`mcp__*`) are unconditionally available in EVERY agent mode
-    // (parity: Claude's mcp__ bypass) — a read-only explore or a pure-delegation
+    // (parity: the reference's mcp__ bypass) — a read-only explore or a pure-delegation
     // coordinator can still reach connected MCP servers. Checked first so the
     // per-mode allowlist below never has to enumerate dynamic MCP tool names.
     if (isMcpTool(t)) return true;
@@ -1903,7 +1903,7 @@ export function filterToolsForAgent(
   // Explore is read-only: the `bash` it keeps (for git status/log/diff, ls, cat,
   // head, tail, find, grep) must refuse every mutating command. Swap the raw bash
   // tool for its read-only-guarded variant so the explorer can run read-only shell
-  // ops without ever being able to write (parity: Claude's Explore keeps Bash but
+  // ops without ever being able to write (parity: the reference's Explore keeps Bash but
   // prohibits mutations). Other modes keep the unguarded bash tool untouched.
   if (mode === 'explore') {
     return filtered.map(t => (t.name === 'bash' ? wrapExploreReadOnlyBash(t) : t));
@@ -1917,7 +1917,7 @@ export function filterToolsForAgent(
  * pool. The child keeps the parent's tools in the parent's order (intersected with
  * the live registry — a tool the parent had but the child's registry lacks is
  * skipped) so the serialized tool array — and therefore the provider prompt-cache
- * prefix — stays byte-identical to the parent's. Mirrors Claude Code's
+ * prefix — stays byte-identical to the parent's. Mirrors the reference's
  * `useExactTools` / `tools:['*']` fork inheritance (forkSubagent.ts:L44-L71), which
  * deliberately avoids re-deriving the pool under a different permission mode because
  * that reorders tools / changes a tool-def's serialization and busts the cache at the
@@ -1961,7 +1961,7 @@ export function selectExactForkToolPool(
  * task tool execute method.
  */
 export function filterToolsForAsyncAgent(tools: ToolDefinition[]): ToolDefinition[] {
-  // MCP tools (`mcp__*`) stay available on the background path too (parity: Claude's
+  // MCP tools (`mcp__*`) stay available on the background path too (parity: the reference's
   // mcp__ bypass is unconditional across modes) — a detached agent can still reach
   // connected MCP servers; only recursion-prone/interactive tools are stripped.
   return tools.filter(t => isMcpTool(t) || AGENT_MODES.async.allow!.has(t.name));
@@ -1975,7 +1975,7 @@ export function filterToolsForAsyncAgent(tools: ToolDefinition[]): ToolDefinitio
  * `Read(src/**)`). Every form is run through the single canonical
  * {@link permissionRuleValueFromString} parser (shared with the permission layer —
  * no second parser) so the BASE tool name is extracted and aliased to AMI's
- * registered name. Mirrors Claude Code's `resolveAgentTools`, which runs each tool
+ * registered name. Mirrors the reference's `resolveAgentTools`, which runs each tool
  * spec through `permissionRuleValueFromString` before matching — without this a
  * pattern-form allow entry silently filtered the tool out and a pattern-form
  * disallow entry silently failed to block (exact-string matching never matched
@@ -1988,7 +1988,7 @@ export function canonicalAgentToolNames(specs: string[]): string[] {
 /**
  * Built-in agent types that run ONCE and return a report — the parent never
  * resumes/messages them to continue, so the per-result "to continue this agent"
- * trailer is dead weight on them (mirrors Claude Code's
+ * trailer is dead weight on them (mirrors the reference's
  * ONE_SHOT_BUILTIN_AGENT_TYPES in `AgentTool/constants.ts`, which gates whether the
  * agentId/SendMessage continuation trailer is emitted). `explore` MODE is the third
  * one-shot form (a read-only report), handled by {@link isOneShotAgent}.
@@ -1999,7 +1999,7 @@ export const ONE_SHOT_BUILTIN_AGENT_TYPES = new Set(['Explore', 'Plan']);
  * Whether a spawned subagent is a ONE-SHOT agent that is never continued — a
  * read-only `explore`-mode run or a named one-shot built-in agent type
  * ({@link ONE_SHOT_BUILTIN_AGENT_TYPES}). The task tool omits the "to continue this
- * agent" affordance for these (parity with Claude Code's one-shot trailer gate).
+ * agent" affordance for these (parity with the reference's one-shot trailer gate).
  */
 export function isOneShotAgent(subagentType: string | undefined, mode: string): boolean {
   return mode === 'explore' || (subagentType !== undefined && ONE_SHOT_BUILTIN_AGENT_TYPES.has(subagentType));
@@ -2007,7 +2007,7 @@ export function isOneShotAgent(subagentType: string | undefined, mode: string): 
 
 /**
  * Normalize a caller-supplied `allowed_agent_types` value into a string[] (or
- * undefined when the field is absent). Mirrors Claude Code's `allowedAgentTypes`
+ * undefined when the field is absent). Mirrors the reference's `allowedAgentTypes`
  * boundary (`AgentTool/prompt.ts`): when a parent scopes which subagent types a
  * given invocation may spawn (`Agent(x,y)`), only the listed types are
  * spawnable. Returns `{ error }` for a non-array / non-string-element shape so
@@ -2025,7 +2025,7 @@ export function parseAllowedAgentTypes(
 
 /**
  * Whether a requested `subagent_type` is permitted under an `allowedAgentTypes`
- * restriction. Mirrors Claude's `allowedAgentTypes.includes(a.agentType)` filter:
+ * restriction. Mirrors the reference's `allowedAgentTypes.includes(a.agentType)` filter:
  * `undefined` means no restriction (every type allowed); a provided list (even
  * empty) restricts spawning to exactly its members.
  */
@@ -2038,7 +2038,7 @@ export function isAgentTypeAllowed(
 
 /**
  * Normalize a caller-supplied per-spawn `allowed_tools` value into a string[] (or
- * undefined when absent). Mirrors Claude Code's spawn-time `permissions` /
+ * undefined when absent). Mirrors the reference's spawn-time `permissions` /
  * allowedTools list (`swarm/backends/types.ts`): the caller scopes ONE subagent's
  * tool set inline at task-call time, without a pre-authored named agent definition.
  * Returns `{ error }` for a non-array / non-string-element shape so the caller can
@@ -2076,7 +2076,7 @@ function parseToolSpecArray(
 
 /**
  * Normalize a caller-supplied per-spawn `auto_approve_tools` value into a string[]
- * (or undefined when absent). Mirrors Claude Code's spawn-time `allowedTools`
+ * (or undefined when absent). Mirrors the reference's spawn-time `allowedTools`
  * auto-approve allowlist (`swarm/inProcessRunner.ts:L492-493`, "Tool permissions to
  * auto-allow for this teammate"), which is DISTINCT from the set of tools that merely
  * EXIST for the subagent (AMI's availability {@link parseAllowedTools}). An entry
@@ -2097,7 +2097,7 @@ export function parseAutoApproveTools(
 
 /**
  * Convert a per-spawn `auto_approve_tools` spec list into `allow` {@link PermissionRule}s
- * appended to the spawned subagent's permission rules — the concrete wiring of Claude
+ * appended to the spawned subagent's permission rules — the concrete wiring of the reference
  * Code's auto-approve `allowedTools` allowlist. Each spec is parsed with the one
  * canonical {@link permissionRuleValueFromString} (so a bare name → a tool-wide allow,
  * and a patterned `Bash(git:*)` → an allow scoped to that arg glob), yielding a rule
@@ -2120,7 +2120,7 @@ export function buildAutoApproveRules(specs: readonly string[] | undefined): Per
 
 /**
  * Resolve the per-spawn `allow_permission_prompts` knob into a permission-mode
- * contribution. Mirrors Claude Code's `allowPermissionPrompts` spawn flag
+ * contribution. Mirrors the reference's `allowPermissionPrompts` spawn flag
  * (`swarm/backends/types.ts`, default false): a spawned agent cannot show an
  * interactive permission prompt for a tool outside its granted scope — those calls
  * are auto-DENIED (`deny-all`) rather than blocking a detached/teammate run on a
@@ -2128,7 +2128,7 @@ export function buildAutoApproveRules(specs: readonly string[] | undefined): Per
  * interactive `ask` handler. Returns `undefined` when the flag is absent, so the
  * existing fallback chain (explicit permission_mode → agent-def → explore → `ask`)
  * is untouched — this is an ADDITIVE opt-in that never changes AMI's default. The
- * companion `permissions` grant from Claude maps onto AMI's existing `allowed_tools`
+ * companion `permissions` grant from the reference maps onto AMI's existing `allowed_tools`
  * inline tool scope (no separate field — see {@link parseAllowedTools}).
  */
 export function resolvePromptGatePermissionMode(raw: unknown): 'ask' | 'deny-all' | undefined {
@@ -2138,7 +2138,7 @@ export function resolvePromptGatePermissionMode(raw: unknown): 'ask' | 'deny-all
 
 /**
  * Env knob that globally disables background (`run_in_background`) subagents —
- * mirrors Claude Code's `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS`. When truthy the
+ * mirrors the reference's `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS`. When truthy the
  * `run_in_background` field is OMITTED from the advertised input schema (so the
  * model is never offered the flag) AND a late attempt to set it (e.g. a stale /
  * replayed call) is rejected at runtime. Operators/CI use it to turn detached
@@ -2156,14 +2156,14 @@ export function isBackgroundTasksDisabled(): boolean {
  * Env knob that forces EVERY spawned subagent into read-only PLAN mode by default —
  * the agent explores and must return an implementation plan, it may NOT mutate the
  * workspace (edit/write/bash-write are denied by the `plan` permission mode) until a
- * human/parent has reviewed that plan. Mirrors Claude Code's `planModeRequired`
- * teammate knob and its `CLAUDE_CODE_PLAN_MODE_REQUIRED` env default (the Claude name
- * is honored too, matching how AMI accepts the Claude spelling for other knobs). A
+ * human/parent has reviewed that plan. Mirrors the reference's `planModeRequired`
+ * teammate knob and its `CLAUDE_CODE_PLAN_MODE_REQUIRED` env default (the reference name
+ * is honored too, matching how AMI accepts the reference spelling for other knobs). A
  * per-spawn `plan_mode_required` input overrides this default either way.
  */
 export const SUBAGENT_PLAN_REQUIRED_ENV = 'AMI_SUBAGENT_PLAN_REQUIRED';
 
-/** Claude Code cross-framework alias for {@link SUBAGENT_PLAN_REQUIRED_ENV}. */
+/** the reference cross-framework alias for {@link SUBAGENT_PLAN_REQUIRED_ENV}. */
 export const CLAUDE_PLAN_MODE_REQUIRED_ENV = 'CLAUDE_CODE_PLAN_MODE_REQUIRED';
 
 /** True when spawned subagents default to plan-required via either env spelling. */
@@ -2173,7 +2173,7 @@ export function isSubagentPlanRequiredByEnv(env: NodeJS.ProcessEnv = process.env
 
 /**
  * Resolve whether THIS spawn must run plan-required (read-only until a plan is
- * reviewed). Three-tier, matching Claude Code's `isPlanModeRequired()` precedence:
+ * reviewed). Three-tier, matching the reference's `isPlanModeRequired()` precedence:
  * an explicit per-spawn `plan_mode_required` input wins; absent → the env default
  * ({@link isSubagentPlanRequiredByEnv}). A missing/garbage input contributes nothing
  * so the env default decides — purely additive (default off → no change).
@@ -2200,14 +2200,14 @@ export function applyPlanRequirement(mode: string, planRequired: boolean): strin
  * Notice prepended to a plan-required subagent's first task turn so it knows the
  * read-only boundary is intentional: produce a concrete implementation plan and
  * return it, do NOT attempt to write code (edits/writes/mutating bash are denied
- * and will fail). Mirrors Claude Code's plan-mode spawn directive.
+ * and will fail). Mirrors the reference's plan-mode spawn directive.
  */
 export function buildPlanRequiredNotice(): string {
   return 'PLAN MODE REQUIRED: You are running read-only. Investigate, then return a concrete, step-by-step implementation plan for this task. Do NOT edit files, write files, or run mutating shell commands — those tools are denied in this mode and any such attempt will fail. Hand the plan back for review; implementation happens only after it is approved.';
 }
 
 /**
- * STRUCTURAL read-only-bash boundary for a plan-required subagent (parity: Claude
+ * STRUCTURAL read-only-bash boundary for a plan-required subagent (parity: the reference
  * Code's planAgent, which keeps bash for read-only investigation — ls, git
  * status/log/diff, find, grep, cat, head, tail — but prohibits mutating shell
  * commands, planAgent.ts:L47-48). A plan-required spawn already clamps its permission
@@ -2232,7 +2232,7 @@ export type { SystemPromptMode };
 
 /**
  * System-prompt addendum appended to a subagent that is spawned as a named member
- * of an active team (mirrors Claude Code's teammatePromptAddendum). AMI already
+ * of an active team (mirrors the reference's teammatePromptAddendum). AMI already
  * has all the machinery — `send_message` (with `to: "*"` broadcast), team
  * mailboxes with eager delivery, the shared team task list — but nothing TOLD a
  * teammate that (a) it is one agent in a team, (b) it reaches teammates via
@@ -2248,7 +2248,7 @@ export const TEAMMATE_PROMPT_ADDENDUM =
 
 /**
  * Build the caller-requested thoroughness directive for an `explore`-mode
- * sub-agent (mirrors Claude Code's exploreAgent thoroughness parameter). The
+ * sub-agent (mirrors the reference's exploreAgent thoroughness parameter). The
  * explore prompt tells the agent to "adapt your search breadth to the
  * thoroughness the caller requests"; this turns an abstract instruction into a
  * concrete, caller-chosen depth dial so a "very thorough" request produces a
@@ -2272,7 +2272,7 @@ export const EXPLORE_THOROUGHNESS_LEVELS = ['quick', 'medium', 'very thorough'] 
 
 /**
  * One curated, selectable sub-agent model option with a per-tier affordance
- * description (parity: Claude Code's curated agent model options with per-tier
+ * description (parity: the reference's curated agent model options with per-tier
  * guidance + an explicit "Inherit from parent" choice, `utils/model/agent.ts`).
  * `value` is what the caller passes as the `model` arg — the empty string denotes
  * the default of OMITTING the field (inherit the parent conversation's model).
@@ -2395,7 +2395,7 @@ const TASK_TOOL_PROPERTIES: Record<string, JsonSchemaProperty> = {
   },
   share_abort_controller: {
     type: 'boolean',
-    description: 'Whether a parent-turn abort (ESC / interrupt) cascades to this subagent. Default (true) links the child to the parent so interrupting the parent also stops the child — AMI\'s safe default that never orphans a detached agent. Set false to give the child an INDEPENDENT abort controller (parity: Claude Code\'s SubagentContextOverrides.shareAbortController=false) so a long-lived background delegation keeps running after the spawning turn is interrupted; you then stop it explicitly with task_kill.',
+    description: 'Whether a parent-turn abort (ESC / interrupt) cascades to this subagent. Default (true) links the child to the parent so interrupting the parent also stops the child — AMI\'s safe default that never orphans a detached agent. Set false to give the child an INDEPENDENT abort controller (parity: the reference\'s SubagentContextOverrides.shareAbortController=false) so a long-lived background delegation keeps running after the spawning turn is interrupted; you then stop it explicitly with task_kill.',
   },
   plan_mode_required: {
     type: 'boolean',
@@ -2447,7 +2447,7 @@ const TASK_TOOL_PROPERTIES: Record<string, JsonSchemaProperty> = {
 
 /**
  * Path of the clean FINAL-ANSWER sidecar for a background agent, derived from its
- * `<taskId>.output` transcript path (`<taskId>.result`). Parity with Claude Code's
+ * `<taskId>.output` transcript path (`<taskId>.result`). Parity with the reference's
  * TaskOutputTool preferring the agent's in-memory final answer over the raw on-disk
  * transcript: the `.output` file streams the whole noisy run (thinking, tool calls,
  * tool results), whereas `.result` holds ONLY the agent's last text-bearing turn —
@@ -2463,7 +2463,7 @@ export function agentResultPath(outputPath: string): string {
  * lifecycle hooks for a spawned sub-agent. Shared by the FOREGROUND and BACKGROUND
  * spawn paths so both emit an identical attribution/lineage payload — including the
  * discriminated-union `agentContextKind` (a named spawn joined to a team is a
- * `'teammate'`, every other spawn a plain `'subagent'`; parity: Claude Code's
+ * `'teammate'`, every other spawn a plain `'subagent'`; parity: the reference's
  * subagent-vs-teammate agent-context discriminator). Before this was factored out the
  * background path fired NO lifecycle hook at all, so a SubagentStart/Stop hook never
  * saw async/background agents and their `agentContextKind` was invisible to hook
@@ -2545,7 +2545,7 @@ interface BackgroundDrainParams {
   /** The SubagentStart/Stop lifecycle payload for this background agent. When
    *  present the drain fires `executeSubagentStop(subagentHookCtx)` once the stream
    *  terminates (success, error, or stall) so a background agent's lifecycle is as
-   *  observable to hooks as a foreground one (parity: Claude Code fires the subagent
+   *  observable to hooks as a foreground one (parity: the reference fires the subagent
    *  lifecycle hooks for async agents too). The matching SubagentStart is fired by
    *  the spawn site before the drain begins. */
   subagentHookCtx?: SubagentContext;
@@ -2563,7 +2563,7 @@ async function runBackgroundAgentDrain(p: BackgroundDrainParams): Promise<void> 
   let result = p.initialOutput ?? '';
   let sawError = false;
   // Live usage accounting for the background completion summary (parity with
-  // Claude's runAsyncAgentLifecycle usage block: tokens / tool uses / duration).
+  // the reference's runAsyncAgentLifecycle usage block: tokens / tool uses / duration).
   let bgToolUseCount = p.initialToolUseCount ?? 0;
   let bgTotalTokens = p.initialTokens ?? 0;
   const bgStartedAt = p.startedAt ?? Date.now();
@@ -2580,12 +2580,12 @@ async function runBackgroundAgentDrain(p: BackgroundDrainParams): Promise<void> 
   };
   const clearBgStall = () => { if (bgStallTimer) { clearTimeout(bgStallTimer); bgStallTimer = null; } };
   resetBgStall();
-  // Gate live progress-summary generation (parity: Claude's enableSummarization =
+  // Gate live progress-summary generation (parity: the reference's enableSummarization =
   // coordinator || fork-subagent || sdk-progress). ON by default (AMI superset);
   // AMI_SUBAGENT_SUMMARIES=off disables it, the mode flags force-enable it. The
   // tool-use COUNT is always tracked; only the free-text progressSummary is gated.
   const summariesEnabled = resolveEnableSummarization(process.env);
-  // Classified recent tool-activity window (parity: Claude's collapseReadSearch) so
+  // Classified recent tool-activity window (parity: the reference's collapseReadSearch) so
   // the live progressSummary folds a run of consecutive read/search ops into one
   // compact label instead of scrolling a noisy per-file trail. Bounded so it never
   // grows unboundedly across a long background run. We track the per-call
@@ -2599,7 +2599,7 @@ async function runBackgroundAgentDrain(p: BackgroundDrainParams): Promise<void> 
   const findTool = (name: string): ToolDefinition | undefined =>
     p.tools?.find((t) => t.name === name || t.aliases?.includes(name));
   // The text of the agent's most recent text-bearing assistant turn — the CLEAN
-  // final answer written to the `.result` sidecar on completion (parity: Claude's
+  // final answer written to the `.result` sidecar on completion (parity: the reference's
   // TaskOutputTool preferring the in-memory final answer over the raw transcript).
   let bgLastTurnText: string | undefined;
   let pending = p.firstPending ?? null;
@@ -2624,7 +2624,7 @@ async function runBackgroundAgentDrain(p: BackgroundDrainParams): Promise<void> 
       if (event.type === 'tool_use_start') {
         bgToolUseCount++;
         const input = event.input ?? {};
-        // Human-readable action phrase (parity: Claude's getActivityDescription),
+        // Human-readable action phrase (parity: the reference's getActivityDescription),
         // e.g. "Reading src/foo.ts" / "Running npm test" — resolved from the tool's
         // own hook when present, else the shared name+input phrasing. Falls back to
         // the raw command/file_path/JSON when no phrase applies (an unknown tool).
@@ -2636,7 +2636,7 @@ async function runBackgroundAgentDrain(p: BackgroundDrainParams): Promise<void> 
               : JSON.stringify(input).slice(0, 120));
         // Live tool-call progress: surface the running count on the task entry so
         // task_list can show how much work this background agent has done and the
-        // model can see incremental deltas (reportProgressDelta). Mirrors Claude
+        // model can see incremental deltas (reportProgressDelta). Mirrors the reference
         // Code's live task.progress.toolCount counter. Also surface a short AI
         // progress summary of the CURRENT action (progress.summary parity — takes
         // precedence over the static description in task_list); this stamps the
@@ -2644,7 +2644,7 @@ async function runBackgroundAgentDrain(p: BackgroundDrainParams): Promise<void> 
         bgRecentCollapsible.push(isReadOrSearchActivity(event.toolName, input, findTool(event.toolName)));
         if (bgRecentCollapsible.length > 20) bgRecentCollapsible.shift();
         // Collapse a run of consecutive read/search ops into one line (parity:
-        // Claude's collapseReadSearch); a single op / a mutation keeps its own
+        // the reference's collapseReadSearch); a single op / a mutation keeps its own
         // per-tool detail so writes stay visible.
         const collapsed = collapseActivityRun(bgRecentCollapsible);
         context.processManager?.updateEntry(taskId, {
@@ -2679,12 +2679,12 @@ async function runBackgroundAgentDrain(p: BackgroundDrainParams): Promise<void> 
         w(errText);
       }
       // Track the last text-bearing assistant turn as the clean final answer
-      // (parity: Claude's finalizeAgentTool backward-walk) so the `.result` sidecar
+      // (parity: the reference's finalizeAgentTool backward-walk) so the `.result` sidecar
       // holds only the deliverable, not the whole streamed transcript.
       if (event.type === 'turn_complete' && typeof event.content === 'string' && event.content.trim().length > 0) {
         bgLastTurnText = event.content;
       }
-      // COOPERATIVE GRACEFUL SHUTDOWN (parity: Claude Code's InProcessTeammateTask
+      // COOPERATIVE GRACEFUL SHUTDOWN (parity: the reference's InProcessTeammateTask
       // shutdownRequested check between turns): a graceful task_kill set the flag;
       // honour it at a TURN BOUNDARY so the in-flight turn finishes cleanly instead of
       // being truncated mid-thought (a hard kill does the truncating). Breaking here
@@ -2723,18 +2723,18 @@ async function runBackgroundAgentDrain(p: BackgroundDrainParams): Promise<void> 
   }
   // Persist the CLEAN final answer to the `.result` sidecar so task_output can hand
   // the parent the deliverable instead of the raw streamed transcript (parity:
-  // Claude's TaskOutputTool preferring the in-memory final answer). Only written
+  // the reference's TaskOutputTool preferring the in-memory final answer). Only written
   // when the agent actually produced a text-bearing final turn; best-effort.
   if (bgLastTurnText && bgLastTurnText.trim()) {
     try { fs.writeFileSync(agentResultPath(outputPath), bgLastTurnText); } catch { /* dir removed */ }
   }
-  // Completion usage summary (parity: Claude's async-agent usage block) — the
+  // Completion usage summary (parity: the reference's async-agent usage block) — the
   // tokens / tool-uses / duration the model would otherwise only get from a
   // foreground run. The worktree outcome (cleaned-up / retained) is appended
   // below AFTER the agent is marked terminal, so cleanup can run.
   const bgDurationS = ((Date.now() - bgStartedAt) / 1000).toFixed(1);
   let bgFooter = `\n[Agent stats: ${bgToolUseCount} tool calls, ${bgTotalTokens} tokens, ${bgDurationS}s]`;
-  // Classify the terminal state up front (parity with Claude's completed/failed/
+  // Classify the terminal state up front (parity with the reference's completed/failed/
   // killed): a stall-termination or an external abort (task_kill → abortFn →
   // subAbort.abort) is a KILL, not a crash — distinct from a genuine engine
   // `error` event / thrown exception, which is a FAILURE. Reporting a kill as
@@ -2748,7 +2748,7 @@ async function runBackgroundAgentDrain(p: BackgroundDrainParams): Promise<void> 
   // to the lead instead of an idle/available one.
   markTeammateIdle(context, taskId, terminalStatus);
   // Background agent's lifecycle is over — fire SubagentStop so a lifecycle hook sees
-  // the SAME start/stop pair it gets for a foreground subagent (parity: Claude Code
+  // the SAME start/stop pair it gets for a foreground subagent (parity: the reference
   // fires the subagent lifecycle hooks for async agents too). The matching
   // SubagentStart was fired by the spawn site before this drain began.
   if (p.subagentHookCtx && context._hookManager) {
@@ -2757,7 +2757,7 @@ async function runBackgroundAgentDrain(p: BackgroundDrainParams): Promise<void> 
   if (context.processManager) {
     const exitCode = terminalStatus === 'completed' ? 0 : 1;
     // Record the FINAL-result stats distinct from the live progress counters
-    // (parity: Claude Code's AsyncAgentDetailDialog result-vs-progress split) — the
+    // (parity: the reference's AsyncAgentDetailDialog result-vs-progress split) — the
     // authoritative tool/token totals at the terminal transition, which task_list
     // prefers for a finished agent (falling back to the live counter if absent).
     context.processManager.updateEntry(taskId, {
@@ -2771,13 +2771,13 @@ async function runBackgroundAgentDrain(p: BackgroundDrainParams): Promise<void> 
     // surfaced NO model-facing note for a finished background agent. emitCompletion
     // buffers it for the engine's per-turn drain and enriches it with the
     // status-aware summary + usage clause (duration + token/tool totals recorded on
-    // the entry by the updateEntry() above) — parity with Claude's LocalAgentTask
+    // the entry by the updateEntry() above) — parity with the reference's LocalAgentTask
     // completion notification. Dedup via `notified` still suppresses it when the
     // model already consumed the result via task_output.
     context.processManager.emitCompletion({ taskId, exitCode, command: `[agent] ${label}`, description: `Background agent: ${label}`, outputPath, status: terminalStatus });
   }
   // Tear down the isolated worktree on the background completion path too
-  // (parity: Claude cleans the worktree when an async agent finishes). Done
+  // (parity: the reference cleans the worktree when an async agent finishes). Done
   // AFTER updateEntry() flips this agent out of the 'running' state so it no
   // longer counts against runningAgentCount() for its OWN worktree; the
   // shouldRemoveWorktree() guard still keeps a dirty/unpushed worktree or one
@@ -2850,14 +2850,14 @@ export const taskTool: ToolDefinition = {
     '</example>',
   // Rebuilt per advertisement so `run_in_background` can be dynamically OMITTED
   // when background tasks are disabled via CLAUDE_CODE_DISABLE_BACKGROUND_TASKS —
-  // the model is then never offered the flag (mirrors Claude Code's
+  // the model is then never offered the flag (mirrors the reference's
   // fullInputSchema().omit({run_in_background:true}) gate).
   get inputSchema(): ToolInputSchema {
     const properties: Record<string, JsonSchemaProperty> = { ...TASK_TOOL_PROPERTIES };
     if (isBackgroundTasksDisabled()) {
       delete properties.run_in_background;
     }
-    // `description` is REQUIRED (parity with Claude's baseInputSchema, where
+    // `description` is REQUIRED (parity with the reference's baseInputSchema, where
     // `description: z.string()` is not optional): every spawned agent must carry an
     // explicit short human-readable label for UI/tracking rather than falling back
     // to a truncated raw prompt. execute() keeps a prompt-slice fallback for defense
@@ -2873,7 +2873,7 @@ export const taskTool: ToolDefinition = {
     const prompt = input.prompt as string;
     // Effective spawn mode: an explicit `mode` wins; otherwise, when implicit-fork
     // is enabled AND no `subagent_type` is named, an omitted mode resolves to
-    // `fork` (parity: Claude's FORK_SUBAGENT schema mutation). Default stays
+    // `fork` (parity: the reference's FORK_SUBAGENT schema mutation). Default stays
     // `general`. Uses the RAW `subagent_type` arg — a resume target carries its
     // own identity and never triggers an implicit fork.
     const mode = resolveSpawnMode(
@@ -2881,7 +2881,7 @@ export const taskTool: ToolDefinition = {
       input.subagent_type as string | undefined,
     );
     const resumeTarget = input.resume as string | undefined;
-    // Durable cross-process resume (parity: Claude's readAgentMetadata /
+    // Durable cross-process resume (parity: the reference's readAgentMetadata /
     // getAgentTranscript): the taskId/name→session index is persisted to the project
     // state dir and rehydrated here, so a `resume` resolves an agent spawned in a
     // PRIOR process (AMI's in-memory maps are otherwise process-lifetime only).
@@ -2890,7 +2890,7 @@ export const taskTool: ToolDefinition = {
     // Resolve the resume target — name, taskId, OR raw sessionId — up front so both
     // the identity restore and the session/cwd resolution below read ONE resolution.
     const resumeResolution = resumeTarget ? resolveResumeTarget(resumeTarget) : undefined;
-    // Resume identity restore (parity: Claude Code's resumeAgent metadata restore,
+    // Resume identity restore (parity: the reference's resumeAgent metadata restore,
     // resumeAgent.ts:L99-114): when resuming an agent and the resume call does not
     // re-supply its identity/defaults, fall back to what the ORIGINAL spawn ran
     // under (subagent_type, description, permission_mode, model) — recorded in
@@ -2902,7 +2902,7 @@ export const taskTool: ToolDefinition = {
       : undefined;
     const subagentType = (input.subagent_type as string | undefined) ?? resumeMeta?.agentType;
     const taskDescription = (input.description as string | undefined) ?? resumeMeta?.description;
-    // Caller-supplied STABLE machine id (parity: Claude Code's agentId distinct from
+    // Caller-supplied STABLE machine id (parity: the reference's agentId distinct from
     // the display agentName, utils/teammate.ts:L44-45). Validated up front: it becomes
     // the taskId (→ on-disk output path, file-cache key, registry key), so it must be a
     // single path-safe segment. On resume the resumed agent keeps its original id, so
@@ -2929,7 +2929,7 @@ export const taskTool: ToolDefinition = {
     }
     const effortOverride = input.effort as string | undefined;
     // A fork child may request `permission_mode: 'bubble'` — the sentinel that means
-    // "run with the parent's live stance" (parity: Claude's FORK_AGENT 'bubble'). Resolve
+    // "run with the parent's live stance" (parity: the reference's FORK_AGENT 'bubble'). Resolve
     // it to the parent mode BEFORE the PERMISSION_MODES enum check so 'bubble' is accepted.
     const requestedPermissionMode = resolveBubblePermissionMode(
       (input.permission_mode as string | undefined) ?? resumeMeta?.permissionMode,
@@ -2960,7 +2960,7 @@ export const taskTool: ToolDefinition = {
       };
     }
 
-    // team_name (parity: Claude's Agent-tool `team_name`): join the spawned agent to
+    // team_name (parity: the reference's Agent-tool `team_name`): join the spawned agent to
     // a NAMED, already-existing team. Resolve it up front so an invalid/nonexistent
     // team or an unnamed spawn is rejected before any sub-engine is built. When
     // omitted, the agent joins the currently-active team (if any) as before.
@@ -2997,7 +2997,7 @@ export const taskTool: ToolDefinition = {
     }
 
     // allowed_agent_types: a per-invocation boundary scoping which named
-    // subagent_type values this call may spawn (mirrors Claude's allowedAgentTypes
+    // subagent_type values this call may spawn (mirrors the reference's allowedAgentTypes
     // / Agent(x,y) restriction). Validate the shape, then reject a requested
     // subagent_type that falls outside the permitted subset.
     const allowedAgentTypesResult = parseAllowedAgentTypes(input.allowed_agent_types);
@@ -3006,7 +3006,7 @@ export const taskTool: ToolDefinition = {
     }
     const allowedAgentTypes = allowedAgentTypesResult.value;
 
-    // allowed_tools: a per-spawn inline tool scope (mirrors Claude's spawn-time
+    // allowed_tools: a per-spawn inline tool scope (mirrors the reference's spawn-time
     // permissions/allowedTools). Validate the shape here; the resolved tool set is
     // intersected with it after mode/agent-def resolution below.
     const allowedToolsResult = parseAllowedTools(input.allowed_tools);
@@ -3015,7 +3015,7 @@ export const taskTool: ToolDefinition = {
     }
     const allowedToolsSpec = allowedToolsResult.value;
 
-    // auto_approve_tools: a per-spawn AUTO-APPROVE allowlist (mirrors Claude's
+    // auto_approve_tools: a per-spawn AUTO-APPROVE allowlist (mirrors the reference's
     // spawn-time `allowedTools` auto-allow list) — DISTINCT from allowed_tools
     // (availability). Validate the shape here; the named tools become `allow`
     // permission rules appended to the child's rule set below (buildAutoApproveRules).
@@ -3043,7 +3043,7 @@ export const taskTool: ToolDefinition = {
       return { output: `Error: ${ribParsed.error}`, isError: true };
     }
 
-    // Per-spawn `share_abort_controller` knob (parity: Claude Code's
+    // Per-spawn `share_abort_controller` knob (parity: the reference's
     // SubagentContextOverrides.shareAbortController). AMI's default (true) cascades a
     // parent-turn abort to the child — the safe default that never orphans a detached
     // agent. An explicit `false` opts the child OUT of the cascade (independent
@@ -3114,7 +3114,7 @@ export const taskTool: ToolDefinition = {
 
     if (context._hookManager) {
       // Gate on the SPECIFIC named agent type when one is requested (mirrors
-      // Claude Code's Agent(<type>) deny rules), falling back to the tool tier
+      // the reference's Agent(<type>) deny rules), falling back to the tool tier
       // `mode` for a mode-only spawn — so an `Agent(researcher)` deny rule can
       // block exactly that subagent type rather than only the coarse mode.
       const agentTypeForGate = subagentType || mode;
@@ -3139,27 +3139,27 @@ export const taskTool: ToolDefinition = {
     let agentMaxTurns: number | undefined;
     let agentPermissionMode: string | undefined;
     let agentTokenBudget: number | undefined;
-    // Per-agent `background: true` default (parity: Claude's agent background flag).
+    // Per-agent `background: true` default (parity: the reference's agent background flag).
     // Applied only when the caller did not explicitly pass run_in_background.
     let agentBackgroundDefault = false;
-    // Per-agent `isolation` default (parity: Claude's agent isolation field) — used
+    // Per-agent `isolation` default (parity: the reference's agent isolation field) — used
     // when the caller did not pass an explicit `isolation` on the task call.
     let agentIsolationDefault: string | undefined;
-    // Per-agent `effort` default (parity: Claude's agent effort field) — the sub-engine
+    // Per-agent `effort` default (parity: the reference's agent effort field) — the sub-engine
     // thinking level, used when the caller did not pass an explicit per-call `effort`.
     let agentEffort: string | undefined;
-    // Per-agent `initialPrompt` (parity: Claude's agent initialPrompt) — text prepended
+    // Per-agent `initialPrompt` (parity: the reference's agent initialPrompt) — text prepended
     // to the first user turn on the initial spawn (never on resume).
     let agentInitialPrompt: string | undefined;
-    // Per-agent `skills` preload (parity: Claude's runAgent skill preloading) —
+    // Per-agent `skills` preload (parity: the reference's runAgent skill preloading) —
     // a one-line note naming any declared-but-unresolvable skill, prepended to the
     // agent's returned output so a typo'd/disabled preload is visible, not silent.
     let agentSkillPreloadNote = '';
-    // Per-agent `color` (parity: Claude's agent/teammate `color`) — the named
+    // Per-agent `color` (parity: the reference's agent/teammate `color`) — the named
     // agent's declared display color, used for the live-roster badge unless the
     // caller passes an explicit per-spawn `color` override below.
     let agentColor: AgentColorName | undefined;
-    // Per-agent frontmatter hooks (parity: Claude's agent `hooks` + registerFrontmatterHooks
+    // Per-agent frontmatter hooks (parity: the reference's agent `hooks` + registerFrontmatterHooks
     // with isAgent=true) — registered on the spawned sub-engine for the duration of this
     // agent's run and torn down when it shuts down. Plugin-sourced agents never carry hooks
     // (stripped at load), so this is always author-trusted.
@@ -3169,7 +3169,7 @@ export const taskTool: ToolDefinition = {
     // coordinator/fork, or a bundled roster agent) vs a USER-DEFINED custom agent.
     // A mode-only spawn (no subagent_type) is always a built-in mode; a named agent is
     // resolved below. Threaded into the subagent hook/attribution context (parity:
-    // Claude's agentContext isBuiltIn) and used to collapse analytics names privacy-safely.
+    // the reference's agentContext isBuiltIn) and used to collapse analytics names privacy-safely.
     let subagentIsBuiltIn = true;
     // Whether a named agent definition narrowed the toolset with an explicit,
     // non-wildcard `tools` allowlist. Drives the teammate-coordination-tools floor
@@ -3186,7 +3186,7 @@ export const taskTool: ToolDefinition = {
       // cannot do its job until those servers are connected — so before building the
       // sub-engine, wait for any still-connecting required server (bounded poll,
       // early-exit on a failed one) and refuse the spawn with a guided error if a
-      // required server is failed/missing. Mirrors Claude Code's AgentTool
+      // required server is failed/missing. Mirrors the reference's AgentTool
       // requiredMcpServers readiness gate (AgentTool.tsx:L367-410). No-op for agents
       // without the field, so existing spawns are untouched.
       const mcpGate = await ensureRequiredMcpServersReady(
@@ -3196,7 +3196,7 @@ export const taskTool: ToolDefinition = {
       );
       if (!mcpGate.ready) return { output: mcpGate.error, isError: true };
       agentSystemPrompt = agentDef.systemPrompt;
-      // Per-agent `systemPromptMode` (parity: Claude swarm teammate systemPromptMode).
+      // Per-agent `systemPromptMode` (parity: the reference swarm teammate systemPromptMode).
       // 'append' layers the agent's own prompt AFTER the base subagent stance so the
       // agent EXTENDS the default guidance; 'replace'/'default'/absent keep the agent
       // prompt as the authoritative identity (AMI's existing replace behavior). A
@@ -3205,7 +3205,7 @@ export const taskTool: ToolDefinition = {
       if ((agentDef.systemPromptMode as SystemPromptMode | undefined) === 'append' && agentDef.systemPrompt) {
         agentSystemPrompt = `${SUBAGENT_SYSTEM_PROMPT}\n\n${agentDef.systemPrompt}`;
       }
-      // Per-agent project-context OPT-IN (parity: Claude's agent `omitClaudeMd`,
+      // Per-agent project-context OPT-IN (parity: the reference's agent `omitClaudeMd`,
       // inverted for AMI's lean-subagent perk — see resolveAgentProjectContext).
       // AMI subagents normally omit the project CLAUDE.md/AGENTS.md entirely; an agent
       // that declares `omit-claude-md: false` gets those instructions appended to its
@@ -3219,14 +3219,14 @@ export const taskTool: ToolDefinition = {
       agentMaxTurns = agentDef.maxTurns;
       // A NON-built-in (user/project/plugin) agent definition — which may come from an
       // untrusted cloned repo — may TIGHTEN but never ESCALATE the subagent's permission
-      // mode past the parent's live stance (parity: Claude's runAgent permission clamp +
+      // mode past the parent's live stance (parity: the reference's runAgent permission clamp +
       // source-trust gate). A repo-local `.ami/agents/*.md` declaring
       // `permission-mode: auto-allow` therefore cannot auto-approve every tool call when
       // the parent session is in `ask` / detached `deny-all`. Built-in agents are trusted
       // and keep their declared mode. The clamp is a no-op when the parent mode is not
       // threaded (bare/test contexts), so it never regresses existing behavior.
       subagentIsBuiltIn = isBuiltInAgent(agentDef);
-      // An agent definition may declare the `'bubble'` sentinel (parity: Claude's
+      // An agent definition may declare the `'bubble'` sentinel (parity: the reference's
       // async/background-agent bubble mode) — resolve it to the parent's LIVE stance
       // FIRST so every permission decision bubbles up to the parent terminal instead
       // of being auto-denied or mis-clamped as an unknown mode. A concrete declared
@@ -3243,11 +3243,11 @@ export const taskTool: ToolDefinition = {
       agentColor = agentDef.color;
       // Stamp the agent's bundle/base root onto its command hooks so a
       // `${CLAUDE_PLUGIN_ROOT}`-referencing agent hook resolves its bundled asset
-      // path (parity with Claude's agent `baseDir` → registerFrontmatterHooks plugin
+      // path (parity with the reference's agent `baseDir` → registerFrontmatterHooks plugin
       // root). Returns a cloned list — never mutates the cached agentDef.hooks.
       agentFrontmatterHooks = withFrontmatterHookPluginRoot(agentDef.hooks, agentPluginRoot(agentDef));
 
-      // Per-agent persistent memory (parity: Claude's loadAgentMemoryPrompt).
+      // Per-agent persistent memory (parity: the reference's loadAgentMemoryPrompt).
       // When the agent definition declares a `memory` scope, load/seed its OWN
       // file-based memory store — namespaced by agent type, separate from the
       // global auto-memory — and PREPEND it to the authoritative system prompt so
@@ -3255,7 +3255,7 @@ export const taskTool: ToolDefinition = {
       // Keyed on the parent's cwd (its canonical git root), not the eventual
       // worktree, so every spawn of this agent in the repo shares one store.
       // Capability-gated: the per-agent memory block is only configured when the
-      // auto-memory capability is active (parity with Claude Code's MemoryStep
+      // auto-memory capability is active (parity with the reference's MemoryStep
       // `getSystemPrompt: isAutoMemoryEnabled() && memory && agentType ? …` and
       // the agent-creation wizard only inserting MemoryStep when
       // `isAutoMemoryEnabled()`). With `AMI_DISABLE_AUTO_MEMORY` set, a declared
@@ -3268,7 +3268,7 @@ export const taskTool: ToolDefinition = {
           : agentMemoryBlock;
       }
 
-      // Preload the bodies of the skills this agent declares (parity: Claude's
+      // Preload the bodies of the skills this agent declares (parity: the reference's
       // runAgent skill preloading) into its authoritative system prompt, so the
       // spawned agent starts already carrying that instruction context instead of
       // having to discover + invoke each skill. Resolution reuses the SkillManager's
@@ -3277,7 +3277,7 @@ export const taskTool: ToolDefinition = {
       // hard failure (a missing optional skill should not strand the whole agent).
       if (agentDef.skills && agentDef.skills.length > 0) {
         // Resolution uses the SkillManager's exact name/alias lookup FIRST (covers
-        // all registered skills incl. non-invocable), then falls back to Claude's
+        // all registered skills incl. non-invocable), then falls back to the reference's
         // multi-strategy resolveSkillName over the invocable set so a
         // plugin-namespaced skill (`plugin:name`) still resolves when the agent
         // references it by its bare name and the bare form is unavailable.
@@ -3294,7 +3294,7 @@ export const taskTool: ToolDefinition = {
         }
       }
 
-      // Per-agent `criticalSystemReminder` (parity: Claude's
+      // Per-agent `criticalSystemReminder` (parity: the reference's
       // criticalSystemReminder_EXPERIMENTAL): a short, strongly-flagged hard
       // constraint appended to the agent's authoritative system prompt so a
       // must-hold rule (e.g. "no project writes", "end with VERDICT:") stays
@@ -3306,7 +3306,7 @@ export const taskTool: ToolDefinition = {
       if (agentDef.tools !== undefined) {
         const everything = allTools.getAll();
         if (agentDef.tools.length === 0) {
-          // Explicit EMPTY allowlist = NO tools (parity: Claude distinguishes
+          // Explicit EMPTY allowlist = NO tools (parity: the reference distinguishes
           // `tools === undefined` → all tools from `tools === []` → no tools). This
           // resolves to a zero-tool set, which the zero-tool boundary guard below
           // then rejects with an actionable error — instead of the previous
@@ -3340,7 +3340,7 @@ export const taskTool: ToolDefinition = {
           agentHadExplicitTools = true;
         }
         // Deny wins even when an allowlist is set: an agent may declare BOTH
-        // `tools` and `disallowedTools` (e.g. Claude's planAgent allows the
+        // `tools` and `disallowedTools` (e.g. the reference's planAgent allows the
         // explore set yet denies edit/write/exit for defense-in-depth). Subtract
         // the denylist from the allowlist result so the two compose instead of
         // the allowlist silently ignoring the denylist.
@@ -3362,7 +3362,7 @@ export const taskTool: ToolDefinition = {
       }
       // Source-trust floor: a NON-built-in agent definition cannot grant itself a
       // denied powerful tool (incl. the nested-spawn `task`) via its own `tools`
-      // whitelist (parity: Claude's CUSTOM_AGENT_DISALLOWED_TOOLS on source !==
+      // whitelist (parity: the reference's CUSTOM_AGENT_DISALLOWED_TOOLS on source !==
       // 'built-in'). Applied AFTER the agent's own tools/disallowedTools resolution so
       // no allowlist (even `['*']`) can reintroduce them; built-in agents are unaffected.
       tools = applyCustomAgentDenylist(tools, agentDef);
@@ -3375,7 +3375,7 @@ export const taskTool: ToolDefinition = {
       // Cache-identical fork prefix: inherit the parent's EXACT ordered tool pool
       // ({@link selectExactForkToolPool}) when the parent threaded it, so the child's
       // serialized tool array matches the parent's cached prefix byte-for-byte instead
-      // of a freshly-rebuilt general pool (parity: Claude's useExactTools). Falls back
+      // of a freshly-rebuilt general pool (parity: the reference's useExactTools). Falls back
       // to the general rebuild when no parent pool was threaded (e.g. a fork spawned
       // outside a live engine turn).
       tools = context._parentToolNames && context._parentToolNames.length > 0
@@ -3390,7 +3390,7 @@ export const taskTool: ToolDefinition = {
     // allowlist (incl. `['*']`) can reintroduce plan_mode or workflow.
     tools = tools.filter(t => !ALL_AGENT_DISALLOWED_TOOLS.has(t.name));
 
-    // In-process teammate-only tool gating (parity: Claude's
+    // In-process teammate-only tool gating (parity: the reference's
     // IN_PROCESS_TEAMMATE_ALLOWED_TOOLS injected only via isInProcessTeammate()).
     // Agent-coordination + scheduling tools ({@link IN_PROCESS_TEAMMATE_ONLY_TOOLS}:
     // the shared task list, teammate messaging, team create/delete, cron, and
@@ -3407,7 +3407,7 @@ export const taskTool: ToolDefinition = {
       tools = filterTeammateOnlyTools(tools, isInProcessTeammateSpawn);
     }
 
-    // Per-spawn `allowed_tools` inline scope (mirrors Claude's spawn-time
+    // Per-spawn `allowed_tools` inline scope (mirrors the reference's spawn-time
     // permissions/allowedTools): intersect the resolved set with exactly the tools
     // the caller named for this one subagent. A name that matches no registered tool
     // is rejected so a typo is not silently dropped (leaving a narrower set than
@@ -3427,7 +3427,7 @@ export const taskTool: ToolDefinition = {
       tools = tools.filter(t => allowed.has(t.name));
     }
 
-    // Per-spawn `auto_approve_tools` auto-allow list (mirrors Claude's spawn-time
+    // Per-spawn `auto_approve_tools` auto-allow list (mirrors the reference's spawn-time
     // `allowedTools`): the named tools are pre-approved for this subagent. Validate each
     // names a real tool (typo-safe, same as allowed_tools) BEFORE building the allow
     // rules appended to the child's permission set below. Auto-approval is independent of
@@ -3451,14 +3451,14 @@ export const taskTool: ToolDefinition = {
     // silently dropped `run_in_background: "true"` to foreground, serializing a batch
     // the model meant to run concurrently). An explicit run_in_background (even
     // "false") wins; otherwise fall back to the agent definition's `background: true`
-    // default (parity: Claude's agent background).
+    // default (parity: the reference's agent background).
     const runInBackground = input.run_in_background !== undefined
       ? ribParsed.value
       : agentBackgroundDefault;
 
     // Async/background allowlist — a detached background agent has no live parent
     // turn supervising it, so after all mode/agent-def/denylist resolution its tool
-    // set is further INTERSECTED with ASYNC_AGENT_ALLOWED_TOOLS (mirrors Claude's
+    // set is further INTERSECTED with ASYNC_AGENT_ALLOWED_TOOLS (mirrors the reference's
     // isAsync → ASYNC_AGENT_ALLOWED_TOOLS gate). This strips recursion-prone (`task`)
     // and interactive/stateful tools even when a `['*']` allowlist widened the set.
     if (runInBackground) {
@@ -3470,7 +3470,7 @@ export const taskTool: ToolDefinition = {
     // by its denylist or the universal floor — would otherwise spawn a subagent
     // that can take no action: an opaque, hard-to-diagnose stall. Fail fast with an
     // explicit error instead of silently launching a zero-tool agent (mirrors
-    // Claude's non-empty selected-tools boundary guard).
+    // the reference's non-empty selected-tools boundary guard).
     if (tools.length === 0) {
       return {
         output: `Error: the resolved tool set for this subagent is empty — it would be unable to act. ` +
@@ -3483,7 +3483,7 @@ export const taskTool: ToolDefinition = {
     }
 
     // A direct per-call `max_turns` override caps any mode-only general/explore/
-    // fork subagent (mirrors Claude's runForkedAgent maxTurns parameter). It wins
+    // fork subagent (mirrors the reference's runForkedAgent maxTurns parameter). It wins
     // over an agent definition's maxTurns AND the fork default below, so an ad-hoc
     // delegation can bound its API round-trips without a named agent definition.
     const requestedMaxTurns = parsePositiveIntInput(input.max_turns);
@@ -3494,7 +3494,7 @@ export const taskTool: ToolDefinition = {
     // A `fork` child continues the parent's full task as a context-inheriting
     // clone, so it needs a generous turn budget. When no agent definition and no
     // explicit max_turns set one, default to DEFAULT_FORK_MAX_TURNS (mirrors
-    // Claude's FORK_AGENT).
+    // the reference's FORK_AGENT).
     if (mode === 'fork' && agentMaxTurns === undefined) {
       agentMaxTurns = DEFAULT_FORK_MAX_TURNS;
     }
@@ -3504,7 +3504,7 @@ export const taskTool: ToolDefinition = {
     // listener cap up front to avoid a MaxListenersExceededWarning on a wide turn.
     const subAbort = createBoundedAbortController();
     // Cascade a parent-turn abort to the subagent for BOTH foreground AND background
-    // spawns (parity: Claude's createChildAbortController in registerAsyncAgent). The
+    // spawns (parity: the reference's createChildAbortController in registerAsyncAgent). The
     // prior code linked ONLY the foreground path, leaving a detached background
     // subagent (and its nested grandchildren) orphaned to keep running until an
     // explicit task_kill, the stall timeout, or engine shutdown when the spawning turn
@@ -3518,10 +3518,10 @@ export const taskTool: ToolDefinition = {
       : () => {};
 
     // An explicit per-call `isolation` wins; otherwise fall back to the agent
-    // definition's `isolation` default (parity: Claude's agent isolation field).
+    // definition's `isolation` default (parity: the reference's agent isolation field).
     const isolation = (input.isolation as string | undefined) ?? agentIsolationDefault;
     const requestedCwd = input.cwd as string | undefined;
-    // `worktree_path` points the subagent at an EXISTING worktree (parity: Claude's
+    // `worktree_path` points the subagent at an EXISTING worktree (parity: the reference's
     // TeammateSpawnConfig.worktreePath). It is mutually exclusive with both
     // `isolation:"worktree"` (which CREATES a fresh worktree) and `cwd` (a different
     // working-dir override) — all three set the working directory, so accepting more
@@ -3534,7 +3534,7 @@ export const taskTool: ToolDefinition = {
         isError: true,
       };
     }
-    // `cwd` and `isolation:"worktree"` are mutually exclusive (parity: Claude's
+    // `cwd` and `isolation:"worktree"` are mutually exclusive (parity: the reference's
     // documented cwd contract). A worktree is created FROM the base cwd, so honoring
     // both would silently root the worktree at the override and defeat one of the two
     // conflicting intents — reject the combination explicitly instead.
@@ -3576,7 +3576,7 @@ export const taskTool: ToolDefinition = {
     // pass may have removed it — and fall back to the parent cwd instead of
     // crashing the sub-engine on an invalid chdir. On success, bump the directory's
     // mtime so a stale-worktree reaper does not treat the just-resumed worktree as
-    // abandoned (mirrors Claude Code's resume worktree revalidation + touch).
+    // abandoned (mirrors the reference's resume worktree revalidation + touch).
     if (resumeCwd && !requestedCwd && isolation !== 'worktree') {
       try {
         if (!fs.statSync(resumeCwd).isDirectory()) throw new Error('not a directory');
@@ -3610,7 +3610,7 @@ export const taskTool: ToolDefinition = {
     const providerConfig = { ...(context._providerConfig || { baseUrl: '', apiKey: '', model: '' }) };
     const envSubagentModel = process.env.SUPERINFERENCE_SUBAGENT_MODEL;
     // SUPERINFERENCE_SUBAGENT_MODEL is a HARD, highest-priority operator override
-    // (mirrors Claude Code's CLAUDE_CODE_SUBAGENT_MODEL, which is checked first and
+    // (mirrors the reference's CLAUDE_CODE_SUBAGENT_MODEL, which is checked first and
     // returns immediately): it beats a per-call `model` arg, an agent definition's
     // pinned model, AND the `inherit` sentinel, so an operator policy forcing every
     // subagent onto a cheap/local model cannot be silently overridden by a model
@@ -3623,15 +3623,15 @@ export const taskTool: ToolDefinition = {
       providerConfig.model = agentModel;
     } else if (mode === 'explore' && !subagentType) {
       // No explicit model anywhere → a read-only mode-only `explore` sub-agent defaults
-      // to the fast/cheap model (parity: Claude's explore agent pins external runs to
-      // haiku for speed). Only downshifts a Claude-family/absent parent; a non-Claude
+      // to the fast/cheap model (parity: the reference's explore agent pins external runs to
+      // haiku for speed). Only downshifts a reference-family/absent parent; a non-the reference
       // parent keeps its own model. Operator-overridable via AMI_EXPLORE_MODEL. Skipped
       // for a named subagent_type, whose own identity/model governs.
       const fastModel = defaultExploreModel(parentModel);
       if (fastModel) providerConfig.model = fastModel;
     } else {
       // No per-spawn model from any higher-priority source → consult the PERSISTED
-      // `subagentDefaultModel` config knob (parity: Claude's getDefaultTeammateModel).
+      // `subagentDefaultModel` config knob (parity: the reference's getDefaultTeammateModel).
       // A configured string sets this spawn's default; `null` means "follow the leader"
       // (keep the inherited parent model); `undefined` leaves the inherited parent model
       // in place for the provider-aware final fallback below. This is the ONLY site that
@@ -3642,12 +3642,12 @@ export const taskTool: ToolDefinition = {
 
     // Final fallback: if NO model was resolvable from any source above and the
     // parent provided none to inherit, run the subagent on the provider-aware fast
-    // default instead of dispatching an empty model id (parity with Claude Code's
+    // default instead of dispatching an empty model id (parity with the reference's
     // getHardcodedTeammateModelFallback; keeps AMI's parent-inheritance perk when a
     // model IS present — see defaultSubagentModelFallback).
     providerConfig.model = defaultSubagentModelFallback(providerConfig.model, providerConfig);
 
-    // Bedrock data-residency boundary (parity: Claude's subagent model resolution):
+    // Bedrock data-residency boundary (parity: the reference's subagent model resolution):
     // when running on amazon-bedrock, a sub-agent must invoke an inference profile in
     // the SAME account region as its parent. If the resolved sub-agent model does not
     // already pin its own cross-region prefix, inherit the parent model's prefix so a
@@ -3656,7 +3656,7 @@ export const taskTool: ToolDefinition = {
       providerConfig.model = inheritBedrockRegionPrefix(providerConfig.model, parentModel);
     }
 
-    // Per-call `max_output_tokens` cap (parity: Claude's ForkedAgentParams.maxOutputTokens
+    // Per-call `max_output_tokens` cap (parity: the reference's ForkedAgentParams.maxOutputTokens
     // → maxOutputTokensOverride): size the sub-engine's per-request max_tokens so a
     // bounded delegation (short summary / terse report) cannot emit a full-length
     // response. Threaded through the provider config's maxTokens, which the engine
@@ -3667,13 +3667,13 @@ export const taskTool: ToolDefinition = {
       providerConfig.maxTokens = requestedMaxOutputTokens;
     }
 
-    // Per-spawn `allow_permission_prompts` gate (parity: Claude's allowPermissionPrompts
+    // Per-spawn `allow_permission_prompts` gate (parity: the reference's allowPermissionPrompts
     // spawn flag): when the caller passes it, false → 'deny-all' (unlisted-tool calls are
     // auto-denied, never prompted) and true → 'ask' (interactive handler). Absent → no
     // contribution, so the existing fallback chain is unchanged (additive opt-in).
     const promptGatePermissionMode = resolvePromptGatePermissionMode(input.allow_permission_prompts);
 
-    // Per-spawn plan-required gate (parity: Claude's planModeRequired knob +
+    // Per-spawn plan-required gate (parity: the reference's planModeRequired knob +
     // CLAUDE_CODE_PLAN_MODE_REQUIRED env default): when set, the subagent runs
     // read-only ('plan') — it investigates and returns an implementation plan but
     // cannot mutate the workspace until the plan is reviewed. Per-spawn input wins
@@ -3686,7 +3686,7 @@ export const taskTool: ToolDefinition = {
     //    e.g. "plan" / "acceptEdits"; validated against PERMISSION_MODES above) —
     //    CLAMPED to the parent's active mode so a model-chosen permission_mode can
     //    never ESCALATE a subagent above the parent's safety stance (parity:
-    //    Claude's spawn-boundary de-escalation, spawnUtils.ts:L45-56 — a spawned
+    //    the reference's spawn-boundary de-escalation, spawnUtils.ts:L45-56 — a spawned
     //    agent is never more permissive than its parent). The clamp is a no-op when
     //    the parent mode is not threaded (bare/test contexts), so it is purely
     //    additive. The agent-def mode (agentPermissionMode) is already clamped above.
@@ -3696,7 +3696,7 @@ export const taskTool: ToolDefinition = {
     // 5. A BACKGROUND agent with NO permission-prompt handler cannot surface a
     //    prompt to anyone, so its unlisted-tool calls auto-DENY ('deny-all') rather
     //    than defaulting to 'ask' and blocking a detached run on a prompt no one can
-    //    answer (parity: Claude forces shouldAvoidPermissionPrompts on a
+    //    answer (parity: the reference forces shouldAvoidPermissionPrompts on a
     //    non-interactive subagent, forkedAgent.ts:L356-374). When a handler IS
     //    present (detached-YOLO / auto-allow propagation) the 'ask' default is kept
     //    so the handler still decides — no regression to background YOLO workers.
@@ -3719,7 +3719,7 @@ export const taskTool: ToolDefinition = {
     );
 
     // Permission-mode-aware runtime re-resolution of an INHERITED model (parity:
-    // Claude's getRuntimeMainLoopModel on the agent-inherit path, utils/model/agent.ts
+    // the reference's getRuntimeMainLoopModel on the agent-inherit path, utils/model/agent.ts
     // L80-88). When a subagent ends up running the PARENT's model — either the explicit
     // `inherit` sentinel resolved to it, or no model was specified anywhere so the spread
     // parent model was retained — re-resolve it the way the main loop would at spawn time
@@ -3733,7 +3733,7 @@ export const taskTool: ToolDefinition = {
         ?? providerConfig.model;
     }
 
-    // Plan-required STRUCTURAL read-only-bash boundary (parity: Claude's planAgent
+    // Plan-required STRUCTURAL read-only-bash boundary (parity: the reference's planAgent
     // keeps bash for read-only investigation but refuses mutating commands). The
     // `plan` permission clamp above already denies mutations at the permission layer;
     // this swaps the raw bash tool for the read-only-guarded variant so a plan agent
@@ -3759,7 +3759,7 @@ export const taskTool: ToolDefinition = {
     // stance assembled by the engine (no string base here to replace/append to).
     const baseSystemPrompt = agentSystemPrompt || modeOnlySystemPrompt;
 
-    // Per-spawn `system_prompt` knob (mirrors Claude Code's config.systemPrompt +
+    // Per-spawn `system_prompt` knob (mirrors the reference's config.systemPrompt +
     // systemPromptMode): layer a one-off inline persona on a spawn WITHOUT a
     // persisted agent file. "replace"/"default" fully replaces the base; "append"
     // adds it after the base. Append needs a string base to build on — `fork` has
@@ -3801,13 +3801,13 @@ export const taskTool: ToolDefinition = {
       detachedMode: !!context.detachedMode,
       agentDepth: childDepth._agentDepth,
       maxAgentDepth: childDepth._maxAgentDepth,
-      // Agent provenance for the child's query-source analytics tag (parity: Claude's
+      // Agent provenance for the child's query-source analytics tag (parity: the reference's
       // getQuerySourceForAgent). The raw type is only emitted for a BUILT-IN identity;
       // a custom agent collapses to `agent:custom` in the helper so its name never leaks.
       agentType: subagentType || mode,
       agentIsBuiltIn: subagentIsBuiltIn,
       // Thinking is DISABLED by default for non-fork subagents to control
-      // output-token cost across a fleet of delegations (mirrors Claude's runAgent,
+      // output-token cost across a fleet of delegations (mirrors the reference's runAgent,
       // which sets thinkingConfig {type:'disabled'} for regular sub-agents and only
       // inherits the parent's thinking on the fork/useExactTools path). An explicit
       // `effort` override always re-enables it; `fork` inherits the parent's config
@@ -3823,7 +3823,7 @@ export const taskTool: ToolDefinition = {
       // identity — skip stance-skill resolution (which would inject e.g. the
       // swebench stance workflow into a verification-only agent).
       //
-      // Cache-identical fork prefix (parity: Claude's forkSubagent renderedSystemPrompt
+      // Cache-identical fork prefix (parity: the reference's forkSubagent renderedSystemPrompt
       // threading, forkSubagent.ts:L44-L71): a `fork` child with NO custom/named prompt
       // reuses the parent's ALREADY-RENDERED system prompt VERBATIM instead of leaving
       // systemPrompt undefined (which makes the child re-derive the stance from scratch —
@@ -3840,7 +3840,7 @@ export const taskTool: ToolDefinition = {
             frontmatterHooks: agentFrontmatterHooks,
             // isAgent=true: this is a spawned SUBAGENT, so its frontmatter `stop` hook is
             // remapped to `subagentStop` (a completing subagent fires SubagentStop, not
-            // Stop) — parity with Claude Code's registerFrontmatterHooks(isAgent=true).
+            // Stop) — parity with the reference's registerFrontmatterHooks(isAgent=true).
             frontmatterHooksIsAgent: true,
             frontmatterHooksSource: subagentType ? `agent '${subagentType}'` : 'agent',
           }
@@ -3854,9 +3854,9 @@ export const taskTool: ToolDefinition = {
     // previously it got ZERO parent context. Drop a trailing interrupted assistant
     // turn and any assistant message with an unanswered tool_use first so the seeded
     // transcript is API-valid (the engine re-validates/heals it on construction).
-    // Parity: Claude's buildForkedMessages + filterIncompleteToolCalls.
+    // Parity: the reference's buildForkedMessages + filterIncompleteToolCalls.
     //
-    // RESUME guard (parity: Claude's resumeAgent passing forkContextMessages:undefined,
+    // RESUME guard (parity: the reference's resumeAgent passing forkContextMessages:undefined,
     // resumeAgent.ts:L116-L148): on a fork RESUME the sub-engine already reloads the
     // child's saved transcript from `resumeSessionId`, which ALREADY contains the
     // originally-seeded parent fork context. Re-seeding it here would replay the parent's
@@ -3901,7 +3901,7 @@ export const taskTool: ToolDefinition = {
       effectivePrompt = `${lead}\n\n---\n\n${prompt}`;
     }
 
-    // Per-agent `initialPrompt` (parity: Claude's agent initialPrompt): prepend the
+    // Per-agent `initialPrompt` (parity: the reference's agent initialPrompt): prepend the
     // agent's standing instruction ahead of the caller's task prompt on the FIRST
     // user turn only — a resumed agent already carries its seeded context, so skip it.
     if (agentInitialPrompt && !resumeSessionId) {
@@ -3910,13 +3910,13 @@ export const taskTool: ToolDefinition = {
 
     // Caller-specified thoroughness dial for explore-mode agents: turns the
     // explore prompt's abstract "adapt to the requested thoroughness" into a
-    // concrete, caller-chosen search depth (mirrors Claude Code's exploreAgent
+    // concrete, caller-chosen search depth (mirrors the reference's exploreAgent
     // thoroughness parameter). Only meaningful when exploring.
     if (thoroughness && mode === 'explore') {
       effectivePrompt = `${buildThoroughnessDirective(thoroughness)}\n\n---\n\n${effectivePrompt}`;
     }
 
-    // Coordinator-mode worker-capability affordance (mirrors Claude Code's
+    // Coordinator-mode worker-capability affordance (mirrors the reference's
     // getCoordinatorUserContext): a coordinator has NO file/shell tools and only
     // delegates, so it is told at runtime exactly which tools its spawned workers
     // have and which MCP servers they can reach — otherwise it mis-delegates work
@@ -3929,7 +3929,7 @@ export const taskTool: ToolDefinition = {
     // freshly created one (isolation:"worktree") OR a caller-supplied existing one
     // (worktree_path) — prepend a notice so it translates inherited paths to the
     // worktree root, re-reads stale files, and knows its changes are isolated
-    // (mirrors Claude's buildWorktreeNotice).
+    // (mirrors the reference's buildWorktreeNotice).
     if ((isolation === 'worktree' || usingExistingWorktree) && effectiveCwd !== context.cwd) {
       effectivePrompt = `${buildWorktreeNotice(context.cwd, effectiveCwd)}\n\n---\n\n${effectivePrompt}`;
     }
@@ -3961,11 +3961,11 @@ export const taskTool: ToolDefinition = {
     // A named agent spawned while a team is active joins that team as a member
     // (see registerTeamMember below). Tell it HOW to collaborate: it is one agent
     // in a team, it reaches teammates via send_message, a plain-text reply is
-    // invisible to them, and the user talks mainly to the lead (mirrors Claude
+    // invisible to them, and the user talks mainly to the lead (mirrors the reference
     // Code's teammatePromptAddendum). Without this the machinery exists but the
     // teammate is never told it can/should message its peers.
     if (agentName && resolvedTeam) {
-      // Advertise the team's shared scratchpad (parity: Claude's coordinator
+      // Advertise the team's shared scratchpad (parity: the reference's coordinator
       // scratchpadDir) so a teammate knows where durable cross-worker knowledge
       // goes — it has prompt-free read/write there (teamScratchpadRules below).
       const scratchpadDir = getTeamScratchpadDir(context.cwd, resolvedTeam);
@@ -3978,7 +3978,7 @@ export const taskTool: ToolDefinition = {
       // toolset with an explicit allowlist re-gains the essential coordination
       // tools (send_message + the shared task system) so it can always answer a
       // shutdown request, send its result, and update the team task list — even if
-      // the lead scoped it to e.g. `['file_read']` (mirrors Claude's force-union of
+      // the lead scoped it to e.g. `['file_read']` (mirrors the reference's force-union of
       // team-essential tools onto a restricted agent, inProcessRunner.ts:L979-995).
       // Unrestricted teammates already have these, so this only fires for a
       // deliberately-narrowed def.
@@ -3992,14 +3992,14 @@ export const taskTool: ToolDefinition = {
 
     // PARITY (additive): a named teammate spawned into a team (the active team, or a
     // team named via `team_name`) inherits the team-wide declarative allowed-path
-    // permissions (teamAllowedPaths) as session allow-rules, mirroring Claude Code's
+    // permissions (teamAllowedPaths) as session allow-rules, mirroring the reference's
     // teammateInit path→rule conversion. The lead sets these when creating the team;
     // each teammate gets them on spawn so the whole team shares a consistent,
     // team-scoped path allowlist.
     if (agentName && resolvedTeam) {
       // PARITY (additive): a teammate inherits BOTH the declarative team-wide
       // allowed-path rules AND a prompt-free grant to the team's shared scratchpad
-      // dir (teamScratchpadRules — Claude's gated coordinator scratchpadDir), so
+      // dir (teamScratchpadRules — the reference's gated coordinator scratchpadDir), so
       // workers persist durable cross-worker knowledge without a permission prompt.
       const teamRules = [
         ...teamAllowedPathsToRules(resolvedTeam),
@@ -4033,10 +4033,10 @@ export const taskTool: ToolDefinition = {
       // later `resume` can restore the agent to the same files it was editing.
       if (effectiveCwd !== context.cwd) agentCwdRegistry.set(taskId, effectiveCwd);
       // Record this agent's identity/defaults so a later `resume` restores them when
-      // the resume call names none (parity: Claude's resumeAgent metadata restore).
+      // the resume call names none (parity: the reference's resumeAgent metadata restore).
       recordAgentMeta(taskId, { agentType: subagentType, model: subConfig.provider?.model, permissionMode: resolvedPermissionMode, description: taskDescription });
       // Persist the registry snapshot so this agent is resumable from a LATER process
-      // (durable cross-process resume — parity: Claude's on-disk agent metadata).
+      // (durable cross-process resume — parity: the reference's on-disk agent metadata).
       persistAgentRegistry(context.cwd);
       // If a team is active, a named teammate joins it as an active member so the
       // team-delete guard can see it and refuse to disband while it runs.
@@ -4060,7 +4060,7 @@ export const taskTool: ToolDefinition = {
           description: `Background agent: ${label}`,
           outputPath,
           abortFn: () => { subAbort.abort(); },
-          // Introspection markers (parity: Claude resumeAgent / pillLabel): tag a
+          // Introspection markers (parity: the reference resumeAgent / pillLabel): tag a
           // resumed continuation vs a fresh spawn, and the team the agent joined so
           // task_list can tally distinct teams.
           resumed: !!resumeTarget,
@@ -4078,7 +4078,7 @@ export const taskTool: ToolDefinition = {
       // exists, so a factory that throws (a DEAD CHILD) would otherwise orphan a
       // phantom 'running' agent that never drains. On persistent construction failure
       // we prune those entries and return a classified error instead of rejecting out
-      // of the tool (parity: Claude's dead-target detection + bounded prune-and-retry).
+      // of the tool (parity: the reference's dead-target detection + bounded prune-and-retry).
       let subEngine: ReturnType<NonNullable<ToolContext['_engineFactory']>>;
       try {
         subEngine = buildSubEngineWithRetry(context._engineFactory, subConfig);
@@ -4089,7 +4089,7 @@ export const taskTool: ToolDefinition = {
       }
       // Fire the SubagentStart lifecycle hook for this background agent with the SAME
       // attribution/lineage + discriminated `agentContextKind` payload a foreground
-      // spawn emits (parity: Claude Code fires the subagent lifecycle hooks for async
+      // spawn emits (parity: the reference fires the subagent lifecycle hooks for async
       // agents too). Before this, a background spawn fired NO lifecycle hook, so a
       // SubagentStart/Stop hook never observed async agents. SubagentStop is fired by
       // the drain when the stream terminates (success/error/stall).
@@ -4134,10 +4134,10 @@ export const taskTool: ToolDefinition = {
     // later `resume` can restore the agent to the same files it was editing.
     if (effectiveCwd !== context.cwd) agentCwdRegistry.set(taskId, effectiveCwd);
     // Record this agent's identity/defaults so a later `resume` restores them when
-    // the resume call names none (parity: Claude's resumeAgent metadata restore).
+    // the resume call names none (parity: the reference's resumeAgent metadata restore).
     recordAgentMeta(taskId, { agentType: subagentType, model: subConfig.provider?.model, permissionMode: resolvedPermissionMode, description: taskDescription });
     // Persist the registry snapshot so this agent is resumable from a LATER process
-    // (durable cross-process resume — parity: Claude's on-disk agent metadata).
+    // (durable cross-process resume — parity: the reference's on-disk agent metadata).
     persistAgentRegistry(context.cwd);
     if (agentName && resolvedTeam) {
       const memberRecord = { name: agentName, agentId: taskId, agentType: subagentType, model: subConfig.provider?.model, cwd: effectiveCwd };
@@ -4149,13 +4149,13 @@ export const taskTool: ToolDefinition = {
     // Shared Subagent lifecycle-hook payload for this foreground spawn. parentSessionId
     // is the INVOKING engine's session id (context.sessionId) — not the child's taskId —
     // so a SubagentStart/Stop hook can correlate the subagent boundary back to its real
-    // parent across concurrent/nested runs (parity: Claude's SubagentContext.parentSessionId;
+    // parent across concurrent/nested runs (parity: the reference's SubagentContext.parentSessionId;
     // the prior code mis-reported the child id as its own parent). invocationKind
     // discriminates a fresh `spawn` from a `resume` of an existing agent session (parity:
-    // Claude's invocationKind). Falls back to taskId only in bare/test contexts with no
+    // the reference's invocationKind). Falls back to taskId only in bare/test contexts with no
     // session id.
     // Fresh per-invocation correlation id for the cross-agent attribution tree (parity:
-    // Claude's per-subagent query-tracking lineage, forkedAgent.ts:L451-455 — a new
+    // the reference's per-subagent query-tracking lineage, forkedAgent.ts:L451-455 — a new
     // chainId plus a monotonically incremented depth = parent.depth + 1). childDepth
     // ._agentDepth is already the CHILD's depth (one below the parent), so it is the
     // parent.depth+1 value directly.
@@ -4186,7 +4186,7 @@ export const taskTool: ToolDefinition = {
       type: 'subagent_start', nodeId: taskId, depth: relayDepth,
       agentName: agentName || undefined, model: subConfig.provider?.model, prompt,
       color: effectiveColor,
-      // The spawned KIND (parity: Claude's task_started.task_type): the named agent
+      // The spawned KIND (parity: the reference's task_started.task_type): the named agent
       // definition when one was requested, else the built-in mode it runs as.
       taskType: subagentType || mode,
     });
@@ -4203,14 +4203,14 @@ export const taskTool: ToolDefinition = {
 
     let toolUseCount = 0;
     let totalTokens = 0;
-    // Prompt-cache introspection carried into the completion footer (parity: Claude's
+    // Prompt-cache introspection carried into the completion footer (parity: the reference's
     // per-fork cacheRead / cacheHitRate). Latched from usage_update stats; 0/undefined
     // when the provider reports no cache signal (clause then omitted).
     let cacheReadTokens = 0;
     let cacheHitRate: number | undefined;
     const startedAt = Date.now();
     const recentActivities: string[] = [];
-    // Live-display state for this subagent (PARITY: Claude's DreamTask): a bounded
+    // Live-display state for this subagent (PARITY: the reference's DreamTask): a bounded
     // ring buffer of the most recent assistant turns + a 'starting'|'updating'
     // sub-phase flipped on the first file-mutating tool_use. Surfaced in the
     // stall/max-turns introspection footer so a terminated/capped agent's live
@@ -4223,7 +4223,7 @@ export const taskTool: ToolDefinition = {
     let exitReason: import('../types').ExitReason | undefined;
     let sawAbortError = false;
     // The text of the sub-agent's most recent text-bearing assistant turn. Tracking
-    // the last `turn_complete` that carried text performs Claude's finalizeAgentTool
+    // the last `turn_complete` that carried text performs the reference's finalizeAgentTool
     // backward-walk incrementally, so the returned deliverable is the clean FINAL
     // answer, not every intermediate narration delta concatenated across the run.
     let lastTurnText: string | undefined;
@@ -4232,7 +4232,7 @@ export const taskTool: ToolDefinition = {
     let deliverable = '';
     // Whether this subagent's isolated worktree was torn down during cleanup. Set in
     // the `finally` so the removal runs on EVERY exit path (success, error, abort,
-    // stall), mirroring Claude's cleanupWorktreeIfNeeded() living in finally — the
+    // stall), mirroring the reference's cleanupWorktreeIfNeeded() living in finally — the
     // success-path notice below reads this instead of re-running cleanup.
     let worktreeRemoved = false;
 
@@ -4251,11 +4251,11 @@ export const taskTool: ToolDefinition = {
 
     // Auto-background: a foreground subagent that is STILL ACTIVELY WORKING past the
     // configured threshold is promoted to a background task so the parent turn is not
-    // blocked for its full lifetime (parity: Claude's autoBackgroundMs race against a
+    // blocked for its full lifetime (parity: the reference's autoBackgroundMs race against a
     // background signal, AgentTool.tsx:808-833). Disabled by default (getAutoBackgroundMs
     // returns 0); the stall timeout only bounds INACTIVITY, so without this a subagent
     // that keeps emitting events blocks the parent indefinitely. The timer is cleared on
-    // normal completion/error (parity: Claude's cancelAutoBackground).
+    // normal completion/error (parity: the reference's cancelAutoBackground).
     const autoBgMs = getAutoBackgroundMs();
     let promotedToBackground = false;
     let autoBgTimer: ReturnType<typeof setTimeout> | null = null;
@@ -4271,7 +4271,7 @@ export const taskTool: ToolDefinition = {
     // Consume the sub-engine's event stream via a manual iterator so the auto-background
     // timer can be raced against the next event (a `for await` cannot be interrupted
     // mid-await without finalizing the generator, which would kill the subagent).
-    // Derive the background-race signal ONCE (parity: Claude creates backgroundPromise
+    // Derive the background-race signal ONCE (parity: the reference creates backgroundPromise
     // outside the loop) so each iteration does not stack a new .then() reaction on it.
     const bgSignal = autoBgPromise ? autoBgPromise.then(() => ({ kind: 'bg' as const })) : null;
     let pendingNext: Promise<IteratorResult<import('../types').EngineEvent>> | null = null;
@@ -4321,12 +4321,12 @@ export const taskTool: ToolDefinition = {
         }
         if (event.type === 'tool_use_start') {
           toolUseCount++;
-          // Record a name+input activity label (parity: Claude's progress
+          // Record a name+input activity label (parity: the reference's progress
           // recentActivities carry the tool name AND its input), bounded to the most
           // recent MAX_RECENT_ACTIVITIES so the trail stays compact.
           recentActivities.push(describeActivity(event.toolName, event.input));
           if (recentActivities.length > MAX_RECENT_ACTIVITIES) recentActivities.shift();
-          // Live-display turn accounting (parity: Claude's DreamTask) — tallies this
+          // Live-display turn accounting (parity: the reference's DreamTask) — tallies this
           // turn's tool uses and flips the sub-phase to 'updating' on the first
           // file-mutating tool.
           liveTurns.recordToolUse(event.toolName);
@@ -4346,7 +4346,7 @@ export const taskTool: ToolDefinition = {
           lastTurnText = event.content;
         }
         // Commit each assistant turn into the bounded live-display ring buffer
-        // (parity: Claude's addDreamTurn — tool uses collapsed to a count, the N
+        // (parity: the reference's addDreamTurn — tool uses collapsed to a count, the N
         // most recent turns retained, pure no-op turns skipped).
         if (event.type === 'turn_complete') {
           liveTurns.commitTurn(typeof event.content === 'string' ? event.content : '');
@@ -4376,7 +4376,7 @@ export const taskTool: ToolDefinition = {
             description: `Background agent: ${label}`,
             outputPath,
             abortFn: () => { subAbort.abort(); },
-            // Introspection markers (parity: Claude resumeAgent / pillLabel), same
+            // Introspection markers (parity: the reference resumeAgent / pillLabel), same
             // as the explicit-background path above.
             resumed: !!resumeTarget,
             ...(resolvedTeamName ? { teamName: resolvedTeamName } : {}),
@@ -4407,7 +4407,7 @@ export const taskTool: ToolDefinition = {
       // plus the truncation notice — not the intermediate narration.
       deliverable = selectFinalAnswer(lastTurnText, resultText);
       if (stalled) {
-        // Surface the last few tool actions (parity: Claude's recentActivities) so a
+        // Surface the last few tool actions (parity: the reference's recentActivities) so a
         // stalled agent's final state is observable instead of opaque.
         deliverable += `\n[Subagent timed out — no activity for ${Math.round(stallTimeoutMs / 1000)}s]${buildRecentActivityTrail(recentActivities)}${buildLiveStateTrail(liveTurns)}`;
       } else if (exitReason === 'max_turns') {
@@ -4434,7 +4434,7 @@ export const taskTool: ToolDefinition = {
       };
     } finally {
       clearStallTimer();
-      // Always cancel the auto-background timer (parity: Claude's cancelAutoBackground
+      // Always cancel the auto-background timer (parity: the reference's cancelAutoBackground
       // on completion) so it cannot fire after the run is over.
       clearAutoBg();
       // When the subagent was promoted to the background, the drain now OWNS teardown
@@ -4454,7 +4454,7 @@ export const taskTool: ToolDefinition = {
         // longer blocks team_delete, and fire TeammateIdle.
         markTeammateIdle(context, taskId);
         // Tear down the isolated worktree here in `finally` so it runs on the error /
-        // abort / stall paths too — not only the success return (parity: Claude runs
+        // abort / stall paths too — not only the success return (parity: the reference runs
         // cleanupWorktreeIfNeeded in finally "to handle abort/error paths"). The
         // shouldRemoveWorktree() guard inside removeWorktreeIfClean still keeps a dirty
         // or unpushed worktree, and a worktree with a live background agent in it.
@@ -4478,7 +4478,7 @@ export const taskTool: ToolDefinition = {
       } else {
         // Worktree RETAINED (it has changes / unpushed commits / a live agent):
         // surface where the agent's work landed so the model can find it instead of
-        // rediscovering it (parity: Claude's <worktree_path>/<worktree_branch>).
+        // rediscovering it (parity: the reference's <worktree_path>/<worktree_branch>).
         deliverable += buildWorktreeCompletionNotice(effectiveCwd, readWorktreeBranch(effectiveCwd));
       }
     }
@@ -4492,10 +4492,10 @@ export const taskTool: ToolDefinition = {
 
     // A stall-kill or an abort is a FAILURE, not a successful result — surface it
     // so the parent does not treat a cancelled/timed-out run as a finished one
-    // (mirrors Claude's AbortError-on-abort semantics). A run whose FINAL deliverable
+    // (mirrors the reference's AbortError-on-abort semantics). A run whose FINAL deliverable
     // is an interrupted/synthetic message (server-error / tool-call interrupt) was
     // cancelled mid-flight too, even without an explicit abort event — treat it as a
-    // failure so the parent does not act on a truncated half-answer (parity: Claude's
+    // failure so the parent does not act on a truncated half-answer (parity: the reference's
     // post-loop synthetic-final re-throw, AgentTool.tsx:L1205-1218).
     const failed = stalled || exitReason === 'abort' || sawAbortError || isInterruptedFinalText(deliverable);
 
@@ -4506,12 +4506,12 @@ export const taskTool: ToolDefinition = {
     const durationS = ((Date.now() - startedAt) / 1000).toFixed(1);
     // A metadata-only tail (empty body + stats) reads as "nothing to act on" to
     // some models and ends the parent turn prematurely — substitute an explicit
-    // no-output marker (mirrors Claude's "(Subagent completed but returned no output.)").
+    // no-output marker (mirrors the reference's "(Subagent completed but returned no output.)").
     const rawBody = cappedResult.trim() ? cappedResult : '(Subagent completed but returned no output.)';
     // Prepend any skills-preload note (a declared preload skill that could not be
     // resolved) so the typo/disabled skill is visible to the parent, not silent.
     const bodyBase = `${cwdFallbackNote}${agentSkillPreloadNote ? `${agentSkillPreloadNote}\n\n` : ''}${rawBody}`;
-    // Handoff safety review (parity: Claude's classifyHandoffIfNeeded): when the
+    // Handoff safety review (parity: the reference's classifyHandoffIfNeeded): when the
     // sub-agent ran in an AUTONOMOUS mode (auto-allow/bypassPermissions) its tool
     // calls were auto-approved with no human in the loop, so review them across the
     // trust boundary and prepend a SECURITY WARNING if it took a dangerous action —
@@ -4528,7 +4528,7 @@ export const taskTool: ToolDefinition = {
     // Continue-affordance: tell the parent it CAN message/resume this agent to
     // carry the work forward. Skipped for ONE-SHOT agents — a read-only `explore`
     // run OR a named one-shot built-in type (Explore/Plan) — which are never
-    // continued, so the trailer is dead weight (mirrors Claude Code's
+    // continued, so the trailer is dead weight (mirrors the reference's
     // ONE_SHOT_BUILTIN_AGENT_TYPES continuation-trailer gate). Uses the RAW `mode`
     // (not effectiveMode, which fork/explore paths may reassign) so the one-shot
     // classification matches what the caller requested.

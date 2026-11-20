@@ -3,7 +3,7 @@ import { ToolDefinition } from '../types';
 export const askUserQuestionTool: ToolDefinition = {
   name: 'AskUserQuestion',
   // Concise capability phrase for tool_search discovery, distinct from the long
-  // DESCRIPTION (parity with Claude's `searchHint`). tool_search weights a curated
+  // DESCRIPTION (parity with the reference's `searchHint`). tool_search weights a curated
   // searchHint above the prose description when ranking a deferred tool, so a
   // query like "multiple choice" or "prompt the user" surfaces this tool by intent.
   searchHint: 'prompt the user with a multiple-choice question',
@@ -140,20 +140,20 @@ export const askUserQuestionTool: ToolDefinition = {
       },
     },
     required: [],
-    // Strict input object: reject unknown top-level keys (parity with Claude's
+    // Strict input object: reject unknown top-level keys (parity with the reference's
     // z.strictObject). `ToolInputSchema.additionalProperties` now declares this.
     additionalProperties: false,
   },
   isReadOnly: true,
   // Compact projection fed to the auto-mode security classifier (parity with
-  // Claude's `toAutoClassifierInput(input) => questions.map(q => q.question).join(' | ')`).
+  // the reference's `toAutoClassifierInput(input) => questions.map(q => q.question).join(' | ')`).
   // The classifier keys on the question texts rather than the full argument blob
   // (option labels/previews/annotations), giving a stable textual signature of what
   // is being asked. Handles both the multi-question (`questions[]`) and single-question
   // shorthand (`question`) shapes; a call with no question text projects to '' (skip).
   toAutoClassifierInput: askUserToAutoClassifierInput,
   // Cap the (user/model-derived) answer+annotation text that flows back into the
-  // model context (parity with Claude's `maxResultSizeChars: 100_000`). The tool is
+  // model context (parity with the reference's `maxResultSizeChars: 100_000`). The tool is
   // handled specially by the engine, which reads this field to bound the result.
   maxResultSizeChars: 100_000,
   async execute(_input, _context) {
@@ -162,7 +162,7 @@ export const askUserQuestionTool: ToolDefinition = {
   },
 };
 
-/** Hard cap on the serialized AskUserQuestion result (parity with Claude's
+/** Hard cap on the serialized AskUserQuestion result (parity with the reference's
  *  `maxResultSizeChars: 100_000`). The engine reads {@link askUserQuestionTool}'s
  *  `maxResultSizeChars` so this constant is the single source of the default. */
 export const ASK_USER_MAX_RESULT_CHARS = askUserQuestionTool.maxResultSizeChars ?? 100_000;
@@ -170,7 +170,7 @@ export const ASK_USER_MAX_RESULT_CHARS = askUserQuestionTool.maxResultSizeChars 
 /**
  * Bound an AskUserQuestion tool result to `cap` characters before it flows back
  * into the model context. Oversized answer/annotation payloads are truncated with
- * an explicit marker rather than returned unbounded (parity with Claude's
+ * an explicit marker rather than returned unbounded (parity with the reference's
  * `maxResultSizeChars`). Returns the input unchanged when within the cap.
  */
 export function capAskUserResult(output: string, cap: number = ASK_USER_MAX_RESULT_CHARS): string {
@@ -184,7 +184,7 @@ export function capAskUserResult(output: string, cap: number = ASK_USER_MAX_RESU
 
 /**
  * Project an AskUserQuestion tool input to the compact signature fed to the
- * auto-mode security classifier (parity with Claude's
+ * auto-mode security classifier (parity with the reference's
  * `toAutoClassifierInput(input) => input.questions.map(q => q.question).join(' | ')`).
  *
  * The classifier reasons about WHAT is being asked, so only the question texts are
@@ -192,7 +192,7 @@ export function capAskUserResult(output: string, cap: number = ASK_USER_MAX_RESU
  * shapes the tool accepts are supported: the multi-question `questions[]` array and
  * the single-question `question` shorthand. Non-string / empty question texts are
  * dropped; when nothing remains the projection is `''`, which the classifier treats
- * as "skip" (parity with Claude's `'' = skip` convention on this hook).
+ * as "skip" (parity with the reference's `'' = skip` convention on this hook).
  */
 export function askUserToAutoClassifierInput(input: Record<string, unknown>): string {
   const texts: string[] = [];
@@ -209,7 +209,7 @@ export function askUserToAutoClassifierInput(input: Record<string, unknown>): st
 }
 
 // ---------------------------------------------------------------------------
-// Input validation (parity with Claude's AskUserQuestionTool refine + validateInput)
+// Input validation (parity with the reference's AskUserQuestionTool refine + validateInput)
 //
 // The schema's minItems/maxItems/additionalProperties are advisory — many
 // providers do not enforce JSON-Schema array bounds or refinements, so the
@@ -218,18 +218,18 @@ export function askUserToAutoClassifierInput(input: Record<string, unknown>): st
 // every AskUserQuestion tool call.
 // ---------------------------------------------------------------------------
 
-/** Model-facing message when uniqueness is violated (matches Claude's refine). */
+/** Model-facing message when uniqueness is violated (matches the reference's refine). */
 export const ASK_USER_UNIQUENESS_MESSAGE =
   'Question texts must be unique, option labels must be unique within each question';
 
-/** Cardinality bounds (parity with Claude's zod `.min(1).max(4)` on questions and `.min(2).max(4)` on options). */
+/** Cardinality bounds (parity with the reference's zod `.min(1).max(4)` on questions and `.min(2).max(4)` on options). */
 export const ASK_USER_MIN_QUESTIONS = 1;
 export const ASK_USER_MAX_QUESTIONS = 4;
 export const ASK_USER_MIN_OPTIONS = 2;
 export const ASK_USER_MAX_OPTIONS = 4;
 
 /**
- * Max header/chip width (parity with Claude's `ASK_USER_QUESTION_TOOL_CHIP_WIDTH = 12`).
+ * Max header/chip width (parity with the reference's `ASK_USER_QUESTION_TOOL_CHIP_WIDTH = 12`).
  * The schema advertises `maxLength: 12`, but JSON-Schema `maxLength` is advisory —
  * providers do not reliably enforce it, so the validator fail-closes here too.
  */
@@ -238,7 +238,7 @@ export const ASK_USER_MAX_HEADER = 12;
 /**
  * Model-facing message when a preview is supplied on a multi-select question.
  * Previews are a single-select-only affordance (side-by-side focused preview),
- * so a preview on a multiSelect question is rejected (parity with Claude's
+ * so a preview on a multiSelect question is rejected (parity with the reference's
  * prompt constraint "previews are only supported for single-select questions").
  */
 export const ASK_USER_PREVIEW_MULTISELECT_MESSAGE =
@@ -270,7 +270,7 @@ interface AskUserQuestionInputLike {
 /**
  * Validate an option's HTML preview fragment (only meaningful when the
  * question's previewFormat is 'html'). Returns a model-facing error string, or
- * null when the preview is safe/absent. Ported 1:1 from Claude's
+ * null when the preview is safe/absent. Ported 1:1 from the reference's
  * validateHtmlPreview: a preview must be a fragment (no full-document tags), must
  * not carry executable/style tags, and must actually contain a tag.
  */
@@ -292,9 +292,9 @@ export function validateHtmlPreview(preview: string | undefined): string | null 
  * Validate a parsed AskUserQuestion tool input. Returns a model-facing error
  * string when the input is invalid, or null when it is acceptable. Enforces:
  *   - cardinality bounds: 1-4 questions, each with 2-4 options (parity with
- *     Claude's zod `.min/.max`; providers do not reliably enforce JSON-Schema
+ *     the reference's zod `.min/.max`; providers do not reliably enforce JSON-Schema
  *     `minItems`/`maxItems`, so the engine must fail-closed here),
- *   - header/chip width (<= 12 chars, parity with Claude's chip width),
+ *   - header/chip width (<= 12 chars, parity with the reference's chip width),
  *   - unique question texts across the call,
  *   - unique option labels within each question,
  *   - previews only on single-select questions (not multiSelect),
@@ -330,7 +330,7 @@ export function validateAskUserQuestionInput(input: AskUserQuestionInputLike): s
       return `Question "${q.question ?? ''}" must have ${ASK_USER_MIN_OPTIONS}-${ASK_USER_MAX_OPTIONS} options (got ${q.options.length}).`;
     }
 
-    // Header/chip width (parity with Claude's ASK_USER_QUESTION_TOOL_CHIP_WIDTH).
+    // Header/chip width (parity with the reference's ASK_USER_QUESTION_TOOL_CHIP_WIDTH).
     if (typeof q.header === 'string' && q.header.length > ASK_USER_MAX_HEADER) {
       return `Question "${q.question ?? ''}" header must be <= ${ASK_USER_MAX_HEADER} chars (got ${q.header.length}).`;
     }

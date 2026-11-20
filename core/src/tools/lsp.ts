@@ -12,7 +12,7 @@ import { filterGitIgnoredLocations } from './lsp-gitignore-filter';
 import { groupBy } from '../utils/group-by';
 
 /**
- * Position-based semantic LSP tool — parity with Claude Code's LSPTool.
+ * Position-based semantic LSP tool — parity with the reference's LSPTool.
  *
  * A single `operation` enum dispatches nine language-server queries against the
  * real JSON-RPC client (which reads server responses and correlates them by id):
@@ -20,7 +20,7 @@ import { groupBy } from '../utils/group-by';
  * goToImplementation, prepareCallHierarchy, incomingCalls, outgoingCalls.
  * Positions are 1-based (as shown in editors) and converted to the 0-based LSP
  * protocol. Unknown file types return a graceful "no server" message instead of
- * throwing, matching Claude's undefined-result fallback.
+ * throwing, matching the reference's undefined-result fallback.
  */
 
 const OPERATIONS = [
@@ -93,7 +93,7 @@ function linePos(range: Range | undefined): string {
  * Normalize a Location | LocationLink into a Location shape. For a LocationLink,
  * prefer the narrower `targetSelectionRange` (the identifier span) over the full
  * `targetRange` (the whole declaration block) so go-to-definition points at the
- * SYMBOL, not the first line of its enclosing block — parity with Claude Code's
+ * SYMBOL, not the first line of its enclosing block — parity with the reference's
  * `toLocation` (`targetSelectionRange || targetRange`).
  */
 function toLocation(item: Location | LocationLink): Location {
@@ -182,7 +182,7 @@ function formatReferencesResult(result: unknown): string {
 /**
  * Recursively total the symbols in a hierarchical `DocumentSymbol[]`, descending
  * into every `children` array — so a class with five nested methods counts as six,
- * not one. Parity with Claude Code's `countSymbols` (LSPTool.ts L515-526): the flat
+ * not one. Parity with the reference's `countSymbols` (LSPTool.ts L515-526): the flat
  * `SymbolInformation[]` shape has no nesting, so its count is just `.length` and is
  * handled by the caller's shape discrimination rather than here.
  */
@@ -205,7 +205,7 @@ function countUniqueFiles(uris: Array<string | undefined>): number {
  * Structured `{ resultCount, fileCount }` for an LSP operation's (post-filter,
  * post-call-hierarchy-expansion) result, carried as tool-result metadata so a
  * programmatic caller reads the hit count without re-parsing the formatted text.
- * Parity with Claude Code's `formatResult` return (`{ formatted, resultCount,
+ * Parity with the reference's `formatResult` return (`{ formatted, resultCount,
  * fileCount }`, LSPTool.ts L638-828): `documentSymbol` uses the recursive
  * `countSymbols` for the hierarchical shape (and flat `.length` for
  * `SymbolInformation[]`), every location-bearing op counts valid hits + distinct
@@ -287,7 +287,7 @@ function formatDocumentSymbolResult(result: unknown): string {
   // BEFORE the hierarchical-vs-flat shape detection. A null element otherwise
   // made `'location' in arr[0]` throw a TypeError (surfaced as an "Error
   // performing documentSymbol"); now it degrades to the actionable empty-result
-  // message, matching Claude Code's defensive result handling.
+  // message, matching the reference's defensive result handling.
   const arr = (result as unknown[]).filter(
     (x): x is DocumentSymbol | SymbolInformation => x != null && typeof x === 'object',
   );
@@ -353,7 +353,7 @@ function formatResult(op: LspOperation, result: unknown): string {
       // FUNCTIONAL PARITY: a hover payload that renders to an empty / whitespace-
       // only string (e.g. `contents: ''`, `contents: []`, or all-empty array
       // entries) must fall back to the actionable "no hover information" message
-      // rather than emitting a blank tool output. Matches Claude Code's hover
+      // rather than emitting a blank tool output. Matches the reference's hover
       // empty-result handling.
       const rendered = formatHover((result as { contents?: unknown } | null | undefined)?.contents);
       return rendered.trim() === '' ? NO_RESULT_MESSAGE.hover : rendered;
@@ -393,7 +393,7 @@ function formatHover(contents: unknown): string {
  * Drop gitignored files from location-bearing results (goToDefinition,
  * goToImplementation, findReferences, workspaceSymbol) so build-artifact /
  * vendored / generated locations never appear in navigation output — matching
- * Claude Code's `filterGitIgnoredLocations`. Other operations (hover,
+ * the reference's `filterGitIgnoredLocations`. Other operations (hover,
  * documentSymbol on an explicitly-opened file, call hierarchy) pass through
  * unchanged. The result shape is preserved: a single Location in →
  * (filtered) array out is fine because the location formatters normalize both.
@@ -445,7 +445,7 @@ export const lspTool: ToolDefinition = {
       character: { type: 'number', description: 'Character offset (1-based, as shown in editors).' },
     },
     required: ['operation', 'file_path'],
-    // PARITY (additive): strict-object gating — Claude Code's LSP schemas use
+    // PARITY (additive): strict-object gating — the reference's LSP schemas use
     // `z.strictObject` (schemas.ts), which rejects any key outside the declared
     // set so a hallucinated/typo'd parameter (e.g. `operaton`, `filePath`,
     // `position`) is a hard InputValidationError, not a silently-dropped field.
@@ -505,7 +505,7 @@ export const lspTool: ToolDefinition = {
 
       result = await filterIgnoredResult(operation, result, context.cwd);
 
-      // PARITY (additive): surface Claude Code's structured `{ resultCount,
+      // PARITY (additive): surface the reference's structured `{ resultCount,
       // fileCount }` as result metadata — recursive nested-symbol total for a
       // hierarchical documentSymbol — so a programmatic caller reads the hit
       // count without re-parsing the formatted text. The rendered `output` is

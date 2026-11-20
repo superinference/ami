@@ -1,11 +1,11 @@
 /**
- * MCP "needs-auth" cache — Claude Code parity (services/mcp/client.ts:L257-316,
+ * MCP "needs-auth" cache — the reference parity (services/mcp/client.ts:L257-316,
  * `mcp-needs-auth-cache.json`, `MCP_AUTH_CACHE_TTL_MS`).
  *
  * A remote (http/sse/ws) MCP server that returns a 401 — or that has been
  * OAuth-probed before but holds no usable token — is a *guaranteed-401* on the
  * next connect: re-probing it burns a network round-trip plus a full OAuth
- * discovery leg every startup for no benefit. Claude Code persists a small cache
+ * discovery leg every startup for no benefit. the reference persists a small cache
  * keyed by server name recording the last time a server reported "needs auth",
  * and on each subsequent startup/connect pass SKIPS connecting any server whose
  * entry is still within a time-to-live, short-circuiting straight to a
@@ -20,12 +20,12 @@
  *
  * Persistence is cross-session (a file in the config dir) precisely so a server
  * that needed auth in a prior run is short-circuited on the first connect of the
- * next run — matching Claude Code's `hasMcpDiscoveryButNoToken` short-circuit.
+ * next run — matching the reference's `hasMcpDiscoveryButNoToken` short-circuit.
  */
 import * as fs from 'fs';
 import * as path from 'path';
 
-/** Time-to-live for a needs-auth entry — Claude-parity `MCP_AUTH_CACHE_TTL_MS` (15 min). */
+/** Time-to-live for a needs-auth entry — the reference-parity `MCP_AUTH_CACHE_TTL_MS` (15 min). */
 export const MCP_NEEDS_AUTH_CACHE_TTL_MS = 15 * 60 * 1000;
 
 /** A single cache entry: the epoch-ms timestamp a server last reported needs-auth. */

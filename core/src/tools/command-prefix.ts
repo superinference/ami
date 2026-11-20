@@ -9,7 +9,7 @@
  *
  * This module unwraps a chain of argv-executing wrapper commands to expose the
  * inner command plus the ordered wrapper names, so {@link suggestAllowPrefix} can
- * compose `wrapper … inner-prefix`. Mirrors Claude Code's
+ * compose `wrapper … inner-prefix`. Mirrors the reference's
  * `getCommandPrefixStatic`/`handleWrapper` (utils/bash/prefix.ts): the recursion
  * is HARD-BOUNDED by two independent counters — `wrapperCount` (nested wrappers)
  * and `recursionDepth` (general recursion) — and fails CLOSED (returns null) on a
@@ -25,7 +25,7 @@
 
 import { SAFE_WRAPPERS, WRAPPER_VALUE_FLAGS } from './bash-security';
 
-/** Claude's prefix.ts bounds: reject deeper than these (fail-closed). */
+/** the reference's prefix.ts bounds: reject deeper than these (fail-closed). */
 const MAX_WRAPPER_COUNT = 2;
 const MAX_RECURSION_DEPTH = 10;
 
@@ -35,7 +35,7 @@ const MAX_RECURSION_DEPTH = 10;
  * are deliberately NOT safe to strip for classification (privilege escalation and
  * fan-out runners) but ARE safe to COMPOSE into a scoped rule — a `sudo git
  * commit` rule is strictly narrower than `git commit`, never broader. Mirrors
- * Claude's WRAPPER_COMMANDS (nice/sudo/env/xargs/timeout/watch/…).
+ * the reference's WRAPPER_COMMANDS (nice/sudo/env/xargs/timeout/watch/…).
  */
 export const WRAPPER_PREFIX_COMMANDS: ReadonlySet<string> = new Set<string>([
   ...SAFE_WRAPPERS,
@@ -77,7 +77,7 @@ function bareName(token: string): string {
  * rejects a token carrying a quote, so a genuinely quoted subcommand
  * (`git 'push origin'`) still fails closed to the exact command rather than
  * over-matching `git push origin --force`. An unterminated quote fails closed
- * (returns null) rather than guessing a split. Mirrors Claude Code's post-buildPrefix
+ * (returns null) rather than guessing a split. Mirrors the reference's post-buildPrefix
  * word-integrity / over-approval boundary check (utils/powershell/staticPrefix.ts
  * L89-140): a prefix word that does not map to one real argv element is rejected.
  */
@@ -226,7 +226,7 @@ export function unwrapWrapperChain(command: string): UnwrappedCommand | null {
  * N un-collapsed rules). A multi-word LCP (`npm run`) is always safe to keep — it
  * is narrowly scoped — so this returns false for it.
  *
- * Mirrors Claude Code's `getCompoundCommandPrefixesStatic` collapse guard
+ * Mirrors the reference's `getCompoundCommandPrefixesStatic` collapse guard
  * (utils/powershell/staticPrefix.ts L271-280): when `lcpWordCount <= 1` and the
  * root declares subcommands / has a `DEPTH_RULES` entry, the group is dropped.
  *
@@ -246,7 +246,7 @@ export function isBareSubcommandAwareRoot(
   // Root matching is CASE-INSENSITIVE: a word-aligned LCP preserves the first
   // string's casing (`Git` for `Git add`+`git commit`) while the oracle's
   // subcommand-aware set is lowercase, so a mixed-case `Git` must still be
-  // recognised as the bare `git` root and dropped. Mirrors Claude's
+  // recognised as the bare `git` root and dropped. Mirrors the reference's
   // `getCommandSpec(rootLower)` lookup (utils/powershell/staticPrefix.ts L273).
   return isSubcommandAwareRoot(trimmed.toLowerCase());
 }
@@ -261,7 +261,7 @@ export function isBareSubcommandAwareRoot(
  * `Git` === `git`, `Get-Process` === `get-process`) and is harmless for the
  * case-sensitive bash path (lowercased tokens compare identically). e.g.
  * `['npm run test', 'npm run lint']` → `npm run`; `['Git status', 'git log']`
- * → `Git`. Mirrors Claude Code's `wordAlignedLCP`
+ * → `Git`. Mirrors the reference's `wordAlignedLCP`
  * (utils/powershell/staticPrefix.ts L288-316).
  */
 export function wordAlignedCommonPrefix(prefixes: readonly string[]): string {
@@ -299,7 +299,7 @@ export function wordAlignedCommonPrefix(prefixes: readonly string[]): string {
  * This is the single canonical compound-prefix collapser — the permission layer
  * ({@link import('../permissions').getCompoundCommandPrefixes}) derives the
  * per-subcommand prefixes, then delegates the grouping/LCP/drop to this helper so
- * the collapse logic lives in exactly one place. Mirrors Claude Code's
+ * the collapse logic lives in exactly one place. Mirrors the reference's
  * `getCompoundCommandPrefixesStatic` group/collapse/drop
  * (utils/powershell/staticPrefix.ts L246-284).
  */

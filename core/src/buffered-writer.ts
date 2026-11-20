@@ -1,5 +1,5 @@
 /**
- * Generic batched/buffered writer (Claude-parity `createBufferedWriter`,
+ * Generic batched/buffered writer (the reference-parity `createBufferedWriter`,
  * utils/bufferedWriter.ts).
  *
  * A write sink whose `writeFn` may BLOCK (e.g. a synchronous `appendFileSync` to

@@ -42,7 +42,7 @@ export interface DockerSandboxConfig {
   projectDir: string;
   allowNetwork: boolean;
   /**
-   * PARITY (per-host egress denylist — Claude's `SandboxNetworkConfig.deniedHosts`,
+   * PARITY (per-host egress denylist — the reference's `SandboxNetworkConfig.deniedHosts`,
    * "deny wins over allow"): hostnames blocked for outbound network INSIDE the
    * container even when `allowNetwork` is true. Each host is blackholed via
    * `--add-host <host>:0.0.0.0`, so DNS resolution inside the container returns an
@@ -52,7 +52,7 @@ export interface DockerSandboxConfig {
    */
   deniedHosts?: string[];
   /**
-   * PARITY (per-domain network ALLOWLIST — Claude's
+   * PARITY (per-domain network ALLOWLIST — the reference's
    * `SandboxNetworkConfig.allowedDomains` / `allowManagedDomainsOnly`): hostnames
    * the container may reach for outbound network, with EVERYTHING ELSE denied —
    * the "network on, but only to these domains" knob the binary `--network
@@ -69,7 +69,7 @@ export interface DockerSandboxConfig {
    */
   allowedHosts?: string[];
   /**
-   * PARITY (proxy-routed egress — Claude's `SandboxNetworkConfig.httpProxyPort`):
+   * PARITY (proxy-routed egress — the reference's `SandboxNetworkConfig.httpProxyPort`):
    * host TCP port of an HTTP(S) egress proxy. When set, the container exports
    * HTTP(S)_PROXY pointing at `host.docker.internal:<port>` (a host-gateway
    * `--add-host` is added so the container can reach it), routing outbound HTTP(S)
@@ -78,7 +78,7 @@ export interface DockerSandboxConfig {
    */
   httpProxyPort?: number;
   /**
-   * PARITY (proxy-routed egress — Claude's `SandboxNetworkConfig.socksProxyPort`):
+   * PARITY (proxy-routed egress — the reference's `SandboxNetworkConfig.socksProxyPort`):
    * host TCP port of a SOCKS egress proxy. When set, the container exports
    * ALL_PROXY=`socks5://host.docker.internal:<port>`. 1..65535; invalid ignored.
    */
@@ -86,7 +86,7 @@ export interface DockerSandboxConfig {
   maxMemoryMB?: number;
   maxProcesses?: number;
   /**
-   * PARITY (filesystem write-deny — Claude's `SandboxFilesystemConfig.denyWrite`
+   * PARITY (filesystem write-deny — the reference's `SandboxFilesystemConfig.denyWrite`
    * / `getFsWriteConfig.denyWithinAllow`): absolute paths that must stay READ-ONLY
    * inside the container even though they sit inside the otherwise-writable project
    * mount. Each existing path is bind-remounted `:ro` ON TOP of the project RW
@@ -97,14 +97,14 @@ export interface DockerSandboxConfig {
    */
   denyWritePaths?: string[];
   /**
-   * PARITY (filesystem read-deny — Claude's `SandboxFilesystemConfig.denyRead`):
+   * PARITY (filesystem read-deny — the reference's `SandboxFilesystemConfig.denyRead`):
    * absolute FILE paths hidden from reads inside the container by bind-mounting
    * `/dev/null` over each (a read returns empty). Only existing regular files are
    * applied; directories/missing paths are skipped.
    */
   denyReadPaths?: string[];
   /**
-   * PARITY (filesystem write-allow — Claude's `SandboxFilesystemConfig.allowWrite`
+   * PARITY (filesystem write-allow — the reference's `SandboxFilesystemConfig.allowWrite`
    * + the `/add-dir` sandbox-mount sync): extra absolute paths bind-mounted
    * WRITABLE in addition to the project. Used to widen the container's writable set
    * to a directory granted outside the project (e.g. via `/add-dir`). Only existing
@@ -112,7 +112,7 @@ export interface DockerSandboxConfig {
    */
   allowWritePaths?: string[];
   /**
-   * PARITY (Unix-socket allowlist — Claude's
+   * PARITY (Unix-socket allowlist — the reference's
    * `SandboxNetworkConfig.allowUnixSockets` / `getAllowUnixSockets`): host
    * Unix-socket paths explicitly GRANTED into the container. The container mounts
    * NO host socket by default (deny-all — the Docker daemon, SSH/GPG-agent sockets
@@ -121,7 +121,7 @@ export interface DockerSandboxConfig {
    */
   allowUnixSockets?: string[];
   /**
-   * PARITY (custom seccomp syscall filter — Claude's `sandbox.seccomp.bpfPath` /
+   * PARITY (custom seccomp syscall filter — the reference's `sandbox.seccomp.bpfPath` /
    * `applyPath`): absolute path to a Docker seccomp JSON profile. When set it is
    * passed as `--security-opt seccomp=<path>`, REPLACING Docker's default profile
    * with the operator-supplied one (on top of the always-applied
@@ -178,7 +178,7 @@ export const DOCKER_HOST_GATEWAY_ALIAS = 'host.docker.internal';
 
 /**
  * PARITY (seccomp syscall filtering / privilege-escalation isolation layer —
- * Claude's bwrap seccomp profile): Docker `--security-opt` flags applied to EVERY
+ * the reference's bwrap seccomp profile): Docker `--security-opt` flags applied to EVERY
  * sandbox container, as a defense-in-depth isolation layer on top of the mount /
  * network jail.
  *
@@ -189,7 +189,7 @@ export const DOCKER_HOST_GATEWAY_ALIAS = 'host.docker.internal';
  * Crucially, these flags are ADDED, never a `seccomp=unconfined`: Docker's DEFAULT
  * seccomp profile (which blocks the dangerous syscall surface) stays applied, so
  * the container keeps syscall filtering. The Unix-domain-socket escape that
- * Claude's seccomp profile targets is additionally closed here by the deny-all
+ * the reference's seccomp profile targets is additionally closed here by the deny-all
  * socket-mount design (no host socket is bind-mounted unless explicitly
  * allowlisted — see {@link DockerSandboxConfig.allowUnixSockets}). Exported for
  * the `/sandbox` introspection surface and tests.
@@ -332,7 +332,7 @@ export function describeDockerUnavailable(a: DockerAvailability): string {
 }
 
 /**
- * PARITY (Claude's `getSandboxUnavailableReason()` — the #34044 security-footgun
+ * PARITY (the reference's `getSandboxUnavailableReason()` — the #34044 security-footgun
  * fix): when the container sandbox is explicitly ENABLED (`mode: 'container'`) but
  * cannot actually run, return a precise, human-readable reason + remediation meant
  * to be surfaced ONCE (e.g. at startup or via `/sandbox`), so a user whose security
@@ -450,7 +450,7 @@ function mentionsPathOutsideProject(stderr: string, projectDir: string): boolean
  * failure, and/or when an absolute path outside the project mount is reported
  * missing. Returns the stderr unchanged when nothing matches.
  *
- * SIDE EFFECT (parity — Claude's violation store): each detected sandbox-caused
+ * SIDE EFFECT (parity — the reference's violation store): each detected sandbox-caused
  * failure is also recorded into the {@link sandboxViolationStore} (unless the
  * operator allowlisted it via `cfg.ignoreViolations`), so the `/sandbox` surface
  * can show the user the running total + last-N of what the boundary blocked — AMI
@@ -462,7 +462,7 @@ export function annotateStderrWithSandboxFailures(
   cfg: { allowNetwork: boolean; projectDir: string; ignoreViolations?: Record<string, string[]> },
 ): string {
   if (!stderr) return stderr;
-  // Honor the per-command ignore map (Claude's `sandbox.ignoreViolations`) for the
+  // Honor the per-command ignore map (the reference's `sandbox.ignoreViolations`) for the
   // recorded-violation side effect only; the model-facing annotation is unaffected.
   sandboxViolationStore.setIgnoreViolations(cfg.ignoreViolations);
   const notes: string[] = [];
@@ -505,7 +505,7 @@ export function annotateStderrWithSandboxFailures(
     });
   }
   if (notes.length === 0) return stderr;
-  // PARITY (Claude's `<sandbox_violations>` envelope): wrap the sandbox notes in a
+  // PARITY (the reference's `<sandbox_violations>` envelope): wrap the sandbox notes in a
   // `<sandbox_violations>` block so the MODEL keeps them (to explain that a failure
   // was the sandbox boundary, not a real error) while the CLI tool-error renderer
   // strips the block from the USER-facing display (removeSandboxViolationTags).
@@ -532,7 +532,7 @@ function shSingleQuote(s: string): string {
  * agent. A sandboxed command that rewrites any of these escapes the sandbox on the
  * next load (flip `sandbox.mode` off, plant a project-tier SKILL.md/agent that then
  * loads at highest priority, …). The container therefore mounts each of them
- * read-only. Mirrors Claude's unconditional `denyWrite` of settings.json +
+ * read-only. Mirrors the reference's unconditional `denyWrite` of settings.json +
  * `.claude/skills` / `commands` / `agents` (CVE-class config-rewrite / privilege-
  * escalation escape).
  */
@@ -564,7 +564,7 @@ export function defaultDenyWritePaths(projectDir: string): string[] {
 }
 
 /**
- * PARITY (bare-repo .git-file poisoning defense — Claude's CVE-#29316 guard):
+ * PARITY (bare-repo .git-file poisoning defense — the reference's CVE-#29316 guard):
  * absolute paths of the files git's `is_git_directory()` keys on — HEAD, objects,
  * refs, hooks, config — that ALREADY EXIST directly at `cwd` (the project root,
  * NOT under `.git/`). A directory containing these is treated by git as a (bare)
@@ -594,7 +594,7 @@ export function bareGitRepoDenyPaths(cwd: string): string[] {
  * `${sep}.git${sep}worktrees${sep}` (deliberately NOT `indexOf('.git')`, which
  * would false-match paths like `/home/user/.github-projects/`) to recover the main
  * repo root so it can be added to the writable mount set. Returns `null` when
- * `cwd` is not a linked worktree. Mirrors Claude's `detectWorktreeMainRepoPath`.
+ * `cwd` is not a linked worktree. Mirrors the reference's `detectWorktreeMainRepoPath`.
  */
 export function detectWorktreeMainRepoPath(cwd: string): string | null {
   const gitPath = path.join(path.resolve(cwd || '.'), '.git');

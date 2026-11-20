@@ -15,12 +15,12 @@ export interface SkillCatalogEntry {
   files: string[];
   /**
    * Optional free-form category used to organize/filter a skill in discovery
-   * listings (e.g. "productivity", "development"). Mirrors Claude Code's
+   * listings (e.g. "productivity", "development"). Mirrors the reference's
    * marketplace-entry `category`.
    */
   category?: string;
   /**
-   * Optional searchability tags for discovery. Mirrors Claude Code's
+   * Optional searchability tags for discovery. Mirrors the reference's
    * marketplace-entry `tags`. Non-string members are dropped during validation.
    */
   tags?: string[];
@@ -35,14 +35,14 @@ export interface SkillCatalogEntry {
    * the running AMI is older, the discovery layer refuses the skill with an
    * actionable "run `ami update`" message rather than installing something it
    * cannot run. Absent/empty/malformed means "no floor" (graceful 0.0.0
-   * fallback), mirroring Claude Code's `checkBridgeMinVersion` default.
+   * fallback), mirroring the reference's `checkBridgeMinVersion` default.
    */
   requires?: string;
   /**
    * Optional list of this skill's relative file paths that must be materialized
    * with an owner-execute bit set — scripts/hooks a skill ships and later runs
    * (e.g. a `hooks/*.sh` the hook runner invokes with `sh -c "/path/script.sh"`).
-   * Mirrors Claude Code's archive exec-bit preservation (officialMarketplaceGcs
+   * Mirrors the reference's archive exec-bit preservation (officialMarketplaceGcs
    * `parseZipModes` → `chmod` when `mode & 0o111`): without it a shipped script
    * extracts non-executable and fails with EACCES. AMI declares executability
    * per-file in the catalog because files are fetched individually over HTTP
@@ -67,12 +67,12 @@ export interface SkillCatalogIndex {
    * Optional catalog-level version string (semver recommended). Surfaced so a
    * consumer can display and compare the publisher's declared catalog version.
    * Accepted either at the top level (`version`) or nested under `metadata`,
-   * mirroring Claude Code's marketplace `metadata.version`.
+   * mirroring the reference's marketplace `metadata.version`.
    */
   version?: string;
   /**
    * Optional catalog owner/author display name. Accepted as a bare string, as
-   * `{ name }`, or via an `author` alias — mirroring Claude Code's marketplace
+   * `{ name }`, or via an `author` alias — mirroring the reference's marketplace
    * `owner` (a `PluginAuthor` object). Only the display name is retained.
    */
   owner?: string;
@@ -95,7 +95,7 @@ export interface SkillSource {
    * (`PluginBundle.name`). Absent for a skill loaded from a tier directory
    * (core/user/project) or a URL catalog. Surfaced in the skill listing as
    * ` · <bundle>` so a user/model can see which plugin a skill came from,
-   * mirroring Claude Code's `skill.pluginInfo.pluginManifest.name` display field
+   * mirroring the reference's `skill.pluginInfo.pluginManifest.name` display field
    * (SkillsMenu renderSkill). Kept on the canonical source record so the origin
    * survives name-collision namespacing.
    */
@@ -103,7 +103,7 @@ export interface SkillSource {
 }
 
 /**
- * User-facing source annotation for a skill/command listing (Claude parity:
+ * User-facing source annotation for a skill/command listing (the reference parity:
  * `formatDescriptionWithSource` — typeahead + help screens show WHERE each entry
  * comes from). Returns the parenthesized origin token WITHOUT a leading space —
  * e.g. `(my-plugin)`, `(bundled)`, `(installed)`, `(user)`, `(project)` — or an
@@ -112,7 +112,7 @@ export interface SkillSource {
  *
  * Mapping from AMI's `SkillTrustTier` to the annotation:
  * - a plugin-contributed entry (`bundleName` set) wins → `(<bundleName>)`, so the
- *   originating plugin is named exactly like Claude's `(<pluginName>)`;
+ *   originating plugin is named exactly like the reference's `(<pluginName>)`;
  * - tier `core` is AMI's bundled catalog → `(bundled)`;
  * - tiers `installed` / `user` / `project` annotate with their own tier name.
  *
@@ -147,7 +147,7 @@ export function formatSkillSourceSuffix(
  * Bump this whenever the manifest layout changes incompatibly: a cached manifest
  * stamped with a different number is treated as absent (invalidated) so a format
  * change forces a clean re-pull instead of trusting a foreign layout. Mirrors
- * Claude Code's install-counts cache `version` gate (`INSTALL_COUNTS_CACHE_VERSION`).
+ * the reference's install-counts cache `version` gate (`INSTALL_COUNTS_CACHE_VERSION`).
  */
 export const INSTALLED_MANIFEST_SCHEMA_VERSION = 1;
 
@@ -168,7 +168,7 @@ export interface InstalledSkillManifest {
   /**
    * Stable `sha256:<hex>` checksum of the catalog index content the last pull
    * materialized, computed over a deep key-sorted normalization so it is
-   * insensitive to key ordering / whitespace (mirrors Claude Code's
+   * insensitive to key ordering / whitespace (mirrors the reference's
    * policyLimits / remoteManagedSettings `computeChecksum`). When a fresh pull
    * produces the identical checksum the catalog content is unchanged and the
    * per-skill file re-download is skipped. Absent on legacy manifests.
@@ -253,7 +253,7 @@ export function isSafeRelativePath(filePath: string): boolean {
 
 /**
  * Names reserved by the loader/installer and therefore forbidden for a
- * catalog-supplied skill name. Mirrors Claude Code's reserved marketplace
+ * catalog-supplied skill name. Mirrors the reference's reserved marketplace
  * names ("inline"/"builtin").
  */
 const RESERVED_CATALOG_NAMES = new Set(['inline', 'builtin']);
@@ -262,7 +262,7 @@ const RESERVED_CATALOG_NAMES = new Set(['inline', 'builtin']);
  * Whether a catalog/skill *name* is well-formed. Stricter than
  * {@link isSafeSegment}: in addition to full path-traversal safety it forbids
  * ANY whitespace (kebab-case convention) and the reserved loader names,
- * mirroring Claude Code's `MarketplaceNameSchema` (which rejects spaces and
+ * mirroring the reference's `MarketplaceNameSchema` (which rejects spaces and
  * reserves "inline"/"builtin"). Used for the identifier that becomes a
  * filesystem directory — not for free-form descriptions.
  */
@@ -311,7 +311,7 @@ export const MAX_TAGS_PER_SKILL = 100;
 
 /**
  * Extract a catalog-level version string from a raw index object. Accepts a
- * top-level `version` string or a nested `metadata.version` string (Claude Code
+ * top-level `version` string or a nested `metadata.version` string (the reference
  * nests it under `metadata`); returns undefined when neither is present.
  */
 function extractCatalogVersion(obj: Record<string, unknown>): string | undefined {
@@ -326,7 +326,7 @@ function extractCatalogVersion(obj: Record<string, unknown>): string | undefined
 
 /**
  * Extract a catalog owner/author display name from a raw index object. Accepts
- * `owner` as a bare string or as a `{ name }` object (Claude Code's
+ * `owner` as a bare string or as a `{ name }` object (the reference's
  * `PluginAuthor`), falling back to a bare `author` string; returns the display
  * name only, or undefined when none is present.
  */
@@ -705,7 +705,7 @@ function expandAndGroup(group: string): Comparator[] | null {
  * ranges (`1.2.3 - 2.0.0`), compound AND (space) and OR (`||`). An empty range matches
  * any valid version; a malformed `version` or a wholly-unparseable range fails closed
  * (false). Prerelease/build tags are compared by their release portion, consistent with
- * {@link compareSemver}. Parity: Claude Code's `satisfies(version, range)` (utils/semver.ts),
+ * {@link compareSemver}. Parity: the reference's `satisfies(version, range)` (utils/semver.ts),
  * implemented dependency-free so it stays a self-contained core building block.
  */
 export function satisfies(version: string, range: string): boolean {
@@ -726,7 +726,7 @@ export function satisfies(version: string, range: string): boolean {
 /**
  * Whether `current` (the running AMI version) satisfies a skill's `required` version
  * constraint. An absent/empty `required` imposes no floor (returns true — the graceful
- * default), mirroring Claude Code's `checkBridgeMinVersion` default "0.0.0".
+ * default), mirroring the reference's `checkBridgeMinVersion` default "0.0.0".
  *
  * FUNCTIONAL (additive, labeled): `required` now accepts a FULL semver RANGE expression
  * (`^2.0.0`, `>=2 <4`, `2.x || 3.x`, `1.2.3 - 2.0.0`) via {@link satisfies}, not just a
@@ -761,7 +761,7 @@ export function resolveSkillUrl(input: string): string {
   const trimmed = input.trim();
 
   // A trailing `#ref` fragment selects a git branch/tag/commit for GitHub
-  // shorthand (`owner/repo#v1.2.3`), mirroring Claude Code's `#ref` convention.
+  // shorthand (`owner/repo#v1.2.3`), mirroring the reference's `#ref` convention.
   // Only a URL-safe, valid ref is honored; anything else is ignored (fall back
   // to the default branch) so a hostile fragment can never inject into the URL.
   const hashIdx = trimmed.indexOf('#');
@@ -795,7 +795,7 @@ export function resolveSkillUrl(input: string): string {
  * policy means "no restriction". `deny` takes precedence over `allow`; when a
  * non-empty `allow` list is present only matching hosts pass. Each entry is a
  * hostname (`example.com`) or a wildcard-subdomain pattern (`*.example.com`,
- * which also matches the apex `example.com`). Mirrors Claude Code's
+ * which also matches the apex `example.com`). Mirrors the reference's
  * blocklist-first-then-allowlist `isSourceAllowedByPolicy`.
  */
 export interface SkillSourcePolicy {

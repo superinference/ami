@@ -1,6 +1,6 @@
 /**
  * PARITY (additive): human-readable capability categories for the tool set.
- * Mirrors Claude Code's `ToolSelector` buckets — 'Read-only tools', 'Edit tools',
+ * Mirrors the reference's `ToolSelector` buckets — 'Read-only tools', 'Edit tools',
  * 'Execution tools', 'MCP tools', 'Other tools' — so a tool can be reasoned about
  * by what it can do (read vs edit vs execute). Surfaced via `tool_search` results
  * (tool discovery) so the model sees each discovered tool's category.
@@ -8,7 +8,7 @@
 
 export type ToolCategory = 'read-only' | 'edit' | 'execution' | 'mcp' | 'other';
 
-/** Human-readable label for each category (parity with Claude's bucket names). */
+/** Human-readable label for each category (parity with the reference's bucket names). */
 export const TOOL_CATEGORY_LABELS: Record<ToolCategory, string> = {
   'read-only': 'Read-only tools',
   edit: 'Edit tools',
@@ -17,10 +17,10 @@ export const TOOL_CATEGORY_LABELS: Record<ToolCategory, string> = {
   other: 'Other tools',
 };
 
-/** Tools that execute arbitrary commands/code (Claude's EXECUTION bucket). */
+/** Tools that execute arbitrary commands/code (the reference's EXECUTION bucket). */
 const EXECUTION_TOOLS: ReadonlySet<string> = new Set(['bash']);
 
-/** Tools that mutate file/notebook content (Claude's EDIT bucket). */
+/** Tools that mutate file/notebook content (the reference's EDIT bucket). */
 const EDIT_TOOLS: ReadonlySet<string> = new Set(['file_edit', 'notebook_edit']);
 
 /** Minimal structural shape needed to categorize a tool. */
@@ -40,7 +40,7 @@ export interface CategorizableTool {
  * or writable for their whole lifetime (`isReadOnly`), but a few — notably the config
  * tool — are read-only for some inputs and writable for others: a config `get` only
  * reads, while a `set` mutates on-disk config. When a tool declares
- * `isReadOnlyForInput`, that dynamic verdict wins for THIS call (parity: Claude's
+ * `isReadOnlyForInput`, that dynamic verdict wins for THIS call (parity: the reference's
  * `Tool.isReadOnly(input)`), so a read auto-allows without a permission prompt while a
  * write stays on the permission-asking path. Tools without the hook fall back to their
  * static `isReadOnly` flag.
@@ -58,7 +58,7 @@ export function isToolReadOnlyForInput(
  * either always parallel-safe or always serial; a few are safe for some inputs and
  * must serialize for others (e.g. a read whose target another batched call writes).
  * When a tool declares `isConcurrencySafe` as a FUNCTION, that dynamic verdict wins
- * for THIS call (parity: Claude's `Tool.isConcurrencySafe(input)`); a BOOLEAN is used
+ * for THIS call (parity: the reference's `Tool.isConcurrencySafe(input)`); a BOOLEAN is used
  * verbatim; and when the field is ABSENT the verdict defaults to the per-invocation
  * read-only classification (a read-only call is concurrency-safe). The executor uses
  * this as an ADDITIONAL gate on top of read-only when forming the concurrent batch, so
@@ -79,7 +79,7 @@ export function isToolConcurrencySafe(
  * `mcp__<server>__<tool>` name prefix. Single source for the MCP discriminator so
  * the categorizer, the per-mode agent-tool filter (which always allows MCP tools
  * regardless of mode), and any prefix-based permission/auto-allow matching all agree
- * on what counts as an MCP tool. Parity: Claude Code treats `mcp__`-prefixed tools
+ * on what counts as an MCP tool. Parity: the reference treats `mcp__`-prefixed tools
  * as unconditionally available to every agent mode (agentToolUtils.ts:L82-85).
  */
 export function isMcpTool(tool: CategorizableTool): boolean {
@@ -104,7 +104,7 @@ export function getToolCategory(tool: CategorizableTool): ToolCategory {
  * (`mcp__<server>__<tool>`). Returns `undefined` for a non-MCP name or one with no
  * server segment (`mcp__`). Shared single source for the server discriminator so
  * {@link getMcpServerBuckets} and any caller grouping MCP tools by integration
- * agree on how the server is extracted. Parity: Claude Code's MCP tool-name parsing.
+ * agree on how the server is extracted. Parity: the reference's MCP tool-name parsing.
  */
 export function mcpServerName(name: string): string | undefined {
   if (!name.startsWith('mcp__')) return undefined;
@@ -124,7 +124,7 @@ export interface McpServerBucket<T extends CategorizableTool> {
  * Group a tool set's MCP tools by their contributing server, sorting the servers —
  * and each server's tools — stably by name via `localeCompare`. Non-MCP tools are
  * ignored; an MCP tool with no parseable server segment is bucketed under
- * `'(unknown)'`. Parity: Claude Code's `getMcpServerBuckets` (ToolSelector.tsx),
+ * `'(unknown)'`. Parity: the reference's `getMcpServerBuckets` (ToolSelector.tsx),
  * which presents an agent's MCP tools grouped per server and alphabetically sorted
  * rather than as one flat list. Used by `tool_search` to surface discovered MCP
  * tools grouped by integration.

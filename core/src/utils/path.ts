@@ -20,9 +20,9 @@ export const _pathHooks: { platform: NodeJS.Platform } = { platform: process.pla
  * that are case-insensitive (Windows NTFS, macOS HFS+/APFS default): the whole
  * path is lower-cased so `C:\Users\Foo` and `c:\users\foo` — or `/Users/Foo` and
  * `/users/foo` — compare equal. On case-sensitive platforms (Linux) the path is
- * returned unchanged. Lower-casing the entire path subsumes Claude Code's
+ * returned unchanged. Lower-casing the entire path subsumes the reference's
  * Windows drive-letter upper-casing (both make `c:` and `C:` match) while also
- * matching Claude's macOS `normalizeCaseForComparison` fold.
+ * matching the reference's macOS `normalizeCaseForComparison` fold.
  *
  * [FUNCTIONAL CHANGE] New helper — case-insensitive path containment parity.
  */
@@ -38,7 +38,7 @@ export function normalizeCaseForComparison(p: string): string {
  * Resolves `~` to the user's home directory, resolves relative paths against
  * the provided cwd, and normalizes the result.
  *
- * Hardening (Claude Code path-utility parity, all additive):
+ * Hardening (the reference path-utility parity, all additive):
  *   - `cwd` is optional and defaults to `process.cwd()`.
  *   - Non-string arguments are rejected with a descriptive `TypeError`.
  *   - NUL bytes in either argument are rejected (a `\0` can truncate a path at
@@ -139,7 +139,7 @@ export function isPathSafe(filePath: string, cwd: string): boolean {
  * decomposed on-disk spelling of a name; without re-normalizing to NFC the same
  * file has a different byte string than an NFC-stored cwd/rule, so an
  * in-workspace file is judged outside the workspace and an NFD-spelled path can
- * evade an NFC deny/allow rule. Mirrors Claude Code's
+ * evade an NFC deny/allow rule. Mirrors the reference's
  * `fs.realpathSync(path).normalize('NFC')` in getPathsForPermissionCheck.
  *
  * A path that does not yet exist (a write target) cannot be realpath-resolved, so
@@ -176,7 +176,7 @@ export function realpathNFC(
  *     or a leading `=` (zsh equals-expansion, e.g. `=rg` → `/usr/bin/rg`).
  *
  * Returns a human-readable reason string when the path must be rejected, or
- * `null` when it is safe to resolve. Mirrors Claude Code's `validatePath` tilde-
+ * `null` when it is safe to resolve. Mirrors the reference's `validatePath` tilde-
  * variant / shell-expansion guards (permissions/pathValidation.ts).
  *
  * [FUNCTIONAL CHANGE] New exported validator consumed by the file-tool path
@@ -198,7 +198,7 @@ export function validatePathExpansionSafety(filePath: string): string | null {
  * Converts an absolute path to a relative path if it is within cwd.
  * Otherwise returns the absolute path unchanged.
  *
- * `cwd` is optional and defaults to `process.cwd()`, matching Claude Code's
+ * `cwd` is optional and defaults to `process.cwd()`, matching the reference's
  * single-argument `toRelativePath(absolutePath)` (callers that already thread an
  * explicit cwd keep passing it).
  */
@@ -214,7 +214,7 @@ export function toRelativePath(filePath: string, cwd: string = process.cwd()): s
 }
 
 // ---------------------------------------------------------------------------
-// FUNCTIONAL PARITY ADDITIONS (additive superset — Claude Code path display /
+// FUNCTIONAL PARITY ADDITIONS (additive superset — the reference path display /
 // containment parity). None of the above behavior is removed; the helpers below
 // are new public API plus a hardening of the shared containment check.
 // ---------------------------------------------------------------------------
@@ -269,7 +269,7 @@ function isDescendant(child: string, parent: string): boolean {
  *
  * [FUNCTIONAL CHANGE] New exported helper (exposes the previously-private
  * containment primitive and tolerates trailing separators / tilde / relative
- * inputs). Mirrors Claude Code's workspace-containment checks.
+ * inputs). Mirrors the reference's workspace-containment checks.
  */
 export function isPathWithin(childPath: string, parentPath: string, cwd: string = process.cwd()): boolean {
   const resolvedChild = expandPath(childPath, cwd);
@@ -292,7 +292,7 @@ export function isPathWithin(childPath: string, parentPath: string, cwd: string 
  * case-insensitive filesystems via the shared {@link isDescendant} primitive, so
  * `/a/bc` does NOT overlap `/a/b` (no shared subtree) while `/a/b/c` does.
  *
- * Mirrors Claude Code's `pathsOverlap` (utils/plugins/orphanedPluginFilter.ts)
+ * Mirrors the reference's `pathsOverlap` (utils/plugins/orphanedPluginFilter.ts)
  * — the prefix/equality/root/win32-case overlap test — but reuses AMI's canonical
  * containment helper (which also folds case on macOS) instead of a second
  * normalize/prefix implementation.
@@ -313,7 +313,7 @@ export function pathsOverlap(a: string, b: string, cwd: string = process.cwd()):
  * separator on the input is preserved.
  *
  * [FUNCTIONAL CHANGE] New exported helper — tilde-display abbreviation parity
- * with Claude Code's path rendering.
+ * with the reference's path rendering.
  */
 export function abbreviateHome(filePath: string, home: string = os.homedir()): string {
   const normalizedHome = stripTrailingSep(path.normalize(home).normalize('NFC'));
@@ -354,11 +354,11 @@ export function abbreviateHome(filePath: string, home: string = os.homedir()): s
  * more compact of the two spellings.
  *
  * [FUNCTIONAL CHANGE] New exported helper — "shortest of ~home vs ./cwd"
- * display parity with Claude Code's `getRelativeMemoryPath`
+ * display parity with the reference's `getRelativeMemoryPath`
  * (components/memory/MemoryUpdateNotification.tsx). Superset improvement over
  * the reference: boundary membership uses the separator-aware containment check
  * (so a sibling prefix dir like `/home/user2` is not treated as inside
- * `/home/user`), where Claude uses a raw `startsWith`.
+ * `/home/user`), where the reference uses a raw `startsWith`.
  */
 export function shortestDisplayPath(
   filePath: string,
@@ -397,7 +397,7 @@ export function shortestDisplayPath(
  * all accepted.
  *
  * [FUNCTIONAL CHANGE] New exported helper — workspace-relative display parity
- * with Claude Code.
+ * with the reference.
  */
 export function displayPath(filePath: string, cwd: string, home: string = os.homedir()): string {
   const resolved = expandPath(filePath, cwd);

@@ -115,14 +115,14 @@ export interface HookContext {
   /** Whether this Stop hook is firing as a RE-ENTRANT continuation (a previous
    *  Stop hook blocked turn-end and the engine re-entered the loop), serialized
    *  into the Stop hook stdin as `stop_hook_active` so a hook can detect — and
-   *  break — a block→retry recursion (Claude Code's StopHookInput.stop_hook_active). */
+   *  break — a block→retry recursion (the reference's StopHookInput.stop_hook_active). */
   stopHookActive?: boolean;
   /** Parent cancellation signal (user Ctrl-C / turn abort). Threaded into
    *  command/http/prompt/agent hook execution so a long-running hook is torn
    *  down when the surrounding operation is cancelled, combined with the
    *  per-hook timeout. */
   abortSignal?: AbortSignal;
-  /** Origin of the model-sampling call that triggered this hook (Claude Code's
+  /** Origin of the model-sampling call that triggered this hook (the reference's
    *  MagicDocs `querySource` discriminator). `'main'` = the top-level REPL/agent
    *  loop; `'subagent'` = a forked/nested agent's own sampling. Surfaced to
    *  pre/postSampling hooks (as the matcher field + serialized `sampling_origin`)
@@ -130,24 +130,24 @@ export interface HookContext {
    *  samplings and avoid re-entrant/recursive work (MagicDocs L222-224:
    *  `if (querySource !== 'repl_main_thread') return`). */
   samplingOrigin?: SamplingOrigin;
-  /** The active system prompt in effect for the turn (Claude Code's
+  /** The active system prompt in effect for the turn (the reference's
    *  REPLHookContext.systemPrompt). Surfaced to post-sampling / stop hooks (as the
    *  serialized `system_prompt`) so a hook can judge the model's output against what
    *  it was actually told. Populated by the engine when it builds the stop /
    *  post-sampling context; omitted otherwise. */
   systemPrompt?: string;
-  /** Mutable user-facing key/value context bag (Claude Code's
+  /** Mutable user-facing key/value context bag (the reference's
    *  REPLHookContext.userContext). Serialized as `user_context` for post-sampling /
    *  stop hooks so a hook can read session context keys the user/UI attached. */
   userContext?: Record<string, string>;
-  /** System key/value context bag (Claude Code's REPLHookContext.systemContext),
+  /** System key/value context bag (the reference's REPLHookContext.systemContext),
    *  serialized as `system_context`. Distinct from {@link userContext}: these keys
    *  are machine/session metadata rather than user-provided. */
   systemContext?: Record<string, string>;
 }
 
 /** Allowed {@link HookContext.samplingOrigin} discriminators — the matcher value
- *  set for pre/postSampling hooks (Claude Code's query-source boundary). */
+ *  set for pre/postSampling hooks (the reference's query-source boundary). */
 export const SAMPLING_ORIGINS = ['main', 'subagent'] as const;
 export type SamplingOrigin = (typeof SAMPLING_ORIGINS)[number];
 
@@ -157,7 +157,7 @@ export function isSamplingOrigin(v: unknown): v is SamplingOrigin {
 }
 
 /**
- * Whether the conversation is mid tool-chain — Claude Code's
+ * Whether the conversation is mid tool-chain — the reference's
  * `hasToolCallsInLastAssistantTurn` (MagicDocs idle-gating). Returns true when the
  * LAST assistant message issued tool calls that are NOT yet all answered by
  * subsequent tool results. A background pre/postSampling or maintenance hook reads
@@ -190,7 +190,7 @@ export function hasPendingToolCalls(messages: Message[]): boolean {
 export interface PreToolUseContext extends HookContext {
   toolName: string;
   toolInput: Record<string, unknown>;
-  /** The originating user prompt for the turn that produced this tool call (Claude
+  /** The originating user prompt for the turn that produced this tool call (the reference
    *  Code's `toolUseContext.requestPrompt`). Serialized as `request_prompt` so a
    *  PreToolUse guardrail hook can decide against the user's actual request, not
    *  just the mechanical tool input. Populated by the tool executor when known;
@@ -205,15 +205,15 @@ export interface PostToolUseContext extends HookContext {
   isError: boolean;
   /** Elapsed time for the tool execution in milliseconds. */
   durationMs?: number;
-  /** The tool's error text (Claude Code PostToolUseFailure `error`). Lets a
+  /** The tool's error text (the reference PostToolUseFailure `error`). Lets a
    *  failure hook react to WHAT failed, not just that something did. Serialized as
    *  `error`. Optional — populated for the postToolUseFailure event. */
   error?: string;
   /** Whether the failure was a user/turn interrupt rather than an ordinary error
-   *  (Claude Code `is_interrupt`): a failure hook can skip remediation when the
+   *  (the reference `is_interrupt`): a failure hook can skip remediation when the
    *  user themselves cancelled. Serialized as `is_interrupt`. */
   isInterrupt?: boolean;
-  /** Correlation id of the failed tool call (Claude Code `tool_use_id`) so a
+  /** Correlation id of the failed tool call (the reference `tool_use_id`) so a
    *  failure hook can tie back to the exact call. Serialized as `tool_use_id`. */
   toolUseId?: string;
 }
@@ -223,7 +223,7 @@ export interface PreSamplingContext extends HookContext {
 }
 
 export type HookDecision =
-  // `permissionBypass` marks an EXPLICIT PreToolUse approval (Claude Code's
+  // `permissionBypass` marks an EXPLICIT PreToolUse approval (the reference's
   // `permissionDecision: 'allow'` / `decision: 'approve'`) that PRE-APPROVES the call
   // so the consumer (tool-executor) bypasses a would-be interactive permission prompt.
   // A bare `allow` (the default "no objection" verdict) leaves it unset and does NOT
@@ -231,7 +231,7 @@ export type HookDecision =
   // approval can never override a deny.
   | { action: 'allow'; additionalContext?: string; permissionBypass?: boolean }
   | { action: 'deny'; reason: string; additionalContext?: string }
-  // Claude Code's PreToolUse `permissionDecision: 'ask'` — the hook does not
+  // the reference's PreToolUse `permissionDecision: 'ask'` — the hook does not
   // allow or deny outright but FORCES an interactive permission confirmation,
   // optionally with its own `reason` (shown at the prompt) and `updatedInput`
   // (the input the user is asked to approve). The consumer (tool-executor) must
@@ -248,7 +248,7 @@ export type PreToolUseHookFn = (context: PreToolUseContext) => Promise<HookDecis
 /**
  * PostToolUse hook result. Beyond context/output mutation, a PostToolUse hook
  * can BLOCK (feed a blocking error back to the model) or PREVENT CONTINUATION
- * (halt the agent loop after the tool ran), matching Claude Code's
+ * (halt the agent loop after the tool ran), matching the reference's
  * toolHooks `{ blockingError, preventContinuation, stopReason }`.
  */
 export interface PostToolUseHookResult {
@@ -262,7 +262,7 @@ export type PostToolUseHookFn = (context: PostToolUseContext) => Promise<PostToo
 export type PreSamplingHookFn = (context: PreSamplingContext) => Promise<HookDecision>;
 
 /**
- * Allowed SessionStart `source` discriminators (Claude Code's
+ * Allowed SessionStart `source` discriminators (the reference's
  * SessionStartHookInputSchema `source` enum). Surfaced to a sessionStart hook as
  * the matcher field so a hook can scope to e.g. only `resume`.
  */
@@ -274,7 +274,7 @@ export function isSessionStartSource(v: unknown): v is SessionStartSource {
 }
 
 /**
- * Session-exit-reason classification for the SessionEnd hook (Claude Code's
+ * Session-exit-reason classification for the SessionEnd hook (the reference's
  * EXIT_REASONS / ExitReasonSchema). This is the SessionEnd `reason` discriminator
  * — distinct from the engine-loop `EXIT_REASONS` in types.ts (which classifies why
  * the agent turn-loop terminated). Enumerated in the sessionEnd introspection
@@ -290,7 +290,7 @@ export function isSessionEndReason(v: unknown): v is SessionEndReason {
 }
 
 /**
- * Setup hook `trigger` discriminator (Claude Code's SetupHookInputSchema
+ * Setup hook `trigger` discriminator (the reference's SetupHookInputSchema
  * `trigger` enum): `init` (first-run setup) vs `maintenance` (periodic). Used as
  * the setup matcher field so a hook can scope to just one trigger.
  */
@@ -304,26 +304,26 @@ export function isSetupTrigger(v: unknown): v is SetupTrigger {
 export interface SessionContext {
   sessionId: string;
   cwd: string;
-  /** Why the SessionStart hook is firing — Claude Code's `source` discriminator
+  /** Why the SessionStart hook is firing — the reference's `source` discriminator
    *  (startup | resume | clear | compact). A `matcher` on a sessionStart hook is
    *  tested against this (HOOK_MATCHER_FIELD.sessionStart = 'source') so a hook
    *  can scope to e.g. only `resume`. */
   source?: string;
-  /** Why the SessionEnd hook is firing — Claude Code's `reason` discriminator
+  /** Why the SessionEnd hook is firing — the reference's `reason` discriminator
    *  (clear | logout | prompt_input_exit | other). A `matcher` on a sessionEnd
    *  hook is tested against this (HOOK_MATCHER_FIELD.sessionEnd = 'reason'). */
   reason?: string;
-  /** Why the Setup hook is firing — Claude Code's `trigger` discriminator
+  /** Why the Setup hook is firing — the reference's `trigger` discriminator
    *  (init | maintenance). A `matcher` on a setup hook is tested against this
    *  (HOOK_MATCHER_FIELD.setup = 'trigger'). */
   trigger?: string;
   /** Active model id, forwarded to SessionStart/Setup hooks in the stdin payload
-   *  (Claude Code's SessionStart `model`). */
+   *  (the reference's SessionStart `model`). */
   model?: string;
   /** Agent type the session is running as, forwarded to SessionStart hooks as
-   *  `agent_type` (Claude Code's SessionStart `agent_type`). */
+   *  `agent_type` (the reference's SessionStart `agent_type`). */
   agentType?: string;
-  /** Cooperative-cancellation deadline for the session lifecycle hooks. Claude
+  /** Cooperative-cancellation deadline for the session lifecycle hooks. the reference
    *  Code threads `AbortSignal.timeout(sessionEndTimeoutMs)` into
    *  executeSessionEndHooks (commands/clear/conversation.ts) so a slow in-process
    *  SessionStart/SessionEnd callback can observe the deadline and bail instead of
@@ -333,7 +333,7 @@ export interface SessionContext {
   signal?: AbortSignal;
   /** Force SessionStart/Setup hooks that self-declare `async:true` to run
    *  SYNCHRONOUSLY (blocking) for this invocation instead of being backgrounded
-   *  (Claude Code's `forceSyncExecution` option on executeSessionStart/
+   *  (the reference's `forceSyncExecution` option on executeSessionStart/
    *  executeSetupHooks). Needed when the caller must have every hook's
    *  `initialUserMessage` / `additionalContexts` available before the first turn
    *  is assembled (e.g. a `source:'resume'` restore or a print-mode run), where
@@ -346,39 +346,39 @@ export interface SessionContext {
 export interface SubagentContext {
   /** The INVOKING (parent) engine's session id — lets a hook correlate the
    *  subagent boundary back to its real parent across concurrent/nested runs
-   *  (Claude Code parity: SubagentContext.parentSessionId). */
+   *  (the reference parity: SubagentContext.parentSessionId). */
   parentSessionId: string;
   subagentSessionId: string;
   prompt: string;
   mode?: string;
   /** Parent cancellation signal (user Ctrl-C / turn abort). When aborted, the
-   *  SubagentStop hook chain stops immediately (Claude Code's abort-signal
+   *  SubagentStop hook chain stops immediately (the reference's abort-signal
    *  cancellation of in-flight Stop/SubagentStop hook chains). Optional so
    *  non-cancellable call sites may omit it. */
   abortSignal?: AbortSignal;
   /** Whether this boundary is a fresh `spawn` or a `resume` of an existing agent
-   *  session (Claude Code parity: invocationKind). Absent in bare/test contexts. */
+   *  session (the reference parity: invocationKind). Absent in bare/test contexts. */
   invocationKind?: 'spawn' | 'resume';
   /** Whether the spawned agent is a BUILT-IN identity (a bare mode like
    *  explore/general/coordinator/fork, or a bundled roster agent) vs a USER-DEFINED
-   *  custom project/plugin agent (Claude Code parity: agentContext `isBuiltIn`). */
+   *  custom project/plugin agent (the reference parity: agentContext `isBuiltIn`). */
   isBuiltIn?: boolean;
   /** Privacy-safe agent-type label for analytics: the real type for built-in agents,
    *  collapsed to `'user-defined'` for custom agents so a private repo's agent names
-   *  never leak into telemetry (Claude Code parity: agentContext name collapse). */
+   *  never leak into telemetry (the reference parity: agentContext name collapse). */
   analyticsAgentType?: string;
   /** The INVOKING agent's identity — the immediate parent subagent id when nested,
    *  else the invoking session id. Roots this invocation's edge in the cross-agent
-   *  attribution tree (Claude Code parity: invokingRequestId). */
+   *  attribution tree (the reference parity: invokingRequestId). */
   invokingRequestId?: string;
   /** Fresh per-invocation correlation id for the query-tracking lineage so nested
-   *  fork/subagent chains can be correlated (Claude Code parity: chainId). */
+   *  fork/subagent chains can be correlated (the reference parity: chainId). */
   chainId?: string;
   /** This agent's depth in the spawn tree (parent.depth + 1; 0 = top level). Paired
-   *  with chainId for lineage correlation (Claude Code parity: query-tracking depth). */
+   *  with chainId for lineage correlation (the reference parity: query-tracking depth). */
   depth?: number;
   /** Discriminated-union agent-context kind: a named spawn joined to a team is a
-   *  `'teammate'`; every other spawn is a plain `'subagent'` (Claude Code parity:
+   *  `'teammate'`; every other spawn is a plain `'subagent'` (the reference parity:
    *  subagent-vs-teammate agent-context discriminator). */
   agentContextKind?: 'subagent' | 'teammate';
 }
@@ -387,17 +387,17 @@ export interface CompactContext {
   messageCount: number;
   tokenEstimate: number;
   /** Whether compaction was auto-triggered (token pressure) or user-requested
-   *  (`/compact`). Surfaced to PreCompact hooks (Claude Code parity). */
+   *  (`/compact`). Surfaced to PreCompact hooks (the reference parity). */
   trigger?: 'auto' | 'manual';
   /** The user-supplied custom compaction instructions a PreCompact hook may
    *  read and extend/override via `newCustomInstructions`. */
   customInstructions?: string | null;
   /** The compaction summary text produced by the compaction run. Supplied to
-   *  PostCompact hooks (Claude Code's `executePostCompactHooks({ trigger,
+   *  PostCompact hooks (the reference's `executePostCompactHooks({ trigger,
    *  compactSummary })`) so a post-compaction automation can read, log, or
    *  annotate the generated summary. Absent on PreCompact (no summary yet). */
   compactSummary?: string;
-  /** The compaction's cancellation signal. Claude Code passes
+  /** The compaction's cancellation signal. the reference passes
    *  `context.abortController.signal` into executePreCompactHooks
    *  (commands/compact/compact.ts) so a PreCompact hook subprocess is killed the
    *  instant the user interrupts the compaction, instead of lingering until its own
@@ -413,20 +413,20 @@ export interface PermissionContext {
   reason?: string;
   retry?: boolean;
   /** Active permission posture (`ask` | `deny-all` | `auto-allow` | `plan`) so a
-   *  PermissionRequest hook can branch on the mode when deciding — Claude Code's
+   *  PermissionRequest hook can branch on the mode when deciding — the reference's
    *  CoordinatorPermissionParams.permissionMode threaded into `runHooks`. */
   permissionMode?: PermissionMode;
   /** Permission-rule updates the engine is already suggesting for this call; a
    *  hook may inspect them before returning its own `updatedPermissions`. Mirrors
-   *  Claude's `suggestions: PermissionUpdate[]` param to `runHooks`. */
+   *  the reference's `suggestions: PermissionUpdate[]` param to `runHooks`. */
   suggestions?: PermissionUpdate[];
   /** Turn abort signal — threaded in so a slow/hanging in-process permission hook
    *  (and a command-hook subprocess) is cancelled when the user interrupts (Esc /
-   *  Ctrl-C). Parity with Claude threading `abortController.signal` into
+   *  Ctrl-C). Parity with the reference threading `abortController.signal` into
    *  `executePermissionRequestHooks` / the classifier. */
   abortSignal?: AbortSignal;
   /** Correlation id of the pending tool call this permission request is for
-   *  (Claude Code's permission-prompt-tool `tool_use_id`). Threaded through to the
+   *  (the reference's permission-prompt-tool `tool_use_id`). Threaded through to the
    *  hook's stdin payload (serialized as `tool_use_id`) so a delegated
    *  permission-prompt tool / SDK hook can tie its decision back to the exact call
    *  and dedup/correlate concurrent requests. Optional: callers that don't have an
@@ -439,7 +439,7 @@ export interface TaskEventContext {
   subject: string;
   status?: string;
   description?: string;
-  /** Abort/cancellation boundary (Claude Code parity): the surrounding tool call's
+  /** Abort/cancellation boundary (the reference parity): the surrounding tool call's
    *  AbortSignal, forwarded so a long-running task-event hook is cancellable when the
    *  turn is aborted. When already aborted, the hook loop short-circuits and runs no
    *  further hooks. Optional so non-tool callers may omit it. */
@@ -452,7 +452,7 @@ export interface UserPromptContext {
 }
 
 /**
- * Context for the TeammateIdle hook (Claude Code's TeammateIdleHookInputSchema —
+ * Context for the TeammateIdle hook (the reference's TeammateIdleHookInputSchema —
  * `teammate_name` + `team_name`). Fires when a teammate agent in a multi-agent
  * team finishes its run and transitions to idle, so a hook can react (notify,
  * reassign work, record metrics) to an idle teammate. A `matcher` on a
@@ -480,7 +480,7 @@ export interface InstructionsContext {
   loadReason: string;
   /**
    * Which memory tier the instruction file belongs to — `Project` | `Local` |
-   * `User` | `Managed` (parity: Claude Code's InstructionsLoaded `memory_type`,
+   * `User` | `Managed` (parity: the reference's InstructionsLoaded `memory_type`,
    * sdk/coreSchemas.ts). Optional: emitters that don't classify the source omit it.
    */
   memoryType?: string;
@@ -503,7 +503,7 @@ export interface CwdChangedContext {
 
 export interface StopFailureContext {
   /**
-   * The matchable failure CLASS (Claude Code's StopFailure `error` discriminator),
+   * The matchable failure CLASS (the reference's StopFailure `error` discriminator),
    * one of {@link StopFailureErrorClass}. A `matcher` on a StopFailure hook scopes
    * on this value, so the sole emitter classifies the raw failure into the taxonomy
    * via {@link stopFailureErrorClass} before firing — a matcher configured with one
@@ -522,41 +522,41 @@ export interface ElicitationContext {
   message?: string;
   mode?: string;
   /** The JSON-schema of the fields the MCP server is requesting the user fill in
-   *  (Claude Code's elicitation `requestedSchema`). Forwarded to the hook stdin as
+   *  (the reference's elicitation `requestedSchema`). Forwarded to the hook stdin as
    *  `requested_schema` so an elicitation hook can inspect WHAT is being asked
    *  before deciding accept/decline/cancel. Sourced from the MCP elicitation
    *  request params (see mcp/client.ts). Optional — observe-only callers omit it. */
   requestedSchema?: Record<string, unknown>;
-  /** The URL an MCP server asked the user to visit for this elicitation (Claude
+  /** The URL an MCP server asked the user to visit for this elicitation (the reference
    *  Code's elicitation `url`), when the request is URL-mode. Serialized as `url`. */
   url?: string;
-  /** Correlation id of the MCP elicitation request (Claude Code's `elicitationId`),
+  /** Correlation id of the MCP elicitation request (the reference's `elicitationId`),
    *  so a hook can tie its decision back to the exact request / dedup concurrent
    *  elicitations. Serialized as `elicitation_id`. Optional. */
   elicitationId?: string;
 }
 
 /** SessionStart/Setup hook result. A hook may inject a single `initialUserMessage`
- *  OR, matching Claude Code's SessionStart hook result (an ARRAY of injectable
+ *  OR, matching the reference's SessionStart hook result (an ARRAY of injectable
  *  messages, not a single string), multiple messages via `initialUserMessages`.
  *  A hook may ALSO contribute `additionalContexts[]` — model-facing context that
  *  executeSessionStart/executeSetup accumulate across every hook and surface as a
- *  single combined `hook_additional_context` attachment (Claude Code's
+ *  single combined `hook_additional_context` attachment (the reference's
  *  SessionStart/Setup additionalContexts aggregation).
  *  executeSessionStart aggregates ALL messages from ALL hooks (not last-wins). */
 export type SessionHookFn = (context: SessionContext) => Promise<{ initialUserMessage?: string; initialUserMessages?: string[]; additionalContexts?: string[]; watchPaths?: string[] } | void>;
 export type SubagentHookFn = (context: SubagentContext) => Promise<void>;
 /** SubagentStart hook: may contribute additionalContexts prepended to the
- *  subagent's initial messages (Claude Code parity). */
+ *  subagent's initial messages (the reference parity). */
 export type SubagentStartHookFn = (context: SubagentContext) => Promise<{ additionalContexts?: string[] } | void>;
 /** PostCompact hook: receives the generated compaction summary + trigger via
- *  {@link CompactContext} and may surface a user-facing display message (Claude
+ *  {@link CompactContext} and may surface a user-facing display message (the reference
  *  Code's `executePostCompactHooks` → `userDisplayMessage`). */
 export type PostCompactHookFn = (context: CompactContext) => Promise<{ userDisplayMessage?: string } | void>;
 /** PreCompact hook: may inject/override compaction instructions and surface a
- *  user-facing display message (Claude Code parity). */
+ *  user-facing display message (the reference parity). */
 export type PreCompactHookFn = (context: CompactContext) => Promise<{ newCustomInstructions?: string; userDisplayMessage?: string } | void>;
-/** How a permission grant/denial should be classified (Claude Code's
+/** How a permission grant/denial should be classified (the reference's
  *  `PermissionDecisionClassificationSchema`): `user_temporary` (session-scoped
  *  grant), `user_permanent` (durable grant the engine persists), or `user_reject`
  *  (explicit rejection). Carried on BOTH allow and deny permission decisions so a
@@ -564,7 +564,7 @@ export type PreCompactHookFn = (context: CompactContext) => Promise<{ newCustomI
 export const HOOK_DECISION_CLASSIFICATIONS = ['user_temporary', 'user_permanent', 'user_reject'] as const;
 export type HookDecisionClassification = (typeof HOOK_DECISION_CLASSIFICATIONS)[number];
 
-/** Narrow an arbitrary value to a known decision classification. Matches Claude
+/** Narrow an arbitrary value to a known decision classification. Matches the reference
  *  Code's lenient `z.enum(...).catch(undefined)`: a malformed value degrades to
  *  `false` (→ undefined at the call site) rather than rejecting the decision. */
 export function isHookDecisionClassification(v: unknown): v is HookDecisionClassification {
@@ -572,7 +572,7 @@ export function isHookDecisionClassification(v: unknown): v is HookDecisionClass
 }
 
 /**
- * Result a PermissionRequest hook may return (Claude Code's PermissionDecision
+ * Result a PermissionRequest hook may return (the reference's PermissionDecision
  * from `runHooks`). Beyond allow/deny, an ALLOW may rewrite the tool input
  * (`updatedInput`) and/or add durable permission rules the engine persists
  * (`updatedPermissions`); a DENY may set `interrupt` to abort the whole turn
@@ -585,7 +585,7 @@ export interface PermissionHookResult {
   updatedPermissions?: PermissionUpdate[];
   interrupt?: boolean;
   /** Classifies the grant/denial as session-scoped / durable / explicit-reject
-   *  (Claude Code's `decisionClassification`). Parsed leniently — a malformed
+   *  (the reference's `decisionClassification`). Parsed leniently — a malformed
    *  value from the hook is dropped rather than rejecting the whole decision. */
   decisionClassification?: HookDecisionClassification;
 }
@@ -593,21 +593,21 @@ export interface PermissionHookResult {
 export type PermissionHookFn = (context: PermissionContext) => Promise<PermissionHookResult | void>;
 /** TaskCreated hook: like a TaskCompleted hook, a blocking TaskCreated hook can
  *  VETO a just-created task by returning a blockingError; the task tool then rolls
- *  back the created task and surfaces the reason (Claude Code parity —
+ *  back the created task and surfaces the reason (the reference parity —
  *  TaskCreateTool's taskCreated-hook blockingError + compensating deleteTask). A
  *  plain void return is the non-blocking case. */
 export type TaskEventHookFn = (context: TaskEventContext) => Promise<{ blockingError?: string } | void>;
 /** TaskCompleted hook: a blocking hook can veto a status→completed transition
- *  by returning a blockingError (Claude Code parity). */
+ *  by returning a blockingError (the reference parity). */
 export type TaskCompletedHookFn = (context: TaskEventContext) => Promise<{ blockingError?: string } | void>;
 /** UserPromptSubmit hook result: may inject context, or BLOCK/deny the prompt
- *  (blockingError) / prevent continuation, matching Claude Code. */
+ *  (blockingError) / prevent continuation, matching the reference. */
 export interface UserPromptSubmitHookResult {
   additionalContext?: string;
   blockingError?: string;
   preventContinuation?: boolean;
   stopReason?: string;
-  /** USER-facing warning text a hook emitted via `systemMessage` (Claude Code's
+  /** USER-facing warning text a hook emitted via `systemMessage` (the reference's
    *  user-shown warning channel, distinct from model-facing `additionalContext`).
    *  Aggregated across every UserPromptSubmit hook and surfaced to the human by the
    *  engine as a `hook_warning` event — never injected into the model's context. */
@@ -617,17 +617,17 @@ export type UserPromptHookFn = (context: UserPromptContext) => Promise<UserPromp
 export type NotificationHookFn = (context: NotificationContext) => Promise<void>;
 /** TeammateIdle hook: observational lifecycle hook fired when a teammate agent
  *  goes idle (finished its run). Fire-and-forget — AMI surfaces the idle event
- *  with the teammate/team identity (Claude Code parity on the event + payload).
+ *  with the teammate/team identity (the reference parity on the event + payload).
  */
 export type TeammateIdleHookFn = (context: TeammateContext) => Promise<void>;
 /** ConfigChange hook: a blocking hook can VETO a config change before it is
- *  applied (Claude Code's hasBlockingResult). */
+ *  applied (the reference's hasBlockingResult). */
 export type ConfigChangeHookFn = (context: ConfigChangeContext) => Promise<{ blockingError?: string } | void>;
 export type InstructionsHookFn = (context: InstructionsContext) => Promise<void>;
 export type WorktreeHookFn = (context: WorktreeContext) => Promise<void>;
 /** WorktreeCreate hook: a *provider* hook that can supply the filesystem path of
  *  the worktree it created, from stdout (first non-empty line) or
- *  `hookSpecificOutput.worktreePath` (Claude Code's executeWorktreeCreateHook).
+ *  `hookSpecificOutput.worktreePath` (the reference's executeWorktreeCreateHook).
  *  The harness uses the returned path as the created worktree instead of the
  *  default `.ami/worktrees/<slug>` location. A void return is the observe-only
  *  case (the hook materialised the default path or merely reacted). */
@@ -647,7 +647,7 @@ export interface ElicitationHookResult {
 export type ElicitationHookFn = (context: ElicitationContext) => Promise<ElicitationHookResult | void>;
 export type StopFailureHookFn = (context: StopFailureContext) => Promise<void>;
 
-/** Aggregated result of running Stop hooks (Claude Code's StopHookResult). */
+/** Aggregated result of running Stop hooks (the reference's StopHookResult). */
 export interface StopHookResult {
   /** Blocking reasons fed back into the turn as user messages. */
   blockingErrors: string[];
@@ -661,7 +661,7 @@ export type StopHookFn = (context: HookContext) => Promise<{ blockingError?: str
 
 /**
  * Default human-readable reason attached when a Stop hook halts the agent loop
- * without supplying its own `stopReason` (Claude Code's hook_stopped_continuation
+ * without supplying its own `stopReason` (the reference's hook_stopped_continuation
  * attachment default — stopHooks.ts:L268-280 "Stop hook prevented continuation").
  * Gives the engine/operator an introspectable record of WHY the turn stopped even
  * when the hook was terse.
@@ -682,11 +682,11 @@ export function formatHookStoppedContinuation(stopReason?: string): string {
 
 /**
  * User-facing message when a UserPromptSubmit hook BLOCKS a submitted prompt via
- * `blockingError` (Claude Code's `getUserPromptSubmitHookBlockingMessage`,
+ * `blockingError` (the reference's `getUserPromptSubmitHookBlockingMessage`,
  * utils/hooks.ts:L1936-L1939 → processUserInput.ts:L193-L209). The engine surfaces
  * this and erases the user's input, so a policy/guardrail hook can refuse a prompt
  * outright with a displayable reason. Pure. The caller appends `Original prompt: …`
- * so the erased input is still visible to the user (Claude Code parity).
+ * so the erased input is still visible to the user (the reference parity).
  */
 export function formatUserPromptSubmitBlockedMessage(blockingError: string): string {
   return `UserPromptSubmit operation blocked by hook:\n${blockingError}`;
@@ -694,11 +694,11 @@ export function formatUserPromptSubmitBlockedMessage(blockingError: string): str
 
 /**
  * User-facing message when a UserPromptSubmit hook STOPS a prompt via
- * `preventContinuation` (Claude Code processUserInput.ts:L213-L224): the prompt is
+ * `preventContinuation` (the reference processUserInput.ts:L213-L224): the prompt is
  * kept in context but the turn halts. With a non-empty `stopReason` the message is
  * `Operation stopped by hook: <reason>`, otherwise the bare `Operation stopped by
  * hook`. Pure. This intentionally differs from {@link formatHookStoppedContinuation}
- * (the Stop-hook default wording), matching Claude Code's two distinct messages.
+ * (the Stop-hook default wording), matching the reference's two distinct messages.
  */
 export function formatUserPromptStoppedMessage(stopReason?: string): string {
   const r = stopReason?.trim();
@@ -707,7 +707,7 @@ export function formatUserPromptStoppedMessage(stopReason?: string): string {
 
 /**
  * Event-specific wording for a Stop hook's blocking feedback re-injected into the
- * model's context (Claude Code's `getStopHookMessage`, utils/hooks.ts:L1894-L1896 →
+ * model's context (the reference's `getStopHookMessage`, utils/hooks.ts:L1894-L1896 →
  * `Stop hook feedback:\n<error>`). When a Stop hook BLOCKS turn-end with a
  * `blockingError`, the engine frames it with this prefix so the model can attribute
  * the re-injected feedback to a Stop guard, mirroring the already-framed
@@ -718,25 +718,25 @@ export function formatStopHookBlockingMessage(blockingError: string): string {
   return `Stop hook feedback:\n${blockingError}`;
 }
 
-/** Per-hook timing + error record from a Stop-hook run (Claude Code's hookInfos
+/** Per-hook timing + error record from a Stop-hook run (the reference's hookInfos
  *  in createStopHookSummaryMessage). One entry per Stop hook that actually ran. */
 export interface StopHookInfo {
   /** Wall-clock duration of this individual Stop hook, in milliseconds. */
   durationMs: number;
   /** Error text if this Stop hook threw/failed; undefined on success. */
   error?: string;
-  /** The shell command backing a command-type Stop hook (Claude Code's
+  /** The shell command backing a command-type Stop hook (the reference's
    *  StopHookInfo.command) — present when the hook was registered from a
    *  command-hook config / with a display descriptor, so the summary can attribute
    *  a slow/failing hook to its config instead of a bare ordinal. */
   command?: string;
-  /** The prompt text backing a prompt/agent-type Stop hook (Claude Code's
+  /** The prompt text backing a prompt/agent-type Stop hook (the reference's
    *  StopHookInfo.promptText) — the identifier for a non-command Stop hook. */
   promptText?: string;
 }
 
 /** Display descriptor identifying a registered Stop hook in the run summary
- *  (Claude Code's per-hook command / promptText). Either/both may be set. */
+ *  (the reference's per-hook command / promptText). Either/both may be set. */
 export interface StopHookDisplay {
   command?: string;
   promptText?: string;
@@ -744,7 +744,7 @@ export interface StopHookDisplay {
 
 /**
  * Aggregated Stop-hook run summary emitted on the HookManager `stopHookSummary`
- * event after every Stop-hook chain (Claude Code's createStopHookSummaryMessage
+ * event after every Stop-hook chain (the reference's createStopHookSummaryMessage
  * inputs). Carries per-hook timings + errors + whether a hook prevented
  * continuation so a consumer can surface a "Ran N stop hook(s)" line (with the
  * wall-clock-vs-summed timing, per-hook failures, and prevented-continuation) to
@@ -756,7 +756,7 @@ export interface StopHookSummary {
   count: number;
   /** Per-hook timing + error records, in execution order. */
   hookInfos: StopHookInfo[];
-  /** Wall-clock elapsed for the whole Stop-hook chain, in ms. Claude prefers this
+  /** Wall-clock elapsed for the whole Stop-hook chain, in ms. the reference prefers this
    *  over the summed per-hook time because stop hooks can run back-to-back. */
   totalDurationMs: number;
   /** Error texts for the hooks that failed (subset of hookInfos), for quick display. */
@@ -766,7 +766,7 @@ export interface StopHookSummary {
   /** Reason surfaced when preventContinuation is set. */
   stopReason?: string;
   /** Whether the chain produced any surfaced output worth showing the operator —
-   *  a blocking error, a hook error, or a prevented continuation (Claude Code's
+   *  a blocking error, a hook error, or a prevented continuation (the reference's
    *  `hasOutput` flag on createStopHookSummaryMessage). A silent, fast, non-blocking
    *  chain has `hasOutput:false` and need not be rendered. */
   hasOutput: boolean;
@@ -774,7 +774,7 @@ export interface StopHookSummary {
 
 /**
  * Render an operator-facing one-shot summary line for a completed Stop-hook chain
- * (Claude Code's stop-hook run summary — stopHooks.ts createStopHookSummaryMessage):
+ * (the reference's stop-hook run summary — stopHooks.ts createStopHookSummaryMessage):
  * the hook count, the wall-clock total, each hook that was slow (over
  * {@link HOOK_TIMING_DISPLAY_THRESHOLD_MS}) or errored with its duration, every
  * error line, and a prevented-continuation note. NEVER fed to the model — this is a
@@ -796,7 +796,7 @@ export function formatStopHookSummaryMessage(summary: StopHookSummary): string {
   if (!summary.hasOutput && !slow) return '';
   const lines: string[] = [`Ran ${summary.count} ${plural(summary.count, 'stop hook')} in ${summary.totalDurationMs}ms`];
   summary.hookInfos.forEach((info, i) => {
-    // Attribute the row to its backing config when known (Claude Code's StopHookInfo
+    // Attribute the row to its backing config when known (the reference's StopHookInfo
     // command / promptText) so a slow/failing hook is named, not just numbered.
     const id = info.command ?? info.promptText;
     const label = id ? ` [${stopHookInfoLabel(id)}]` : '';
@@ -817,7 +817,7 @@ export function formatStopHookSummaryMessage(summary: StopHookSummary): string {
 /**
  * Minimum wall-clock duration (ms) a Stop-hook chain must exceed before its
  * summary is worth DISPLAYING when there were no errors / no prevented
- * continuation (Claude Code's HOOK_TIMING_DISPLAY_THRESHOLD_MS): a fast no-op
+ * continuation (the reference's HOOK_TIMING_DISPLAY_THRESHOLD_MS): a fast no-op
  * Stop hook does not deserve a summary row, but a slow one (or one with errors)
  * does. Consumed by the summary surface so the display threshold matches parity.
  */
@@ -827,7 +827,7 @@ export const HOOK_TIMING_DISPLAY_THRESHOLD_MS = 500;
  * A settings/hooks/config file that failed to parse while loading hooks. Surfaced
  * (via {@link HookManager.getConfigErrors} + the `configError` event + `/hooks`)
  * so a malformed file — which silently disables EVERY hook it would contribute —
- * is visible to the user instead of only hitting the debug log (Claude Code's
+ * is visible to the user instead of only hitting the debug log (the reference's
  * "a broken settings.json silently disables ALL settings from that file" warning).
  */
 export interface HookConfigError {
@@ -845,7 +845,7 @@ export const MAX_CONCURRENT_PER_EVENT = 12;
 
 /**
  * Default per-callback timeout for in-process ('function') hook callbacks —
- * matches Claude Code's addFunctionHook default. A slow/stuck in-process
+ * matches the reference's addFunctionHook default. A slow/stuck in-process
  * callback cannot stall the turn indefinitely; after this deadline the callback
  * is abandoned (JS callbacks are not forcibly cancellable) and logged.
  */
@@ -872,7 +872,7 @@ export function runWithTimeout<T>(work: Promise<T>, timeoutMs: number, label: st
  * user interrupt (Esc / Ctrl-C) stops the caller awaiting a slow/hanging
  * callback — the JS callback itself cannot be forcibly cancelled, but the caller
  * stops waiting and the signal short-circuits the remaining callbacks. Parity
- * with Claude threading `abortController.signal` into its permission-hook loop.
+ * with the reference threading `abortController.signal` into its permission-hook loop.
  * No signal → the work passes through unchanged. Shared so no call site
  * re-implements the abort Promise.race.
  */
@@ -935,23 +935,23 @@ export class EventConcurrencyLimiter {
 // Hook validation and safety
 // ---------------------------------------------------------------------------
 
-export const MAX_HOOK_TIMEOUT_MS = 600_000; // 10 min — matches Claude Code's hook ceiling
+export const MAX_HOOK_TIMEOUT_MS = 600_000; // 10 min — matches the reference's hook ceiling
 export const DEFAULT_HOOK_TIMEOUT_MS = 60_000; // CC default when a hook sets no timeout
 /** Default lifetime budget for an async ('background') hook when it sets no
- *  `asyncTimeout` — 15s, matching Claude Code's dedicated background-hook deadline.
+ *  `asyncTimeout` — 15s, matching the reference's dedicated background-hook deadline.
  *  A background hook must NOT inherit the long synchronous command/HTTP default
  *  (60s / 10min): it runs detached from the turn, so it is bounded on a short,
  *  distinct clock and aborted when exceeded (child killed / request aborted). In
  *  milliseconds (clamped via validateHookTimeout). */
 export const DEFAULT_ASYNC_HOOK_TIMEOUT_MS = 15_000;
 /** Default HTTP-hook deadline when the hook sets no `timeout` — 10 minutes,
- *  matching Claude Code's DEFAULT_HTTP_HOOK_TIMEOUT_MS (= TOOL_HOOK_EXECUTION_
+ *  matching the reference's DEFAULT_HTTP_HOOK_TIMEOUT_MS (= TOOL_HOOK_EXECUTION_
  *  TIMEOUT_MS). A webhook round-trip may legitimately be slow; a too-short
  *  default (previously 10s) spuriously failed/denied slow hooks. */
 export const DEFAULT_HTTP_HOOK_TIMEOUT_MS = 10 * 60 * 1000;
 export const MAX_HOOKS_PER_EVENT = 10;
 
-/** Default execution budget for SessionEnd hooks (Claude Code's
+/** Default execution budget for SessionEnd hooks (the reference's
  *  SESSION_END_HOOK_TIMEOUT_MS_DEFAULT). SessionEnd hooks run during
  *  shutdown/clear and must NOT block teardown, so they get a deliberately tight
  *  default — far below DEFAULT_HOOK_TIMEOUT_MS (60s) — overridable via the
@@ -975,16 +975,16 @@ export function getSessionEndHookTimeoutMs(
 
 /** Hard turn-count cap on an agent (multi-turn LLM) hook, independent of the
  *  timeout, so a verification agent cannot loop indefinitely even within budget
- *  (Claude Code's MAX_AGENT_TURNS). Passed to the hook sub-engine. */
+ *  (the reference's MAX_AGENT_TURNS). Passed to the hook sub-engine. */
 export const MAX_AGENT_TURNS = 50;
 
-/** Cap on hook-contributed context injected into the turn (Claude Code's
+/** Cap on hook-contributed context injected into the turn (the reference's
  *  MAX_HOOK_OUTPUT_LENGTH). A UserPromptSubmit hook that emits a huge blob is
  *  truncated with a marker so it cannot blow out the context window. */
 export const MAX_HOOK_OUTPUT_LENGTH = 10_000;
 
 /** Truncate hook-contributed output to MAX_HOOK_OUTPUT_LENGTH, appending the
- *  Claude-parity marker when it overflows. Shared so no site re-implements it. */
+ *  the reference-parity marker when it overflows. Shared so no site re-implements it. */
 export function truncateHookOutput(content: string): string {
   if (content.length > MAX_HOOK_OUTPUT_LENGTH) {
     return `${content.substring(0, MAX_HOOK_OUTPUT_LENGTH)}… [output truncated - exceeded ${MAX_HOOK_OUTPUT_LENGTH} characters]`;
@@ -994,7 +994,7 @@ export function truncateHookOutput(content: string): string {
 
 /**
  * Hard ceiling on how many bytes of a command hook's stdout / stderr are held in
- * memory while it runs (Claude Code's TaskOutput pipe-mode `#maxMemory`, 8 MiB).
+ * memory while it runs (the reference's TaskOutput pipe-mode `#maxMemory`, 8 MiB).
  * A hook's decision JSON is parsed from the HEAD of stdout, so once this cap is
  * reached further output is dropped (head-preserving) rather than growing the
  * buffer unbounded — a runaway hook that floods stdout can no longer OOM the
@@ -1079,7 +1079,7 @@ export function validateHookTimeout(timeoutMs: number): number {
 
 /**
  * Default interpreter for command hooks when none is configured — matches
- * Claude Code's DEFAULT_HOOK_SHELL. A hook may override it per-entry via the
+ * the reference's DEFAULT_HOOK_SHELL. A hook may override it per-entry via the
  * `shell` config field (bash | sh | powershell | pwsh).
  */
 export const DEFAULT_HOOK_SHELL = 'bash';
@@ -1090,7 +1090,7 @@ const HOOK_SHELL_SELECTORS: ReadonlySet<string> = new Set(['bash', 'sh', 'powers
 /**
  * Resolve the DEFAULT command-hook interpreter when a hook sets no `shell`.
  * Honors the `SUPERINFERENCE_HOOK_SHELL` env override (bash | sh | powershell |
- * pwsh) so a deployment can change the default interpreter (Claude Code's
+ * pwsh) so a deployment can change the default interpreter (the reference's
  * configurable DEFAULT_HOOK_SHELL) — e.g. a Windows host that wants `pwsh` by
  * default. An unset/unrecognized value falls back to DEFAULT_HOOK_SHELL.
  */
@@ -1109,7 +1109,7 @@ export function posixSingleQuote(s: string): string {
 }
 
 /**
- * Wrap a hook command with an outer shell prefix (Claude Code's
+ * Wrap a hook command with an outer shell prefix (the reference's
  * formatShellPrefixCommand / CLAUDE_CODE_SHELL_PREFIX). The prefix may carry a
  * trailing `-flag` run (split on the last ` -`); the executable and the wrapped
  * command are POSIX-quoted so neither can break out of the prefix invocation.
@@ -1134,13 +1134,13 @@ export interface ResolveHookShellOpts {
 
 /**
  * Resolve a command hook's `shell` selector to a concrete spawn descriptor
- * (Claude Code's per-hook shell selection: `hook.shell ?? DEFAULT_HOOK_SHELL`).
+ * (the reference's per-hook shell selection: `hook.shell ?? DEFAULT_HOOK_SHELL`).
  * PowerShell hooks spawn `pwsh -NoProfile -NonInteractive -Command <command>`
  * (non-interactive, no profile — matching the reference), every POSIX shell
  * uses `<shell> -c <command>`. Single source of truth so command execution
  * never hard-codes `bash`.
  *
- * Two Claude-Code command-construction behaviors are applied for POSIX shells:
+ * Two the reference command-construction behaviors are applied for POSIX shells:
  *  - Windows `.sh` fallback: on win32 a bare `.sh` script won't execute without
  *    an explicit interpreter, so `bash ` is auto-prepended.
  *  - `CLAUDE_CODE_SHELL_PREFIX`: when set, the command is wrapped by the prefix
@@ -1161,7 +1161,7 @@ export function resolveHookShell(
   const file = sel === 'sh' ? 'sh' : 'bash';
   let finalCommand = command;
   // Windows (bash) fallback: auto-prepend `bash ` for a .sh script so it
-  // executes instead of opening in the default file handler (Claude Code).
+  // executes instead of opening in the default file handler (the reference).
   if (platform === 'win32' && /\.sh(\s|$|")/.test(command.trim()) && !command.trim().startsWith('bash ')) {
     finalCommand = `bash ${command}`;
   }
@@ -1176,7 +1176,7 @@ export function resolveHookShell(
  * Validate a hook's working directory before spawning. A stale/removed cwd
  * (e.g. a deleted worktree the session was launched from) makes `spawn` throw
  * ENOENT, which for a guardrail hook is indistinguishable from a real failure.
- * Claude Code pre-checks the hook cwd and falls back; this mirrors that by
+ * the reference pre-checks the hook cwd and falls back; this mirrors that by
  * returning the home directory when the configured cwd no longer exists.
  * Single source so every spawn path validates once.
  */
@@ -1188,7 +1188,7 @@ export function resolveHookCwd(cwd: string): string {
 }
 
 /**
- * Claude Code's hook `timeout` field is in SECONDS for EVERY hook type
+ * the reference's hook `timeout` field is in SECONDS for EVERY hook type
  * (command/prompt/http/agent). This resolves a config value (seconds) to a
  * validated millisecond deadline, falling back to a per-type default when unset.
  * Single source of truth so prompt/http/agent no longer treat `timeout` as raw
@@ -1200,7 +1200,7 @@ export function resolveHookTimeoutMs(timeoutSeconds: number | undefined, default
 
 /**
  * Combine an optional parent AbortSignal with a hard timeout into one signal.
- * Mirrors Claude Code's createCombinedAbortSignal: the returned signal aborts
+ * Mirrors the reference's createCombinedAbortSignal: the returned signal aborts
  * when EITHER the parent aborts (user Ctrl-C / turn cancel) OR the timeout
  * fires, so a stalled hook (command/http/model call) is actively torn down
  * instead of relying on a cooperative between-events deadline. `timedOut()`
@@ -1228,7 +1228,7 @@ export function combineHookAbort(
 }
 
 /**
- * Tools a hook-spawned agent/prompt engine must NOT get — Claude Code filters a
+ * Tools a hook-spawned agent/prompt engine must NOT get — the reference filters a
  * stop/verification hook agent's toolset through ALL_AGENT_DISALLOWED_TOOLS so it
  * cannot recursively spawn subagents, launch a workflow, enter the interactive
  * plan mode, block on an AskUserQuestion (no user answers a hook), or reach into
@@ -1244,7 +1244,7 @@ export const HOOK_AGENT_DISALLOWED_TOOLS: readonly string[] = [
 ];
 
 /**
- * Three-state HTTP-hook URL allowlist check (Claude Code semantics):
+ * Three-state HTTP-hook URL allowlist check (the reference semantics):
  *   undefined  → no restriction (allow)
  *   []         → block everything
  *   non-empty  → the URL must match at least one `*`-wildcard pattern
@@ -1259,13 +1259,13 @@ export function isHttpHookUrlAllowed(url: string, allowed: string[] | undefined)
 /**
  * Stable error code for an HTTP hook whose target was refused by the SSRF guard
  * (resolves to a private/link-local/metadata address, or is otherwise unsafe).
- * Mirrors Claude Code's `ssrfError` code so the block is machine-identifiable in
+ * Mirrors the reference's `ssrfError` code so the block is machine-identifiable in
  * logs and surfaced messages regardless of the human-readable reason text.
  */
 export const ERR_HTTP_HOOK_BLOCKED_ADDRESS = 'ERR_HTTP_HOOK_BLOCKED_ADDRESS';
 
 /**
- * Build the user-facing message for an SSRF-blocked HTTP hook, mirroring Claude
+ * Build the user-facing message for an SSRF-blocked HTTP hook, mirroring the reference
  * Code's `ssrfError` wording (names the blocked host, explains loopback is
  * allowed) and tagging it with the stable {@link ERR_HTTP_HOOK_BLOCKED_ADDRESS}
  * code. `reason` is the detail from the URL-safety validator (which already names
@@ -1281,7 +1281,7 @@ export function formatHttpHookBlockedMessage(url: string, reason: string): strin
 /**
  * Strip CR, LF, and NUL bytes from an HTTP-hook header value to prevent HTTP
  * header (CRLF) injection via an env-var value or a hook-configured header
- * template (Claude Code's sanitizeHeaderValue). A malicious env var such as
+ * template (the reference's sanitizeHeaderValue). A malicious env var such as
  * `token\r\nX-Evil: 1` would otherwise smuggle a second header into the request.
  * Implemented with split/join (not a regex) so the control-char class does not
  * trip the security lint's no-control-regex rule.
@@ -1300,7 +1300,7 @@ export function sanitizeHeaderValue(value: string): string {
  * NOR a resolved env value can inject an extra header.
  *
  * `onWarn` (when supplied) is invoked once per DISTINCT env var reference that was
- * skipped because it is not on the allowlist, so a caller can surface Claude Code's
+ * skipped because it is not on the allowlist, so a caller can surface the reference's
  * explanatory "env var $<name> not in allowedEnvVars, skipping interpolation"
  * warning (execHttpHook.ts:L89-108) — otherwise a user who writes `$TOKEN` in a
  * header value silently gets the empty string with no hint why.
@@ -1324,7 +1324,7 @@ export function interpolateHookHeaderEnv(
 }
 
 /**
- * Claude Code's canonical hook output wraps event-specific fields in a
+ * the reference's canonical hook output wraps event-specific fields in a
  * `hookSpecificOutput` object discriminated by `hookEventName`
  * (PreToolUse → permissionDecision/permissionDecisionReason/updatedInput/
  * additionalContext; UserPromptSubmit/SessionStart/… each with their own keys).
@@ -1350,7 +1350,7 @@ export function unwrapHookSpecificOutput(parsed: unknown): HookDecisionOutput {
 }
 
 /**
- * hookEventName spoof check (Claude Code's parseHookOutput validation): when a
+ * hookEventName spoof check (the reference's parseHookOutput validation): when a
  * hook's `hookSpecificOutput.hookEventName` is present it MUST equal the event
  * the hook actually fired for. A mismatch means the hook is trying to act as a
  * different event (e.g. a SessionStart hook claiming PreToolUse to inject a
@@ -1376,7 +1376,7 @@ export function hookEventNameMismatch(
 
 /**
  * Expected command-hook JSON output shape, surfaced as an affordance when a
- * hook emits malformed JSON (Claude Code's parseHookOutput error hint).
+ * hook emits malformed JSON (the reference's parseHookOutput error hint).
  */
 export const HOOK_JSON_SCHEMA_HINT = JSON.stringify({
   continue: 'boolean (optional)',
@@ -1391,7 +1391,7 @@ export const HOOK_JSON_SCHEMA_HINT = JSON.stringify({
   updatedPermissions: 'array (optional)',
   // Abort the whole turn on a deny rather than skipping this one tool call.
   interrupt: 'boolean (optional)',
-  // async OUTPUT response (Claude Code's { async: true, asyncTimeout }): a hook
+  // async OUTPUT response (the reference's { async: true, asyncTimeout }): a hook
   // may self-declare that it should keep running in the background, bounded by its
   // own asyncTimeout (milliseconds) instead of the synchronous hook deadline.
   async: 'boolean (optional)',
@@ -1402,7 +1402,7 @@ export const HOOK_JSON_SCHEMA_HINT = JSON.stringify({
 /**
  * Build a user-facing validation message for a command hook that emitted text
  * starting with `{` (i.e. intended to be JSON) which failed to parse. Mirrors
- * Claude Code's parseHookOutput `validationError` + schema affordance so a
+ * the reference's parseHookOutput `validationError` + schema affordance so a
  * malformed hook output is reported to the user instead of being silently
  * swallowed / treated as opaque plain text.
  */
@@ -1414,11 +1414,11 @@ export function formatHookValidationError(raw: string, err: unknown): string {
 // ---------------------------------------------------------------------------
 // Hook event serialization (stdin payload for command hooks)
 // ---------------------------------------------------------------------------
-// Claude Code hooks read a snake_case JSON object from stdin terminated by a
+// the reference hooks read a snake_case JSON object from stdin terminated by a
 // newline (hook_event_name / tool_name / tool_input / tool_response / …). AMI
 // historically emitted camelCase with an `event` key. serializeHookEvent emits
 // BOTH: the original camelCase keys (back-compat for AMI's own consumers/tests)
-// AND the Claude Code snake_case aliases + a trailing newline, so stock CC hooks
+// AND the reference snake_case aliases + a trailing newline, so stock CC hooks
 // work unchanged. (R2-H4)
 const HOOK_EVENT_PASCAL: Record<string, string> = {
   preToolUse: 'PreToolUse', postToolUse: 'PostToolUse', userPromptSubmit: 'UserPromptSubmit',
@@ -1437,31 +1437,31 @@ const HOOK_KEY_SNAKE: Record<string, string> = {
   notificationType: 'notification_type',
   permissionMode: 'permission_mode',
   samplingOrigin: 'sampling_origin',
-  // PostCompact input carries the generated summary (Claude Code's compactSummary);
+  // PostCompact input carries the generated summary (the reference's compactSummary);
   // emit the snake_case alias too so cross-framework hooks can read either form.
   compactSummary: 'compact_summary',
-  // Correlation id for the pending tool call (Claude Code's `tool_use_id`): lets a
+  // Correlation id for the pending tool call (the reference's `tool_use_id`): lets a
   // permission-prompt / PostToolUseFailure hook tie its decision to the exact call.
   toolUseId: 'tool_use_id',
-  // Snake-case parity for a tool-failure payload (Claude Code PostToolUseFailure
+  // Snake-case parity for a tool-failure payload (the reference PostToolUseFailure
   // emits is_error / is_interrupt; previously AMI emitted only the camelCase keys).
   isError: 'is_error', isInterrupt: 'is_interrupt',
-  // Idle-boundary flag for pre/postSampling hooks (Claude Code's
+  // Idle-boundary flag for pre/postSampling hooks (the reference's
   // hasToolCallsInLastAssistantTurn inverse) so a background hook can self-gate on
   // the serialized `is_idle` field.
   isIdle: 'is_idle',
-  // PermissionRequest 'always allow' options (Claude Code's `permission_suggestions`
+  // PermissionRequest 'always allow' options (the reference's `permission_suggestions`
   // param) so a permission-prompt hook sees the standing-rule suggestions.
   suggestions: 'permission_suggestions',
-  // MCP elicitation request params (Claude Code's elicitation payload): the
+  // MCP elicitation request params (the reference's elicitation payload): the
   // requested JSON-schema and the request correlation id.
   requestedSchema: 'requested_schema', elicitationId: 'elicitation_id',
-  // PreToolUse decision context (Claude Code passes `tool.getToolUseSummary(input)`
+  // PreToolUse decision context (the reference passes `tool.getToolUseSummary(input)`
   // and `toolUseContext.requestPrompt` into executePreToolHooks): a human-readable
   // one-line summary of the pending tool call and the originating user prompt, so a
   // guardrail hook can decide with the same context the permission UI sees.
   toolUseSummary: 'tool_use_summary', requestPrompt: 'request_prompt',
-  // REPL hook context (Claude Code's REPLHookContext for post-sampling + stop
+  // REPL hook context (the reference's REPLHookContext for post-sampling + stop
   // hooks): the active system prompt and the mutable user/system key-value context
   // bags, so a hook can read what the model was told and any session context keys.
   systemPrompt: 'system_prompt', userContext: 'user_context', systemContext: 'system_context',
@@ -1473,7 +1473,7 @@ const HOOK_KEY_SNAKE: Record<string, string> = {
  * AMI-native `${AMI_PLUGIN_ROOT}` alias) with `pluginRoot`, so a plugin- or
  * skill-registered command hook can reference files co-located with its bundle
  * (`${CLAUDE_PLUGIN_ROOT}/scripts/check.sh`) regardless of the session cwd —
- * Claude Code's CLAUDE_PLUGIN_ROOT command substitution (utils/hooks.ts) and
+ * the reference's CLAUDE_PLUGIN_ROOT command substitution (utils/hooks.ts) and
  * registerSkillHooks skillRoot. Both `${VAR}` and bare `$VAR` forms are handled.
  * Returns the string unchanged when `pluginRoot` is empty. Canonical — reused by
  * every command-hook call site; never re-implement the substitution per site.
@@ -1507,7 +1507,7 @@ export function substitutePluginRoot(text: string, pluginRoot: string | undefine
  * `${AMI_PLUGIN_DATA}` alias, plus the bare `$CLAUDE_PLUGIN_DATA`/`$AMI_PLUGIN_DATA`
  * forms) with `dataDir`, so a plugin command hook can read/write a stable scratch
  * directory that survives across sessions and is separate from the read-only bundle
- * root (`${CLAUDE_PLUGIN_ROOT}`) — Claude Code's CLAUDE_PLUGIN_DATA substitution
+ * root (`${CLAUDE_PLUGIN_ROOT}`) — the reference's CLAUDE_PLUGIN_DATA substitution
  * (utils/hooks.ts getPluginDataDir). Returns the string unchanged when `dataDir`
  * is empty. Canonical — reused by the command-hook call site alongside
  * {@link substitutePluginRoot}; never re-implement the substitution per site.
@@ -1519,7 +1519,7 @@ export function substitutePluginData(text: string, dataDir: string | undefined):
 
 /**
  * Resolve the deterministic, persistent per-plugin data directory for a plugin
- * command hook whose bundle lives at `pluginRoot` (Claude Code's getPluginDataDir).
+ * command hook whose bundle lives at `pluginRoot` (the reference's getPluginDataDir).
  * Keyed by the sanitized basename of the bundle root so the same plugin always maps
  * to the same `~/.ami/plugin-data/<id>` directory regardless of the session cwd, and
  * two different plugins never collide. Returns `undefined` when `pluginRoot` is empty
@@ -1535,7 +1535,7 @@ export function resolvePluginDataDir(pluginRoot: string | undefined): string | u
 
 /**
  * Resolve the stable plugin IDENTIFIER for a hook whose bundle lives at
- * `pluginRoot` — the sanitized basename of the bundle root (Claude Code's
+ * `pluginRoot` — the sanitized basename of the bundle root (the reference's
  * per-hook `pluginId` provenance). Canonical: reused by {@link resolvePluginDataDir}
  * (the data-dir key) and by the hook rewake payload so a backgrounded plugin hook's
  * completion/wake message is attributable to the plugin that installed it. Returns
@@ -1607,7 +1607,7 @@ const TOOL_USE_SUMMARY_MAX = 120;
 
 /**
  * Build a concise, human-readable summary of a pending tool call for a PreToolUse
- * hook's stdin payload — AMI's generic stand-in for Claude Code's per-tool
+ * hook's stdin payload — AMI's generic stand-in for the reference's per-tool
  * `tool.getToolUseSummary(input)`. Picks the most salient primary argument (shell
  * command → file path → url/pattern/query/prompt) and renders `toolName(arg)` on a
  * single collapsed line, elided to {@link TOOL_USE_SUMMARY_MAX}. Falls back to the
@@ -1629,7 +1629,7 @@ export function buildToolUseSummary(toolName: string, toolInput: Record<string, 
 }
 
 /**
- * Extract the REPL-hook context fields (Claude Code's REPLHookContext:
+ * Extract the REPL-hook context fields (the reference's REPLHookContext:
  * systemPrompt + the user/system key-value context bags) from a {@link HookContext}
  * for the post-sampling / stop hook stdin payload. Each field is included only when
  * the engine populated it (empty bags omitted), so a hook that doesn't need them
@@ -1663,7 +1663,7 @@ export function extractHookBlockingError(result: string): string | undefined {
 }
 
 /**
- * Strict validation of a hook's decision fields (Claude Code parseHookOutput: an
+ * Strict validation of a hook's decision fields (the reference parseHookOutput: an
  * unrecognized `decision` or `permissionDecision` value is an ERROR, not a silent
  * no-op). Returns a human-readable validation message when the parsed output
  * carries a `decision`/`permissionDecision` field whose value is outside the
@@ -1690,7 +1690,7 @@ export function unknownHookDecisionError(
 
 /**
  * Strict shape/type validation of a parsed hook JSON output before any field is
- * acted on (Claude Code's parseHookOutput / hookJSONOutputSchema safeParse): a
+ * acted on (the reference's parseHookOutput / hookJSONOutputSchema safeParse): a
  * hook that declares a KNOWN decision field with a wrong-typed value (e.g.
  * `continue: "yes"`, `updatedInput: []`, `asyncTimeout: "15"`) is malformed and
  * must be surfaced as a validation error rather than silently mis-interpreted
@@ -1742,7 +1742,7 @@ export function validateHookDecisionOutput(
 }
 
 /**
- * Event-specific default deny/feedback wording (Claude Code's phase-specific
+ * Event-specific default deny/feedback wording (the reference's phase-specific
  * block messages): when a hook blocks WITHOUT supplying its own reason, the
  * surfaced text names the lifecycle phase instead of a bare 'Hook blocked', so a
  * user/model can tell WHICH guard fired. A hook-supplied `reason` always wins.
@@ -1768,7 +1768,7 @@ export function formatHookDenyReason(event: string | undefined, reason?: string)
  * {@link HookManager} (runHookByType) returns — into a human-facing re-wake
  * message, or `undefined` when there is nothing to deliver.
  *
- * This is the delivery side of Claude Code's `checkForAsyncHookResponses`: a
+ * This is the delivery side of the reference's `checkForAsyncHookResponses`: a
  * backgrounded hook that exits 0 (or non-blocking non-zero) with
  * `additionalContext` / `systemMessage` / `updatedInput` / plain stdout produces
  * a result that the fire-and-forget path would otherwise DISCARD (the turn has
@@ -1817,7 +1817,7 @@ export function asyncRewakeDeliveryMessage(result: string): string | undefined {
   return trimmed;
 }
 
-/** Global hook kill-switch via environment (Claude Code's `CLAUDE_CODE_SIMPLE`):
+/** Global hook kill-switch via environment (the reference's `CLAUDE_CODE_SIMPLE`):
  *  when set truthy, EVERY hook source is skipped at load time — a fast,
  *  config-file-free escape hatch for a user who wants a hook-free session. The
  *  AMI-native aliases `AMI_SIMPLE` / `AMI_DISABLE_HOOKS` are honored too. Pure;
@@ -1848,7 +1848,7 @@ export function tryParseHookJson(result: string): Record<string, unknown> | unde
 
 /**
  * Canonical merge of user-supplied compaction instructions with hook-injected
- * ones (mirrors Claude Code's mergeHookInstructions): hook text is appended,
+ * ones (mirrors the reference's mergeHookInstructions): hook text is appended,
  * blank-line separated; either side may be empty.
  */
 export function mergeHookInstructions(
@@ -1881,7 +1881,7 @@ export function extractAdditionalContexts(result: string): string[] {
 }
 
 /** Collect ONLY the USER-facing `systemMessage` string(s) a hook contributed —
- *  the human-facing WARNING channel (Claude Code's `systemMessage`, described as
+ *  the human-facing WARNING channel (the reference's `systemMessage`, described as
  *  "Warning message shown to the user" and yielded as a distinct
  *  `hook_system_message` attachment, NOT model-facing `additionalContext`).
  *  Accepts the JSON `systemMessage` field or the flattened `SYSTEM:<text>`
@@ -1907,7 +1907,7 @@ export function extractSystemMessages(result: string): string[] {
  *  strings a SessionStart/Setup hook contributed — distinct from
  *  {@link extractAdditionalContexts}, this deliberately EXCLUDES `systemMessage`
  *  and the `SYSTEM:` sentinel because SessionStart/Setup already route those into
- *  an `initialUserMessage`. Claude Code accumulates these across every hook into a
+ *  an `initialUserMessage`. the reference accumulates these across every hook into a
  *  single `hook_additional_context` attachment. */
 export function extractSessionAdditionalContexts(result: string): string[] {
   const out: string[] = [];
@@ -1922,7 +1922,7 @@ export function extractSessionAdditionalContexts(result: string): string[] {
 }
 
 /** Extract the worktree path a WorktreeCreate provider hook reported, matching
- *  Claude Code's executeWorktreeCreateHook: prefer `hookSpecificOutput.worktreePath`
+ *  the reference's executeWorktreeCreateHook: prefer `hookSpecificOutput.worktreePath`
  *  (http/JSON hooks), else the flattened top-level `worktreePath`, else the first
  *  non-empty trimmed stdout line (command hooks that just `echo` the path). Returns
  *  undefined when the hook produced no usable path (observe-only). */
@@ -1962,7 +1962,7 @@ export function parseElicitationResult(result: string): ElicitationHookResult | 
 /**
  * System-prompt contract appended to prompt/agent (AI-driven) hooks so the model
  * knows exactly what to return: a single JSON object {"ok": boolean, "reason"?:
- * string}. Mirrors Claude Code's hookResponseSchema / createStructuredOutputTool.
+ * string}. Mirrors the reference's hookResponseSchema / createStructuredOutputTool.
  */
 export const HOOK_VERIFICATION_CONTRACT =
   'You are a verification hook. Evaluate the condition described below against the ' +
@@ -1977,7 +1977,7 @@ export const HOOK_VERIFICATION_CONTRACT =
  * `appendSystemPrompt`) frames the verification task, tells the agent exactly where
  * the transcript lives (so it can analyze prior conversation when `transcriptPath`
  * is known), nudges it to be efficient, and restates the `{ok, reason}` output
- * contract so it returns a parseable verdict. Parity: Claude Code's execAgentHook
+ * contract so it returns a parseable verdict. Parity: the reference's execAgentHook
  * verification system prompt (utils/hooks/execAgentHook.ts) — AMI keeps its own
  * text-JSON `{ok, reason}` contract rather than a synthetic structured-output tool.
  */
@@ -1999,7 +1999,7 @@ export function buildAgentHookSystemPrompt(transcriptPath?: string): string {
 
 /**
  * The exact re-prompt nudge used to enforce structured output when an agent hook
- * stops without emitting its machine-readable verdict. Mirrors Claude Code's
+ * stops without emitting its machine-readable verdict. Mirrors the reference's
  * `registerStructuredOutputEnforcement` Stop-hook message (hookHelpers.ts L80:
  * `You MUST call the ${SYNTHETIC_OUTPUT_TOOL_NAME} tool to complete this request.
  * Call this tool now.`). Shared so the wording lives in ONE place and tests can
@@ -2012,7 +2012,7 @@ export function buildStructuredOutputEnforcementNudge(toolName: string = VERIFIC
 
 /**
  * Substitute the hook input JSON into a prompt/agent hook's prompt template
- * (Claude Code's addArgumentsToPrompt / substituteArguments):
+ * (the reference's addArgumentsToPrompt / substituteArguments):
  *   - `$ARGUMENTS`        → the full hook-input JSON string
  *   - `$ARGUMENTS[n]`/`$n`→ the n-th whitespace-delimited token of the input
  *   - if NO placeholder appears, the input is appended as `\n\nARGUMENTS: <json>`
@@ -2047,7 +2047,7 @@ export function parseHookVerification(output: string): { ok: boolean; reason?: s
  *  filtering to non-empty strings. Shared by sessionStart / cwdChanged /
  *  fileChanged which can register dynamic FileChanged watches.
  *
- *  Path scoping (Claude Code's FileChanged `watchPaths` contract): each entry MUST
+ *  Path scoping (the reference's FileChanged `watchPaths` contract): each entry MUST
  *  be ABSOLUTE. A relative path from untrusted hook output is ambiguous (resolved
  *  against whose cwd?) and is dropped rather than silently resolved — the host only
  *  ever watches absolute, hook-declared locations. */
@@ -2059,7 +2059,7 @@ export function parseWatchPaths(result: string): string[] {
 }
 
 /**
- * Per-event matcher field (Claude Code's hooksConfigManager fieldToMatch): for
+ * Per-event matcher field (the reference's hooksConfigManager fieldToMatch): for
  * non-tool events the `matcher` is applied against this context field instead of
  * the tool name, so a hook can be scoped to e.g. a specific MCP server, compact
  * trigger, config source, or subagent type. Events absent from this map (and the
@@ -2071,21 +2071,21 @@ export const HOOK_MATCHER_FIELD: Record<string, string> = {
   subagentStop: 'mode',
   preCompact: 'trigger',
   postCompact: 'trigger',
-  // Sampling: scope on the query ORIGIN (Claude Code's MagicDocs querySource
+  // Sampling: scope on the query ORIGIN (the reference's MagicDocs querySource
   // boundary) so a pre/postSampling hook can fire for only `main` (the top-level
   // loop) or only `subagent` (forked/nested agents) — the re-entrancy guard that
   // lets a hook which itself samples the model exclude background work.
   preSampling: 'samplingOrigin',
   postSampling: 'samplingOrigin',
-  // Session lifecycle: scope on the boundary cause (Claude Code's
+  // Session lifecycle: scope on the boundary cause (the reference's
   // SessionStart `source` / SessionEnd `reason` discriminators) so a hook can
   // fire for e.g. only `resume` or only `clear`.
   sessionStart: 'source',
   sessionEnd: 'reason',
-  // Setup: scope on the boundary cause (Claude Code's Setup `trigger`
+  // Setup: scope on the boundary cause (the reference's Setup `trigger`
   // discriminator — init | maintenance).
   setup: 'trigger',
-  // A StopFailure hook scopes on the failure CLASS (Claude Code's `error` field,
+  // A StopFailure hook scopes on the failure CLASS (the reference's `error` field,
   // e.g. rate_limit / authentication_failed) — the emitter classifies the raw
   // failure into this taxonomy (stopFailureErrorClass) before firing.
   stopFailure: 'error',
@@ -2093,7 +2093,7 @@ export const HOOK_MATCHER_FIELD: Record<string, string> = {
   elicitationResult: 'mcpServerName',
   configChange: 'source',
   instructionsLoaded: 'loadReason',
-  // TeammateIdle: scope on the teammate's name (Claude Code's TeammateIdle
+  // TeammateIdle: scope on the teammate's name (the reference's TeammateIdle
   // teammate_name field) so a hook can fire for just one teammate.
   teammateIdle: 'teammateName',
   permissionRequest: 'toolName',
@@ -2111,7 +2111,7 @@ export function matcherAppliesToCtx(event: string, matcher: string | undefined, 
 }
 
 /**
- * Declarative per-event metadata (Claude Code's getHookEventMetadata): a
+ * Declarative per-event metadata (the reference's getHookEventMetadata): a
  * human-readable summary + description (input JSON shape + command-hook exit-code
  * semantics) for every hook event. Drives `/hooks`-style introspection and the
  * `--introspect` manifest. The matcher field for each event is derived from the
@@ -2124,7 +2124,7 @@ export interface HookEventMetadata {
   /** The context field a `matcher` is applied against, or undefined when the
    *  event has no matchable field (a matcher is a no-op). */
   matcherField?: string;
-  /** Enumerated allowed matcher values for this event's matcher field (Claude
+  /** Enumerated allowed matcher values for this event's matcher field (the reference
    *  Code's MatcherMetadata.values). Present whenever `matcherField` is — a static
    *  enumeration (session sources, compact triggers, config sources, …) or, for
    *  dynamically-scoped events (tool names, agent types, MCP server names), the
@@ -2144,7 +2144,7 @@ export interface HookEventMetadataOpts {
   mcpServerNames?: string[];
 }
 
-/** Static enumerations of allowed matcher values, keyed by event (Claude Code's
+/** Static enumerations of allowed matcher values, keyed by event (the reference's
  *  per-event MatcherMetadata.values). Events whose valid set is dynamic (tool/
  *  agent/MCP scoped) are resolved from {@link HookEventMetadataOpts} instead. */
 const HOOK_MATCHER_VALUES: Record<string, readonly string[]> = {
@@ -2178,7 +2178,7 @@ function resolveMatcherValues(event: string, matcherField: string, opts: HookEve
   return stat ? [...stat] : [];
 }
 
-/** Whether a `matcher` is meaningful for this event (Claude Code's
+/** Whether a `matcher` is meaningful for this event (the reference's
  *  eventSupportsMatcher): true when the event has a matchable field (tool name
  *  or a non-tool fieldToMatch). Events without one treat a matcher as a no-op, so
  *  the introspection UI hides/ignores it. */
@@ -2187,13 +2187,13 @@ export function eventSupportsMatcher(event: string): boolean {
 }
 
 /** Display label for a hook matcher: an empty / absent matcher targets everything,
- *  rendered as '(all)' (Claude Code's matcher list fallback). */
+ *  rendered as '(all)' (the reference's matcher list fallback). */
 export function formatHookMatcherLabel(matcher: string | undefined): string {
   return matcher && matcher.length > 0 ? matcher : '(all)';
 }
 
 /** Source-tier priority for ordering matchers/hooks in introspection (lower =
- *  higher authority). Mirrors Claude Code's SOURCES order with plugin/builtin
+ *  higher authority). Mirrors the reference's SOURCES order with plugin/builtin
  *  pinned lowest. */
 export const HOOK_SOURCE_PRIORITY: Record<string, number> = {
   managed: 0,
@@ -2204,7 +2204,7 @@ export const HOOK_SOURCE_PRIORITY: Record<string, number> = {
   builtin: 999,
 };
 
-/** Deterministically order matchers within an event (Claude Code's
+/** Deterministically order matchers within an event (the reference's
  *  sortMatchersByPriority): by their highest-priority (lowest-number) contributing
  *  source first, tie-broken by matcher name. Pure — never mutates its input. */
 export function sortMatchersByPriority(
@@ -2285,7 +2285,7 @@ function computeHookEventMetadata(event: string, opts: HookEventMetadataOpts): H
 }
 
 /** Stable cache key for {@link getHookEventMetadata}: the event plus each dynamic
- *  matcher-value source joined in SORTED order. Mirrors Claude Code's
+ *  matcher-value source joined in SORTED order. Mirrors the reference's
  *  hooksConfigManager resolver `toolNames => toolNames.slice().sort().join(',')`
  *  (ref L26), extended to the agent/MCP sources AMI also scopes on. A caller that
  *  passes a freshly-allocated `toolNames` array with the same members every render
@@ -2313,7 +2313,7 @@ export function getHookEventMetadata(event: string, opts: HookEventMetadataOpts 
 }
 
 /**
- * Content-identity equality for hook configs (Claude Code's isHookEqual): two
+ * Content-identity equality for hook configs (the reference's isHookEqual): two
  * hooks are the same when their type + content (command/prompt/url) + `if`
  * condition match; timeout is ignored. Used to de-duplicate hook entries loaded
  * from overlapping sources.
@@ -2346,7 +2346,7 @@ export interface CommandHookConfig {
   command: string;
   /** Exec form: spawn command directly without a shell, avoiding quoting issues. */
   args?: string[];
-  /** Interpreter for the command (Claude Code's per-hook shell selection):
+  /** Interpreter for the command (the reference's per-hook shell selection):
    *  'bash' (default) | 'sh' | 'powershell' | 'pwsh'. Ignored when `args` is set
    *  (exec form bypasses the shell). */
   shell?: string;
@@ -2364,7 +2364,7 @@ export interface CommandHookConfig {
    *  default 'allow' preserves today's fail-open behavior. */
   onFailure?: 'block' | 'allow';
   /** Human-readable label shown in progress/introspection surfaces in place of the
-   *  raw command (Claude Code's getHookDisplayText `statusMessage`). Lets a hook
+   *  raw command (the reference's getHookDisplayText `statusMessage`). Lets a hook
    *  present e.g. 'Running security scan…' instead of leaking the shell command. */
   statusMessage?: string;
   /** Filesystem base directory of the plugin bundle (or skill) that contributed
@@ -2372,13 +2372,13 @@ export interface CommandHookConfig {
    *  (and the `${AMI_PLUGIN_ROOT}` alias) substituted to this path, and the hook
    *  child process receives `CLAUDE_PLUGIN_ROOT`/`AMI_PLUGIN_ROOT` env vars so a
    *  plugin/skill-registered hook can locate its own co-located files regardless of
-   *  the session cwd (Claude Code's CLAUDE_PLUGIN_ROOT / registerSkillHooks
+   *  the session cwd (the reference's CLAUDE_PLUGIN_ROOT / registerSkillHooks
    *  skillRoot). Populated by loadFromFile's plugin-discovery block; absent for
    *  filesystem (.ami/.claude/config) hooks. */
   pluginRoot?: string;
   /** Name of the plugin bundle that contributed this hook, when it came from a
    *  plugin. Carried onto the runtime config so a backgrounded (asyncRewake) hook's
-   *  completion/wake payload is attributable to its plugin (Claude Code's per-hook
+   *  completion/wake payload is attributable to its plugin (the reference's per-hook
    *  `pluginName`/`pluginId` provenance). Absent for filesystem/config hooks. */
   pluginName?: string;
 }
@@ -2397,11 +2397,11 @@ export interface PromptHookConfig {
    *  aborted when it elapses. Clamped to [100ms, MAX_HOOK_TIMEOUT_MS]. */
   asyncTimeout?: number;
   asyncRewake?: boolean;
-  /** Friendly label for progress/introspection (Claude Code `statusMessage`). */
+  /** Friendly label for progress/introspection (the reference `statusMessage`). */
   statusMessage?: string;
   /** Plugin bundle root + name when contributed by a plugin — carried so a
    *  backgrounded prompt hook's rewake payload is attributable to its plugin
-   *  (Claude Code `pluginId` provenance). Absent for filesystem/config hooks. */
+   *  (the reference `pluginId` provenance). Absent for filesystem/config hooks. */
   pluginRoot?: string;
   pluginName?: string;
 }
@@ -2425,11 +2425,11 @@ export interface HttpHookConfig {
    *  aborted when it elapses. Clamped to [100ms, MAX_HOOK_TIMEOUT_MS]. */
   asyncTimeout?: number;
   asyncRewake?: boolean;
-  /** Friendly label for progress/introspection (Claude Code `statusMessage`). */
+  /** Friendly label for progress/introspection (the reference `statusMessage`). */
   statusMessage?: string;
   /** Plugin bundle root + name when contributed by a plugin — carried so a
    *  backgrounded HTTP hook's rewake payload is attributable to its plugin
-   *  (Claude Code `pluginId` provenance). Absent for filesystem/config hooks. */
+   *  (the reference `pluginId` provenance). Absent for filesystem/config hooks. */
   pluginRoot?: string;
   pluginName?: string;
 }
@@ -2458,14 +2458,14 @@ export interface AgentHookConfig {
    *  aborted when it elapses. Clamped to [100ms, MAX_HOOK_TIMEOUT_MS]. */
   asyncTimeout?: number;
   asyncRewake?: boolean;
-  /** Friendly label for progress/introspection (Claude Code `statusMessage`). */
+  /** Friendly label for progress/introspection (the reference `statusMessage`). */
   statusMessage?: string;
   /** Plugin bundle root + name when contributed by a plugin — carried so a
    *  backgrounded agent hook's rewake payload is attributable to its plugin
-   *  (Claude Code `pluginId` provenance). Absent for filesystem/config hooks. */
+   *  (the reference `pluginId` provenance). Absent for filesystem/config hooks. */
   pluginRoot?: string;
   pluginName?: string;
-  /** Opt-in structured-output enforcement (Claude Code's
+  /** Opt-in structured-output enforcement (the reference's
    *  `registerStructuredOutputEnforcement`, hookHelpers.ts L66-L83): when `true`, an
    *  agent hook run that STOPS without ever calling the {@link VERIFICATION_OUTPUT_TOOL_NAME}
    *  verification tool is re-prompted ONCE with a precise nudge
@@ -2487,20 +2487,20 @@ export interface HookDecisionOutput {
   suppressOutput?: boolean;
   reason?: string;
   /** A hook that emits `{ "async": true }` on stdout self-declares that it should
-   *  be treated as a background/async hook (Claude Code's AsyncHookJSONOutput).
+   *  be treated as a background/async hook (the reference's AsyncHookJSONOutput).
    *  Validated by {@link validateHookDecisionOutput}; carried so a consumer can
    *  detect the runtime async-declaration channel. */
   async?: boolean;
   /** Background-hook lifetime budget (ms) a hook may self-declare alongside
-   *  `async:true` (Claude Code's `asyncTimeout`). */
+   *  `async:true` (the reference's `asyncTimeout`). */
   asyncTimeout?: number;
   /** PermissionRequest ALLOW: durable permission-rule mutations the engine should
-   *  persist (Claude Code's `decision.updatedPermissions`). */
+   *  persist (the reference's `decision.updatedPermissions`). */
   updatedPermissions?: PermissionUpdate[];
   /** PermissionRequest DENY: abort the whole turn (not just skip this tool) —
-   *  Claude Code's `decision.interrupt` → `abortController.abort()`. */
+   *  the reference's `decision.interrupt` → `abortController.abort()`. */
   interrupt?: boolean;
-  /** PermissionRequest allow/deny classification (Claude Code's
+  /** PermissionRequest allow/deny classification (the reference's
    *  `decisionClassification`): user_temporary | user_permanent | user_reject.
    *  Parsed leniently — a malformed value is ignored, not an error. */
   decisionClassification?: HookDecisionClassification;
@@ -2508,7 +2508,7 @@ export interface HookDecisionOutput {
 
 /**
  * In-process ('callback') hook. Receives the firing `event`, its `data`, and an
- * optional `abort` AbortSignal (Claude Code's `HookCallback` `abort: AbortSignal
+ * optional `abort` AbortSignal (the reference's `HookCallback` `abort: AbortSignal
  * | undefined`) so a long-running callback can observe a user interrupt / turn
  * abort and bail early via cooperative cancellation. The signal is threaded by
  * {@link HookManager.executeCallbacks}; a callback that ignores it still works
@@ -2517,7 +2517,7 @@ export interface HookDecisionOutput {
 export type HookCallback = (event: string, data: unknown, abort?: AbortSignal) => Promise<HookDecisionOutput | string | void>;
 
 /**
- * Function-hook callback (Claude Code's {@link FunctionHookCallback}): an
+ * Function-hook callback (the reference's {@link FunctionHookCallback}): an
  * in-memory TypeScript gate that inspects the conversation messages and returns
  * `true` to let the event proceed or `false` to block it. Session-scoped only —
  * it embeds a live callback and so can never be persisted to settings.json.
@@ -2525,7 +2525,7 @@ export type HookCallback = (event: string, data: unknown, abort?: AbortSignal) =
 export type FunctionHookCallback = (messages: Message[], signal?: AbortSignal) => boolean | Promise<boolean>;
 
 /**
- * A runtime ('function') hook with an embedded callback (Claude Code's
+ * A runtime ('function') hook with an embedded callback (the reference's
  * sessionHooks.ts `FunctionHook`). Registered via {@link HookManager.addFunctionHook},
  * returns `true`=pass / `false`=block, and surfaces {@link errorMessage} as the
  * block reason. Never loaded from a config file (hence NOT in HOOK_CONFIG_TYPES,
@@ -2545,7 +2545,7 @@ export interface FunctionHook {
 }
 
 /**
- * Scoping metadata for a runtime callback hook (Claude Code's SessionHookMatcher
+ * Scoping metadata for a runtime callback hook (the reference's SessionHookMatcher
  * `matcher`/`skillRoot` + addSessionHook `sessionId`). Lets a skill/stance/agent
  * register hooks at runtime that are matcher-gated and can be torn down as a group
  * by the skill root or session that installed them.
@@ -2553,14 +2553,14 @@ export interface FunctionHook {
 export interface RuntimeHookMeta {
   /** Glob matcher gating which tool/event names fire this hook ('' / absent = all). */
   matcher?: string;
-  /** Owning skill/plugin base directory (Claude Code `skillRoot`) for grouped teardown. */
+  /** Owning skill/plugin base directory (the reference `skillRoot`) for grouped teardown. */
   skillRoot?: string;
-  /** Owning session/agent id (Claude Code `sessionId`) for end-of-session teardown. */
+  /** Owning session/agent id (the reference `sessionId`) for end-of-session teardown. */
   sessionId?: string;
   /** Stable id (function hooks) for id-based removal. */
   id?: string;
   /**
-   * Marks a SYSTEM-registered in-process callback (Claude Code's HookCallback
+   * Marks a SYSTEM-registered in-process callback (the reference's HookCallback
    * `internal:true` — e.g. the session-file-access guard). An internal hook runs
    * exactly like any other callback but is hidden from the user-facing hook count
    * ({@link getSummary} `callbackHooks`) so an operator's `/hooks` view reflects
@@ -2571,7 +2571,7 @@ export interface RuntimeHookMeta {
 }
 
 /**
- * A hook-execution lifecycle event (Claude Code's hookEvents.ts
+ * A hook-execution lifecycle event (the reference's hookEvents.ts
  * HookExecutionEvent): `progress` when a hook starts running, `resolved` when it
  * settles. Delivered to a {@link HookManager.registerHookEventHandler} subscriber,
  * and BUFFERED (bounded FIFO) when no subscriber is attached so an early event
@@ -2584,22 +2584,22 @@ export interface HookLifecycleEvent {
   label: string;
   /** Present on `resolved`: whether the hook completed successfully. */
   success?: boolean;
-  /** Stable per-hook identifier (Claude Code's HookStartedEvent/HookResponseEvent
+  /** Stable per-hook identifier (the reference's HookStartedEvent/HookResponseEvent
    *  `hookId`): the SAME value on the start-`progress`, every streaming-`progress`,
    *  and the terminal `resolved` event for one hook run, so a frontend can correlate
    *  a hook's lifecycle across emissions. Derived by {@link computeHookId}. */
   hookId?: string;
-  /** Human-facing hook name (Claude Code's `hookName`): the display label
+  /** Human-facing hook name (the reference's `hookName`): the display label
    *  (statusMessage when set, else the hook's content). Carried alongside the
-   *  internal {@link HookLifecycleEvent.label} for parity with Claude's event shape. */
+   *  internal {@link HookLifecycleEvent.label} for parity with the reference's event shape. */
   hookName?: string;
-  /** Present on `resolved`: the 3-way terminal classification (Claude Code's
+  /** Present on `resolved`: the 3-way terminal classification (the reference's
    *  HookResponseEvent.outcome) — `success` | `error` | `cancelled`. Finer-grained
    *  than {@link HookLifecycleEvent.success}; `cancelled` means the run was aborted
    *  (user interrupt / shutdown) rather than failing on its own. Set via
    *  {@link classifyHookOutcome}. */
   outcome?: HookLifecycleOutcome;
-  /** Present on a STREAMING `progress` event (Claude Code's emitHookProgress): the
+  /** Present on a STREAMING `progress` event (the reference's emitHookProgress): the
    *  hook's incremental captured stdout so far while it is still running. Absent on
    *  the initial announce-`progress` and on `resolved`. */
   stdout?: string;
@@ -2609,12 +2609,12 @@ export interface HookLifecycleEvent {
   output?: string;
 }
 
-/** Terminal 3-way outcome of a hook run (Claude Code's HookResponseEvent.outcome). */
+/** Terminal 3-way outcome of a hook run (the reference's HookResponseEvent.outcome). */
 export const HOOK_LIFECYCLE_OUTCOMES = ['success', 'error', 'cancelled'] as const;
 export type HookLifecycleOutcome = (typeof HOOK_LIFECYCLE_OUTCOMES)[number];
 
 /**
- * Classify a hook run's terminal outcome (Claude Code's finalizeHook outcome:
+ * Classify a hook run's terminal outcome (the reference's finalizeHook outcome:
  * `aborted ? 'cancelled' : success ? 'success' : 'error'`). `aborted` takes
  * precedence — a cancelled (interrupt/shutdown/async-timeout) run is `cancelled`
  * even if its own work had "succeeded" up to the abort. The single source for the
@@ -2627,7 +2627,7 @@ export function classifyHookOutcome(success: boolean, aborted: boolean): HookLif
 }
 
 /**
- * Stable per-hook identifier for lifecycle-event correlation (Claude Code's
+ * Stable per-hook identifier for lifecycle-event correlation (the reference's
  * per-hook `hookId`). Deterministic in the firing event, the hook type, the hook's
  * content, and its index within the event's hook array — so two identical hooks on
  * the same event still get distinct ids, while the same hook gets the same id on
@@ -2637,14 +2637,14 @@ export function computeHookId(event: string, hookType: HookConfigType, content: 
   return createHash('sha256').update(`${event}\0${hookType}\0${index}\0${content}`).digest('hex').slice(0, 12);
 }
 
-/** AMI's live-progress polling cadence (ms) for a running command hook. Claude
+/** AMI's live-progress polling cadence (ms) for a running command hook. the reference
  *  Code's startHookProgressInterval defaults to 1000ms; AMI polls more frequently
  *  so a short hook still surfaces at least one incremental update. */
 export const HOOK_PROGRESS_INTERVAL_MS = 250;
 
 /**
  * Poll a running hook's incremental output on a fixed interval and deliver each
- * CHANGED snapshot to `onProgress` (Claude Code's `startHookProgressInterval`):
+ * CHANGED snapshot to `onProgress` (the reference's `startHookProgressInterval`):
  * gated by {@link shouldEmitHookLifecycle} (a gated-off event never polls and gets
  * a no-op stop), deduped on the combined `output` so unchanged polls are dropped,
  * and timer-unref'd so a pending poll never keeps the process alive. Returns a stop
@@ -2673,13 +2673,13 @@ export function startHookProgressInterval(params: {
   return () => clearInterval(interval);
 }
 
-/** Bounded cap on buffered hook-lifecycle events (Claude Code's MAX_PENDING_EVENTS). */
+/** Bounded cap on buffered hook-lifecycle events (the reference's MAX_PENDING_EVENTS). */
 export const MAX_PENDING_HOOK_EVENTS = 100;
 
 /**
  * Hook events whose lifecycle (`progress`/`resolved`) notifications are ALWAYS
  * published to a {@link HookManager.registerHookEventHandler} subscriber,
- * regardless of the all-events toggle (Claude Code's `ALWAYS_EMITTED_HOOK_EVENTS`
+ * regardless of the all-events toggle (the reference's `ALWAYS_EMITTED_HOOK_EVENTS`
  * in hookEvents.ts): the low-noise startup lifecycle events kept on for
  * backwards-compatible observability even when the broader channel is quieted.
  */
@@ -2687,7 +2687,7 @@ export const ALWAYS_EMITTED_HOOK_EVENTS = ['sessionStart', 'setup'] as const;
 
 /**
  * Whether a hook-lifecycle event for `event` should be published to subscribers,
- * given whether all-events emission is enabled (Claude Code's hookEvents.ts
+ * given whether all-events emission is enabled (the reference's hookEvents.ts
  * `shouldEmit`): events on the {@link ALWAYS_EMITTED_HOOK_EVENTS} allowlist always
  * pass; every other known {@link HOOK_EVENTS} event passes only when
  * `allEnabled` is set; an unknown event name is never emitted. Pure; the gate used
@@ -2705,7 +2705,7 @@ export interface HookConfigEntry {
   matcher?: string;
   _source?: 'project' | 'user' | 'config';
   /** Name of the plugin bundle that contributed this hook, when it came from a
-   *  plugin (Claude Code's per-hook `pluginName`/`pluginId` provenance). Absent
+   *  plugin (the reference's per-hook `pluginName`/`pluginId` provenance). Absent
    *  for filesystem (.ami/.claude/config) hooks. Retained so a hook can be
    *  attributed to — and audited per — the plugin that installed it. */
   pluginName?: string;
@@ -2723,22 +2723,22 @@ export interface HookConfigFile {
 }
 
 /**
- * Options for {@link HookManager.registerConfigEntries} — parity with Claude Code's
+ * Options for {@link HookManager.registerConfigEntries} — parity with the reference's
  * registerFrontmatterHooks `isAgent` + `sourceName` parameters.
  */
 export interface FrontmatterHookOptions {
   /** When true the entries came from a SUBAGENT's own frontmatter: a `stop` hook is
    *  remapped to `subagentStop`, because a completing subagent fires SubagentStop (not
-   *  Stop), mirroring Claude Code's `isAgent` conversion. Skills leave `stop` as-is. */
+   *  Stop), mirroring the reference's `isAgent` conversion. Skills leave `stop` as-is. */
   isAgent?: boolean;
   /** Human-readable origin (e.g. `agent 'reviewer'` / `skill 'deploy'`) used only in
    *  the debug/introspection log attributing the registered hooks + the Stop→SubagentStop
-   *  conversion to their source (Claude Code's registerFrontmatterHooks `sourceName`). */
+   *  conversion to their source (the reference's registerFrontmatterHooks `sourceName`). */
   sourceName?: string;
 }
 
 /**
- * A single file-loaded hook, retained for introspection (Claude Code's per-hook
+ * A single file-loaded hook, retained for introspection (the reference's per-hook
  * ViewHookMode details): reveals the ACTUAL configured command / prompt / url —
  * not just an aggregate count — so `/hooks` and `--introspect` can show what each
  * hook runs, its matcher, and which settings tier contributed it.
@@ -2752,16 +2752,16 @@ export interface HookDescriptor {
   source: string;
   /** The hook's command, prompt, or URL (sanitized of secret-looking tokens). */
   content: string;
-  /** Plugin bundle name when the hook came from a plugin (Claude Code's per-hook
+  /** Plugin bundle name when the hook came from a plugin (the reference's per-hook
    *  plugin attribution). Absent for filesystem/config hooks. */
   pluginName?: string;
-  /** The hook author's friendly status label (Claude Code `statusMessage`), when
+  /** The hook author's friendly status label (the reference `statusMessage`), when
    *  set — surfaced in progress/audit views instead of the raw command. */
   statusMessage?: string;
 }
 
 /**
- * Per-hook-type display label for the hook's primary content field — Claude Code's
+ * Per-hook-type display label for the hook's primary content field — the reference's
  * ViewHookMode label resolution: command→'Command', http→'URL', and BOTH prompt
  * and agent hooks reuse the 'Prompt' label (an agent hook is a prompt-driven
  * verification agent). Pure; used by {@link HookManager.getHookAuditView}.
@@ -2776,7 +2776,7 @@ export function hookContentLabel(type: HookConfigType): string {
 }
 
 /**
- * Human-readable text to show WHILE a hook runs / in an audit row (Claude Code's
+ * Human-readable text to show WHILE a hook runs / in an audit row (the reference's
  * getHookDisplayText): the author-supplied `statusMessage` when present, else the
  * hook's own content (command/prompt/url). Never leaks a secret the content
  * sanitizer already stripped. Pure; used by {@link HookManager.getHookAuditView}.
@@ -2789,7 +2789,7 @@ export function getHookDisplayText(d: { statusMessage?: string; content: string 
 /**
  * Payload for the `hookProgress` / `hookResolved` events a {@link HookManager}
  * emits around every config-registered command/prompt/http/agent hook run
- * (Claude Code's hook_progress affordance). `hookProgress` fires when the hook
+ * (the reference's hook_progress affordance). `hookProgress` fires when the hook
  * starts; `hookResolved` adds `success` when it settles. A frontend subscribes
  * to render a live "Running <event> hook…" indicator so a long-running hook does
  * not look like a hang; it is also an operator-facing introspection signal.
@@ -2803,10 +2803,10 @@ export interface HookProgressEvent {
   label: string;
   /** Present only on `hookResolved`: whether the hook ran successfully. */
   success?: boolean;
-  /** Stable per-hook id (Claude Code `hookId`) correlating this hook's
+  /** Stable per-hook id (the reference `hookId`) correlating this hook's
    *  `hookProgress` and `hookResolved` emissions. From {@link computeHookId}. */
   hookId?: string;
-  /** Human-facing hook name (Claude Code `hookName`) — the display label. */
+  /** Human-facing hook name (the reference `hookName`) — the display label. */
   hookName?: string;
   /** Present only on `hookResolved`: the 3-way terminal classification
    *  (success | error | cancelled), from {@link classifyHookOutcome}. */
@@ -2814,7 +2814,7 @@ export interface HookProgressEvent {
 }
 
 /**
- * Canonical per-source-tier label set (Claude Code's three
+ * Canonical per-source-tier label set (the reference's three
  * `hookSource*DisplayString` helpers in hooksSettings.ts), so the three UI forms —
  * a full description WITH the backing file path, a Title-Case section HEADER, and a
  * terse INLINE badge — can never drift from one another. One table; every form reads
@@ -2830,13 +2830,13 @@ const HOOK_SOURCE_LABELS: Record<string, { display: string; description: string;
 };
 
 /** Append `(pluginName)` to a base label for a plugin-contributed hook so the user
- *  sees WHICH plugin installed it (Claude Code's per-hook plugin attribution). */
+ *  sees WHICH plugin installed it (the reference's per-hook plugin attribution). */
 function withPluginSuffix(base: string, pluginName?: string): string {
   return pluginName ? `${base} (${pluginName})` : base;
 }
 
 /**
- * Human-readable provenance string for a hook's source tier, with Claude Code's
+ * Human-readable provenance string for a hook's source tier, with the reference's
  * plugin special-case: a plugin-contributed hook appends `(pluginName)` so the
  * user sees WHICH plugin installed it (SelectHookMode /
  * hookSourceDescriptionDisplayString). Pure; used by
@@ -2847,7 +2847,7 @@ export function hookSourceDisplayString(source: string, pluginName?: string): st
 }
 
 /**
- * Full source description INCLUDING the backing file path (Claude Code's
+ * Full source description INCLUDING the backing file path (the reference's
  * `hookSourceDescriptionDisplayString`): e.g. `Project settings (.ami/settings.json)`,
  * with `(pluginName)` appended for plugin hooks. For a detail/inspector view that
  * tells the user exactly which file a hook came from. Pure; used by
@@ -2858,7 +2858,7 @@ export function hookSourceDescription(source: string, pluginName?: string): stri
 }
 
 /**
- * Title-Case section HEADER for grouping hooks by source (Claude Code's
+ * Title-Case section HEADER for grouping hooks by source (the reference's
  * `hookSourceHeaderDisplayString`): e.g. `Project Settings`, `Plugin Hooks`. For a
  * grouped list header. The plugin name is appended when present so distinct plugins
  * get distinct headers. Pure; used by {@link HookManager.getHookAuditView}.
@@ -2868,7 +2868,7 @@ export function hookSourceHeader(source: string, pluginName?: string): string {
 }
 
 /**
- * Terse INLINE badge for a hook source (Claude Code's
+ * Terse INLINE badge for a hook source (the reference's
  * `hookSourceInlineDisplayString`): a single word — `Project`, `User`, `Config`,
  * `Managed`, `Plugin` — for a compact inline column. The plugin name is NOT appended
  * (the badge stays short). Pure; used by {@link HookManager.getHookAuditView}.
@@ -2877,7 +2877,7 @@ export function hookSourceInline(source: string): string {
   return HOOK_SOURCE_LABELS[source]?.inline ?? source;
 }
 
-/** A single hook's full audit row (Claude Code's ViewHookMode): identity, matcher,
+/** A single hook's full audit row (the reference's ViewHookMode): identity, matcher,
  *  typed content with its display label, plugin attribution, and the human-readable
  *  source + display text. */
 export interface HookAuditRow {
@@ -2914,14 +2914,14 @@ export interface HookEventMatcherGroup {
   /** Distinct settings tiers contributing hooks under this matcher. */
   sources: string[];
   /** Distinct plugin bundle names that contributed a hook under this matcher
-   *  (Claude Code's per-matcher `pluginHook`/`pluginName` attribution in
+   *  (the reference's per-matcher `pluginHook`/`pluginName` attribution in
    *  groupHooksByEventAndMatcher). Present only when a plugin owns at least one
    *  hook in the group, so the `/hooks` view can show WHICH plugin bound a matcher,
    *  not just that a `plugin` tier is involved. */
   pluginNames?: string[];
 }
 
-/** Per-active-event introspection record (Claude Code's SelectEventMode row):
+/** Per-active-event introspection record (the reference's SelectEventMode row):
  *  count + human-readable summary/description + matcher metadata + the matcher
  *  groups (sorted by source priority). */
 export interface HookEventDescription {
@@ -2950,7 +2950,7 @@ function describeHookContent(
 
 /** Derive the Stop-hook run-summary display descriptor (command / promptText) from
  *  a hook config, so a Stop hook can be attributed to its backing config in the
- *  per-hook summary (Claude Code's StopHookInfo.command / promptText). Command and
+ *  per-hook summary (the reference's StopHookInfo.command / promptText). Command and
  *  HTTP hooks surface a `command` identifier (the shell command / URL); prompt and
  *  agent hooks surface `promptText`. Content is sanitized of secret-looking tokens
  *  (reusing {@link describeHookContent}) before it is retained for display. */
@@ -2967,20 +2967,20 @@ function stopHookDisplayFromConfig(
 }
 
 /**
- * Translate Claude Code's map-keyed hooks.json into AMI's flat entry array:
+ * Translate the reference's map-keyed hooks.json into AMI's flat entry array:
  *   { "PreToolUse": [{ matcher?, hooks: [{ type, command, ... }] }] }
  * →  [{ event: 'preToolUse', matcher?, hook: { type, command, ... } }, ...]
  * Capitalized event names (PreToolUse) are lower-camel-cased (preToolUse).
  * Unknown shapes are skipped defensively.
  */
-/** Map Claude Code's capitalized tool names to AMI tool names so a matcher like
+/** Map the reference's capitalized tool names to AMI tool names so a matcher like
  *  'Bash' or 'Edit|Write' actually gates the AMI tools at execution time. Shares
  *  the single canonical alias map with the permission-rule parser (no duplicate). */
 const CLAUDE_TO_AMI_TOOL: Record<string, string> = PERMISSION_TOOL_ALIASES;
 
 /** Hook-matcher-only tool-name aliases layered OVER the shared permission alias
- *  map. The plan-exit tool is named `ExitPlanMode`/`ExitPlanModeV2` in Claude Code
- *  but `plan_mode` in AMI, so a Claude-Code-format hook matcher of `ExitPlanMode`
+ *  map. The plan-exit tool is named `ExitPlanMode`/`ExitPlanModeV2` in the reference
+ *  but `plan_mode` in AMI, so a reference-format hook matcher of `ExitPlanMode`
  *  must gate AMI's plan-mode tool. Kept hook-local (not in PERMISSION_TOOL_ALIASES)
  *  because the permission layer does not expose a plan-exit tool name. */
 const HOOK_MATCHER_EXTRA_ALIASES: Record<string, string> = {
@@ -3021,7 +3021,7 @@ export function normalizeMapKeyedHooks(map: unknown): HookConfigEntry[] {
 
 /**
  * Parse a skill/agent frontmatter `hooks` value into AMI's flat {@link HookConfigEntry}
- * array (parity with Claude Code's per-skill/per-agent frontmatter `hooks` field,
+ * array (parity with the reference's per-skill/per-agent frontmatter `hooks` field,
  * registered scoped to the invocation/agent lifecycle by registerFrontmatterHooks).
  *
  * Accepts the authoring shapes used across AMI, reusing the single canonical
@@ -3034,8 +3034,8 @@ export function normalizeMapKeyedHooks(map: unknown): HookConfigEntry[] {
  *   - AMI's flat array form — `[{ event, hook: {type,...}, matcher? }]` — each entry is
  *     kept only when it has a string `event` and an object `hook`; the matcher's
  *     tool-name tokens are translated via {@link translateHookMatcher} so a
- *     Claude-Code-style `Edit|Write` matcher gates the AMI tools.
- *   - Claude Code's map-keyed form — `{ PreToolUse: [{ matcher?, hooks: [...] }] }` —
+ *     the reference-style `Edit|Write` matcher gates the AMI tools.
+ *   - the reference's map-keyed form — `{ PreToolUse: [{ matcher?, hooks: [...] }] }` —
  *     delegated verbatim to {@link normalizeMapKeyedHooks}.
  * Any other value (absent/number/boolean) yields `[]` so a malformed `hooks:` block
  * can never crash the loader or register a garbage hook.
@@ -3077,7 +3077,7 @@ export function parseFrontmatterHooks(value: unknown): HookConfigEntry[] {
  * object does NOT carry an `async` key, returning that parsed object — or
  * `undefined` when no such line exists.
  *
- * Parity with Claude Code's `checkForAsyncHookResponses` stdout line-scan
+ * Parity with the reference's `checkForAsyncHookResponses` stdout line-scan
  * (utils/hooks/AsyncHookRegistry.ts L183-212): a command hook may interleave
  * ordinary log/diagnostic lines with its single JSON decision line, so a
  * whole-blob `JSON.parse(stdout)` fails even though a valid decision IS present
@@ -3101,7 +3101,7 @@ export function firstHookJsonLine(stdout: string): Record<string, unknown> | und
     }
     if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
     // Skip the background-mode marker ({ async: true, asyncTimeout }); it is the
-    // detach opt-in, NOT the synchronous decision Claude's line-scan looks for.
+    // detach opt-in, NOT the synchronous decision the reference's line-scan looks for.
     if ('async' in (parsed as Record<string, unknown>)) continue;
     return parsed as Record<string, unknown>;
   }
@@ -3111,7 +3111,7 @@ export function firstHookJsonLine(stdout: string): Record<string, unknown> | und
 export type EngineFactory = (config: any) => { submit(prompt: string): AsyncIterable<{ type: string; text?: string; error?: string; toolName?: string; input?: Record<string, unknown>; exitReason?: string }>; shutdown?(): void };
 
 // ---------------------------------------------------------------------------
-// Hook-driven prompt-elicitation protocol (Claude Code parity:
+// Hook-driven prompt-elicitation protocol (the reference parity:
 // types/hooks.ts promptRequestSchema / PromptResponse + utils/hooks.ts
 // stdout line-scan → stdin answer). A command hook can pause and ask the user
 // to pick from a labelled list of options by emitting a `PromptRequest` JSON
@@ -3121,7 +3121,7 @@ export type EngineFactory = (config: any) => { submit(prompt: string): AsyncIter
 // `{async:true}` async-output discriminator) and carries the request id.
 // ---------------------------------------------------------------------------
 
-/** One selectable option offered by a hook prompt (Claude Code's
+/** One selectable option offered by a hook prompt (the reference's
  *  `{key,label,description?}`). `key` is returned to the hook; `label` is shown
  *  to the user; `description` is an optional secondary line. */
 export interface PromptRequestOption {
@@ -3130,7 +3130,7 @@ export interface PromptRequestOption {
   description?: string;
 }
 
-/** A hook's request for the user to choose one of `options` (Claude Code's
+/** A hook's request for the user to choose one of `options` (the reference's
  *  `PromptRequest`). `prompt` is the correlation id echoed back in the
  *  `PromptResponse.prompt_response`. */
 export interface PromptRequest {
@@ -3139,7 +3139,7 @@ export interface PromptRequest {
   options: PromptRequestOption[];
 }
 
-/** The engine's answer to a {@link PromptRequest} (Claude Code's
+/** The engine's answer to a {@link PromptRequest} (the reference's
  *  `PromptResponse`): the chosen option `key` plus the originating request id. */
 export interface PromptResponse {
   prompt_response: string;
@@ -3149,11 +3149,11 @@ export interface PromptResponse {
 /** Interactive prompt resolver: given a hook's {@link PromptRequest}, resolve to
  *  the user's chosen option key. Rejecting (or throwing) signals the user
  *  cancelled — the engine then closes the hook's stdin so it does not hang
- *  (Claude Code's `requestPrompt` contract + `app:interrupt` abort). */
+ *  (the reference's `requestPrompt` contract + `app:interrupt` abort). */
 export type PromptRequestHandler = (request: PromptRequest) => Promise<string>;
 
 /**
- * Validate an arbitrary parsed value as a {@link PromptRequest} (Claude Code's
+ * Validate an arbitrary parsed value as a {@link PromptRequest} (the reference's
  * `promptRequestSchema.safeParse`). Returns the typed request on success, or
  * `undefined` when the shape does not match — so an async-output line
  * (`{async:true}`), a plain log line, or a decision JSON is never mistaken for a
@@ -3177,7 +3177,7 @@ export function validatePromptRequest(value: unknown): PromptRequest | undefined
 }
 
 /**
- * Parse a single stdout line as a {@link PromptRequest} (Claude Code's
+ * Parse a single stdout line as a {@link PromptRequest} (the reference's
  * per-line scan). Blank lines, non-JSON lines, and JSON that is not a valid
  * prompt request all return `undefined` — only a well-formed request line is
  * recognized, leaving ordinary hook output untouched.
@@ -3190,27 +3190,27 @@ export function parsePromptRequestLine(line: string): PromptRequest | undefined 
   return validatePromptRequest(parsed);
 }
 
-/** Whether `selected` is one of the keys the request actually offered (Claude
+/** Whether `selected` is one of the keys the request actually offered (the reference
  *  Code answers with a key drawn from `options`). Guards against a resolver
  *  returning a key the hook never presented. */
 export function isValidPromptSelection(request: PromptRequest, selected: string): boolean {
   return request.options.some(o => o.key === selected);
 }
 
-/** Build the {@link PromptResponse} for a resolved request (Claude Code's
+/** Build the {@link PromptResponse} for a resolved request (the reference's
  *  `{prompt_response: request.prompt, selected}`). */
 export function buildPromptResponse(request: PromptRequest, selected: string): PromptResponse {
   return { prompt_response: request.prompt, selected };
 }
 
 /** Serialize a {@link PromptResponse} for writing to the hook's stdin — JSON
- *  plus the trailing newline the line-oriented hook reads (Claude Code writes
+ *  plus the trailing newline the line-oriented hook reads (the reference writes
  *  `jsonStringify(response) + '\n'`). */
 export function serializePromptResponse(response: PromptResponse): string {
   return JSON.stringify(response) + '\n';
 }
 
-/** A streaming scanner over a hook's stdout (Claude Code's line-buffer +
+/** A streaming scanner over a hook's stdout (the reference's line-buffer +
  *  `processedPromptLines` set). Returned by {@link createPromptLineScanner}. */
 export interface PromptLineScanner {
   /** Feed a raw stdout chunk; complete lines are scanned for prompt requests. */
@@ -3224,12 +3224,12 @@ export interface PromptLineScanner {
 }
 
 /**
- * Create a streaming prompt-request scanner (Claude Code's stdout line-scan).
+ * Create a streaming prompt-request scanner (the reference's stdout line-scan).
  * Each complete line (split on `\n`; the trailing partial line is buffered until
  * completed) is tested with {@link parsePromptRequestLine}; a match is recorded
  * in `processedLines` and handed to `onRequest` synchronously, in the order the
  * hook asked. The caller serializes any async side effects (resolving +
- * answering) so responses are written back in request order (Claude's
+ * answering) so responses are written back in request order (the reference's
  * `promptChain`).
  */
 export function createPromptLineScanner(onRequest: (req: PromptRequest, rawLine: string) => void): PromptLineScanner {
@@ -3269,13 +3269,13 @@ async function runCommandHookAsync(
   args?: string[],
   signal?: AbortSignal,
   shell?: string,
-  // Interactive prompt-elicitation resolver (Claude Code's `requestPrompt`).
+  // Interactive prompt-elicitation resolver (the reference's `requestPrompt`).
   // When provided, stdout is scanned line-by-line for `PromptRequest` JSON; each
   // request is resolved to a key, a `PromptResponse` is written back to the
   // hook's stdin, and the request lines are stripped from the captured stdout.
   // Its presence also keeps stdin open for the response round-trip.
   requestPrompt?: PromptRequestHandler,
-  // Live-output sink (Claude Code's getHookDisplayText progress source): updated
+  // Live-output sink (the reference's getHookDisplayText progress source): updated
   // with the current accumulated stdout/stderr on every chunk so a caller polling
   // it (startHookProgressInterval) can stream the hook's output while it runs.
   liveOutput?: { stdout: string; stderr: string },
@@ -3290,13 +3290,13 @@ async function runCommandHookAsync(
       : resolveHookShell(command, shell);            // shell form — per-hook interpreter
     const proc = spawn(spawnDesc.file, spawnDesc.args, { cwd: safeCwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
 
-    // Capture stdout and stderr SEPARATELY (Claude Code contract): a command hook's
+    // Capture stdout and stderr SEPARATELY (the reference contract): a command hook's
     // decision JSON is read from stdout, while the human-facing reason comes from
     // stderr. `output` keeps the combined stream for back-compat logging.
     let stdout = '';
     let stderr = '';
     // Bound in-memory capture so a hook that floods a stream cannot OOM the agent
-    // (Claude Code TaskOutput pipe-mode memory boundary). Head-preserving: the
+    // (the reference TaskOutput pipe-mode memory boundary). Head-preserving: the
     // decision JSON parsed from the head of stdout always survives; the overflow
     // tail is dropped and a one-time notice is appended at close.
     let stdoutTruncated = false;
@@ -3306,7 +3306,7 @@ async function runCommandHookAsync(
     // each to a key, and writes a PromptResponse back to the hook's stdin. A
     // resolver rejection (user cancelled) closes stdin so the hook does not hang.
     // Serialize prompt handling so responses are written back in request order
-    // (Claude Code's `promptChain`).
+    // (the reference's `promptChain`).
     let promptChain: Promise<void> = Promise.resolve();
     const scanner = requestPrompt
       ? createPromptLineScanner((req) => {
@@ -3340,7 +3340,7 @@ async function runCommandHookAsync(
     });
 
     // When a prompt resolver is active, stdin MUST stay open so PromptResponse
-    // lines can be written back (Claude Code parity: `requestPrompt` keeps stdin
+    // lines can be written back (the reference parity: `requestPrompt` keeps stdin
     // open). Otherwise close stdin once the input payload is written so a hook
     // that reads-to-EOF does not block.
     if (stdinData) {
@@ -3360,7 +3360,7 @@ async function runCommandHookAsync(
     // server, or spawned a `docker`/`curl` grandchild would otherwise leak those
     // descendants after the hook is declared timed-out. killTree enumerates the
     // child's process tree (+ a process-group sweep) and SIGKILLs every member
-    // (Claude Code's treeKill parity).
+    // (the reference's treeKill parity).
     const timer = setTimeout(() => {
       killTree(proc);
       reject(new Error(`Hook timed out after ${timeout}ms`));
@@ -3401,7 +3401,7 @@ async function runCommandHookAsync(
  * `once:true` self-removal gate (see `runHookByType`); the optional `exitCode` /
  * `stdout` / `stderr` are captured by the command path so an async hook's
  * structured completion record (`hook_response` EngineEvent) reports the exit code
- * and SEPARATELY-captured streams rather than one merged blob. Parity: Claude
+ * and SEPARATELY-captured streams rather than one merged blob. Parity: the reference
  * Code's hook outcome passed to `finalizeHook`/`emitHookResponse`.
  */
 export interface HookOutcome {
@@ -3416,7 +3416,7 @@ export class HookManager extends EventEmitter {
   /** Re-entrancy depth of engine-backed (prompt/agent) hooks currently running on
    *  this manager. Non-zero means a hook sub-engine is live; {@link
    *  executeUserPromptSubmit} short-circuits so the sub-engine's own submit cannot
-   *  re-fire UserPromptSubmit hooks and recurse (Claude Code's execPromptHook
+   *  re-fire UserPromptSubmit hooks and recurse (the reference's execPromptHook
    *  bypasses processUserInput for the same reason). */
   private _engineHookDepth = 0;
   private _providerConfig: any = null;
@@ -3425,7 +3425,7 @@ export class HookManager extends EventEmitter {
    *  prepends the returned messages before the hook's user message so the LLM judges
    *  the condition against the ACTUAL conversation — e.g. a prompt hook that must
    *  block only "if the user did not already agree earlier" needs to see the prior
-   *  turns, not just the single event payload. Parity: Claude Code's execPromptHook
+   *  turns, not just the single event payload. Parity: the reference's execPromptHook
    *  optional `messages[]` → `messagesToQuery = [...messages, userMessage]`
    *  (execPromptHook.ts:L28,L44-48). AGENT hooks are deliberately excluded: they
    *  read the transcript FILE via a scoped Read grant instead (execAgentHook), so
@@ -3437,7 +3437,7 @@ export class HookManager extends EventEmitter {
   private _workspaceTrusted = false;
   private _interactive = false;
   private _httpHookPolicy: HttpHookPolicy = {};
-  // Interactive prompt-elicitation resolver (Claude Code's `requestPrompt`).
+  // Interactive prompt-elicitation resolver (the reference's `requestPrompt`).
   // When set (interactive frontend), command hooks may ask the user to pick from
   // a labelled option list mid-run. Unset in non-interactive/detached mode so a
   // hook's PromptRequest is simply left unanswered (parity: no resolver → no
@@ -3460,7 +3460,7 @@ export class HookManager extends EventEmitter {
    *  hooks, keyed by the callback. Drives matcher-gated dispatch in
    *  {@link executeCallbacks} and grouped teardown by skill root / session. */
   private _callbackMeta = new WeakMap<HookCallback, RuntimeHookMeta>();
-  /** Function hooks indexed by id (Claude Code's removeFunctionHook id lookup):
+  /** Function hooks indexed by id (the reference's removeFunctionHook id lookup):
    *  the firing event + the wrapper callback registered under it, so a function
    *  hook can be removed by the id {@link addFunctionHook} returned. */
   private _functionHooks = new Map<string, { event: string; callback: HookCallback }>();
@@ -3475,7 +3475,7 @@ export class HookManager extends EventEmitter {
   private _hookProvenance = new WeakMap<Function, { source: string; pluginName?: string; pluginRoot?: string }>();
   /** Per-Stop-hook display descriptor (command / promptText), keyed by the registered
    *  Stop-hook fn, so {@link executeStop} can attribute each per-hook timing/error row
-   *  in the run summary to its backing config (Claude Code's StopHookInfo.command /
+   *  in the run summary to its backing config (the reference's StopHookInfo.command /
    *  promptText). A WeakMap so a removed/cleared Stop hook's entry is GC'd with the fn. */
   private _stopHookDisplay = new WeakMap<StopHookFn, StopHookDisplay>();
   private _denyRulesHold = false;
@@ -3506,7 +3506,7 @@ export class HookManager extends EventEmitter {
   /** Fingerprint of the plugin-affecting settings the last plugin-hook reload ran
    *  against (sources + the managed/trust/kill-switch policy that gate them). Lets
    *  {@link reloadPluginHooksIfChanged} skip a redundant clear+re-register when
-   *  nothing that affects plugin hooks actually changed (Claude Code's
+   *  nothing that affects plugin hooks actually changed (the reference's
    *  getPluginAffectingSettingsSnapshot + "skipping reload, plugin-affecting
    *  settings unchanged" debug log). `undefined` until the first gated reload. */
   private _pluginSettingsSnapshot?: string;
@@ -3523,7 +3523,7 @@ export class HookManager extends EventEmitter {
   private _lastStopHookSummary: StopHookSummary | null = null;
 
   /** Bounded FIFO of hook-lifecycle events produced while no
-   *  {@link registerHookEventHandler} subscriber is attached (Claude Code's
+   *  {@link registerHookEventHandler} subscriber is attached (the reference's
    *  `pendingEvents` ring). Drained in order on register so an early event is
    *  replayed, capped at {@link MAX_PENDING_HOOK_EVENTS} (oldest dropped). */
   private _pendingHookEvents: HookLifecycleEvent[] = [];
@@ -3531,10 +3531,10 @@ export class HookManager extends EventEmitter {
   private _hookEventHandler: ((e: HookLifecycleEvent) => void) | null = null;
 
   /** Whether lifecycle events for ALL hook events are published, vs only the
-   *  {@link ALWAYS_EMITTED_HOOK_EVENTS} allowlist (Claude Code's SDK
+   *  {@link ALWAYS_EMITTED_HOOK_EVENTS} allowlist (the reference's SDK
    *  `includeHookEvents` / remote-mode toggle). AMI defaults this ON — its richer
-   *  all-events observability is an intentional superset of Claude's default-off
-   *  gate; {@link setAllHookEventsEnabled}(false) opts DOWN to Claude's quiet
+   *  all-events observability is an intentional superset of the reference's default-off
+   *  gate; {@link setAllHookEventsEnabled}(false) opts DOWN to the reference's quiet
    *  allowlist-only behaviour for low-noise consumers. */
   private _allHookEventsEnabled = true;
 
@@ -3547,7 +3547,7 @@ export class HookManager extends EventEmitter {
     super();
     // Feed the replayable hook-lifecycle buffer from the live EventEmitter
     // channel so progress/resolved events emitted before a subscriber attaches
-    // are not lost (Claude Code's hookEvents.ts pending-buffer guarantee).
+    // are not lost (the reference's hookEvents.ts pending-buffer guarantee).
     this.on('hookProgress', (p: HookProgressEvent) =>
       this.publishHookLifecycle({ phase: 'progress', event: p.event, hookType: p.hookType, label: p.label, hookId: p.hookId, hookName: p.hookName }));
     this.on('hookResolved', (p: HookProgressEvent & { success?: boolean }) =>
@@ -3557,10 +3557,10 @@ export class HookManager extends EventEmitter {
   /**
    * Publish a hook-lifecycle event to the attached subscriber, or buffer it in a
    * bounded FIFO (dropping the oldest past {@link MAX_PENDING_HOOK_EVENTS}) when
-   * none is attached. Parity with Claude Code's hookEvents.ts `emit`.
+   * none is attached. Parity with the reference's hookEvents.ts `emit`.
    */
   private publishHookLifecycle(e: HookLifecycleEvent): void {
-    // Honour the all-events gate (Claude Code's hookEvents.ts `shouldEmit`): when a
+    // Honour the all-events gate (the reference's hookEvents.ts `shouldEmit`): when a
     // consumer has quieted the channel via setAllHookEventsEnabled(false), only the
     // ALWAYS_EMITTED_HOOK_EVENTS allowlist (sessionStart/setup) still flows.
     if (!shouldEmitHookLifecycle(e.event, this._allHookEventsEnabled)) return;
@@ -3573,7 +3573,7 @@ export class HookManager extends EventEmitter {
    * Attach (or, with `null`, detach) a hook-lifecycle subscriber. On attach, any
    * events buffered while no subscriber was present are replayed IN ORDER and the
    * buffer is drained — guaranteeing a late subscriber still sees early events
-   * (Claude Code's registerHookEventHandler). Returns a detach closure.
+   * (the reference's registerHookEventHandler). Returns a detach closure.
    */
   registerHookEventHandler(handler: ((e: HookLifecycleEvent) => void) | null): () => void {
     this._hookEventHandler = handler;
@@ -3589,9 +3589,9 @@ export class HookManager extends EventEmitter {
 
   /**
    * Toggle whether lifecycle events for ALL hook events are published, or only the
-   * {@link ALWAYS_EMITTED_HOOK_EVENTS} allowlist (Claude Code's `setAllHookEventsEnabled`
+   * {@link ALWAYS_EMITTED_HOOK_EVENTS} allowlist (the reference's `setAllHookEventsEnabled`
    * driven by the SDK `includeHookEvents` option / remote mode). Passing `false`
-   * quiets the channel down to Claude's low-noise default (sessionStart/setup only);
+   * quiets the channel down to the reference's low-noise default (sessionStart/setup only);
    * `true` (AMI's default) restores full all-events observability. Takes effect for
    * subsequent lifecycle emissions; already-buffered events are unaffected.
    */
@@ -3618,7 +3618,7 @@ export class HookManager extends EventEmitter {
 
   /** Whether this is an interactive (TUI) session. Drives the workspace-trust
    *  gate: in interactive mode untrusted workspaces skip ALL hooks; in
-   *  non-interactive/SDK mode trust is implicit (matches Claude Code). */
+   *  non-interactive/SDK mode trust is implicit (matches the reference). */
   setInteractive(interactive: boolean): void { this._interactive = interactive; }
   isInteractive(): boolean { return this._interactive; }
 
@@ -3634,7 +3634,7 @@ export class HookManager extends EventEmitter {
   getHookEnginePermissionMode(): string { return this._hookEnginePermissionMode; }
 
   /** When true (org policy), ONLY admin/managed-settings hooks execute — project,
-   *  user, and plugin hooks are not loaded (Claude Code's allowManagedHooksOnly). */
+   *  user, and plugin hooks are not loaded (the reference's allowManagedHooksOnly). */
   private _allowManagedHooksOnly = false;
   setAllowManagedHooksOnly(on: boolean): void { this._allowManagedHooksOnly = on; }
   isAllowManagedHooksOnly(): boolean { return this._allowManagedHooksOnly; }
@@ -3644,7 +3644,7 @@ export class HookManager extends EventEmitter {
    * settings file so {@link isRestrictedToPluginOnly} can decide whether the
    * `hooks` surface is locked to plugin/managed-only sources. Managed-sourced by
    * construction (this is the admin policy file). Never throws: a missing or
-   * malformed file degrades to `undefined` (nothing locked). Parity: Claude's
+   * malformed file degrades to `undefined` (nothing locked). Parity: the reference's
    * `getSettingsForSource('policySettings')?.strictPluginOnlyCustomization`.
    */
   private readManagedPluginOnlyPolicy(managedPath: string): unknown {
@@ -3664,7 +3664,7 @@ export class HookManager extends EventEmitter {
    * Read fresh from disk each call so frontmatter/bundle hook registration (which
    * can happen any time a skill/agent is invoked, after startup) observes the live
    * policy. Degrades to `false` (unlocked) when no managed path is set or the file
-   * is absent/malformed. Parity: Claude's `isRestrictedToPluginOnly('hooks', …)`
+   * is absent/malformed. Parity: the reference's `isRestrictedToPluginOnly('hooks', …)`
    * computed from `policySettings.strictPluginOnlyCustomization`.
    */
   private isHooksSurfaceRestricted(): boolean {
@@ -3673,12 +3673,12 @@ export class HookManager extends EventEmitter {
     return isRestrictedToPluginOnly('hooks', this.readManagedPluginOnlyPolicy(managedPath));
   }
 
-  /** Managed-policy kill-switch (Claude Code's disableAllHooks). When set via a
+  /** Managed-policy kill-switch (the reference's disableAllHooks). When set via a
    *  managed source it skips ALL hooks, including managed ones. */
   private _disableAllHooks = false;
 
   /**
-   * Set the disableAllHooks kill-switch with Claude Code's managed > non-managed
+   * Set the disableAllHooks kill-switch with the reference's managed > non-managed
    * precedence: a MANAGED `disableAllHooks` disables ALL hooks (including
    * managed); a NON-managed `disableAllHooks` can only disable non-managed hooks
    * (i.e. it collapses to allowManagedHooksOnly — managed hooks still run) and can
@@ -3707,11 +3707,11 @@ export class HookManager extends EventEmitter {
     const hooks = this._callbackHooks.get(event) || [];
     hooks.push(callback);
     this._callbackHooks.set(event, hooks);
-    // Per-callback timeout (Claude Code addFunctionHook `timeout`): bound a
+    // Per-callback timeout (the reference addFunctionHook `timeout`): bound a
     // slow/stuck in-process callback so it cannot stall the turn.
     if (timeoutMs !== undefined) this._callbackTimeouts.set(callback, timeoutMs);
     // Scoping metadata (matcher/skillRoot/sessionId/id) for matcher-gated dispatch
-    // and grouped teardown (Claude Code's SessionHookMatcher).
+    // and grouped teardown (the reference's SessionHookMatcher).
     if (meta) this._callbackMeta.set(callback, meta);
     return () => this.unregisterCallback(event, callback);
   }
@@ -3731,7 +3731,7 @@ export class HookManager extends EventEmitter {
   /**
    * Register a runtime ('function') hook: an in-memory callback that inspects the
    * conversation messages and returns `true` (pass) / `false` (block). Parity with
-   * Claude Code's addFunctionHook — defaults the timeout to 5000ms, auto-generates
+   * the reference's addFunctionHook — defaults the timeout to 5000ms, auto-generates
    * an id when none is given, and RETURNS the id so the hook can later be removed
    * via {@link removeFunctionHook}. When a `false` verdict blocks the event the
    * `errorMessage` is surfaced as the block reason. Re-registering an explicit id
@@ -3744,7 +3744,7 @@ export class HookManager extends EventEmitter {
     errorMessage: string,
     options?: { timeout?: number; id?: string; matcher?: string; skillRoot?: string; sessionId?: string; statusMessage?: string; internal?: boolean },
   ): string {
-    // Build the canonical FunctionHook record (Claude Code's sessionHooks.ts
+    // Build the canonical FunctionHook record (the reference's sessionHooks.ts
     // shape) so its id/timeout defaults and schema fields live in one place.
     const spec: FunctionHook = {
       type: 'function',
@@ -3774,7 +3774,7 @@ export class HookManager extends EventEmitter {
   }
 
   /** Remove a function hook by the id {@link addFunctionHook} returned. Returns
-   *  true when a hook was removed (Claude Code's removeFunctionHook). */
+   *  true when a hook was removed (the reference's removeFunctionHook). */
   removeFunctionHook(id: string): boolean {
     const entry = this._functionHooks.get(id);
     if (!entry) return false;
@@ -3784,7 +3784,7 @@ export class HookManager extends EventEmitter {
   }
 
   /**
-   * Register a session/agent-scoped runtime hook (Claude Code's addSessionHook via
+   * Register a session/agent-scoped runtime hook (the reference's addSessionHook via
    * registerFrontmatterHooks). The hook is tagged with `sessionId` so it can be
    * torn down as a group by {@link clearSessionHooks} when that session/agent ends.
    * With `isAgent:true` a `stop` hook is remapped to `subagentStop` (a subagent
@@ -3806,13 +3806,13 @@ export class HookManager extends EventEmitter {
     });
   }
 
-  /** Tear down every runtime callback scoped to a session/agent id (Claude Code's
+  /** Tear down every runtime callback scoped to a session/agent id (the reference's
    *  clearSessionHooks, called on sessionEnd/subagentStop). Returns the count removed. */
   clearSessionHooks(sessionId: string): number {
     return this.removeRuntimeHooksWhere(meta => meta.sessionId === sessionId);
   }
 
-  /** Tear down every runtime callback registered by a given skill root (Claude
+  /** Tear down every runtime callback registered by a given skill root (the reference
    *  Code's skill-scoped teardown on stance deactivation). Returns the count removed. */
   removeBySkillRoot(skillRoot: string): number {
     return this.removeRuntimeHooksWhere(meta => meta.skillRoot === skillRoot);
@@ -3834,11 +3834,11 @@ export class HookManager extends EventEmitter {
    * Execute all registered callback hooks for the given event.
    * Returns the first non-void HookDecisionOutput if any callback returns one.
    * When `matchValue` is supplied, a callback registered with a non-empty `matcher`
-   * fires ONLY if the matcher applies to it (Claude Code's SessionHookMatcher
+   * fires ONLY if the matcher applies to it (the reference's SessionHookMatcher
    * gating; an empty/absent matcher is the `''` wildcard that always fires).
    *
    * An optional `signal` (the turn/abort signal) is threaded into each callback
-   * for cooperative cancellation (Claude Code's `HookCallback` `abort` arg): a
+   * for cooperative cancellation (the reference's `HookCallback` `abort` arg): a
    * callback can observe it to bail early, the caller stops awaiting a hung
    * callback the instant it aborts ({@link raceAbort}), and once aborted the
    * remaining callbacks are skipped rather than run against a cancelled turn.
@@ -3858,7 +3858,7 @@ export class HookManager extends EventEmitter {
       for (const cb of hooks) {
         // Stop consulting callbacks once the turn is aborted (user interrupt):
         // a cancelled event runs no further in-process hooks (parity with
-        // Claude's abort-aware runHooks loop; the Pre/PostToolUse arm-hook paths
+        // the reference's abort-aware runHooks loop; the Pre/PostToolUse arm-hook paths
         // already short-circuit on abort the same way).
         if (signal?.aborted) break;
         try {
@@ -3892,7 +3892,7 @@ export class HookManager extends EventEmitter {
   private _asyncAbort = new AbortController();
 
   /** Live view of every in-flight async hook (introspection surface): the event
-   *  it fired for and how long it has been running. Claude Code tracks pending
+   *  it fired for and how long it has been running. the reference tracks pending
    *  background hooks with elapsed time so a stall is visible; this exposes the
    *  same (the richer companion to {@link getPendingAsyncCount}). */
   getPendingAsyncHooks(): Array<{ event: string; elapsedMs: number }> {
@@ -3946,7 +3946,7 @@ export class HookManager extends EventEmitter {
       .then((output) => {
         if (outcome.success && onSuccess) onSuccess();
         // Deliver the COMPLETED background hook's result back into the turn once
-        // (Claude Code's checkForAsyncHookResponses). Without this a backgrounded
+        // (the reference's checkForAsyncHookResponses). Without this a backgrounded
         // hook that exits 0 with additionalContext / systemMessage / plain stdout
         // is silently dropped — the fire-and-forget path moved on without reading
         // its output. Gated on the hook's explicit `asyncRewake` opt-in, matching
@@ -3970,7 +3970,7 @@ export class HookManager extends EventEmitter {
         // user/introspection surface sees a clean success too. An aborted signal
         // means the hook was cancelled (shutdown) or hit its async-timeout budget;
         // otherwise `outcome.success` discriminates success vs error. Parity:
-        // Claude Code's finalizeHook/emitHookResponse (AsyncHookRegistry.ts).
+        // the reference's finalizeHook/emitHookResponse (AsyncHookRegistry.ts).
         const resolvedOutcome: HookLifecycleOutcome = classifyHookOutcome(outcome.success, ac.signal.aborted);
         this.emit('hookResponse', {
           event,
@@ -3987,7 +3987,7 @@ export class HookManager extends EventEmitter {
   /**
    * Canonical per-event hook runner for config-registered hooks. Runs the hook
    * (sync or fire-and-forget async) and handles `once:true` self-removal with
-   * Claude Code's onHookSuccess semantics: the one-shot hook is spliced out ONLY
+   * the reference's onHookSuccess semantics: the one-shot hook is spliced out ONLY
    * after a SUCCESSFUL execution (not when it errored, timed out, or was blocked
    * by an error), for BOTH the sync and async paths. Returns the flattened result
    * string; for an async hook it returns `''` (no blocking result is awaited),
@@ -4001,7 +4001,7 @@ export class HookManager extends EventEmitter {
     arr: T[],
     fn: T,
     event: string,
-    // Force an `async:true` hook to run SYNCHRONOUSLY for this invocation (Claude
+    // Force an `async:true` hook to run SYNCHRONOUSLY for this invocation (the reference
     // Code's forceSyncExecution). Threaded only by the sessionStart/setup arms from
     // SessionContext.forceSyncExecution; every other caller leaves it false so the
     // hook's own `async` flag governs as before.
@@ -4011,13 +4011,13 @@ export class HookManager extends EventEmitter {
     // so two hooks on the same event export into distinct, deterministic fragments.
     const idx = arr.indexOf(fn);
     const envFileHint = idx >= 0 ? { event, index: idx } : undefined;
-    // Running-hook progress affordance (Claude Code's hook_progress /
+    // Running-hook progress affordance (the reference's hook_progress /
     // getHookDisplayText): announce a command/prompt/http/agent hook is about to
     // run and, when it settles, that it resolved — so a frontend can render a
     // "Running <event> hook…" indicator instead of a silent multi-second hang.
     const progress = this.hookProgressPayload(config, event, idx);
     this.emit('hookProgress', progress);
-    // forceSync (Claude Code's forceSyncExecution) overrides the hook's `async`
+    // forceSync (the reference's forceSyncExecution) overrides the hook's `async`
     // opt-in: a sessionStart/setup hook that would normally be fire-and-forget is
     // awaited inline so its initialUserMessage / additionalContexts are captured
     // before the caller continues (a backgrounded result would arrive too late).
@@ -4031,12 +4031,12 @@ export class HookManager extends EventEmitter {
       return '';
     }
     const outcome = { success: true };
-    // Live progress streaming (Claude Code's emitHookProgress driven by
+    // Live progress streaming (the reference's emitHookProgress driven by
     // startHookProgressInterval): poll the hook's accumulating output while it
     // runs and publish each changed snapshot on the lifecycle channel, so a long
     // hook shows partial output instead of only a start + end. `live` is mutated
     // in place — by runCommandHookAsync for a command hook, and by the engine
-    // sub-stream for a prompt/agent hook (Claude Code's execPromptHook /
+    // sub-stream for a prompt/agent hook (the reference's execPromptHook /
     // execAgentHook live `setResponseLength` affordance while the model streams).
     // HTTP hooks are a single request/response with no incremental output, so
     // they keep the start+end-only lifecycle.
@@ -4061,7 +4061,7 @@ export class HookManager extends EventEmitter {
    *  (statusMessage when set, else the hook's sanitized content — the same
    *  getHookDisplayText the audit view uses, so progress + audit stay in sync),
    *  and the stable per-hook id/name ({@link computeHookId}) that correlates this
-   *  hook's progress/streaming/resolved emissions (Claude Code hookId/hookName). */
+   *  hook's progress/streaming/resolved emissions (the reference hookId/hookName). */
   private hookProgressPayload(
     config: CommandHookConfig | PromptHookConfig | HttpHookConfig | AgentHookConfig,
     event: string,
@@ -4153,10 +4153,10 @@ export class HookManager extends EventEmitter {
       // `<event>-hook-<index>.sh` fragment (e.g. `export FOO=bar`,
       // `source .venv/bin/activate`) into this dir and it is folded into the
       // script prepended to subsequent bash commands, so hook-exported env
-      // persists across stateless tool calls (Claude Code CLAUDE_ENV_FILE parity).
+      // persists across stateless tool calls (the reference CLAUDE_ENV_FILE parity).
       SUPERINFERENCE_SESSION_ENV_DIR: sessionEnvDirPath(this._sessionId),
     };
-    // Per-hook env-file path (Claude Code's hookIndex-derived CLAUDE_ENV_FILE):
+    // Per-hook env-file path (the reference's hookIndex-derived CLAUDE_ENV_FILE):
     // an env-ingestible lifecycle hook (setup/sessionStart/cwdChanged/fileChanged)
     // gets the EXACT deterministic fragment path to append `export KEY=VAL` to,
     // so it does not have to reconstruct the `<event>-hook-<index>.sh` naming
@@ -4180,7 +4180,7 @@ export class HookManager extends EventEmitter {
    * Resolve the current session's transcript (journal) file path so a verification
    * AGENT hook can be told where to read the prior conversation, and be granted a
    * scoped Read rule for exactly that file. Returns undefined when no session is
-   * active (nothing to read) or the path cannot be resolved. Parity: Claude Code's
+   * active (nothing to read) or the path cannot be resolved. Parity: the reference's
    * getTranscriptPath/getAgentTranscriptPath threaded into execAgentHook.
    */
   private resolveHookTranscriptPath(): string | undefined {
@@ -4197,7 +4197,7 @@ export class HookManager extends EventEmitter {
   /**
    * Surface a hook EXECUTION failure (throw / hard-timeout / transport error /
    * non-2xx) as a visible `hookError` event so a crashed or misconfigured hook is
-   * never silent on the fail-OPEN path — Claude Code always yields a
+   * never silent on the fail-OPEN path — the reference always yields a
    * `hook_error_during_execution` attachment with the formatted error + hook name.
    * This is distinct from a hook's DENY *decision* (a successful run that chose to
    * block, already surfaced to the model). The engine forwards it to the operator.
@@ -4207,7 +4207,7 @@ export class HookManager extends EventEmitter {
   }
 
   /**
-   * Plugin provenance for a hook's rewake payload (Claude Code's per-hook
+   * Plugin provenance for a hook's rewake payload (the reference's per-hook
    * `pluginName`/`pluginId`): the installing plugin's name + stable id, derived
    * from the plugin root loadFromFile stamped onto the config. Empty object for a
    * filesystem/config hook (no plugin), so spreading it adds nothing. Lets the
@@ -4227,7 +4227,7 @@ export class HookManager extends EventEmitter {
   private postSamplingHooks: HookFn[] = [];
   private stopHooks: StopHookFn[] = [];
   /** Re-entrancy guard: a Stop hook (or its blocking-error re-entry) must not
-   *  recursively trigger Stop hooks again (Claude Code's stopHookActive). */
+   *  recursively trigger Stop hooks again (the reference's stopHookActive). */
   private _stopHookActive = false;
   private errorHooks: HookFn[] = [];
   private preToolUseHooks: PreToolUseHookFn[] = [];
@@ -4272,7 +4272,7 @@ export class HookManager extends EventEmitter {
     this._descriptors = [];
     // Reset the parse-error set too, so a fixed file clears its prior error.
     this._configErrors = [];
-    // Folder-trust grant (parity: Claude Code's checkHasTrustDialogAccepted): consult
+    // Folder-trust grant (parity: the reference's checkHasTrustDialogAccepted): consult
     // the persisted `hasTrustDialogAccepted` project-config knob so a user who recorded
     // trust for this workspace actually gets project-tier hooks (and, interactively, all
     // hooks) loaded instead of silently skipped. Only PROMOTES trust — an explicitly-set
@@ -4281,7 +4281,7 @@ export class HookManager extends EventEmitter {
       this._workspaceTrusted = true;
     }
     // Defense-in-depth: in an interactive session an untrusted workspace fires
-    // NO hooks of any tier (Claude Code's shouldSkipHookDueToTrust). Project
+    // NO hooks of any tier (the reference's shouldSkipHookDueToTrust). Project
     // entries are also gated below, but this blocks user/config-tier hooks too.
     if (shouldSkipHookDueToTrust(this._workspaceTrusted, this._interactive)) {
       coreLog('hooks', 'Skipping ALL hooks: workspace not trusted (interactive)');
@@ -4289,7 +4289,7 @@ export class HookManager extends EventEmitter {
     }
     // Kill-switch: a managed `disableAllHooks` policy OR the CLAUDE_CODE_SIMPLE
     // (AMI_SIMPLE / AMI_DISABLE_HOOKS) env switch skips EVERY hook, including
-    // managed ones (Claude Code's shouldDisableAllHooksIncludingManaged).
+    // managed ones (the reference's shouldDisableAllHooksIncludingManaged).
     if (this.isAllHooksDisabled()) {
       coreLog('hooks', "Skipping ALL hooks: 'disableAllHooks' policy / CLAUDE_CODE_SIMPLE env is set");
       return;
@@ -4311,7 +4311,7 @@ export class HookManager extends EventEmitter {
       // Per-directory LOCAL override tier: `.ami/settings.local.json` is the
       // developer's untracked, machine-local settings file (gitignored by
       // convention). It is read AFTER the shared project `.ami/hooks.json` so a
-      // local entry layers on top with higher precedence — matching Claude Code's
+      // local entry layers on top with higher precedence — matching the reference's
       // `settings.local.json` `local` tier (addDirPluginSettings / settings-guard).
       { path: path.join(cwd, '.ami', 'settings.local.json'), source: 'project', kind: 'project' },
       { path: userHooksPath, source: 'user', kind: 'user' },
@@ -4320,7 +4320,7 @@ export class HookManager extends EventEmitter {
       // map-keyed `hooks` field is handled by normalizeMapKeyedHooks below, and
       // project-scoped entries are gated by workspace trust. (R2-M8)
       { path: path.join(cwd, '.claude', 'settings.json'), source: 'project', kind: 'project' },
-      // Claude Code's per-directory local override: `.claude/settings.local.json`
+      // the reference's per-directory local override: `.claude/settings.local.json`
       // is read right after `.claude/settings.json` (local-after-project), so a
       // developer's untracked local settings take precedence over the shared,
       // committed project settings — the three-layer user < project < local
@@ -4344,7 +4344,7 @@ export class HookManager extends EventEmitter {
     // Managed per-surface lock: `strictPluginOnlyCustomization` (admin/managed-only
     // policy) can confine the `hooks` surface to plugin- and managed-provided sources
     // only, dropping user/project filesystem hooks (.ami/.claude). Composes with
-    // allowManagedHooksOnly (which is stricter — managed only). Parity: Claude Code's
+    // allowManagedHooksOnly (which is stricter — managed only). Parity: the reference's
     // strictPluginOnlyCustomization. The policy lives in the managed settings file.
     if (this.isHooksSurfaceRestricted()) {
       effectiveSources = effectiveSources.filter(s => s.kind === 'managed' || s.kind === 'plugin');
@@ -4366,7 +4366,7 @@ export class HookManager extends EventEmitter {
       }
       try {
         const config: HookConfigFile = JSON.parse(stripBom(raw));
-        // Accept both AMI's array form and Claude Code's map-keyed form
+        // Accept both AMI's array form and the reference's map-keyed form
         // ({ "PreToolUse": [{ matcher, hooks: [...] }] }).
         const entries = Array.isArray(config.hooks)
           ? config.hooks
@@ -4383,11 +4383,11 @@ export class HookManager extends EventEmitter {
           if (pluginRoot) entry.pluginRoot = pluginRoot;
           // Carry the plugin bundle's base directory onto a command hook so its
           // `${CLAUDE_PLUGIN_ROOT}` placeholders / CLAUDE_PLUGIN_ROOT env resolve to
-          // the bundle root at execution time (Claude Code plugin-hook substitution).
+          // the bundle root at execution time (the reference plugin-hook substitution).
           if (pluginRoot && entry.hook && entry.hook.type === 'command') entry.hook.pluginRoot = pluginRoot;
           // Carry plugin provenance (root + name) onto EVERY hook config type so a
           // backgrounded (asyncRewake) hook's completion/wake payload is attributable
-          // to the plugin that installed it (Claude Code per-hook `pluginId`). The
+          // to the plugin that installed it (the reference per-hook `pluginId`). The
           // runner only sees the config, so the attribution must live on it.
           if (entry.hook) {
             if (pluginRoot) entry.hook.pluginRoot = pluginRoot;
@@ -4442,7 +4442,7 @@ export class HookManager extends EventEmitter {
    * can be attributed to, and later pruned by, its plugin (gh-36995). Shared by
    * {@link loadFromFile} and {@link reloadPluginHooks} so the discovery rule has one
    * home. Never throws: a failed discovery (optional subsystem) logs a categorized
-   * remediation hint and yields no plugin sources. Parity: Claude Code's
+   * remediation hint and yields no plugin sources. Parity: the reference's
    * loadPluginHooks plugin enumeration.
    */
   private discoverPluginHookSources(
@@ -4470,7 +4470,7 @@ export class HookManager extends EventEmitter {
       // Plugin discovery failed (optional subsystem) — don't crash the load, but
       // surface a CATEGORIZED remediation hint (network / permissions / config)
       // instead of swallowing it silently, so the user can tell WHY plugin hooks
-      // did not load and HOW to fix it. Mirrors Claude Code's sessionStart
+      // did not load and HOW to fix it. Mirrors the reference's sessionStart
       // plugin-hook-load guidance.
       const { category, guidance } = categorizeLoadFailure(err);
       coreLog('hooks', `Failed to load plugin hooks (${category}): ${err instanceof Error ? err.message : String(err)}. ${guidance}`);
@@ -4551,7 +4551,7 @@ export class HookManager extends EventEmitter {
 
   /**
    * Remove every config-registered PLUGIN hook (atomic clear — the first half of
-   * Claude Code's clear-then-register swap in loadPluginHooks). A hook qualifies when
+   * the reference's clear-then-register swap in loadPluginHooks). A hook qualifies when
    * its captured provenance carries a `pluginName`/`pluginRoot`; filesystem
    * (project/user/config) and runtime/frontmatter hooks are untouched. Returns the
    * number of hooks removed. Safe to call repeatedly (idempotent: a second call
@@ -4603,13 +4603,13 @@ export class HookManager extends EventEmitter {
   }
 
   /**
-   * Force a fresh mid-session re-read of the on-disk hook configuration (Claude
+   * Force a fresh mid-session re-read of the on-disk hook configuration (the reference
    * Code's updateHooksConfigSnapshot): clear every file/config/plugin-sourced hook
    * (via {@link clearConfigHooks}) then re-run {@link loadFromFile}, so an external
    * edit to `.ami/hooks.json` / `settings.json` made AFTER startup is picked up
    * without restarting the process. Runtime/engine-registered hooks are preserved.
    *
-   * Unlike Claude Code, AMI's hook loader reads each source straight from disk with
+   * Unlike the reference, AMI's hook loader reads each source straight from disk with
    * `fs.readFileSync` on every load and keeps no settings cache, so this re-read
    * inherently reflects the current file contents and cannot be defeated by a file
    * watcher's stability-threshold debounce — the stale-cache race the upstream
@@ -4638,7 +4638,7 @@ export class HookManager extends EventEmitter {
    * `enabledRoots`. Additions are deliberately NOT performed here — a newly enabled
    * plugin's hooks are picked up by the explicit {@link reloadPluginHooks}/`/reload-
    * plugins` pass — so a disable/uninstall takes effect at once while a trust-
-   * sensitive add stays gated behind an explicit reload (Claude Code's prune-only
+   * sensitive add stays gated behind an explicit reload (the reference's prune-only
    * invalidation). A plugin hook with no recorded root is left in place (it cannot be
    * attributed to a root, so pruning it would be unsound). Returns the count removed.
    */
@@ -4661,7 +4661,7 @@ export class HookManager extends EventEmitter {
   }
 
   /**
-   * Atomic clear-then-register swap for plugin hooks (Claude Code's loadPluginHooks
+   * Atomic clear-then-register swap for plugin hooks (the reference's loadPluginHooks
    * re-registration after a plugin management operation): remove ALL currently-
    * registered plugin hooks, then re-discover and re-register the hooks of every
    * still-enabled plugin bundle. Idempotent — re-running with no plugin changes
@@ -4708,7 +4708,7 @@ export class HookManager extends EventEmitter {
    * hooks load: the discovered plugin hook sources (which plugins contribute hooks,
    * each tagged by source tier + plugin name + path) and the policy knobs that gate
    * them ({@link isAllowManagedHooksOnly}, {@link isAllHooksDisabled}, workspace
-   * trust). Mirrors Claude Code's `getPluginAffectingSettingsSnapshot` — a stable
+   * trust). Mirrors the reference's `getPluginAffectingSettingsSnapshot` — a stable
    * multi-field snapshot whose purpose is to decide whether a settings change
    * actually touches plugin hooks before paying for a clear+re-register. The
    * top-level keys AND the `sources` list are sorted so the string is
@@ -4738,7 +4738,7 @@ export class HookManager extends EventEmitter {
 
   /**
    * Reload plugin hooks ONLY when the plugin-affecting settings actually changed
-   * since the last gated reload — the automatic settings-change path (Claude Code's
+   * since the last gated reload — the automatic settings-change path (the reference's
    * loadPluginHooks subscriber). Takes the current
    * {@link getPluginAffectingSettingsSnapshot}; if it matches the stored one, logs
    * `Plugin hooks: skipping reload, plugin-affecting settings unchanged` and returns
@@ -4766,7 +4766,7 @@ export class HookManager extends EventEmitter {
    * Seed the plugin-affecting-settings baseline WITHOUT reloading, so the FIRST
    * subsequent {@link reloadPluginHooksIfChanged} compares against the real startup
    * state rather than `undefined` (which always reads as "changed" and forces a
-   * spurious clear+re-register on the first unrelated settings write). Mirrors Claude
+   * spurious clear+re-register on the first unrelated settings write). Mirrors the reference
    * Code's setupPluginHookHotReload capturing `lastPluginSettingsSnapshot` at
    * subscribe time. Idempotent and side-effect-free apart from recording the baseline;
    * returns the captured snapshot so a caller/test can assert what was primed.
@@ -4780,7 +4780,7 @@ export class HookManager extends EventEmitter {
   /**
    * Capture (or re-capture) the startup hook-config snapshot and, on a reload at
    * the SAME cwd, record any hook entries that appeared or were mutated since the
-   * baseline. Mirrors Claude Code's captureHooksConfigSnapshot /
+   * baseline. Mirrors the reference's captureHooksConfigSnapshot /
    * updateHooksConfigSnapshot, whose purpose is "to avoid hidden hook
    * modifications": a settings file edited mid-session (e.g. via a
    * prompt-injected file edit or a tool call) cannot silently slip new
@@ -4823,7 +4823,7 @@ export class HookManager extends EventEmitter {
    * for {@link getConfigErrors}/`/hooks`, and emit a `configError` event so a live
    * consumer (e.g. a file-watcher reload) can surface it. A malformed file
    * silently disables EVERY hook it would contribute, so making it visible matters
-   * (Claude Code's "silently disables ALL settings from that file" warning).
+   * (the reference's "silently disables ALL settings from that file" warning).
    */
   private recordConfigError(filePath: string, err: unknown): void {
     const base = err instanceof Error ? err.message : String(err);
@@ -4831,7 +4831,7 @@ export class HookManager extends EventEmitter {
     // retained error — surfaced via getConfigErrors()/`/hooks` and the `configError`
     // event — tells the user HOW to fix the malformed source, not just that it
     // failed. A broken hooks file silently disables every hook it would contribute,
-    // so actionable guidance matters. Mirrors Claude Code's categorized load guidance.
+    // so actionable guidance matters. Mirrors the reference's categorized load guidance.
     const { guidance } = categorizeLoadFailure(err);
     const message = `${base}. ${guidance}`;
     coreLog('hooks', `Invalid hooks config at ${filePath}: ${message}`);
@@ -4869,7 +4869,7 @@ export class HookManager extends EventEmitter {
 
   /**
    * Register a set of already-parsed {@link HookConfigEntry}s scoped to THIS engine
-   * instance (parity with Claude Code's registerFrontmatterHooks, which installs a
+   * instance (parity with the reference's registerFrontmatterHooks, which installs a
    * skill/agent's own frontmatter hooks for the duration of its invocation). The
    * forked-skill / spawned-subagent sub-engine is a fresh short-lived engine, so a
    * hook registered here lives exactly as long as that engine — the invocation-scoped
@@ -4895,7 +4895,7 @@ export class HookManager extends EventEmitter {
     }
     const sourceName = options.sourceName;
     const srcSuffix = sourceName ? ` from ${sourceName}` : '';
-    // Per-item fail-closed admin-trust gate (Claude Code's
+    // Per-item fail-closed admin-trust gate (the reference's
     // `allowed = !isRestrictedToPluginOnly(surface) || isSourceAdminTrusted(item.source)`
     // used at frontmatter/bundle registration). The filesystem settings loader runs
     // its source-level lock in loadFromFile, but frontmatter hooks arrive from a
@@ -4914,7 +4914,7 @@ export class HookManager extends EventEmitter {
         coreLog('hooks', `strictPluginOnlyCustomization: skipping untrusted frontmatter hook (${raw.event})${srcSuffix}`);
         continue;
       }
-      // isAgent remap (Claude Code registerFrontmatterHooks isAgent=true): a subagent
+      // isAgent remap (the reference registerFrontmatterHooks isAgent=true): a subagent
       // completing fires SubagentStop, NOT Stop — so an agent's frontmatter `stop` hook
       // would never run if left as-is. Convert it to `subagentStop` so the hook the
       // agent declared actually fires on that agent's completion. Skills (isAgent=false)
@@ -4971,7 +4971,7 @@ export class HookManager extends EventEmitter {
               toolInput: ctx.toolInput,
               // A one-line human summary of the pending call + the originating user
               // prompt give a guardrail hook the same context the permission UI has
-              // (Claude Code's getToolUseSummary + requestPrompt).
+              // (the reference's getToolUseSummary + requestPrompt).
               toolUseSummary: buildToolUseSummary(ctx.toolName, ctx.toolInput),
               ...(ctx.requestPrompt ? { requestPrompt: ctx.requestPrompt } : {}),
             });
@@ -4981,7 +4981,7 @@ export class HookManager extends EventEmitter {
             // interactive permission prompt rather than allowing/denying outright.
             // The sentinel carries the optional reason to show at the prompt; a
             // MODIFY-style updatedInput can also travel with it when the hook wants
-            // the user to approve a rewritten input (Claude Code hookPermissionResult
+            // the user to approve a rewritten input (the reference hookPermissionResult
             // { behavior:'ask', updatedInput, message }).
             if (result.startsWith('ASK:')) return { action: 'ask', reason: result.slice(4).trim() || undefined };
             if (result.startsWith('MODIFY:')) {
@@ -4994,7 +4994,7 @@ export class HookManager extends EventEmitter {
               } catch { /* ignore parse errors */ }
             }
             if (result.startsWith('SYSTEM:')) return { action: 'allow', additionalContext: result.slice(7).trim() };
-            // A PreToolUse hook that EXPLICITLY approves (Claude Code's
+            // A PreToolUse hook that EXPLICITLY approves (the reference's
             // `permissionDecision: 'allow'` / `decision: 'approve'`) PRE-APPROVES the
             // call: the decision-less JSON flows through runHookByType verbatim, so
             // recover it here as an allow carrying `permissionBypass` (the consumer
@@ -5022,7 +5022,7 @@ export class HookManager extends EventEmitter {
             const result = await this.runArmHook(hookConfig, cwd, eventData, ctx.abortSignal, this.postToolUseHooks, fn, 'postToolUse');
             // A PostToolUse hook may block (DENY / exit-2) or request a stop
             // (continue:false) — both surface via the DENY sentinel; feed the
-            // reason back to the model as a blocking error (Claude Code parity).
+            // reason back to the model as a blocking error (the reference parity).
             const blockingError = extractHookBlockingError(result);
             if (blockingError) return { blockingError };
             const parsed = tryParseHookJson(result);
@@ -5030,7 +5030,7 @@ export class HookManager extends EventEmitter {
               const out: PostToolUseHookResult = {};
               if (typeof parsed.additionalContext === 'string') out.additionalContext = parsed.additionalContext;
               if (typeof parsed.updatedToolOutput === 'string') out.updatedToolOutput = parsed.updatedToolOutput;
-              // Claude Code's PostToolUse hooks rewrite MCP tool output via the
+              // the reference's PostToolUse hooks rewrite MCP tool output via the
               // `updatedMCPToolOutput` key (typed `unknown`). Accept it as an alias
               // of updatedToolOutput — updatedToolOutput wins if both are present;
               // a non-string value is JSON-serialized into the string channel.
@@ -5074,7 +5074,7 @@ export class HookManager extends EventEmitter {
         }
         case 'stop': {
           const fn: StopHookFn = async (ctx) => {
-            // Claude Code parity: a Stop hook reads `stop_hook_active` (to break a
+            // the reference parity: a Stop hook reads `stop_hook_active` (to break a
             // block→retry recursion) and `last_assistant_message` (the final model
             // text) from its stdin without reading the transcript file.
             const lastText = ctx.lastAssistantMessage?.content?.trim() || undefined;
@@ -5103,23 +5103,23 @@ export class HookManager extends EventEmitter {
         case 'sessionStart': {
           const fn: SessionHookFn = async (ctx) => {
             if (!matcherAppliesToCtx('sessionStart', matcher, ctx as unknown as Record<string, unknown>)) return;
-            // `model` falls back to the session's configured model (Claude Code
+            // `model` falls back to the session's configured model (the reference
             // includes it in the SessionStart payload); `agent_type` is supplied
             // by the engine when a non-default agent is active.
             const eventData = serializeHookEvent({ event: 'sessionStart', sessionId: ctx.sessionId, source: ctx.source, model: ctx.model ?? this._providerConfig?.model, agentType: ctx.agentType });
             // Thread the session lifecycle signal so a spawned SessionStart command
-            // hook is killed when the session-start deadline/cancel fires (Claude
+            // hook is killed when the session-start deadline/cancel fires (the reference
             // Code SessionContext signal parity).
             const result = await this.runArmHook(hookConfig, cwd, eventData, ctx.signal, this.sessionStartHooks, fn, 'sessionStart', ctx.forceSyncExecution ?? false);
             const watchPaths = this.registerWatchPaths('sessionStart', result);
-            // Claude Code accumulates `additionalContexts[]` from every SessionStart
+            // the reference accumulates `additionalContexts[]` from every SessionStart
             // hook into a single hook_additional_context attachment — carry them on
             // every return branch so executeSessionStart can aggregate them.
             const additionalContexts = extractSessionAdditionalContexts(result);
             const base = additionalContexts.length > 0 ? { additionalContexts, watchPaths } : { watchPaths };
             try {
               const parsed = JSON.parse(result);
-              // Claude Code's SessionStart hook result is an ARRAY of injectable
+              // the reference's SessionStart hook result is an ARRAY of injectable
               // messages; accept `initialUserMessages: string[]` as well as the
               // single `initialUserMessage` / `systemMessage` forms.
               if (Array.isArray(parsed.initialUserMessages)) {
@@ -5145,7 +5145,7 @@ export class HookManager extends EventEmitter {
             // so a lingering child process cannot outlive teardown. When the caller
             // supplied an explicit lifecycle signal (an earlier /clear cancel), the
             // child is torn down on EITHER the caller's cancel OR the budget deadline
-            // (Claude Code SessionContext signal parity).
+            // (the reference SessionContext signal parity).
             const budgetSignal = AbortSignal.timeout(getSessionEndHookTimeoutMs());
             const endSignal = ctx.signal ? AbortSignal.any([ctx.signal, budgetSignal]) : budgetSignal;
             await this.runArmHook(hookConfig, cwd, eventData, endSignal, this.sessionEndHooks, fn, 'sessionEnd');
@@ -5180,7 +5180,7 @@ export class HookManager extends EventEmitter {
             const eventData = serializeHookEvent({ event: 'preCompact', messageCount: ctx.messageCount, trigger: ctx.trigger, customInstructions: ctx.customInstructions ?? undefined });
             // Thread the compaction's abort signal so a spawned PreCompact command
             // hook is killed the instant the user interrupts the compaction, rather
-            // than lingering until its own timeout (Claude Code CompactContext signal).
+            // than lingering until its own timeout (the reference CompactContext signal).
             const result = await this.runArmHook(hookConfig, cwd, eventData, ctx.signal, this.preCompactHooks, fn, 'preCompact');
             const parsed = tryParseHookJson(result);
             if (parsed) {
@@ -5198,7 +5198,7 @@ export class HookManager extends EventEmitter {
           const fn: PostCompactHookFn = async (ctx) => {
             if (!matcherAppliesToCtx('postCompact', matcher, ctx as unknown as Record<string, unknown>)) return;
             // Hand the PostCompact hook the compaction `trigger` and the generated
-            // `compactSummary` (Claude Code's executePostCompactHooks input) so a
+            // `compactSummary` (the reference's executePostCompactHooks input) so a
             // post-compaction automation can read/log/annotate the summary, and let
             // it surface a `userDisplayMessage` back to the user.
             const eventData = serializeHookEvent({ event: 'postCompact', messageCount: ctx.messageCount, trigger: ctx.trigger, compactSummary: ctx.compactSummary });
@@ -5216,7 +5216,7 @@ export class HookManager extends EventEmitter {
           const fn: PermissionHookFn = async (ctx) => {
             if (!matcherAppliesToCtx('permissionRequest', matcher, ctx as unknown as Record<string, unknown>)) return;
             // Surface the active posture + already-suggested rule updates to the
-            // hook (Claude's permissionMode + suggestions params), and thread the
+            // hook (the reference's permissionMode + suggestions params), and thread the
             // turn abort signal so a slow command hook is cancelled on interrupt.
             const eventData = serializeHookEvent({ event: 'permissionRequest', toolName: ctx.toolName, toolInput: ctx.toolInput, permissionMode: ctx.permissionMode, suggestions: ctx.suggestions, toolUseId: ctx.toolUseId });
             const result = await this.runArmHook(hookConfig, cwd, eventData, ctx.abortSignal, this.permissionRequestHooks, fn, 'permissionRequest');
@@ -5225,7 +5225,7 @@ export class HookManager extends EventEmitter {
             // A command hook emitting `{permissionDecision:'allow', updatedInput}`
             // is flattened by runHookByType into the generic `MODIFY:<json>`
             // sentinel; recover it as an ALLOW that rewrites the tool input
-            // (Claude's decision.updatedInput on allow). An additionalContext-only
+            // (the reference's decision.updatedInput on allow). An additionalContext-only
             // MODIFY carries no rewrite, so allow without touching the input.
             if (result.startsWith('MODIFY:')) {
               const out: PermissionHookResult = { action: 'allow' as const };
@@ -5242,7 +5242,7 @@ export class HookManager extends EventEmitter {
               const parsed: HookDecisionOutput = JSON.parse(result);
               if (parsed.permissionDecision === 'allow' || parsed.decision === 'approve') {
                 // An ALLOW may rewrite the tool input and/or carry durable
-                // permission-rule mutations the engine persists (Claude's
+                // permission-rule mutations the engine persists (the reference's
                 // decision.updatedInput / decision.updatedPermissions).
                 const out: PermissionHookResult = { action: 'allow' as const };
                 if (parsed.updatedInput && typeof parsed.updatedInput === 'object' && !Array.isArray(parsed.updatedInput)) out.updatedInput = parsed.updatedInput;
@@ -5252,13 +5252,13 @@ export class HookManager extends EventEmitter {
               }
               if (parsed.permissionDecision === 'deny' || parsed.decision === 'deny' || parsed.decision === 'block') {
                 // A DENY may set `interrupt` to abort the whole turn rather than
-                // just skipping this one tool (Claude's decision.interrupt).
+                // just skipping this one tool (the reference's decision.interrupt).
                 const out: PermissionHookResult = { action: 'deny' as const, reason: parsed.reason ?? 'Hook denied' };
                 if (parsed.interrupt === true) out.interrupt = true;
                 if (isHookDecisionClassification(parsed.decisionClassification)) out.decisionClassification = parsed.decisionClassification;
                 return out;
               }
-              // Strict rejection (Claude Code parseHookOutput): an unrecognized
+              // Strict rejection (the reference parseHookOutput): an unrecognized
               // decision/permissionDecision value is a validation error, not a
               // silent no-op. Fail CLOSED so a typo can't let a tool through.
               const invalid = unknownHookDecisionError(parsed as Record<string, unknown>);
@@ -5274,7 +5274,7 @@ export class HookManager extends EventEmitter {
             if (!matcherAppliesToCtx('permissionDenied', matcher, ctx as unknown as Record<string, unknown>)) return;
             const eventData = serializeHookEvent({ event: 'permissionDenied', toolName: ctx.toolName, toolUseId: ctx.toolUseId });
             const result = await this.runArmHook(hookConfig, cwd, eventData, undefined, this.permissionDeniedHooks, fn, 'permissionDenied');
-            // Claude Code's PermissionDenied hook may grant a RETRY on exit 0 via
+            // the reference's PermissionDenied hook may grant a RETRY on exit 0 via
             // `{"hookSpecificOutput":{"hookEventName":"PermissionDenied","retry":true}}`
             // (or a flat top-level `retry:true`). Flatten the envelope and, when the
             // hook signalled retry, return the `allow` decision that
@@ -5295,7 +5295,7 @@ export class HookManager extends EventEmitter {
             const eventData = serializeHookEvent({ event: 'userPromptSubmit', turnCount: ctx.turnCount, prompt: ctx.prompt });
             const result = await this.runArmHook(hookConfig, cwd, eventData, undefined, this.userPromptSubmitHooks, fn, 'userPromptSubmit');
             // A UserPromptSubmit hook can BLOCK the prompt (DENY / exit-2) or
-            // request a stop (continue:false) — feed the reason back (Claude parity).
+            // request a stop (continue:false) — feed the reason back (the reference parity).
             const blockingError = extractHookBlockingError(result);
             if (blockingError) return { blockingError };
             const parsed = tryParseHookJson(result);
@@ -5304,7 +5304,7 @@ export class HookManager extends EventEmitter {
               if (typeof parsed.additionalContext === 'string') out.additionalContext = parsed.additionalContext;
               if (parsed.continue === false) { out.preventContinuation = true; if (typeof parsed.stopReason === 'string') out.stopReason = parsed.stopReason; }
               // A UserPromptSubmit hook can ALSO warn the human via `systemMessage`
-              // (Claude Code's user-facing warning channel) — carried separately so
+              // (the reference's user-facing warning channel) — carried separately so
               // the engine surfaces it to the user WITHOUT injecting it into model
               // context the way `additionalContext` is.
               const sysMsgs = extractSystemMessages(result);
@@ -5376,7 +5376,7 @@ export class HookManager extends EventEmitter {
             const result = await this.runArmHook(hookConfig, cwd, eventData, undefined, this.setupHooks, fn, 'setup', ctx.forceSyncExecution ?? false);
             // Setup hooks, like SessionStart, may contribute model-facing
             // additionalContexts accumulated into one hook_additional_context
-            // attachment (Claude Code's Setup additionalContexts aggregation).
+            // attachment (the reference's Setup additionalContexts aggregation).
             const additionalContexts = extractSessionAdditionalContexts(result);
             if (additionalContexts.length > 0) return { additionalContexts };
             return undefined;
@@ -5411,7 +5411,7 @@ export class HookManager extends EventEmitter {
             const result = await this.runArmHook(hookConfig, cwd, eventData, undefined, this.worktreeCreateHooks, fn, 'worktreeCreate');
             // A command/http WorktreeCreate hook acts as a provider: the path it
             // emits (stdout or hookSpecificOutput.worktreePath) overrides the
-            // default worktree location (Claude Code parity).
+            // default worktree location (the reference parity).
             const worktreePath = extractWorktreePath(result);
             if (worktreePath) return { worktreePath };
             return undefined;
@@ -5431,7 +5431,7 @@ export class HookManager extends EventEmitter {
           const fn: CwdChangedHookFn = async (ctx) => {
             const eventData = serializeHookEvent({ event: 'cwdChanged', oldCwd: ctx.oldCwd, newCwd: ctx.newCwd });
             const result = await this.runArmHook(hookConfig, cwd, eventData, undefined, this.cwdChangedHooks, fn, 'cwdChanged');
-            // Surface any USER-facing systemMessage the hook emitted (Claude Code's
+            // Surface any USER-facing systemMessage the hook emitted (the reference's
             // fileChangedWatcher forwards each systemMessage via notifyCallback(msg,false)).
             for (const msg of extractSystemMessages(result)) this.emitHookNotify('cwdChanged', msg, false);
             const watchPaths = this.registerWatchPaths('cwdChanged', result);
@@ -5447,7 +5447,7 @@ export class HookManager extends EventEmitter {
             if (matcher && !matchesPattern(matcher, ctx.filePath)) return;
             const eventData = serializeHookEvent({ event: 'fileChanged', filePath: ctx.filePath, fileEvent: ctx.event });
             const result = await this.runArmHook(hookConfig, cwd, eventData, undefined, this.fileChangedHooks, fn, 'fileChanged');
-            // Surface any USER-facing systemMessage the hook emitted (Claude Code's
+            // Surface any USER-facing systemMessage the hook emitted (the reference's
             // fileChangedWatcher forwards each systemMessage via notifyCallback(msg,false)).
             for (const msg of extractSystemMessages(result)) this.emitHookNotify('fileChanged', msg, false);
             const watchPaths = this.registerWatchPaths('fileChanged', result);
@@ -5513,7 +5513,7 @@ export class HookManager extends EventEmitter {
 
   /** Register a Stop hook. An optional {@link StopHookDisplay} descriptor
    *  (command / promptText) identifies the hook in the end-of-chain run summary
-   *  (Claude Code's StopHookInfo attribution) — config-registered command/prompt
+   *  (the reference's StopHookInfo attribution) — config-registered command/prompt
    *  Stop hooks pass it so a slow/failing hook is named, not just numbered. */
   onStop(fn: StopHookFn, display?: StopHookDisplay): void {
     this.stopHooks.push(fn);
@@ -5563,7 +5563,7 @@ export class HookManager extends EventEmitter {
    * settings/config change to the live session uses this to decide between the cheap
    * synchronous direct-apply path (no hooks → nothing can veto) and the blocking
    * pre-apply veto path (run {@link executeConfigChange} first and skip applying the
-   * change when it returns `blockingErrors`, mirroring Claude Code's
+   * change when it returns `blockingErrors`, mirroring the reference's
    * `hasBlockingResult` gate). Keeping the no-hook path synchronous preserves the
    * in-band re-enforcement (killswitch / permission re-sync) every existing caller
    * relies on. Introspection surface for the veto wiring.
@@ -5579,7 +5579,7 @@ export class HookManager extends EventEmitter {
 
   /**
    * Register (or clear, with `undefined`) the interactive prompt-elicitation
-   * resolver (Claude Code's `requestPrompt`). An interactive frontend sets this
+   * resolver (the reference's `requestPrompt`). An interactive frontend sets this
    * so a command hook that emits a {@link PromptRequest} line pauses and asks the
    * user to pick an option; the chosen key is written back to the hook's stdin.
    */
@@ -5622,7 +5622,7 @@ export class HookManager extends EventEmitter {
    * Execute Stop hooks. A Stop hook can BLOCK turn-end (blockingError, fed back
    * into the loop as a user message) or PREVENT CONTINUATION (continue the turn
    * instead of ending). Returns the aggregated {blockingErrors, preventContinuation,
-   * stopReason} so the engine can re-enter the loop (Claude Code parity).
+   * stopReason} so the engine can re-enter the loop (the reference parity).
    * Re-entrant calls (while Stop hooks are already running) short-circuit to a
    * neutral result via the stopHookActive guard — a Stop hook cannot recursively
    * fire Stop hooks.
@@ -5632,9 +5632,9 @@ export class HookManager extends EventEmitter {
     return this.withConcurrencyGate('stop', async (): Promise<StopHookResult> => {
       this._stopHookActive = true;
       const blockingErrors: string[] = [];
-      // Per-hook timings + errors for the end-of-chain summary (Claude Code's
+      // Per-hook timings + errors for the end-of-chain summary (the reference's
       // hookInfos). Wall-clock total is measured around the whole chain because
-      // Claude prefers it over the summed per-hook time.
+      // the reference prefers it over the summed per-hook time.
       const hookInfos: StopHookInfo[] = [];
       const hookErrors: string[] = [];
       const chainStart = Date.now();
@@ -5642,7 +5642,7 @@ export class HookManager extends EventEmitter {
       let stopReason: string | undefined;
       try {
         for (let i = 0; i < this.stopHooks.length; i++) {
-          // Abort-signal awareness (Claude Code's stopHooks abort check): a user
+          // Abort-signal awareness (the reference's stopHooks abort check): a user
           // interrupt (Ctrl-C / turn abort) mid-chain stops the Stop-hook chain
           // immediately — no further hooks run — and the in-flight per-hook child
           // is torn down via the abortSignal threaded into runArmHook. The partial
@@ -5654,7 +5654,7 @@ export class HookManager extends EventEmitter {
           }
           const hookStart = Date.now();
           // Attribute this per-hook row to its backing config (command/promptText)
-          // when a display descriptor was registered (Claude Code's StopHookInfo).
+          // when a display descriptor was registered (the reference's StopHookInfo).
           const display = this._stopHookDisplay.get(this.stopHooks[i]);
           try {
             const r = await this.stopHooks[i](ctx);
@@ -5678,7 +5678,7 @@ export class HookManager extends EventEmitter {
       }
       // A prevented continuation always carries a displayable reason: fall back to
       // the canonical "Stop hook prevented continuation" wording when the hook was
-      // terse (Claude Code's hook_stopped_continuation default — stopHooks.ts:L268-280).
+      // terse (the reference's hook_stopped_continuation default — stopHooks.ts:L268-280).
       if (preventContinuation) stopReason = formatHookStoppedContinuation(stopReason);
       // Build + retain + emit the per-hook summary (operator-facing; NEVER fed to
       // the model). Only when hooks actually ran — a no-op turn gets no summary.
@@ -5691,7 +5691,7 @@ export class HookManager extends EventEmitter {
           preventContinuation,
           stopReason,
           // Output worth surfacing to the operator: a blocking error fed back into
-          // the turn, a hook that errored, or a prevented continuation (Claude Code's
+          // the turn, a hook that errored, or a prevented continuation (the reference's
           // hasOutput flag). A silent, fast, non-blocking chain has nothing to show.
           hasOutput: blockingErrors.length > 0 || hookErrors.length > 0 || preventContinuation,
         };
@@ -5730,7 +5730,7 @@ export class HookManager extends EventEmitter {
    */
   async executePostToolUse(ctx: PostToolUseContext): Promise<PostToolUseHookResult | void> {
     return this.withConcurrencyGate('postToolUse', async (): Promise<PostToolUseHookResult | void> => {
-      // Aggregate ALL contributions across every matching hook (Claude Code's
+      // Aggregate ALL contributions across every matching hook (the reference's
       // AggregatedHookResult collects additionalContexts[]/blockingErrors[]),
       // not last-wins: a later hook must not silently drop an earlier hook's
       // context or block reason. updatedToolOutput stays last-wins (a single
@@ -5773,19 +5773,19 @@ export class HookManager extends EventEmitter {
       coreLog('hooks', `SessionStart: unrecognized source '${ctx.source}' (expected ${SESSION_START_SOURCES.join('|')})`);
     }
     return this.withConcurrencyGate('sessionStart', async (): Promise<{ initialUserMessage?: string; additionalContexts?: string[]; watchPaths?: string[] } | void> => {
-      // Aggregate ALL messages from ALL SessionStart hooks (Claude Code injects
+      // Aggregate ALL messages from ALL SessionStart hooks (the reference injects
       // an array of hook messages, not just the last) — a hook may contribute one
       // (`initialUserMessage`) or many (`initialUserMessages[]`); all are joined.
       // Model-facing `additionalContexts[]` are accumulated across every hook and
       // returned as a single combined list for one hook_additional_context
-      // attachment (Claude Code's SessionStart additionalContexts aggregation).
+      // attachment (the reference's SessionStart additionalContexts aggregation).
       const messages: string[] = [];
       const additionalContexts: string[] = [];
       const watchPaths: string[] = [];
       for (const hook of this.sessionStartHooks) {
         // Cooperative cancellation: a supplied deadline/cancel signal stops the
         // in-process SessionStart chain mid-flight so a slow callback cannot block
-        // startup (Claude Code SessionContext signal parity).
+        // startup (the reference SessionContext signal parity).
         if (ctx.signal?.aborted) { coreLog('hooks', 'SessionStart hooks interrupted by abort signal'); break; }
         try {
           const result = await raceAbort(Promise.resolve(hook(ctx)), ctx.signal);
@@ -5815,14 +5815,14 @@ export class HookManager extends EventEmitter {
       // tight budget (getSessionEndHookTimeoutMs) so a slow or hanging teardown
       // hook — command OR in-process callback — cannot block process exit. On
       // budget exhaustion we LOG and return (teardown proceeds) rather than
-      // reject, matching Claude Code's "don't block shutdown" contract. Command
+      // reject, matching the reference's "don't block shutdown" contract. Command
       // hooks additionally receive an AbortSignal at the same budget (see the
       // sessionEnd registration) so their child processes are actually killed.
       const budgetMs = getSessionEndHookTimeoutMs();
       // In-process SessionEnd callbacks get a cancellation handle: the caller's
       // explicit lifecycle signal when supplied, otherwise one synthesized from the
       // teardown budget — so a slow in-process cleanup callback is abandoned on the
-      // deadline instead of blocking shutdown (Claude Code passes
+      // deadline instead of blocking shutdown (the reference passes
       // AbortSignal.timeout(sessionEndTimeoutMs) into executeSessionEndHooks).
       const lifecycleSignal = ctx.signal ?? AbortSignal.timeout(budgetMs);
       const run = (async () => {
@@ -5836,7 +5836,7 @@ export class HookManager extends EventEmitter {
             coreLog('hooks', 'Hook error', { error: message });
             // Surface the failure instead of swallowing it into the debug log:
             // the session UI is already unmounting, so a failed teardown hook would
-            // otherwise be invisible (Claude Code writes 'SessionEnd hook failed: …'
+            // otherwise be invisible (the reference writes 'SessionEnd hook failed: …'
             // to stderr — utils/hooks.ts:L4127-4134). Emitted on the same `hookError`
             // channel as command/http/agent hook failures.
             this.emit('hookError', { hookType: 'command', hook: 'SessionEnd hook', error: message });
@@ -5854,7 +5854,7 @@ export class HookManager extends EventEmitter {
   /**
    * Execute SubagentStart hooks and aggregate the additionalContexts they
    * contribute, which the Task tool prepends to the subagent's initial messages
-   * (Claude Code parity).
+   * (the reference parity).
    */
   async executeSubagentStart(ctx: SubagentContext): Promise<{ additionalContexts: string[] } | void> {
     return this.withConcurrencyGate('subagentStart', async (): Promise<{ additionalContexts: string[] } | void> => {
@@ -5873,7 +5873,7 @@ export class HookManager extends EventEmitter {
     return this.withConcurrencyGate('subagentStop', async () => {
       for (const hook of this.subagentStopHooks) {
         // Abort-signal awareness: a user interrupt stops the SubagentStop chain
-        // mid-flight (Claude Code parity) — no further hooks run.
+        // mid-flight (the reference parity) — no further hooks run.
         if (ctx.abortSignal?.aborted) {
           coreLog('hooks', 'SubagentStop hooks interrupted by abort signal');
           break;
@@ -5887,7 +5887,7 @@ export class HookManager extends EventEmitter {
    * Execute PreCompact hooks. A hook can inject/override the compaction
    * instructions (newCustomInstructions, merged into the user's via
    * mergeHookInstructions) and surface a user-facing display message
-   * (Claude Code parity). Returns the merged instructions + last display message.
+   * (the reference parity). Returns the merged instructions + last display message.
    */
   async executePreCompact(ctx: CompactContext): Promise<{ newCustomInstructions?: string; userDisplayMessage?: string } | void> {
     return this.withConcurrencyGate('preCompact', async (): Promise<{ newCustomInstructions?: string; userDisplayMessage?: string } | void> => {
@@ -5896,7 +5896,7 @@ export class HookManager extends EventEmitter {
       let userDisplayMessage: string | undefined;
       for (const hook of this.preCompactHooks) {
         // Cooperative cancellation: the user aborting the compaction stops the
-        // in-process PreCompact chain mid-flight (Claude Code CompactContext signal).
+        // in-process PreCompact chain mid-flight (the reference CompactContext signal).
         if (ctx.signal?.aborted) { coreLog('hooks', 'PreCompact hooks interrupted by abort signal'); break; }
         try {
           const r = await raceAbort(Promise.resolve(hook(ctx)), ctx.signal);
@@ -5911,7 +5911,7 @@ export class HookManager extends EventEmitter {
   /**
    * Execute PostCompact hooks with the generated compaction summary + trigger
    * (`ctx.compactSummary` / `ctx.trigger`). A hook may surface a user-facing
-   * display message; the messages from all hooks are joined (Claude Code combines
+   * display message; the messages from all hooks are joined (the reference combines
    * the PostCompact hook's `userDisplayMessage` into the result shown to the user).
    */
   async executePostCompact(ctx: CompactContext): Promise<{ userDisplayMessage?: string } | void> {
@@ -5932,7 +5932,7 @@ export class HookManager extends EventEmitter {
       for (const hook of this.permissionRequestHooks) {
         // Stop consulting hooks once the turn is aborted (user interrupt): a
         // cancelled permission request yields no decision and falls through to
-        // policy (Claude's abort-aware runHooks loop).
+        // policy (the reference's abort-aware runHooks loop).
         if (ctx.abortSignal?.aborted) break;
         try {
           const result = await raceAbort(hook(ctx), ctx.abortSignal);
@@ -5959,19 +5959,19 @@ export class HookManager extends EventEmitter {
   /**
    * Execute UserPromptSubmit hooks. A hook may inject additionalContext, or BLOCK
    * the prompt (blockingError, surfaced to the user) / prevent continuation —
-   * Claude Code parity. Returns the aggregated result.
+   * the reference parity. Returns the aggregated result.
    */
   async executeUserPromptSubmit(ctx: UserPromptContext): Promise<UserPromptSubmitHookResult | void> {
     // Recursion guard: when an engine-backed (prompt/agent) hook is running, its
     // sub-engine's submit must NOT re-fire UserPromptSubmit hooks — that would
-    // re-enter runEngineHook and recurse until resources are exhausted (Claude
+    // re-enter runEngineHook and recurse until resources are exhausted (the reference
     // Code's execPromptHook bypasses processUserInput for exactly this reason).
     if (this._engineHookDepth > 0) {
       coreLog('hooks', 'userPromptSubmit skipped: inside an engine-backed hook run (recursion guard)');
       return;
     }
     return this.withConcurrencyGate('userPromptSubmit', async (): Promise<UserPromptSubmitHookResult | void> => {
-      // Aggregate ALL contributions (Claude Code AggregatedHookResult), not
+      // Aggregate ALL contributions (the reference AggregatedHookResult), not
       // last-wins: every UserPromptSubmit hook's context + block reason is kept.
       const additionalContexts: string[] = [];
       const systemMessages: string[] = [];
@@ -5988,13 +5988,13 @@ export class HookManager extends EventEmitter {
         } catch (err) { coreLog('hooks', 'Hook error', { error: String(err) }); }
       }
       const additionalContext = additionalContexts.length ? additionalContexts.join('\n\n') : undefined;
-      // User-facing warnings are aggregated like additionalContext (Claude Code
+      // User-facing warnings are aggregated like additionalContext (the reference
       // AggregatedHookResult) but routed to the human, not the model.
       const systemMessage = systemMessages.length ? systemMessages.join('\n\n') : undefined;
       const blockingError = blockingErrors.length ? blockingErrors.join('\n') : undefined;
       if (additionalContext || systemMessage || blockingError || preventContinuation) {
         // Bound hook-contributed context so a UserPromptSubmit hook that emits a
-        // huge blob cannot blow out the context window (Claude Code's
+        // huge blob cannot blow out the context window (the reference's
         // MAX_HOOK_OUTPUT_LENGTH truncation with a marker).
         return {
           additionalContext: additionalContext !== undefined ? truncateHookOutput(additionalContext) : undefined,
@@ -6010,7 +6010,7 @@ export class HookManager extends EventEmitter {
   /**
    * Execute TaskCreated hooks. A blocking hook can VETO a just-created task; the
    * aggregated blockingErrors are returned so the task tool can roll the task back
-   * and surface the reason (Claude Code parity). If the forwarded AbortSignal is
+   * and surface the reason (the reference parity). If the forwarded AbortSignal is
    * already aborted the loop short-circuits (cancellation boundary).
    */
   async executeTaskCreated(ctx: TaskEventContext): Promise<{ blockingErrors: string[] } | void> {
@@ -6030,13 +6030,13 @@ export class HookManager extends EventEmitter {
   /**
    * Execute TaskCompleted hooks. A blocking hook can veto a status→completed
    * transition; the aggregated blockingErrors are returned so the task tool can
-   * refuse to mutate the status and surface the reason (Claude Code parity).
+   * refuse to mutate the status and surface the reason (the reference parity).
    */
   async executeTaskCompleted(ctx: TaskEventContext): Promise<{ blockingErrors: string[] } | void> {
     return this.withConcurrencyGate('taskCompleted', async (): Promise<{ blockingErrors: string[] } | void> => {
       const blockingErrors: string[] = [];
       for (const hook of this.taskCompletedHooks) {
-        // Cancellation boundary (Claude Code parity: executeTaskCompletedHooks is
+        // Cancellation boundary (the reference parity: executeTaskCompletedHooks is
         // driven by context.abortController.signal). An already-aborted turn runs
         // no further completion hooks, and a hook that blocks (e.g. spawns a
         // subprocess) is actively cancelled via raceAbort so it cannot leak past a
@@ -6054,7 +6054,7 @@ export class HookManager extends EventEmitter {
 
   /**
    * Fan an event's OBSERVATIONAL (void-returning, non-decision) hooks out
-   * CONCURRENTLY instead of running them one-after-another. Claude Code dispatches
+   * CONCURRENTLY instead of running them one-after-another. the reference dispatches
    * every matching hook for an event in parallel (`matchingHooks.map(async …)` +
    * aggregation, utils/hooks.ts L2142) so N independent command/http/prompt hooks on
    * one event overlap rather than stacking their individual latencies; AMI had been
@@ -6080,7 +6080,7 @@ export class HookManager extends EventEmitter {
 
   /**
    * Fire TeammateIdle hooks when a teammate agent finishes its run and goes idle.
-   * Observational (fire-and-forget); mirrors Claude Code's TeammateIdle event with
+   * Observational (fire-and-forget); mirrors the reference's TeammateIdle event with
    * the teammate/team identity payload (teammate_name / team_name).
    */
   async executeTeammateIdle(ctx: TeammateContext): Promise<void> {
@@ -6107,7 +6107,7 @@ export class HookManager extends EventEmitter {
     }
     return this.withConcurrencyGate('setup', async (): Promise<{ additionalContexts?: string[] } | void> => {
       // Accumulate model-facing additionalContexts across every Setup hook into a
-      // single combined list for one hook_additional_context attachment (Claude
+      // single combined list for one hook_additional_context attachment (the reference
       // Code's Setup additionalContexts aggregation).
       const additionalContexts: string[] = [];
       for (const hook of this.setupHooks) {
@@ -6123,7 +6123,7 @@ export class HookManager extends EventEmitter {
   /**
    * Execute ConfigChange hooks. A blocking hook can VETO the change before it is
    * applied; the aggregated blockingErrors are returned so the config loader can
-   * refuse to commit and surface the reason (Claude Code's hasBlockingResult).
+   * refuse to commit and surface the reason (the reference's hasBlockingResult).
    */
   async executeConfigChange(ctx: ConfigChangeContext): Promise<{ blockingErrors: string[] } | void> {
     return this.withConcurrencyGate('configChange', async (): Promise<{ blockingErrors: string[] } | void> => {
@@ -6147,7 +6147,7 @@ export class HookManager extends EventEmitter {
   /**
    * Execute WorktreeCreate hooks. A provider hook may return a `worktreePath`
    * (from stdout or hookSpecificOutput.worktreePath); the FIRST non-empty path
-   * wins and is returned so the caller uses it as the created worktree (Claude
+   * wins and is returned so the caller uses it as the created worktree (the reference
    * Code's executeWorktreeCreateHook — first successful non-empty output). A plain
    * void return across all hooks is the observe-only case.
    */
@@ -6169,7 +6169,7 @@ export class HookManager extends EventEmitter {
   }
 
   async executeCwdChanged(ctx: CwdChangedContext): Promise<void> {
-    // No-op short-circuit (Claude Code `onCwdChangedForHooks`: `if (oldCwd ===
+    // No-op short-circuit (the reference `onCwdChangedForHooks`: `if (oldCwd ===
     // newCwd) return`). When the "change" lands on the same directory the cwd did
     // not actually move, so clearing the session-env cache and firing CwdChanged
     // hooks would be wasted work with observable side effects (a spurious env
@@ -6177,7 +6177,7 @@ export class HookManager extends EventEmitter {
     if (ctx.oldCwd === ctx.newCwd) return;
     // The cwd changed: drop stale directory-scoped env fragments and invalidate
     // the persisted session-environment cache so the next bash command re-reads
-    // it (Claude Code `clearCwdEnvFiles` / `invalidateSessionEnvCache` parity).
+    // it (the reference `clearCwdEnvFiles` / `invalidateSessionEnvCache` parity).
     await clearCwdEnvFiles(this._sessionId);
     invalidateSessionEnvCache();
     return this.withConcurrencyGate('cwdChanged', async () => {
@@ -6197,7 +6197,7 @@ export class HookManager extends EventEmitter {
    * {@link emitHookNotify} notify channel (isError=true), instead of only
    * `coreLog`-ing it internally. These hooks fire from fire-and-forget fs-watch /
    * cwd-change call sites (no generator to yield from), so a misconfigured watcher
-   * hook would otherwise fail silently forever (Claude Code's fileChangedWatcher.ts
+   * hook would otherwise fail silently forever (the reference's fileChangedWatcher.ts
    * routes each failed hook's error to the notify callback — L99-L105). Operator-
    * facing (debug log + analytics via the engine's `hookError` listener); never fed
    * to the model.
@@ -6212,7 +6212,7 @@ export class HookManager extends EventEmitter {
   /**
    * Forward a FileChanged / CwdChanged watcher hook's USER-facing output on a
    * `hookNotify` channel the session renders, instead of silently dropping it.
-   * Mirrors Claude Code's fileChangedWatcher `setEnvHookNotifier((text, isError) =>
+   * Mirrors the reference's fileChangedWatcher `setEnvHookNotifier((text, isError) =>
    * …)`: a hook's `systemMessages` are surfaced with `isError=false` and a failed
    * hook's error/output with `isError=true` (fileChangedWatcher.ts L90-L105,
    * L162-L169). Watcher hooks fire from fire-and-forget call sites with no generator
@@ -6227,7 +6227,7 @@ export class HookManager extends EventEmitter {
   /**
    * Execute pre-response Elicitation hooks. The FIRST hook that returns an
    * action (programmatic response) or a blockingError short-circuits the user
-   * prompt (Claude Code parity: a hook response resolves the elicitation
+   * prompt (the reference parity: a hook response resolves the elicitation
    * directly; a blockingError declines it).
    */
   async executeElicitation(ctx: ElicitationContext): Promise<ElicitationHookResult | void> {
@@ -6312,7 +6312,7 @@ export class HookManager extends EventEmitter {
       stopFailure: this.stopFailureHooks.length,
       // User-facing runtime callback count EXCLUDES system-registered (`internal`)
       // hooks, so the `/hooks` view reflects only what the operator configured
-      // (Claude Code hides `internal:true` callbacks). The hidden built-ins are
+      // (the reference hides `internal:true` callbacks). The hidden built-ins are
       // reported separately as `internalCallbackHooks` for full introspection.
       callbackHooks: this.countCallbackHooks(false),
       internalCallbackHooks: this.countCallbackHooks(true),
@@ -6326,7 +6326,7 @@ export class HookManager extends EventEmitter {
 
   /**
    * Introspection: the ACTUAL file-loaded hooks (command/prompt/url, matcher,
-   * source), not just counts (Claude Code's per-hook ViewHookMode details). Returns
+   * source), not just counts (the reference's per-hook ViewHookMode details). Returns
    * a copy so callers cannot mutate the retained set.
    */
   describeHooks(): HookDescriptor[] {
@@ -6334,7 +6334,7 @@ export class HookManager extends EventEmitter {
   }
 
   /**
-   * Full per-hook audit view (Claude Code's ViewHookMode): for every retained
+   * Full per-hook audit view (the reference's ViewHookMode): for every retained
    * hook, its typed content with the type-specific label (command→'Command',
    * http→'URL', prompt/agent→'Prompt'), a human-readable source description with
    * plugin attribution (`Plugin (name)`), and the progress display text
@@ -6365,7 +6365,7 @@ export class HookManager extends EventEmitter {
   }
 
   /**
-   * Introspection view of active (count>0) hook events (Claude Code's
+   * Introspection view of active (count>0) hook events (the reference's
    * SelectEventMode): each event with its human-readable summary/description, the
    * matcher field + enumerated matcher values, whether it supports a matcher, and
    * its matcher groups (sorted by source priority). `opts` supplies the dynamic
@@ -6396,7 +6396,7 @@ export class HookManager extends EventEmitter {
       const pluginNamesByMatcher: Record<string, string[]> = {};
       for (const [m, arr] of matcherMap) {
         sourcesByMatcher[m] = Array.from(new Set(arr.map(a => a.source)));
-        // Per-matcher plugin attribution (Claude Code's pluginName per grouped
+        // Per-matcher plugin attribution (the reference's pluginName per grouped
         // hook): collect the distinct bundle names so the group can name WHICH
         // plugin(s) bound this matcher, not just surface a bare `plugin` tier.
         const names = Array.from(new Set(arr.map(a => a.pluginName).filter((n): n is string => typeof n === 'string' && n.length > 0)));
@@ -6525,7 +6525,7 @@ export class HookManager extends EventEmitter {
     cwd: string,
     eventData: string,
     signal?: AbortSignal,
-    // Out-param success signal (mirrors Claude Code's onHookSuccess): set to false
+    // Out-param success signal (mirrors the reference's onHookSuccess): set to false
     // when the hook ERRORS/times out/blocks-via-error so a `once:true` hook is NOT
     // consumed by a failed attempt and stays registered to retry. A clean run
     // (exit 0 / no engine error / 2xx) leaves it true even if the hook returned a
@@ -6544,7 +6544,7 @@ export class HookManager extends EventEmitter {
   ): Promise<string> {
     switch (config.type) {
       case 'command': {
-        // Claude Code hook contract: config.timeout is in SECONDS. Route through
+        // the reference hook contract: config.timeout is in SECONDS. Route through
         // resolveHookTimeoutMs so it is clamped to [100ms, MAX_HOOK_TIMEOUT_MS].
         const timeout = resolveHookTimeoutMs(config.timeout, DEFAULT_HOOK_TIMEOUT_MS);
         const hookEnv = this.buildHookEnv(
@@ -6556,10 +6556,10 @@ export class HookManager extends EventEmitter {
         // inject CLAUDE_PLUGIN_ROOT (+ AMI_PLUGIN_ROOT alias) into the child env and
         // substitute the `${CLAUDE_PLUGIN_ROOT}` placeholder in the command + args so
         // the hook can reference files co-located with its bundle regardless of the
-        // session cwd (Claude Code plugin-hook env/substitution + skillRoot parity).
+        // session cwd (the reference plugin-hook env/substitution + skillRoot parity).
         const pluginRoot = config.pluginRoot;
         // A plugin command hook also gets a PERSISTENT per-plugin data directory
-        // (Claude Code's CLAUDE_PLUGIN_DATA / getPluginDataDir): a stable scratch
+        // (the reference's CLAUDE_PLUGIN_DATA / getPluginDataDir): a stable scratch
         // dir, separate from the read-only bundle root, that survives across
         // sessions so a hook can cache state (`~/.ami/plugin-data/<id>`).
         const pluginDataDir = resolvePluginDataDir(pluginRoot);
@@ -6581,7 +6581,7 @@ export class HookManager extends EventEmitter {
         // as CLAUDE_PLUGIN_OPTION_<KEY> (+ the AMI_PLUGIN_OPTION_<KEY> alias) and
         // the `${user_config.X}` placeholders in the command + args are substituted,
         // so a hook can resolve configuration without reading the sidecar itself
-        // (Claude Code's CLAUDE_PLUGIN_OPTION_<KEY> + ${user_config.X} substitution,
+        // (the reference's CLAUDE_PLUGIN_OPTION_<KEY> + ${user_config.X} substitution,
         // utils/hooks.ts). Absent/empty for a non-plugin or unconfigured hook.
         const pluginOptions = pluginRoot ? readPluginOptionValues(pluginRoot) : undefined;
         if (pluginOptions && Object.keys(pluginOptions).length > 0) {
@@ -6594,10 +6594,10 @@ export class HookManager extends EventEmitter {
           const { exitCode, stdout, stderr } = await runCommandHookAsync(command, cwd, hookEnv, timeout, eventData, args, signal, config.shell, this._promptRequestHandler, liveOutput);
           // Capture the raw result on the shared outcome so an async hook's
           // `hook_response` completion record can report the exit code and the
-          // SEPARATELY-captured streams (parity: Claude Code's split stdout/stderr +
+          // SEPARATELY-captured streams (parity: the reference's split stdout/stderr +
           // exitCode in emitHookResponse), independent of the decision parsed below.
           if (outcome) { outcome.exitCode = exitCode; outcome.stdout = stdout; outcome.stderr = stderr; }
-          // Claude Code exit-code contract:
+          // the reference exit-code contract:
           //   0           = success — parse stdout for a decision
           //   2           = BLOCKING error — reason from stderr → DENY
           //   other != 0  = NON-blocking error — surface stderr, do NOT block the tool
@@ -6624,7 +6624,7 @@ export class HookManager extends EventEmitter {
           } catch (parseErr) {
             // Whole-blob parse failed. A command hook may interleave ordinary log
             // lines with its single JSON decision line, so scan line-by-line for
-            // the first non-async JSON object (Claude Code's
+            // the first non-async JSON object (the reference's
             // checkForAsyncHookResponses stdout line-scan) before giving up —
             // otherwise a real decision buried under log output is silently
             // dropped and the whole stdout is mistaken for opaque plain text.
@@ -6635,7 +6635,7 @@ export class HookManager extends EventEmitter {
             } else if (trimmed.startsWith('{')) {
               // The output LOOKED like a single JSON object but was malformed, and
               // no embedded JSON decision line was found — surface it as a
-              // validation error (Claude Code parseHookOutput), NOT opaque text.
+              // validation error (the reference parseHookOutput), NOT opaque text.
               return `SYSTEM:${sanitizeHookOutput(formatHookValidationError(trimmed, parseErr))}`;
             }
           }
@@ -6645,14 +6645,14 @@ export class HookManager extends EventEmitter {
             // hookEventName spoof check: a hook whose hookSpecificOutput names a
             // DIFFERENT event than the one it fired for is rejected (not acted
             // on) and surfaced as a validation error — a failed run, so a `once`
-            // hook retries (Claude Code parity).
+            // hook retries (the reference parity).
             const spoof = hookEventNameMismatch(rawParsed, firedEvent);
             if (spoof) {
               if (outcome) outcome.success = false;
               return `SYSTEM:${sanitizeHookOutput(spoof)}`;
             }
             const parsed: HookDecisionOutput = unwrapHookSpecificOutput(rawParsed);
-            // Strict shape validation (Claude Code parseHookOutput): a KNOWN
+            // Strict shape validation (the reference parseHookOutput): a KNOWN
             // decision field with a wrong-typed value is malformed output, not a
             // silent no-op. Surface it as a validation error + failed run so a
             // `once` hook retries instead of mis-acting on e.g. continue:"yes".
@@ -6674,7 +6674,7 @@ export class HookManager extends EventEmitter {
             // suppressOutput: a JSON hook result with suppressOutput:true hides
             // the plain-text success surface — return '' instead of echoing the
             // (otherwise decision-less) JSON back as a system message. Explicit
-            // decision/systemMessage results above take precedence (Claude Code).
+            // decision/systemMessage results above take precedence (the reference).
             if (parsed.suppressOutput) return '';
           }
           // No JSON decision (plain-text / DENY:/SYSTEM: prefixes, or a decision-less
@@ -6691,7 +6691,7 @@ export class HookManager extends EventEmitter {
             return `DENY:Hook execution failed (fail-closed): ${err instanceof Error ? err.message : String(err)}`;
           }
           // Fail-OPEN: the hook did not block, but a crashed/timed-out hook must
-          // not be invisible — emit a visible error notice (Claude Code's
+          // not be invisible — emit a visible error notice (the reference's
           // hook_error_during_execution) so a misconfigured hook is observable.
           this.emitHookError(config, err instanceof Error ? err.message : String(err));
           return '';
@@ -6713,7 +6713,7 @@ export class HookManager extends EventEmitter {
     // An engine error (throw / hard-timeout) is a failed run — a once hook retries.
     if (r.error && outcome) outcome.success = false;
     // Fail-OPEN: a prompt hook whose sub-engine errored/timed out returns '' —
-    // surface the error visibly so it is not silent (Claude Code parity).
+    // surface the error visibly so it is not silent (the reference parity).
     if (r.error) this.emitHookError(config, r.error);
     if (config.asyncRewake && r.error) this.emit('hookRewake', { event: 'prompt', message: `Prompt hook error: ${r.error}`, ...this.rewakeAttribution(config) });
     if (config.asyncRewake && r.output.startsWith('DENY:')) this.emit('hookRewake', { event: 'prompt', message: r.output, ...this.rewakeAttribution(config) });
@@ -6741,13 +6741,13 @@ export class HookManager extends EventEmitter {
     signal?: AbortSignal,
     // Live-output sink (progress streaming): when supplied, the accumulating model
     // text is mirrored here on each `text_delta` so {@link streamHookProgress} can
-    // publish incremental progress while the hook sub-engine runs — Claude Code's
+    // publish incremental progress while the hook sub-engine runs — the reference's
     // execPromptHook / execAgentHook live `setResponseLength` affordance. Absent
     // for callers that don't stream progress (background/async firing).
     live?: { stdout: string; stderr: string },
     // Per-run options threaded from the typed hook config. `enforceStructuredOutput`
     // re-prompts an agent hook that stopped without a verification-tool verdict
-    // (Claude Code's registerStructuredOutputEnforcement); agent-only.
+    // (the reference's registerStructuredOutputEnforcement); agent-only.
     opts?: { enforceStructuredOutput?: boolean },
   ): Promise<{ output: string; error?: string }> {
     if (!this._engineFactory) {
@@ -6774,7 +6774,7 @@ export class HookManager extends EventEmitter {
     // AGENT hooks are multi-turn stop/plan verifiers: give them a dedicated
     // verification system prompt, tell them where the conversation transcript is,
     // and scope-allow Read of exactly that transcript file so they can inspect the
-    // prior conversation without a permission prompt (Claude Code execAgentHook
+    // prior conversation without a permission prompt (the reference execAgentHook
     // parity). Prompt hooks are single-shot verdicts and get none of this.
     const agentExtras: Record<string, unknown> = {};
     if (kind === 'agent') {
@@ -6790,7 +6790,7 @@ export class HookManager extends EventEmitter {
     // LLM judges the condition IN CONTEXT (e.g. "block only if the user did not
     // already agree earlier") rather than against the self-contained event payload
     // alone. The seeded messages become the sub-engine's prior turns and the hook's
-    // composed user message is appended by submit() — exactly Claude Code's
+    // composed user message is appended by submit() — exactly the reference's
     // execPromptHook `messagesToQuery = [...messages, userMessage]`. AGENT hooks are
     // excluded on purpose: they inspect the transcript FILE via the scoped Read
     // grant above, so inlining history too would double the context. An empty/absent
@@ -6806,7 +6806,7 @@ export class HookManager extends EventEmitter {
       cwd: this._cwd,
       // Advertise the reusable verification-result tool so an AI-driven hook can
       // return a one-call structured {ok, reason} verdict instead of free prose
-      // (parity: Claude Code's createStructuredOutputTool, used by agent/prompt
+      // (parity: the reference's createStructuredOutputTool, used by agent/prompt
       // hooks and background verification). The {ok,reason} text contract below
       // stays as the fallback, so a hook that answers in prose still parses.
       tools: [createVerificationOutputTool()],
@@ -6818,7 +6818,7 @@ export class HookManager extends EventEmitter {
       abortController: abort.controller,
       disallowedTools: HOOK_AGENT_DISALLOWED_TOOLS,
       // Disable extended thinking for hook evaluation — a verification hook needs a
-      // fast structured verdict, not a reasoning trace (Claude Code's
+      // fast structured verdict, not a reasoning trace (the reference's
       // thinkingConfig:{type:'disabled'} for prompt/agent hooks).
       disableThinking: true,
       // Hard turn-count cap on agent (multi-turn) hooks so a verification agent
@@ -6829,39 +6829,39 @@ export class HookManager extends EventEmitter {
 
     // Compose the hook prompt, then prepend the {ok, reason} verification contract
     // so an AI-driven hook returns a parseable decision rather than free prose
-    // (Claude Code's hookResponseSchema). When the prompt references the hook input
+    // (the reference's hookResponseSchema). When the prompt references the hook input
     // via a placeholder ($ARGUMENTS / $ARGUMENTS[n] / $n), substitute it in place
-    // (Claude Code's addArgumentsToPrompt); otherwise append the event data under
+    // (the reference's addArgumentsToPrompt); otherwise append the event data under
     // the per-kind `dataLabel` ('Event data' / 'Context').
     const hasArgPlaceholder = /\$ARGUMENTS|\$\d/.test(promptText);
     const body = hasArgPlaceholder
       ? substituteHookArguments(promptText, eventData)
       : `${promptText}\n\n${dataLabel}:\n${eventData}`;
     const fullPrompt = `${HOOK_VERIFICATION_CONTRACT}\n\n${body}`;
-    // Introspection debug trace (Claude Code execPromptHook's logForDebugging
+    // Introspection debug trace (the reference execPromptHook's logForDebugging
     // "Processing prompt hook with prompt: …"): the exact processed prompt the
     // hook evaluates, so `--debug` / AMI_DEBUG_TO_STDERR reveals what it saw.
     coreLog('hooks', `${kind} hook processing prompt: ${body}`);
     let result = '';
-    // Structured verdict captured from a verification-tool call (parity: Claude
+    // Structured verdict captured from a verification-tool call (parity: the reference
     // Code's createStructuredOutputTool one-call verdict), preferred over the
     // free-text {ok,reason} contract when the hook used the tool.
     let toolVerdict: { ok: boolean; reason?: string } | undefined;
     let error: string | undefined;
     // Distinguish a cancelled/timed-out/errored run from a genuine completion: a
     // run that did not finish produced NO trustworthy verdict, so its partial
-    // model text must NEVER be returned as a hook decision (Claude Code's
+    // model text must NEVER be returned as a hook decision (the reference's
     // execPromptHook/execAgentHook return a 'cancelled'/non_blocking_error
     // outcome on abort/error, not the partial text).
     let errored = false;
     // Capture how the hook sub-engine terminated so a run that exhausted the
     // MAX_AGENT_TURNS cap (a multi-turn agent hook that never converged on a
     // verdict) gets a DISTINCT diagnostic — separate from a timeout/abort/error
-    // or a conforming/non-conforming reply (Claude Code's execAgentHook logs
+    // or a conforming/non-conforming reply (the reference's execAgentHook logs
     // "Agent hook did not complete within N turns" as its own outcome, so an
     // operator can tell a stop/verify hook gave up on turns vs. on the clock).
     let exitReason: string | undefined;
-    // Recursion guard (Claude Code's execPromptHook builds the user message directly
+    // Recursion guard (the reference's execPromptHook builds the user message directly
     // via createUserMessage "to avoid re-firing UserPromptSubmit hooks and cause
     // infinite recursion"): mark that an engine-backed hook is running so a sub-engine
     // sharing this HookManager cannot re-enter the UserPromptSubmit pipeline and
@@ -6877,7 +6877,7 @@ export class HookManager extends EventEmitter {
           result += event.text;
           // Mirror the accumulating model text into the live sink so the progress
           // poll surfaces partial output/length while the hook sub-engine streams
-          // (Claude Code's live setResponseLength affordance). No-op when the
+          // (the reference's live setResponseLength affordance). No-op when the
           // caller supplied no sink (background/async firing).
           if (live) live.stdout = result;
         }
@@ -6894,7 +6894,7 @@ export class HookManager extends EventEmitter {
     this._engineHookDepth++;
     try {
       await consume(engine.submit(fullPrompt));
-      // Structured-output enforcement (Claude Code's registerStructuredOutputEnforcement,
+      // Structured-output enforcement (the reference's registerStructuredOutputEnforcement,
       // hookHelpers.ts L66-L83): an agent hook that stopped WITHOUT ever calling the
       // verification tool produced no machine-readable verdict. When the hook opted in
       // via `enforceStructuredOutput`, re-prompt it ONCE with a precise nudge naming
@@ -6920,7 +6920,7 @@ export class HookManager extends EventEmitter {
     if (abort.timedOut()) coreLog('hooks', `${kind} hook hard-timeout after ${timeoutMs}ms`);
     // Turn-budget exhaustion diagnostic, distinct from a timeout: an agent hook
     // that ran out the MAX_AGENT_TURNS cap without converging on a verdict is a
-    // different operator signal than a wall-clock timeout (Claude Code's "Agent
+    // different operator signal than a wall-clock timeout (the reference's "Agent
     // hook did not complete within N turns"). Only agent (multi-turn) hooks carry
     // the cap, so this is reported for `agent` kind only, and only when the run
     // produced no structured verdict (a hook that already answered via the
@@ -6935,7 +6935,7 @@ export class HookManager extends EventEmitter {
       coreLog('hooks', msg);
       this.emit('hookError', { hookType: 'agent', hook: 'agent hook', error: msg });
     }
-    // Introspection debug trace (Claude Code's "Model response: …"): the raw
+    // Introspection debug trace (the reference's "Model response: …"): the raw
     // reply the hook produced, logged before any decision is derived from it.
     coreLog('hooks', `${kind} hook model reply: ${result}`);
     // A cancelled/timed-out/errored run yields no decision — discard the partial
@@ -6951,7 +6951,7 @@ export class HookManager extends EventEmitter {
     // back to parsing a free-text {ok,reason} object from the model's reply.
     const verification = toolVerdict ?? parseHookVerification(result);
     if (verification) {
-      // Claude Code wording parity: "<Prompt|Agent> hook condition was not met: …"
+      // the reference wording parity: "<Prompt|Agent> hook condition was not met: …"
       const label = kind === 'agent' ? 'Agent' : 'Prompt';
       coreLog('hooks', verification.ok
         ? `${kind} hook condition was met`
@@ -6962,11 +6962,11 @@ export class HookManager extends EventEmitter {
       };
     }
     // Non-conforming output (did not match the {ok,reason} schema): surface a
-    // distinct, non-blocking diagnostic (Claude Code's hook_non_blocking_error
+    // distinct, non-blocking diagnostic (the reference's hook_non_blocking_error
     // "model response does not conform to expected schema") instead of silently
     // treating free-form prose as a verdict. AMI keeps its SYSTEM:/raw-context
     // passthrough superset here — the output is still applied as context, never
-    // as a block — so the run stays non-blocking exactly as Claude Code's
+    // as a block — so the run stays non-blocking exactly as the reference's
     // non_blocking_error outcome does.
     coreLog('hooks', `${kind} hook output did not match the {ok,reason} schema — treating as non-blocking raw output`);
     return { output: sanitizeHookOutput(result), error };
@@ -6977,17 +6977,17 @@ export class HookManager extends EventEmitter {
     const https = require('https');
     // Fail-closed: an HTTP hook that times out or errors DENIES when onFailure:block.
     // Any failure path (allowlist/SSRF block, non-2xx, transport error, timeout) is
-    // NOT a successful run — a once hook stays registered to retry (Claude parity).
+    // NOT a successful run — a once hook stays registered to retry (the reference parity).
     const onFail = () => { if (outcome) outcome.success = false; return config.onFailure === 'block' ? 'DENY:HTTP hook failed (fail-closed)' : ''; };
     // Fail-closed WITH the underlying cause: a transport error / timeout surfaces
-    // its specific detail in the DENY reason and the debug log (Claude Code's
+    // its specific detail in the DENY reason and the debug log (the reference's
     // execHttpHook `logForDebugging("HTTP hook error: <msg>")` + distinct errorMsg),
     // instead of a generic "failed" with no diagnosable cause.
     const onFailWith = (detail: string) => {
       coreLog('hooks', `HTTP hook error: ${detail}`);
       if (outcome) outcome.success = false;
       // Fail-OPEN transport error/timeout would otherwise return '' silently —
-      // surface it visibly (Claude Code parity). The block path already DENYs.
+      // surface it visibly (the reference parity). The block path already DENYs.
       if (config.onFailure !== 'block') this.emitHookError(config, detail);
       return config.onFailure === 'block' ? `DENY:HTTP hook failed: ${detail}` : '';
     };
@@ -7006,7 +7006,7 @@ export class HookManager extends EventEmitter {
     );
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     for (const [k, v] of Object.entries(config.headers ?? {})) {
-      // Surface Claude Code's explanatory warning (execHttpHook.ts:L89-108) when a
+      // Surface the reference's explanatory warning (execHttpHook.ts:L89-108) when a
       // header references an env var that is NOT on the allowlist, so the user learns
       // WHY `$TOKEN` resolved to empty instead of being silently dropped.
       headers[k] = interpolateHookHeaderEnv(v, envAllow, process.env, (name) =>
@@ -7030,7 +7030,7 @@ export class HookManager extends EventEmitter {
     let resolvedIP: string;
     let url: URL;
     try {
-      // (4) Env-var proxy routing (HTTP(S)_PROXY, honoring NO_PROXY) — Claude Code's
+      // (4) Env-var proxy routing (HTTP(S)_PROXY, honoring NO_PROXY) — the reference's
       // execHttpHook routes the POST through a configured proxy and, in that case,
       // SKIPS the local SSRF/pinned-DNS guard: the proxy performs DNS for the target
       // and enforces its own egress allowlist (applying the guard would instead
@@ -7056,13 +7056,13 @@ export class HookManager extends EventEmitter {
       // (5) SSRF guard (direct connections only) — resolve + validate the hostname,
       // reusing the shared web-utils validator (blocks private/link-local/metadata
       // IPs) and pin the resolved IP to stop DNS-rebinding (TOCTOU). Loopback is
-      // allowed (local dev webhook servers), matching Claude Code's ssrfGuardedLookup.
+      // allowed (local dev webhook servers), matching the reference's ssrfGuardedLookup.
       const safety = await this._validateUrlSafety(config.url, undefined, { allowLoopback: true });
       if ('error' in safety) {
-        // User-facing, code-tagged block message (Claude Code's ssrfError): always
+        // User-facing, code-tagged block message (the reference's ssrfError): always
         // inform why the hook was refused — fail-closed DENY when onFailure:block,
         // otherwise a non-blocking SYSTEM notice so the target is never silently
-        // dropped (the affordance Claude surfaces to the user).
+        // dropped (the affordance the reference surfaces to the user).
         const msg = formatHttpHookBlockedMessage(config.url, safety.error);
         coreLog('hooks', msg);
         if (outcome) outcome.success = false;
@@ -7079,7 +7079,7 @@ export class HookManager extends EventEmitter {
       throw err;
     }
     const client = url.protocol === 'https:' ? https : http;
-    // Introspection: log the outbound request target before any I/O (Claude Code's
+    // Introspection: log the outbound request target before any I/O (the reference's
     // execHttpHook `logForDebugging("Hooks: HTTP hook POST to <url>")`).
     coreLog('hooks', `HTTP hook POST to ${config.url}`);
     // Classify a transport failure: a combined-signal abort is a timeout/cancel
@@ -7103,7 +7103,7 @@ export class HookManager extends EventEmitter {
         res.on('end', () => {
           // (4) Non-2xx is a failure — do NOT parse an error body as a decision.
           const status = res.statusCode ?? 0;
-          // Introspection: response status + body length (Claude Code's
+          // Introspection: response status + body length (the reference's
           // execHttpHook `logForDebugging("… response status <code>, body length <n>")`).
           coreLog('hooks', `HTTP hook response status ${status}, body length ${body.length}`);
           if (status < 200 || status >= 300) {
@@ -7124,7 +7124,7 @@ export class HookManager extends EventEmitter {
   }
 
   /**
-   * POST an HTTP hook through a configured env-var proxy (Claude Code's
+   * POST an HTTP hook through a configured env-var proxy (the reference's
    * execHttpHook proxy branch). The request is routed through the canonical
    * provider proxy/mTLS dispatcher wrapper ({@link withProxyDispatcher}) rather
    * than the raw http/https client — so there is ONE proxy implementation shared
@@ -7183,7 +7183,7 @@ export class HookManager extends EventEmitter {
     // An engine error (throw / hard-timeout) is a failed run — a once hook retries.
     if (r.error && outcome) outcome.success = false;
     // Fail-OPEN: surface a visible error notice when the agent hook errored so it
-    // is not silent (Claude Code parity).
+    // is not silent (the reference parity).
     if (r.error) this.emitHookError(config, r.error);
     return r.output;
   }
@@ -7192,7 +7192,7 @@ export class HookManager extends EventEmitter {
     const idx = hookArray.indexOf(hookFn);
     if (idx >= 0) {
       hookArray.splice(idx, 1);
-      // Observable one-shot lifecycle (Claude Code's
+      // Observable one-shot lifecycle (the reference's
       // "Removing one-shot hook for event <name>" debug line).
       if (event) coreLog('hooks', `Removing one-shot hook for event ${event}`);
     }
@@ -7205,7 +7205,7 @@ export class HookManager extends EventEmitter {
 
 function matchesPattern(pattern: string, value: string): boolean {
   if (!pattern || pattern === '*') return true;
-  // Claude Code semantics (matchesPattern): a matcher made only of simple token
+  // the reference semantics (matchesPattern): a matcher made only of simple token
   // chars (alphanumeric/underscore, optionally pipe-separated) is an EXACT match
   // — NOT a substring/regex — so `Edit` scopes to the `Edit` tool alone and never
   // leaks onto `EditNotebook`. Only a matcher containing regex metacharacters is
@@ -7234,7 +7234,7 @@ const TOOL_IF_RE = /^([A-Za-z_][A-Za-z0-9_]*)\(([\s\S]*)\)$/;
 
 /**
  * Evaluate a hook `if` condition. Beyond a bare tool-NAME regex, this supports
- * Claude Code's `Tool(content)` rule syntax (e.g. `Bash(git *)`,
+ * the reference's `Tool(content)` rule syntax (e.g. `Bash(git *)`,
  * `Edit(src/**)`) — it checks the tool name matches the rule's tool and then
  * glob-matches the inner content against the tool's input, so a hook can be
  * gated to e.g. only git commands or only certain paths rather than every Bash.

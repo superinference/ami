@@ -5,14 +5,14 @@ import { validateBoundedIntEnvVar } from '../config';
 import * as path from 'path';
 
 /**
- * Built-in default ceiling for a subagent/task transcript (parity: Claude Code's
+ * Built-in default ceiling for a subagent/task transcript (parity: the reference's
  * TASK_MAX_OUTPUT_DEFAULT). Applied EVEN WHEN no output budget is configured, so a
  * chatty subagent can never return an unbounded transcript into the parent context.
  */
 export const DEFAULT_TASK_MAX_CHARS = 32_000;
 
 /**
- * Enforced upper bound for the task output cap (parity: Claude Code's
+ * Enforced upper bound for the task output cap (parity: the reference's
  * TASK_MAX_OUTPUT_UPPER_LIMIT). A misconfigured or hostile override cannot push the
  * cap above this, so the "don't blow up the parent context" guard can't be disabled.
  */
@@ -20,7 +20,7 @@ export const TASK_MAX_OUTPUT_UPPER_LIMIT = 160_000;
 
 /**
  * Resolve the effective character cap for a subagent/task transcript. The cap is
- * ALWAYS finite (mirrors Claude Code's getMaxTaskOutputLength): an explicit per-run
+ * ALWAYS finite (mirrors the reference's getMaxTaskOutputLength): an explicit per-run
  * budget wins (clamped to the upper bound), else the `TASK_MAX_OUTPUT_LENGTH` env
  * knob (validated + bounded), else the built-in {@link DEFAULT_TASK_MAX_CHARS}. This
  * guarantees subagent output is bounded out of the box — no env var, no project
@@ -94,7 +94,7 @@ export interface SpillOptions {
 }
 
 /**
- * Derive a format description for a structured tool result, mirroring Claude
+ * Derive a format description for a structured tool result, mirroring the reference
  * Code's getFormatDescription. Used when spilling MCP results so the banner can
  * tell the model whether the persisted file is plain text, JSON, or a JSON
  * array — optionally with a compact schema signature for jq-friendly querying.
@@ -115,7 +115,7 @@ export function getFormatDescription(
 
 /**
  * Build the sequential-read protocol appended to a spill banner. Mirrors
- * Claude's getLargeOutputInstructions: format line, offset/limit + jq guidance,
+ * the reference's getLargeOutputInstructions: format line, offset/limit + jq guidance,
  * a 100%-read requirement, truncation-retry guidance (with the per-read cap when
  * known), and a completeness-attestation requirement. Returns '' when no
  * read-back options were provided (caller falls back to the compact banner).
@@ -203,7 +203,7 @@ export function buildSpillBanner(
  * returned verbatim (under the limit / non-finite limit) or the spill FAILED
  * (disk full, permission denied, …), in which case only the banner records it.
  *
- * Parity: Claude Code's ExecResult `{ outputFilePath, outputFileSize }` structured
+ * Parity: the reference's ExecResult `{ outputFilePath, outputFileSize }` structured
  * fields (ShellCommand.ts) set when stdout overflows inline into a file on disk.
  */
 export interface SpillResult {
@@ -220,7 +220,7 @@ export interface SpillResult {
  * beside the workspace, returning BOTH the bounded display text and structured
  * spill metadata ({@link SpillResult}). Callers that only need the text use the
  * thin {@link spillToolText} wrapper; callers that want to surface the on-disk
- * path/size in a ToolResult's `metadata` (parity: Claude's ExecResult
+ * path/size in a ToolResult's `metadata` (parity: the reference's ExecResult
  * outputFilePath/outputFileSize) use this directly.
  *
  * The spill filename is deterministic (content hash) and writes are idempotent

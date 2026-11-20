@@ -3,7 +3,7 @@
  *
  * When a string-replace edit's `old_string` is not found, dumping the first N
  * lines of the file is unhelpful for a large file whose closest match is far from
- * the top. Claude Code's `scanForContext`/`sliceContext` show a bounded window of
+ * the top. the reference's `scanForContext`/`sliceContext` show a bounded window of
  * lines AROUND the match with their TRUE 1-based line numbers (re-based via
  * `adjustHunkLineNumbers`) and a `truncated` signal when the file extends beyond
  * the window. This module provides the equivalent WINDOWED-CONTEXT view over the
@@ -13,9 +13,9 @@
  * read-avoidance (which cannot apply once full content is required for matching).
  *
  * It also provides {@link readFileCapped}: a memory-bounded, truncation-aware
- * incremental reader (parity: Claude Code's `readCapped` in readEditContext.ts).
+ * incremental reader (parity: the reference's `readCapped` in readEditContext.ts).
  * file_edit still needs the WHOLE file in memory for fuzzy matching, so the chunked
- * NEEDLE-scan read-avoidance of Claude's scanForContext does not apply here; the
+ * NEEDLE-scan read-avoidance of the reference's scanForContext does not apply here; the
  * applicable, valuable part is the BOUNDED read — reading the existing file into
  * memory in chunks with a hard byte cap, so a file that is (or GROWS past an
  * earlier stat, a TOCTOU window) beyond the cap is reported as `truncated` instead
@@ -57,7 +57,7 @@ export interface CappedRead {
  * truncated. Returns `null` on ENOENT (absent file → caller treats as "new file");
  * any other open/read error propagates. The handle is always closed.
  *
- * Parity: Claude Code's `readCapped(handle)` (returns null past MAX_SCAN_BYTES);
+ * Parity: the reference's `readCapped(handle)` (returns null past MAX_SCAN_BYTES);
  * AMI folds the open + ENOENT handling in and surfaces `truncated` explicitly
  * rather than overloading `null` for both "absent" and "too big".
  */
@@ -111,7 +111,7 @@ export interface EditContextWindow {
   omittedAfter: number;
   /**
    * True when the window is a partial view of the file (lines were omitted on
-   * either side) — the display-time analogue of Claude's scan `truncated` flag.
+   * either side) — the display-time analogue of the reference's scan `truncated` flag.
    */
   truncated: boolean;
 }
@@ -159,7 +159,7 @@ export function extractContextWindow(
 /**
  * Render an {@link EditContextWindow} as `N: <text>` numbered lines bracketed by
  * `... (K lines above/below)` omission markers, mirroring the truncation-aware
- * context block Claude shows around an edit site.
+ * context block the reference shows around an edit site.
  */
 export function renderContextWindow(window: EditContextWindow): string {
   const parts: string[] = [];

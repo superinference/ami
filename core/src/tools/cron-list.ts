@@ -57,7 +57,7 @@ export function formatJobFlags(job: CronJob): string {
   // recurring job will auto-expire (and therefore stop firing) — the custom
   // maxAgeDays when set, otherwise the MAX_AGE_DAYS default; "never-expires" when
   // maxAgeDays:0 was set without the permanent flag. Permanent jobs carry the
-  // 'permanent' flag instead, so expiry is omitted for them. Mirrors Claude's
+  // 'permanent' flag instead, so expiry is omitted for them. Mirrors the reference's
   // guidance to make the N-day auto-expiry visible (src/tools/ScheduleCronTool/prompt.ts).
   const ageFlag = job.recurring && !job.permanent
     ? [(() => {
@@ -83,7 +83,7 @@ export const cronListTool: ToolDefinition = {
     'List scheduled cron jobs (durable and session-only). A teammate sees only its own jobs; the lead sees all. ' +
     'Jobs are ordered by soonest next fire; an optional "status" filter (all|active|inactive) narrows the list.',
   // PARITY (additive): a rich tool prompt (appended to the model-facing
-  // description, like Claude's buildCronListPrompt) that names the durable
+  // description, like the reference's buildCronListPrompt) that names the durable
   // persistence path so the model can tell persisted jobs from session-only ones.
   prompt:
     'Jobs come from two stores: the durable store (scheduled_tasks.json under the ' +
@@ -92,7 +92,7 @@ export const cronListTool: ToolDefinition = {
     'local timezone.',
   // PARITY (additive): bound the serialized result so a very large job list cannot
   // blow the context window — the engine (tool-executor spill) honors this cap,
-  // mirroring Claude's `maxResultSizeChars: 100_000` on CronListTool.
+  // mirroring the reference's `maxResultSizeChars: 100_000` on CronListTool.
   maxResultSizeChars: 100_000,
   inputSchema: {
     type: 'object',

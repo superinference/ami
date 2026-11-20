@@ -1,7 +1,7 @@
 /**
  * Shared infrastructure for classifier-based permission systems (building block).
  *
- * Parity: Claude Code's `utils/permissions/classifierShared.ts`
+ * Parity: the reference's `utils/permissions/classifierShared.ts`
  * (references/claude/claude-code-main/src/utils/permissions/classifierShared.ts:L30-L39)
  * provides the common extract-tool-use + schema-validate-or-null primitives used by both
  * its LLM-driven permission classifiers:
@@ -15,7 +15,7 @@
  * LLM semantic Bash/YOLO permission classifier — lives in common/ (it needs the provider +
  * engine); this layer is a pure parser, exactly like the sibling {@link parsePermissionPromptToolResult}.
  *
- * AMI adaptation vs the reference: Claude's helper works on `BetaContentBlock` tool-use blocks
+ * AMI adaptation vs the reference: the reference's helper works on `BetaContentBlock` tool-use blocks
  * whose `input` is already a decoded object. AMI's provider abstraction surfaces tool calls as
  * {@link ToolCallContent} (`{ id, type: 'function', function: { name, arguments } }`) where
  * `arguments` is a JSON *string*. So AMI's {@link parseClassifierResponse} additionally decodes

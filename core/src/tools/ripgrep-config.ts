@@ -2,7 +2,7 @@ import { execFileSync } from 'child_process';
 
 /**
  * Centralized ripgrep binary resolution shared by the grep and glob tools, plus a
- * cached availability self-test. Mirrors Claude Code's `utils/ripgrep.ts`
+ * cached availability self-test. Mirrors the reference's `utils/ripgrep.ts`
  * (getRipgrepConfig / getRipgrepStatus / testRipgrepOnFirstUse), adapted to AMI:
  * AMI ships no bundled ripgrep, so "builtin" means an operator-configured binary
  * path (AMI_RIPGREP_PATH) and "system" means the PATH-resolved `rg`.
@@ -21,7 +21,7 @@ export interface RipgrepOverride {
   command: string;
   args?: string[];
   /** The argv[0] the child should see, independent of the spawned binary path.
-   *  Mirrors Claude Code's `sandbox.ripgrep.argv0`: a multi-call / busybox-style
+   *  Mirrors the reference's `sandbox.ripgrep.argv0`: a multi-call / busybox-style
    *  binary (one executable dispatching on argv[0]) needs argv[0]==='rg' to behave
    *  as ripgrep even when `command` is the wrapper path. Omitted → the OS default
    *  (argv[0] === the spawned path). */
@@ -42,7 +42,7 @@ export interface RipgrepConfig {
 
 /**
  * True unless the env value is an explicit falsy literal ("0"/"false"/"no"/"off",
- * case-insensitive). Unset/empty defaults TRUE, matching Claude Code's
+ * case-insensitive). Unset/empty defaults TRUE, matching the reference's
  * USE_BUILTIN_RIPGREP default-on behavior.
  */
 function useBuiltinDefaultTrue(raw: string | undefined): boolean {
@@ -63,7 +63,7 @@ function useBuiltinDefaultTrue(raw: string | undefined): boolean {
  *
  * SECURITY: when falling back we return the bare command name `rg` (never a
  * relative path) so the OS resolves it via PATH and a planted `./rg` in the cwd
- * cannot be executed (PATH-hijack protection, mirroring Claude Code).
+ * cannot be executed (PATH-hijack protection, mirroring the reference).
  */
 export function resolveRipgrepConfig(
   env: NodeJS.ProcessEnv = process.env,
@@ -94,7 +94,7 @@ export const ripgrepHooks: { execFileSync: typeof execFileSync } = { execFileSyn
 
 // Cached availability status (singleton), keyed by the resolved command so a config
 // change (e.g. AMI_RIPGREP_PATH set at runtime) re-probes instead of serving a stale
-// result. Mirrors Claude Code's `ripgrepStatus` singleton + `testRipgrepOnFirstUse`.
+// result. Mirrors the reference's `ripgrepStatus` singleton + `testRipgrepOnFirstUse`.
 let ripgrepStatus: { working: boolean; lastTested: number; config: RipgrepConfig } | null = null;
 
 /** Clear the cached probe result (used by tests and after a config change). */
@@ -104,7 +104,7 @@ export function resetRipgrepStatus(): void {
 
 /**
  * Report ripgrep status WITHOUT probing: the resolved mode + binary path and the
- * last cached working flag (`null` when never tested). Mirrors Claude Code's
+ * last cached working flag (`null` when never tested). Mirrors the reference's
  * `getRipgrepStatus()` "return config immediately, working if available".
  */
 export function getRipgrepStatus(env: NodeJS.ProcessEnv = process.env): {
@@ -123,7 +123,7 @@ export function getRipgrepStatus(env: NodeJS.ProcessEnv = process.env): {
  * Functionally probe ripgrep (`<rg> --version`) and cache the result. A second call
  * returns the cache unless the resolved binary changed. "Working" requires a clean
  * exit AND version output that starts with `ripgrep ` (a wrong binary on PATH that
- * exits 0 but is not ripgrep is reported as not working). Mirrors Claude Code's
+ * exits 0 but is not ripgrep is reported as not working). Mirrors the reference's
  * `testRipgrepOnFirstUse`.
  */
 export function probeRipgrep(env: NodeJS.ProcessEnv = process.env): boolean {

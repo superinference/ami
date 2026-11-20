@@ -9,14 +9,14 @@ const MIN_QUERY_LENGTH = 2;
 
 /**
  * Upper bound on the number of searches performed in a single tool call.
- * Mirrors Claude Code's WebSearch `max_uses: 8` — the model may pass a primary
+ * Mirrors the reference's WebSearch `max_uses: 8` — the model may pass a primary
  * `query` plus a bounded list of additional `queries` and all are searched
  * within one invocation (with per-search partial-failure tolerance).
  */
 export const MAX_QUERIES_PER_CALL = 8;
 
 /**
- * Overall serialized tool-result size cap. Mirrors Claude Code's framework-level
+ * Overall serialized tool-result size cap. Mirrors the reference's framework-level
  * `maxResultSizeChars: 100_000` knob on the WebSearch tool: the per-result
  * (MAX_CONTENT_PER_RESULT) and top-N (TOP_RESULTS_TO_FETCH) bounds limit each
  * piece, but a large number of results/snippets can still accumulate, so the
@@ -26,7 +26,7 @@ export const MAX_RESULT_SIZE_CHARS = 100000;
 
 /**
  * Cap the total serialized output to {@link MAX_RESULT_SIZE_CHARS}, appending a
- * truncation marker when the limit is exceeded. Mirrors Claude's
+ * truncation marker when the limit is exceeded. Mirrors the reference's
  * maxResultSizeChars. Exported for direct unit testing.
  */
 export function capResultSize(output: string, max = MAX_RESULT_SIZE_CHARS): string {
@@ -41,7 +41,7 @@ export function capResultSize(output: string, max = MAX_RESULT_SIZE_CHARS): stri
  * Current month/year injected into the tool description so the model grounds
  * recency-sensitive queries in the present year instead of a stale
  * training-cutoff year. Computed once at module load (the process is a single
- * session). Mirrors Claude's getLocalMonthYear() temporal guidance.
+ * session). Mirrors the reference's getLocalMonthYear() temporal guidance.
  */
 const CURRENT_YEAR = new Date().getFullYear();
 const CURRENT_MONTH_YEAR = new Date().toLocaleString('en-US', {
@@ -103,7 +103,7 @@ export function parseDuckDuckGoResults(html: string): SearchResult[] {
     const uddgMatch = href.match(/[?&]uddg=([^&]+)/);
     if (uddgMatch) {
       // Untrusted upstream HTML: a malformed percent-encoding (lone '%' / '%ZZ')
-      // makes decodeURIComponent throw URIError. Mirror Claude's formatUri
+      // makes decodeURIComponent throw URIError. Mirror the reference's formatUri
       // never-throw guard — degrade this ONE result to its raw href instead of
       // letting the throw abort parsing of the entire search response.
       try {
@@ -156,7 +156,7 @@ async function fetchResultContent(
 
 /**
  * Mandatory, structured citation directive appended to every successful search
- * result. Mirrors Claude's WebSearch prompt: a MANDATORY "Sources:" section with
+ * result. Mirrors the reference's WebSearch prompt: a MANDATORY "Sources:" section with
  * an explicit [Title](URL) format spec and a concrete example, instead of a
  * single terse reminder line — so the model's citation output is consistent.
  */
@@ -223,7 +223,7 @@ function applyBudget(budget: WebSearchBudget, cost: number): ToolResult | null {
 }
 
 /**
- * Outcome of a single DuckDuckGo search. Mirrors Claude's heterogeneous
+ * Outcome of a single DuckDuckGo search. Mirrors the reference's heterogeneous
  * `(SearchResult | string | null)[]` tolerance: a search either yields a list
  * of results (possibly empty) or degrades to one of the error variants, which
  * in the multi-query path becomes an error entry rather than failing the whole
@@ -253,7 +253,7 @@ async function runSingleSearch(
 ): Promise<SingleSearchOutcome> {
   const searchUrl = hooks.searchUrl(query);
 
-  // Live progress affordance (parity with Claude's WebSearch 'query_update'):
+  // Live progress affordance (parity with the reference's WebSearch 'query_update'):
   // surface what is being searched before the (potentially multi-second) fetch
   // so the TUI/CLI shows activity instead of going silent until completion.
   context.onProgress?.(`Searching: "${query}"`);
@@ -282,7 +282,7 @@ async function runSingleSearch(
       });
     }
 
-    // Live progress affordance (parity with Claude's 'search_results_received'):
+    // Live progress affordance (parity with the reference's 'search_results_received'):
     // report how many results came back for this query.
     context.onProgress?.(`Found ${results.length} results for "${query}"`);
 
@@ -309,7 +309,7 @@ async function runSingleSearch(
  * Resolve the ordered, de-duplicated list of queries for one tool call: the
  * required primary `query` first, then any additional `queries` (trimmed, >=
  * MIN_QUERY_LENGTH, de-duped), capped at {@link MAX_QUERIES_PER_CALL}. Mirrors
- * Claude's multi-query-in-one-call (max_uses: 8).
+ * the reference's multi-query-in-one-call (max_uses: 8).
  */
 export function resolveQueryList(primary: string, extra: unknown): string[] {
   const list = [primary];
@@ -328,7 +328,7 @@ export function resolveQueryList(primary: string, extra: unknown): string[] {
 
 /**
  * Format a multi-query result: a "Did N searches" summary with timing (parity
- * with Claude's getSearchSummary / "Did {searchCount} searches in {time}"),
+ * with the reference's getSearchSummary / "Did {searchCount} searches in {time}"),
  * followed by each query's results or a degraded per-search error line, then the
  * mandatory Sources directive. A single failed search does not fail the call.
  */
@@ -404,7 +404,7 @@ export const webSearchTool: ToolDefinition = {
   isReadOnly: true,
   isConcurrencySafe: true,
   // Read-only yet OPEN-WORLD: queries a live search backend, so results depend on
-  // external state and are non-reproducible across runs (parity: Claude's isOpenWorld).
+  // external state and are non-reproducible across runs (parity: the reference's isOpenWorld).
   isOpenWorld: true,
 
   async execute(
@@ -416,7 +416,7 @@ export const webSearchTool: ToolDefinition = {
     const query = q.query;
 
     // Reject degenerate 1-character / whitespace-trimmed queries before any
-    // budget spend or network call (mirrors Claude's z.string().min(2)).
+    // budget spend or network call (mirrors the reference's z.string().min(2)).
     if (query.trim().length < MIN_QUERY_LENGTH) {
       return {
         output: `Error: query must be at least ${MIN_QUERY_LENGTH} characters.`,
@@ -455,7 +455,7 @@ export const webSearchTool: ToolDefinition = {
 
     const hooks: WebSearchHooks = (context._webSearchHooks as WebSearchHooks | undefined) ?? { httpGet, validateUrlSafety, searchUrl: defaultSearchUrl };
 
-    // ---- Multi-query path (parity with Claude's max_uses:8 agentic search) ----
+    // ---- Multi-query path (parity with the reference's max_uses:8 agentic search) ----
     // Several searches in one call with per-search partial-failure tolerance:
     // an individual search that errors degrades to a per-search error entry
     // instead of failing the whole tool call, and a "Did N searches" summary

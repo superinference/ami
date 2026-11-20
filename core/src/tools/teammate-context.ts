@@ -3,7 +3,7 @@ import type { AgentColorName } from '../skills';
 
 /**
  * AsyncLocalStorage-isolated runtime context for an IN-PROCESS teammate (parity:
- * Claude Code's `utils/teammateContext.ts`). When several teammates run inside the
+ * the reference's `utils/teammateContext.ts`). When several teammates run inside the
  * SAME Node process (the `in-process` {@link BackendType}), a module-global
  * identity singleton would have them clobber each other's `agentId`/`agentName`.
  * Storing each teammate's identity in an {@link AsyncLocalStorage} store keyed to

@@ -4,7 +4,7 @@
  * per-kind counts, so a frontend can render one summary row ("Read 4 files ·
  * Searched 3× · 2 git ops") instead of a wall of individual tool rows.
  *
- * Parity: Claude Code's `utils/collapseReadSearch.ts`
+ * Parity: the reference's `utils/collapseReadSearch.ts`
  * (`getToolSearchOrReadInfo`) + the `CollapsedReadSearchGroup` schema consumed by
  * `components/messages/CollapsedReadSearchContent.tsx`.
  *
@@ -20,7 +20,7 @@ import { detectGitCommit, GIT_VALUE_OPTS } from './tools/bash';
 import { parseMcpToolName } from './tools/mcp-tool';
 
 /** Tool calls absorbed into a collapse group visually but contributing no count
- *  (parity: Claude's silently-absorbed ToolSearch/Snip meta-operations). */
+ *  (parity: the reference's silently-absorbed ToolSearch/Snip meta-operations). */
 const ABSORBED_TOOLS = new Set(['tool_search']);
 /** File/content read tools. */
 const READ_TOOLS = new Set(['file_read']);
@@ -47,14 +47,14 @@ function pathOf(input: ToolCallInput | undefined): string | undefined {
 }
 
 /** Git subcommands that are counted as a git operation on their own, mirroring
- *  Claude's gitOperationTracking detectors (GIT_PUSH_RE / GIT_CHERRY_PICK_RE /
+ *  the reference's gitOperationTracking detectors (GIT_PUSH_RE / GIT_CHERRY_PICK_RE /
  *  GIT_MERGE_RE / GIT_REBASE_RE) plus the branch-creating navigation verbs. The
  *  hyphenated forms (`merge-base`, `merge-tree`, `cherry` without `-pick`) are
  *  naturally excluded because token equality requires the EXACT subcommand —
- *  this is the token-scan counterpart of Claude's `merge` `(?!-)` lookahead. */
+ *  this is the token-scan counterpart of the reference's `merge` `(?!-)` lookahead. */
 const GIT_OP_SUBCOMMANDS = new Set(['push', 'branch', 'cherry-pick', 'merge', 'rebase']);
 
-/** `gh pr <action>` / `glab mr <action>` verbs Claude's GH_PR_ACTIONS tracks as a
+/** `gh pr <action>` / `glab mr <action>` verbs the reference's GH_PR_ACTIONS tracks as a
  *  PR operation (create/edit/merge/comment/close/ready + glab `mr create`). */
 const PR_ACTIONS = new Set(['create', 'edit', 'merge', 'comment', 'close', 'ready']);
 
@@ -63,7 +63,7 @@ const PR_ACTIONS = new Set(['create', 'edit', 'merge', 'comment', 'close', 'read
  * subcommand token. Options that consume a following value token (`valueOpts`,
  * e.g. git's `-C <path>`) skip two tokens; any other `-`-prefixed token skips
  * one. Generalized from the git-only scan so the same boundary logic serves git,
- * gh and glab (parity: Claude's flag/subcommand boundary skipping is not
+ * gh and glab (parity: the reference's flag/subcommand boundary skipping is not
  * git-specific). Returns the token count when no positional remains.
  */
 function subcommandIndex(tokens: string[], start: number, valueOpts: ReadonlySet<string>): number {
@@ -84,7 +84,7 @@ function subcommandIndex(tokens: string[], start: number, valueOpts: ReadonlySet
  * `rebase`, a branch-creating `git switch -c` / `git checkout -b`, or a forge PR
  * operation `gh pr <create|edit|merge|comment|close|ready>` / `glab mr <action>`.
  * Token scan (no backtracking) to stay ReDoS-safe, matching the posture of the
- * detectors in `tools/bash.ts`. Parity: Claude's `gitOperationTracking`
+ * detectors in `tools/bash.ts`. Parity: the reference's `gitOperationTracking`
  * subcommand set (GIT_PUSH/CHERRY_PICK/MERGE/REBASE_RE + GH_PR_ACTIONS + glab).
  */
 export function isGitOpBashCommand(command: string): boolean {
@@ -104,11 +104,11 @@ export function isGitOpBashCommand(command: string): boolean {
         return true;
       }
     } else if (bin === 'gh') {
-      // `gh pr <action>` with pr immediately after gh (parity: Claude's
+      // `gh pr <action>` with pr immediately after gh (parity: the reference's
       // GH_PR_ACTIONS regex `\bgh\s+pr\s+<action>\b` tolerates no flags between).
       if (tokens[i + 1] === 'pr' && PR_ACTIONS.has(tokens[i + 2] ?? '')) return true;
     } else if (bin === 'glab') {
-      // `glab mr <action>` — GitLab's gh analogue (parity: Claude's `glab mr create`).
+      // `glab mr <action>` — GitLab's gh analogue (parity: the reference's `glab mr create`).
       if (tokens[i + 1] === 'mr' && PR_ACTIONS.has(tokens[i + 2] ?? '')) return true;
     }
   }
@@ -126,7 +126,7 @@ export interface ToolGroupClassifyOptions {
 /**
  * Classify a single tool call into the collapse kind it contributes. Returns
  * `'none'` for a tool that is not part of a read/search collapse group.
- * Parity: Claude's `getToolSearchOrReadInfo` discriminator.
+ * Parity: the reference's `getToolSearchOrReadInfo` discriminator.
  */
 export function classifyToolGroupKind(
   toolName: string,
@@ -174,7 +174,7 @@ export function emptyToolGroupCounts(): ToolGroupCounts {
  * `none` calls increment nothing (the former stays visible in verbose mode, the
  * latter is simply not a collapse member). MCP calls additionally record the
  * distinct server names (first-seen order, deduped) via {@link parseMcpToolName}.
- * Parity: Claude's `CollapsedReadSearchGroup` accumulation.
+ * Parity: the reference's `CollapsedReadSearchGroup` accumulation.
  */
 export function aggregateToolGroupCounts(
   calls: ReadonlyArray<{ name: string; input?: Record<string, unknown> }>,
@@ -210,7 +210,7 @@ export function aggregateToolGroupCounts(
 }
 
 /** True when a group has at least one non-memory read/search/bash/mcp operation
- *  (parity: Claude's `hasNonMemoryOps`), i.e. it is worth rendering as a collapsed
+ *  (parity: the reference's `hasNonMemoryOps`), i.e. it is worth rendering as a collapsed
  *  read/search group rather than a pure memory-ops group. */
 export function hasNonMemoryOps(counts: ToolGroupCounts): boolean {
   return (

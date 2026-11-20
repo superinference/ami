@@ -20,7 +20,7 @@ export interface SeededFileState {
 /**
  * Strip a leading `cat -n`-style line-number prefix (optional indent, digits, then a
  * TAB or `→` separator) from a single line of file-read tool output, returning the
- * bare source line. Mirrors Claude Code's `stripLineNumberPrefix` so transcript-seeded
+ * bare source line. Mirrors the reference's `stripLineNumberPrefix` so transcript-seeded
  * content matches the raw file bytes (needed for the cache's content-hash freshness check).
  */
 export function stripLineNumberPrefix(line: string): string {
@@ -30,7 +30,7 @@ export function stripLineNumberPrefix(line: string): string {
 
 const SYSTEM_REMINDER_RE = /<system-reminder>[\s\S]*?<\/system-reminder>/g;
 
-/** Expand a tool-use `file_path` to an absolute path, like Claude's `expandPath`. */
+/** Expand a tool-use `file_path` to an absolute path, like the reference's `expandPath`. */
 function toAbsolute(filePath: string, cwd: string): string {
   return path.isAbsolute(filePath) ? filePath : path.resolve(cwd, filePath);
 }
@@ -67,7 +67,7 @@ function parseArgs(raw: string): Record<string, unknown> | null {
  * Files that no longer exist (ENOENT) or are momentarily inaccessible are skipped rather
  * than failing the whole restore; any other unexpected FS error is surfaced. Entries are
  * returned in chronological order so a later operation on the same path wins (last-wins),
- * matching Claude Code's `extractReadFilesFromMessages`.
+ * matching the reference's `extractReadFilesFromMessages`.
  */
 export function collectReadFileStatesFromTranscript(
   messages: readonly Message[],
@@ -127,7 +127,7 @@ export function collectReadFileStatesFromTranscript(
         // detection is a no-op for an untouched file; if it diverged (an edit made
         // BETWEEN sessions), seed the reconstructed bytes under the current mtime so
         // hasChanged() reports a content change and the model must re-read before
-        // editing — never clobbering content it never saw. Mirrors Claude Code's
+        // editing — never clobbering content it never saw. Mirrors the reference's
         // readFileState resume semantics (unchanged ⇒ dedup, changed ⇒ forced re-read).
         out.push(disk.content.trim() === reconstructed
           ? { path: readPath, content: disk.content, mtime: disk.mtime, encoding: disk.encoding }
@@ -170,7 +170,7 @@ function isENOENTorInaccessible(err: unknown): boolean {
  * accelerator consistent across the restart. Seeds the directory-shared cache from
  * {@link getFileCache} by default; pass an explicit `target` to seed a bounded,
  * standalone cache instead — e.g. `new FileCache(MAX_CACHE_BYTES, 10)` for a short
- * "ask" operation that touches few files (the entry-count knob is Claude Code's
+ * "ask" operation that touches few files (the entry-count knob is the reference's
  * `ASK_READ_FILE_STATE_CACHE_SIZE` equivalent). Returns the number of entries seeded.
  * Wraps {@link collectReadFileStatesFromTranscript}; this is the resume consumer.
  */

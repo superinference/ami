@@ -20,7 +20,7 @@ import { API_PDF_MAX_PAGES, PDF_TARGET_RAW_SIZE } from './media-limits';
  * first string `code` found. The Anthropic/undici SDK wraps the real
  * network/TLS error (ETIMEDOUT, CERT_HAS_EXPIRED, …) inside nested `.cause`
  * objects, so the top-level error is often a generic "Connection error." with no
- * `code` of its own — inspecting only the top level misses it. Mirrors Claude's
+ * `code` of its own — inspecting only the top level misses it. Mirrors the reference's
  * extractConnectionErrorDetails cause walk. `maxDepth` bounds the descent and a
  * visited set guards against self-referential / cyclic causes.
  */
@@ -57,12 +57,12 @@ export function findErrorCode(err: unknown, maxDepth = 5): string | undefined {
  * `instanceof SomeAbortClass` check is brittle. Union the stable signals: the
  * 'AbortError' name, a DOMException ABORT_ERR code, and a message fallback —
  * while never mistaking an ECONNABORTED network drop for a user cancellation.
- * Mirrors Claude's isAbortError. Exported so the engine/provider can share one
+ * Mirrors the reference's isAbortError. Exported so the engine/provider can share one
  * definition instead of ad-hoc `message.includes('abort')` checks.
  */
 /**
  * Canonical OpenSSL/TLS failure-code set (used by both Node.js and Bun),
- * mirroring Claude Code's `SSL_ERROR_CODES` breadth (services/api/errorUtils.ts).
+ * mirroring the reference's `SSL_ERROR_CODES` breadth (services/api/errorUtils.ts).
  * The SINGLE source of the TLS-code knowledge for the whole codebase: both this
  * module's `classifyError` ssl branch AND `provider.ts`'s `isSslError` match
  * against it, so a wrong-version / handshake-timeout / revoked / untrusted-chain
@@ -114,7 +114,7 @@ export function matchesSslErrorCode(lowerMessage: string): boolean {
  * beneath a generic code-less "Connection error.", so the structured view must
  * walk the chain. Built on the SAME `walkCauseChain` as `findErrorCode` (no
  * parallel traversal) and the SAME canonical `SSL_ERROR_CODES` set as the ssl
- * classification branch. Mirrors Claude's extractConnectionErrorDetails.
+ * classification branch. Mirrors the reference's extractConnectionErrorDetails.
  */
 export interface ConnectionErrorDetails {
   code: string;
@@ -141,7 +141,7 @@ export function extractConnectionErrorDetails(err: unknown): ConnectionErrorDeta
  * One-line connection-error diagnostic for the debug log:
  * `Connection error details: code=<code> (SSL error), message=<message>`.
  * Returns null when no structured `.code` is present (nothing useful to record).
- * Mirrors Claude's logging.ts connection-error diagnostic so a dropped connection
+ * Mirrors the reference's logging.ts connection-error diagnostic so a dropped connection
  * records its root errno + an explicit SSL flag — diagnosable with debug logging
  * on — instead of leaving only a code-less "Connection error.".
  */
@@ -177,7 +177,7 @@ export function isAbortError(err: unknown): boolean {
  * and the minify-safe {@link isAbortError} / {@link isAbort} name checks recognize
  * it. Centralizes the ad-hoc `const e = new Error(...); e.name = 'AbortError'`
  * pattern that was duplicated across the MCP container pull and the subagent
- * limiter. Mirrors Claude's dedicated `AbortError` class so callers discriminate
+ * limiter. Mirrors the reference's dedicated `AbortError` class so callers discriminate
  * user/host cancellation from a genuine failure by type, not by substring.
  */
 export class AbortError extends Error {
@@ -207,7 +207,7 @@ export function makeAbortError(signal?: { reason?: unknown } | null, fallbackMes
  * then falls back to the typed/name/DOMException detection in {@link isAbortError}
  * (which never treats an ECONNABORTED network drop as a cancellation). Supersedes
  * scattered `msg.includes('aborted')` checks at the provider/engine boundary.
- * Mirrors Claude's `isAbortError`, extended with the signal fast path.
+ * Mirrors the reference's `isAbortError`, extended with the signal fast path.
  */
 export function isAbort(err: unknown, signal?: { aborted?: boolean } | null): boolean {
   if (signal?.aborted) return true;
@@ -236,7 +236,7 @@ export interface ClassifiedError {
    * which is also `model_unavailable`/`shouldFallback` but is NOT an overload.
    * An overload usually clears on its own, so the engine retries the SAME model a
    * few times (config `max529RetriesBeforeFallback`, default 3) before switching to
-   * a fallback model, instead of switching on the first 529. Parity: Claude Code's
+   * a fallback model, instead of switching on the first 529. Parity: the reference's
    * MAX_529_RETRIES consecutive-529 threshold before FallbackTriggeredError.
    */
   overloaded?: boolean;
@@ -304,7 +304,7 @@ function overflowTokenFields(raw: string): Pick<ClassifiedError, 'tokenGap' | 'a
 /**
  * Strip an HTML error-page body (e.g. a CloudFlare/proxy 5xx interstitial
  * returned instead of JSON) down to its <title> text, or '' when there is no
- * title. Plain text is returned unchanged. Mirrors Claude's sanitizeMessageHTML
+ * title. Plain text is returned unchanged. Mirrors the reference's sanitizeMessageHTML
  * so the user never sees a multi-KB raw HTML dump.
  */
 export function sanitizeMessageHTML(message: string): string {
@@ -323,7 +323,7 @@ export function sanitizeMessageHTML(message: string): string {
  * text lives nested: `error.error.error.message` (standard Anthropic response
  * body wrapping the API error) or `error.error.message` (Bedrock/proxy). Probes
  * deepest-first, sanitizing HTML at each level. Returns null when neither holds
- * a usable string. Mirrors Claude's extractNestedErrorMessage.
+ * a usable string. Mirrors the reference's extractNestedErrorMessage.
  */
 export function extractNestedErrorMessage(error: unknown): string | null {
   if (typeof error !== 'object' || error === null) return null;
@@ -348,7 +348,7 @@ export function extractNestedErrorMessage(error: unknown): string | null {
  * Bedrock routing error, which nests its type under `Output.__type` (e.g.
  * `{ Output: { __type: 'ThrottlingException' } }`) inside an otherwise
  * well-formed-looking body. Without this the object stringifies to
- * `[object Object]` and classifies as a silent `unknown`. Mirrors Claude's
+ * `[object Object]` and classifies as a silent `unknown`. Mirrors the reference's
  * extractUnknownErrorFormat.
  */
 export function extractUnknownErrorFormat(value: unknown): string | undefined {
@@ -365,7 +365,7 @@ export function extractUnknownErrorFormat(value: unknown): string | undefined {
  * True when an error is the AWS SDK's `CredentialsProviderError` (thrown when no
  * AWS credentials can be resolved from any provider in the chain). The AWS SDK
  * sets `error.name` to this stable string, so matching on the name is minify-safe
- * and does not require importing the SDK. Mirrors Claude's
+ * and does not require importing the SDK. Mirrors the reference's
  * `isAwsCredentialsProviderError`, which gives a clear "no AWS credentials
  * configured" branch instead of surfacing a raw 401/500 from the Bedrock call.
  */
@@ -387,7 +387,7 @@ export function getAwsCredentialsErrorMessage(): string {
 /**
  * Stable fallback message for a deserialized/plain-object API error that carries
  * no usable message — `API error (status N)` (or `status unknown`). Reads a
- * numeric `.status` or `.statusCode`. Mirrors Claude's `formatAPIError` guard so
+ * numeric `.status` or `.statusCode`. Mirrors the reference's `formatAPIError` guard so
  * a JSONL-round-tripped error (e.g. after `--resume`) never collapses to an empty
  * string or `[object Object]` that would mislead the user and the classifier.
  */
@@ -428,7 +428,7 @@ export function normalizeErrorMessage(error: unknown): string {
     if (typeof direct === 'string' && direct.length > 0) return sanitizeMessageHTML(direct);
     // A plain-object API error (deserialized, no message/nested/envelope) still
     // carries a status — surface `API error (status N)` rather than
-    // `[object Object]`. Mirrors Claude's formatAPIError status fallback.
+    // `[object Object]`. Mirrors the reference's formatAPIError status fallback.
     return apiErrorStatusFallback(error);
   }
   return String(error ?? '');
@@ -441,7 +441,7 @@ export function normalizeErrorMessage(error: unknown): string {
 /**
  * Parse actual/limit token counts from a raw "prompt is too long: 137500 tokens
  * > 135000 maximum" error. Lenient: tolerant of SDK prefixes, JSON envelopes,
- * and Vertex casing. Mirrors Claude's parsePromptTooLongTokenCounts.
+ * and Vertex casing. Mirrors the reference's parsePromptTooLongTokenCounts.
  */
 export function parsePromptTooLongTokenCounts(rawMessage: string): {
   actualTokens: number | undefined;
@@ -466,7 +466,7 @@ export function getPromptTooLongTokenGap(rawMessage: string): number | undefined
 
 /**
  * Parse the exact 400 "input length and `max_tokens` exceed context limit: A + B
- * > C" message into its three counts, or null. Mirrors Claude's
+ * > C" message into its three counts, or null. Mirrors the reference's
  * parseMaxTokensContextOverflowError — lets callers compute a precise reduced
  * max_tokens for the next attempt instead of guessing.
  */
@@ -491,7 +491,7 @@ export function parseMaxTokensContextOverflow(rawMessage: string): {
  * max_tokens) or a transient 429/5xx — re-sending the SAME request loops forever.
  * Accepts an Error (its `.message`) or a raw string. Keyed on the literal
  * "prompt is too long" phrase so it never swallows the broader context-overflow
- * phrasings {@link isPromptTooLongMessage} recognizes. Mirrors Claude Code's
+ * phrasings {@link isPromptTooLongMessage} recognizes. Mirrors the reference's
  * `detectPromptTooLong` (utils/permissions/yoloClassifier.ts) — a distinct outcome
  * so a caller can stop retrying a deterministic failure instead of hammering it.
  */
@@ -512,7 +512,7 @@ export function detectPromptTooLong(
  * Stable prefix prepended when a classified API error is rendered into the
  * transcript. Kept constant on purpose so downstream UI / recovery code can
  * recognize an error line already in history via {@link startsWithApiErrorPrefix}
- * and re-classify its underlying text. Mirrors Claude's API_ERROR_MESSAGE_PREFIX.
+ * and re-classify its underlying text. Mirrors the reference's API_ERROR_MESSAGE_PREFIX.
  */
 export const API_ERROR_MESSAGE_PREFIX = 'API Error';
 
@@ -536,7 +536,7 @@ function stripApiErrorPrefix(message: string): string {
  * / context-overflow error? Recognizes the authoritative "… N tokens > M maximum"
  * form (via {@link parsePromptTooLongTokenCounts}) plus the common phrasings, so UI
  * and recovery code can re-detect an overflow error already sitting in history
- * without re-running the full {@link classifyError} taxonomy. Mirrors Claude's
+ * without re-running the full {@link classifyError} taxonomy. Mirrors the reference's
  * isPromptTooLongMessage.
  */
 export function isPromptTooLongMessage(message: string): boolean {
@@ -594,7 +594,7 @@ export function isGatewayRejection(lowerMsg: string): boolean {
  *   - duplicate (non-unique) `tool_use` ids.
  * AMI heals these proactively (provider-transform.ts healOrphanedToolCalls), but
  * if a corruption still reaches the API, retrying the same history just loops —
- * the only recovery is to rewind the conversation. Mirrors Claude's reactive
+ * the only recovery is to rewind the conversation. Mirrors the reference's reactive
  * tool-use-concurrency detection. Backtick-tolerant (the API wraps the tokens in
  * backticks). `lowerMsg` must already be lower-cased.
  */
@@ -617,7 +617,7 @@ export const AUP_POLICY_URL = 'https://www.anthropic.com/legal/aup';
 /**
  * Model this provider's refusals suggest switching to. A refusal is often
  * model-specific, so pointing the user at a known-good model is the fastest
- * recovery. Mirrors Claude's getErrorMessageIfRefusal model-switch affordance.
+ * recovery. Mirrors the reference's getErrorMessageIfRefusal model-switch affordance.
  */
 export const REFUSAL_FALLBACK_MODEL = 'claude-sonnet-4-5';
 
@@ -628,7 +628,7 @@ export const REFUSAL_FALLBACK_MODEL = 'claude-sonnet-4-5';
  * transient error), tells the user how to proceed, and — unless already on the
  * suggested model — names a `/model` switch to try. The wording adapts to
  * non-interactive (detached) sessions, which cannot "press esc to edit".
- * Mirrors Claude Code's `getErrorMessageIfRefusal`.
+ * Mirrors the reference's `getErrorMessageIfRefusal`.
  */
 export function getRefusalMessage(model: string, nonInteractive = false): string {
   const base = nonInteractive
@@ -649,7 +649,7 @@ export function getRefusalMessage(model: string, nonInteractive = false): string
  * (404 model-not-found), mapping each model family to its previous generation so
  * a deployment that lacks the newest model still has a working option. Returns
  * undefined when there is no sensible suggestion (the caller then falls back to
- * generic "/model to pick another"). Mirrors Claude's get3PModelFallbackSuggestion
+ * generic "/model to pick another"). Mirrors the reference's get3PModelFallbackSuggestion
  * family→previous-version chain.
  */
 export function suggestFallbackModel(model: string): string | undefined {
@@ -670,7 +670,7 @@ export function suggestFallbackModel(model: string): string | undefined {
  * Is this raw API error text a media-size rejection (oversized/invalid PDF or
  * image, or a request that exceeds the raw payload ceiling)? Used both to decide
  * whether stripping media and retrying can help and to dispatch a per-variant
- * actionable message. Mirrors Claude's `isMediaSizeError`, broadened to the PDF
+ * actionable message. Mirrors the reference's `isMediaSizeError`, broadened to the PDF
  * password/invalid variants that share the same recovery path. Case-insensitive.
  */
 export function isMediaSizeError(raw: string): boolean {
@@ -789,7 +789,7 @@ function classifySDKError(error: Error): ClassifiedError | null {
         return { category: 'auth_error', message: msg, retryable: false, shouldCompact: false, shouldFallback: false };
       case 403:
         // A 403 whose body signals OAuth token revocation is recoverable by a
-        // token refresh + retry (Claude's also403Revoked path), so it is
+        // token refresh + retry (the reference's also403Revoked path), so it is
         // retryable — unlike an ordinary permanent permission denial.
         if (lowerMsg.includes('oauth token has been revoked') || lowerMsg.includes('token has been revoked')) {
           return { category: 'auth_error', message: msg, retryable: true, shouldCompact: false, shouldFallback: false };
@@ -799,13 +799,13 @@ function classifySDKError(error: Error): ClassifiedError | null {
         return { category: 'auth_error', message: msg, retryable: false, shouldCompact: false, shouldFallback: false };
       case 404:
         // Model does not exist / no access. Non-retryable, but a different model
-        // may work — surface actionable /model guidance (Claude's 404 branch).
+        // may work — surface actionable /model guidance (the reference's 404 branch).
         return { category: 'model_unavailable', message: msg, retryable: false, shouldCompact: false, shouldFallback: true };
       case 408:
-        // Request timeout — transient, retry (Claude shouldRetry 408).
+        // Request timeout — transient, retry (the reference shouldRetry 408).
         return { category: 'network_error', message: msg, retryable: true, shouldCompact: false, shouldFallback: false, suggestedDelay: 5000 };
       case 409:
-        // Lock timeout / conflict — transient, retry (Claude shouldRetry 409).
+        // Lock timeout / conflict — transient, retry (the reference shouldRetry 409).
         return { category: 'server_error', message: msg, retryable: true, shouldCompact: false, shouldFallback: false, suggestedDelay: 3000 };
       case 429:
         return { category: 'rate_limited', message: msg, retryable: true, shouldCompact: false, shouldFallback: false, suggestedDelay: 5000 };
@@ -843,7 +843,7 @@ function classifySDKError(error: Error): ClassifiedError | null {
       default:
         // Generic status fallback: any other 5xx (504 gateway timeout, 507/508,
         // Cloudflare 520-527, 599, …) is a transient server/gateway failure —
-        // retryable with fallback, mirroring Claude's `status >= 500` rule.
+        // retryable with fallback, mirroring the reference's `status >= 500` rule.
         // Keeps the explicit cases above (500/502 server, 503/529 overload)
         // authoritative while no longer dropping uncommon 5xx codes to 'unknown'.
         if (typeof status === 'number' && status >= 500) {
@@ -905,7 +905,7 @@ export function classifyError(error: string | Error | unknown): ClassifiedError 
   const errorString = normalizeErrorMessage(error);
   // A message pulled back out of the transcript may still carry the rendered
   // `API Error: …` prefix — strip it for matching so an already-rendered error
-  // re-classifies on its underlying text (Claude's startsWithApiErrorPrefix path).
+  // re-classifies on its underlying text (the reference's startsWithApiErrorPrefix path).
   const matchText = stripApiErrorPrefix(errorString);
   // Fold the root `.cause` code (e.g. a nested ETIMEDOUT / CERT_HAS_EXPIRED that
   // the SDK hides under a generic "Connection error.") into the matched text, so
@@ -1090,7 +1090,7 @@ export function classifyError(error: string | Error | unknown): ClassifiedError 
  * Structured outcome of a SAFETY/auto-mode classifier call that FAILED — i.e. an
  * async check (e.g. the auto-mode security classifier, see {@link ./auto-mode})
  * that could not produce an allow/deny verdict. Mirrors the failure-carrying
- * fields of Claude Code's `YoloClassifierResult` (`unavailable`,
+ * fields of the reference's `YoloClassifierResult` (`unavailable`,
  * `transcriptTooLong`, `durationMs`) and encodes the documented fail-safe
  * contract: a check that cannot decide must fall back to normal PROMPTING, never
  * retry a DETERMINISTIC failure, and never silently auto-approve or hard-deny.
@@ -1133,7 +1133,7 @@ export interface SafetyClassifierFailure {
  * overflow is DETERMINISTIC for a fixed classifier prompt, so it is reported as
  * `transcriptTooLong` and NON-retryable (retrying loops forever) — the opposite of
  * the main-model "compact then retry" path. `opts.durationMs` records call latency
- * for timeout/overhead telemetry (Claude's `durationMs`). The caller uses the
+ * for timeout/overhead telemetry (the reference's `durationMs`). The caller uses the
  * result to fall back to normal prompting; it never auto-approves a failed check.
  */
 export function classifySafetyCheckFailure(
@@ -1162,7 +1162,7 @@ export function classifySafetyCheckFailure(
 
 /**
  * The enumerated error classes a StopFailure hook is matched against, mirroring
- * Claude Code's StopFailure `error` matcher taxonomy (hooksConfigManager
+ * the reference's StopFailure `error` matcher taxonomy (hooksConfigManager
  * `matcherMetadata.values`). A StopFailure fires when an API error ends the turn
  * (or a Stop hook itself errors) and a hook scopes on WHICH class of failure it
  * was, so the set MUST stay 1:1 with the reference values. This is the SINGLE
@@ -1206,7 +1206,7 @@ const ERROR_CATEGORY_TO_STOP_FAILURE_CLASS: Record<ErrorCategory, StopFailureErr
  * Classify an error into the StopFailure matcher taxonomy so a StopFailure hook can
  * scope on the FAILURE CLASS (`rate_limit` / `authentication_failed` / …) instead
  * of the raw, unmatchable error text. Runs the full {@link classifyError} taxonomy
- * and folds its category onto the reference class set. Mirrors Claude Code's
+ * and folds its category onto the reference class set. Mirrors the reference's
  * StopFailure `error` discriminator so a matcher configured with one of the
  * advertised {@link STOP_FAILURE_ERROR_CLASSES} actually matches the emitted event.
  */
@@ -1223,7 +1223,7 @@ export function stopFailureErrorClass(error: string | Error | unknown): StopFail
  * driving which remediation hint the user sees. Distinct from {@link ErrorCategory}
  * (which classifies live API errors): a load failure is a local filesystem / git /
  * JSON problem, not a provider response. Mirrors the network/permissions/config
- * triage Claude Code performs in `sessionStart.ts` when plugin-hook loading fails.
+ * triage the reference performs in `sessionStart.ts` when plugin-hook loading fails.
  */
 export type LoadFailureCategory = 'network' | 'permissions' | 'config' | 'unknown';
 
@@ -1239,7 +1239,7 @@ export interface LoadFailureGuidance {
  * `network`; a filesystem permission errno (EACCES/EPERM / "permission denied") →
  * `permissions`; a JSON/parse/schema/"invalid" failure → `config`; anything else →
  * `unknown` with generic guidance. Lets a load catch surface WHY it failed and HOW
- * to fix it instead of silently dropping the source. Mirrors Claude Code's
+ * to fix it instead of silently dropping the source. Mirrors the reference's
  * sessionStart plugin-hook-load categorized guidance.
  */
 export function categorizeLoadFailure(error: unknown): LoadFailureGuidance {
@@ -1277,7 +1277,7 @@ export function categorizeLoadFailure(error: unknown): LoadFailureGuidance {
  * the specific actionable condition so a caller can both branch on a typed
  * discriminator AND show the user concrete remediation STEPS.
  *
- * Mirrors Claude Code's `verifyIt2Setup` (utils/swarm/backends/it2Setup.ts), which
+ * Mirrors the reference's `verifyIt2Setup` (utils/swarm/backends/it2Setup.ts), which
  * on a non-zero exit inspects stderr for signatures ('api', 'python',
  * 'connection refused', 'not enabled') to distinguish ONE recoverable mode (the
  * Python API being disabled) and returns a typed `needsPythonApiEnabled`
@@ -1443,7 +1443,7 @@ export function networkErrorHint(lowerMsg: string): string {
  * self-signed / hostname-mismatch / untrusted-chain cases tells them exactly
  * what to fix — and points corporate-proxy users at NODE_EXTRA_CA_CERTS rather
  * than the blunt NODE_TLS_REJECT_UNAUTHORIZED=0. Every branch mentions
- * "certificate" so downstream renderers can key off it. Mirrors Claude's
+ * "certificate" so downstream renderers can key off it. Mirrors the reference's
  * per-code SSL guidance.
  */
 export function getSSLErrorHint(message: string): string {
@@ -1553,7 +1553,7 @@ export function friendlyErrorMessage(
   // common — a premium tier can be throttled while its previous generation is
   // not): name the concrete model to drop to so the user has a one-command
   // recovery instead of only waiting. Reuses the single `suggestFallbackModel`
-  // family map. Mirrors Claude's model-tier-aware rate-limit fallback.
+  // family map. Mirrors the reference's model-tier-aware rate-limit fallback.
   if (classified.category === 'rate_limited') {
     const suggestion = opts?.model ? suggestFallbackModel(opts.model) : undefined;
     if (suggestion) {
@@ -1576,7 +1576,7 @@ export function friendlyErrorMessage(
  * no guidance. Classifies the underlying failure and returns copy that says what
  * happened AND what to do next (retry on a transient/network/abort failure; trim
  * context manually when the summary could not be produced or could not shrink the
- * conversation). Mirrors Claude Code's ERROR_MESSAGE_INCOMPLETE_RESPONSE
+ * conversation). Mirrors the reference's ERROR_MESSAGE_INCOMPLETE_RESPONSE
  * ("Compaction interrupted · This may be due to network issues — please try again")
  * and ERROR_MESSAGE_PROMPT_TOO_LONG guidance (services/compact/compact.ts),
  * adapted to AMI's own `/compact` and `/clear` recovery commands.
@@ -1624,7 +1624,7 @@ export interface MockRateLimitConfig {
 
 /**
  * Parse the {@link MOCK_RATE_LIMIT_ENV} dev/test knob into a config, or null when
- * unset / disabled. This is AMI's provider-neutral equivalent of Claude Code's
+ * unset / disabled. This is AMI's provider-neutral equivalent of the reference's
  * `shouldProcessMockLimits()` / `/mock-limits` facility (RateLimitMessage.tsx): it
  * lets a developer or test deterministically drive the WHOLE rate-limit code path
  * (classification, the approaching/at-limit warning, Retry-After backoff, the retry

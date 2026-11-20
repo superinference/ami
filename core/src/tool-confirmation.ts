@@ -19,7 +19,7 @@ export function deepSortKeys(obj: unknown): unknown {
  *
  * `once` is consumed on first match; `session` is cleared by
  * {@link ToolConfirmationService.clearSession}. The remaining tiers persist
- * across session clears and mirror Claude's permission-update destinations so a
+ * across session clears and mirror the reference's permission-update destinations so a
  * library/automated caller can distinguish *where* a standing grant lives
  * instead of collapsing every durable grant into one bucket:
  * - `workspace` — the current working directory / repo (AMI's original durable tier);
@@ -65,7 +65,7 @@ export type ApprovalMatchMode = 'exact' | 'prefix' | 'wildcard';
  * @public Describes a content-based (scoped) match against a single tool
  * parameter, so a remembered approval can be narrowed below tool-wide — e.g.
  * `{ param: 'command', mode: 'prefix', value: 'npm ' }` approves every `npm …`
- * bash command without approving the entire bash tool. Mirrors Claude's
+ * bash command without approving the entire bash tool. Mirrors the reference's
  * exact|prefix|wildcard permission-rule matching.
  */
 export interface ApprovalMatcher {
@@ -112,7 +112,7 @@ export interface ClassifierApproval {
 /**
  * @public Extract the named rule from a classifier reason string of the form
  * `Allowed by prompt rule: "<rule>"`, falling back to the raw reason when it
- * does not match. Mirrors Claude's
+ * does not match. Mirrors the reference's
  * `reason.match(/^Allowed by prompt rule: "(.+)"$/)?.[1] ?? reason`.
  */
 export function extractPromptRule(reason: string): string {
@@ -370,14 +370,14 @@ export class ToolConfirmationService {
   // tool call was auto-approved by a *classifier* (the bash-safety classifier
   // or an auto/yolo permission mode), keyed per tool-use so the decision's
   // provenance can be surfaced and audited distinctly from a standing user
-  // grant. Mirrors Claude's setClassifierApproval / setYoloClassifierApproval
+  // grant. Mirrors the reference's setClassifierApproval / setYoloClassifierApproval
   // (toolPermission interactiveHandler) and its classifierMatchedRule UI field.
 
   private classifierApprovals: Map<string, ClassifierApproval> = new Map();
 
   /**
    * Record a classifier auto-approval for a named prompt rule (non-auto-mode).
-   * Mirrors Claude's `setClassifierApproval(toolUseID, matchedRule)`.
+   * Mirrors the reference's `setClassifierApproval(toolUseID, matchedRule)`.
    */
   setClassifierApproval(toolUseId: string, matchedRule: string): void {
     this.classifierApprovals.set(toolUseId, {
@@ -391,7 +391,7 @@ export class ToolConfirmationService {
 
   /**
    * Record a classifier auto-approval granted by an auto/yolo permission mode
-   * (no named rule). Mirrors Claude's `setYoloClassifierApproval(toolUseID,
+   * (no named rule). Mirrors the reference's `setYoloClassifierApproval(toolUseID,
    * reason)`: it still extracts a prompt-rule name from the reason when one is
    * embedded (`Allowed by prompt rule: "…"`), keeping `matchedRule` populated.
    */
@@ -413,7 +413,7 @@ export class ToolConfirmationService {
 
   /**
    * Forget a classifier approval once its tool-use settles (parity with
-   * Claude's `clearClassifierChecking(toolUseID)`). Returns whether one was
+   * the reference's `clearClassifierChecking(toolUseID)`). Returns whether one was
    * removed.
    */
   clearClassifierApproval(toolUseId: string): boolean {
@@ -429,14 +429,14 @@ export class ToolConfirmationService {
   }
 
   // ---------------------------------------------------------------------------
-  // In-flight classifier CHECKING state (the pre-decision half of Claude's
+  // In-flight classifier CHECKING state (the pre-decision half of the reference's
   // classifierApprovals.ts). Distinct from the APPROVAL ledger above (which
   // records the SETTLED verdict): this tracks tools whose auto-mode safety
   // classifier is CURRENTLY running an async query, so a frontend can show a
   // "safety check in progress" indicator while an autonomous approval is being
   // confirmed. Keyed by tool NAME (the scope the auto-mode classifier context
   // carries — autonomous checks run sequentially per write-segment, so a name is
-  // a stable key for the in-flight window). Mirrors Claude's `CLASSIFIER_CHECKING`
+  // a stable key for the in-flight window). Mirrors the reference's `CLASSIFIER_CHECKING`
   // Set + setClassifierChecking/clearClassifierChecking/isClassifierChecking.
   // ---------------------------------------------------------------------------
 
@@ -444,7 +444,7 @@ export class ToolConfirmationService {
 
   /** Mark that the safety classifier is actively evaluating `toolName`. Returns
    *  true when this transitioned an idle tool into the checking state (the first
-   *  mark), false when it was already checking. Parity: Claude's
+   *  mark), false when it was already checking. Parity: the reference's
    *  `setClassifierChecking(toolUseID)`. */
   setClassifierChecking(toolName: string): boolean {
     if (this.classifierChecking.has(toolName)) return false;
@@ -453,14 +453,14 @@ export class ToolConfirmationService {
   }
 
   /** Clear the in-flight checking state once the classifier settles. Returns true
-   *  when a checking entry was removed. Parity: Claude's
+   *  when a checking entry was removed. Parity: the reference's
    *  `clearClassifierChecking(toolUseID)`. */
   clearClassifierChecking(toolName: string): boolean {
     return this.classifierChecking.delete(toolName);
   }
 
   /** Whether the safety classifier is currently evaluating `toolName`. Parity:
-   *  Claude's `isClassifierChecking(toolUseID)`. */
+   *  the reference's `isClassifierChecking(toolUseID)`. */
   isClassifierChecking(toolName: string): boolean {
     return this.classifierChecking.has(toolName);
   }

@@ -10,7 +10,7 @@
  * sidecars): two instances in one project derive the SAME scratch path and can
  * clobber each other's in-progress write, corrupting the target on rename.
  *
- * Parity: Claude Code's `getSwarmSocketName()`
+ * Parity: the reference's `getSwarmSocketName()`
  * (references/claude/claude-code-main/src/utils/swarm/constants.ts:L7-L14) embeds
  * `process.pid` (`claude-swarm-${process.pid}`) into its ephemeral swarm socket for
  * exactly this reason — a per-process token so concurrent instances get isolated
@@ -29,7 +29,7 @@
  * The current process's runtime-instance namespace token — its PID. This is the
  * value embedded into every per-instance ephemeral path so two concurrent
  * instances (same project, same cwd) never share one scratch file. Direct parity
- * analog of Claude's `getSwarmSocketName()` PID embedding.
+ * analog of the reference's `getSwarmSocketName()` PID embedding.
  */
 export function runtimeInstancePid(): number {
   return process.pid;

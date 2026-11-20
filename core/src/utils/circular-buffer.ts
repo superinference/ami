@@ -1,5 +1,5 @@
 /**
- * Generic fixed-capacity circular (ring) buffer — parity with Claude Code's
+ * Generic fixed-capacity circular (ring) buffer — parity with the reference's
  * `utils/CircularBuffer.ts`.
  *
  * A single reusable data structure for "keep only the most recent N items"

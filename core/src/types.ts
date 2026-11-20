@@ -17,7 +17,7 @@ export function asSessionId(id: string): SessionId { return id as SessionId; }
 
 /**
  * Type-branded agent id — a nominal `string` subtype so a free-text teammate name
- * cannot be silently passed where a real agent id is expected (parity: Claude's
+ * cannot be silently passed where a real agent id is expected (parity: the reference's
  * `AgentId` in types/ids.ts). {@link asAgentId} mints one unconditionally (the
  * pass-through boundary); {@link toAgentId} VALIDATES the format first and returns
  * `null` for a non-conforming string, which is what discriminates a genuine agent id
@@ -34,13 +34,13 @@ export function toAgentId(id: string): AgentId | null {
 }
 
 /**
- * Detached/headless output formats accepted by `--output-format` (parity: Claude's
+ * Detached/headless output formats accepted by `--output-format` (parity: the reference's
  * `OutputFormat`). `json` / `jsonl` / `text` are machine/human batch encodings;
  * `streamlined` is a distillation-resistant text mode that keeps the final response
  * text intact, collapses every tool call into a single cumulative tool-use summary
  * line, and drops thinking + system/init noise — so a downstream model (or operator)
  * reading the transcript gets the signal without the per-tool-call bulk (parity:
- * Claude's `streamlined` output-format value / `createStreamlinedTransformer`). The
+ * the reference's `streamlined` output-format value / `createStreamlinedTransformer`). The
  * valid set is derived from this const everywhere (config-resolver validation,
  * completions, settings-validation, `--introspect outputFormats`) so there is no
  * drift when a format is added.
@@ -56,11 +56,11 @@ export type ChatMode = (typeof CHAT_MODES)[number];
 
 /**
  * User-selectable theme SETTINGS — the canonical vocabulary accepted by `/theme`
- * and the `AMI_THEME` env var (parity: Claude's `THEME_SETTINGS`, as distinct from
+ * and the `AMI_THEME` env var (parity: the reference's `THEME_SETTINGS`, as distinct from
  * the resolved `THEME_NAMES`). The CLI's `resolveThemeByName` turns each of these
  * into a concrete palette at render time:
  *   - `default` / `auto` — follow the terminal (auto-detect scheme + color tier);
- *     `auto` is the Claude-parity alias of the historical AMI `default`.
+ *     `auto` is the reference-parity alias of the historical AMI `default`.
  *   - `dark` / `light` — force a scheme.
  *   - `dark-daltonized` / `light-daltonized` — deuteranopia/protanopia-safe
  *     ("colorblind-friendly") palettes.
@@ -84,7 +84,7 @@ export type Theme = (typeof THEMES)[number];
 /**
  * Human-readable labels for each {@link Theme} value — the descriptive text a
  * frontend shows beside the bare machine name in a theme picker/listing (parity:
- * Claude Code's `ThemePicker` option labels, e.g. `auto` → "Auto (match terminal)",
+ * the reference's `ThemePicker` option labels, e.g. `auto` → "Auto (match terminal)",
  * `dark-daltonized` → "Dark mode (colorblind-friendly)"). The machine value stays
  * the selection key; the label is purely descriptive, so the `/theme` listing can
  * tell a user what each option DOES ("match terminal", "colorblind-friendly",
@@ -113,7 +113,7 @@ export function describeTheme(theme: string): string {
 
 /**
  * Terminal notification channels for turn-completion alerts, selectable per
- * terminal family (parity: Claude's NOTIFICATION_CHANNELS). `auto` picks the best
+ * terminal family (parity: the reference's NOTIFICATION_CHANNELS). `auto` picks the best
  * mechanism for the detected terminal; `notifications_disabled` turns alerts off.
  * The runtime array is the single source of truth — {@link NotificationChannel}
  * is derived from it so the enum and the type can never drift.
@@ -153,7 +153,7 @@ export interface TextContent {
 
 /**
  * Closed allowlist of image media types the provider vision APIs accept (parity:
- * Claude's imageResizer sniff targets — PNG/JPEG/GIF/WebP). A declared type outside
+ * the reference's imageResizer sniff targets — PNG/JPEG/GIF/WebP). A declared type outside
  * this set (e.g. the WSL-clipboard `image/bmp`, or a spoofed `image/svg+xml`) must be
  * rejected or normalized before it reaches the provider. Single source of truth for
  * {@link isSupportedImageMediaType} and the mint-boundary normalization. */
@@ -178,7 +178,7 @@ export interface ImageContent {
 
 /**
  * A document (e.g. PDF) carried natively in a user message so the model reads it
- * directly rather than through a base64 text blob. Mirrors Claude's third content
+ * directly rather than through a base64 text blob. Mirrors the reference's third content
  * block `{ type: 'document', source: { type: 'base64', media_type: 'application/pdf',
  * data } }` emitted by the Read tool for PDFs (tools/FileReadTool.ts). Distinct from
  * {@link ImageContent}: a document is a whole-file attachment with its own media type
@@ -205,7 +205,7 @@ export interface ToolCallContent {
 }
 
 /**
- * Provenance of an inbound user/queued message (parity: Claude's `MessageOrigin`),
+ * Provenance of an inbound user/queued message (parity: the reference's `MessageOrigin`),
  * which drives per-origin framing — e.g. a `task-notification`/`coordinator`/`channel`
  * message gets an untrusted-source warning that a plain `user` message does not.
  */
@@ -219,7 +219,7 @@ export type MessageOrigin =
 /**
  * Optional transcript-tree / provenance metadata persisted on a message so subagent
  * sidechains form a resumable tree and each message records its origin (parity:
- * Claude's TranscriptMessage `parentUuid`/`logicalParentUuid`/`isSidechain`/`agentId`/
+ * the reference's TranscriptMessage `parentUuid`/`logicalParentUuid`/`isSidechain`/`agentId`/
  * `promptId` plus swarm `teamName`/`agentName` identity used to detect a resumed teammate).
  */
 export interface TranscriptMeta {
@@ -243,7 +243,7 @@ export interface TranscriptMeta {
    *  the model — a third visibility state distinct from {@link UserMessage.isMeta}
    *  (which hides it from the model entirely). Consumers treat
    *  `isMeta || isVisibleInTranscriptOnly` as "synthetic" for display. Parity:
-   *  Claude's `createUserMessage({ isVisibleInTranscriptOnly })` + `shouldShowUserMessage`. */
+   *  the reference's `createUserMessage({ isVisibleInTranscriptOnly })` + `shouldShowUserMessage`. */
   isVisibleInTranscriptOnly?: boolean;
 }
 
@@ -257,15 +257,15 @@ export interface UserMessage extends TranscriptMeta {
   /** Provenance of this message, driving per-origin framing. Parity: `MessageOrigin`. */
   origin?: MessageOrigin;
   /** Permission mode active when this prompt was submitted, preserved per turn for
-   *  audit/replay. Parity: Claude's per-message `permissionMode`. */
+   *  audit/replay. Parity: the reference's per-message `permissionMode`. */
   permissionMode?: string;
   /** Ids of inline pasted-image placeholders (e.g. `[Image #1]`) in this message's
    *  text, correlating each placeholder with the image content block appended to the
-   *  message. Set only when non-empty (else omitted). Parity: Claude's
+   *  message. Set only when non-empty (else omitted). Parity: the reference's
    *  `processTextPrompt({ imagePasteIds })` user-message field. */
   imagePasteIds?: number[];
   /** Marks a message that carries hook-produced additional context (a SessionStart/
-   *  Setup `additionalContexts[]` aggregation — Claude's `hook_additional_context`
+   *  Setup `additionalContexts[]` aggregation — the reference's `hook_additional_context`
    *  attachment). By default such a message is injected for the live turn but
    *  FILTERED OUT of the saved transcript (so --resume re-derives fresh context by
    *  re-running the hooks); the operator can opt in to persist it across resume via
@@ -281,7 +281,7 @@ export interface AssistantMessage extends TranscriptMeta {
   tool_calls?: ToolCallContent[];
   /** Model that produced this assistant message (stamped per turn, incl. architect/
    *  fallback/provider switches), for the transcript model-attribution label.
-   *  Parity: Claude's MessageModel. */
+   *  Parity: the reference's MessageModel. */
   model?: string;
 }
 
@@ -293,7 +293,7 @@ export interface ToolMessage extends TranscriptMeta {
    *  (translated by `convertMessages` to the provider's `tool_result` `is_error`
    *  flag, e.g. the AI-SDK `error-text` output variant). Set on the synthetic
    *  placeholders `healOrphanedToolCalls` emits for unanswered/interrupted tool
-   *  calls so they surface as errors, not ordinary tool output. Parity: Claude's
+   *  calls so they surface as errors, not ordinary tool output. Parity: the reference's
    *  synthetic tool_result `is_error: true`. */
   isError?: boolean;
 }
@@ -306,20 +306,20 @@ export interface SystemMessage extends TranscriptMeta {
    *  the model during the live turn. */
   isMeta?: boolean;
   /** Severity level: 'info' messages are suppressed unless verbose; 'warning'/'error'
-   *  change the styling (color/dot). Parity: Claude's SystemMessage `level`. */
+   *  change the styling (color/dot). Parity: the reference's SystemMessage `level`. */
   level?: 'info' | 'warning' | 'error';
   /** Optional semantic subtype classifying WHY this system message was emitted, so a
    *  renderer can present a category distinctly (e.g. a proactive `'suggestion'` like
    *  "Skill \"x\" updated with improvements." rendered as a hint rather than a plain
    *  system line). Absent ⇒ a generic system message. Check with
-   *  {@link isSuggestionMessage}. Parity: Claude's `createSystemMessage` subtype
+   *  {@link isSuggestionMessage}. Parity: the reference's `createSystemMessage` subtype
    *  argument (`'suggestion'`). */
   kind?: SystemMessageKind;
 }
 
 /** Semantic subtype of a {@link SystemMessage}. `'suggestion'` tags a proactive,
  *  dismissible hint (e.g. a skill-improvement confirmation) so the UI can style it
- *  apart from ordinary system output. Parity: Claude's `createSystemMessage`
+ *  apart from ordinary system output. Parity: the reference's `createSystemMessage`
  *  message-subtype parameter. */
 export type SystemMessageKind = 'suggestion';
 
@@ -327,7 +327,7 @@ export type Message = UserMessage | AssistantMessage | ToolMessage | SystemMessa
 
 export interface JsonSchemaProperty {
   /** JSON Schema type. A string for a single type, or an array of types for a
-   *  union (e.g. `['string','boolean','number']`) — parity with Claude's
+   *  union (e.g. `['string','boolean','number']`) — parity with the reference's
    *  `union([...])` value parameters. Consumers that branch on a single type
    *  must handle the array form (see synthetic-output / workflow-runtime). */
   type: string | string[];
@@ -346,11 +346,11 @@ export interface ToolInputSchema {
   properties: Record<string, JsonSchemaProperty>;
   required?: string[];
   /** When false, the schema rejects keys not declared in {@link properties}
-   *  (parity: Claude Code's `z.strictObject`). Omitted => permissive, as before. */
+   *  (parity: the reference's `z.strictObject`). Omitted => permissive, as before. */
   additionalProperties?: boolean;
 }
 
-/** One hunk of a structured diff (parity: Claude's FileEdit `structuredPatch`),
+/** One hunk of a structured diff (parity: the reference's FileEdit `structuredPatch`),
  *  so a frontend can render a file mutation per-hunk instead of parsing text. */
 export interface DiffHunk {
   oldStart: number;
@@ -361,7 +361,7 @@ export interface DiffHunk {
 }
 
 /** VCS-aware per-edit change summary attached to a file-mutating tool result's
- *  {@link ToolResult.metadata} as `gitDiff`. Parity: Claude's FileEditTool
+ *  {@link ToolResult.metadata} as `gitDiff`. Parity: the reference's FileEditTool
  *  `gitDiffSchema` output field (filename, status, additions/deletions/changes
  *  counts, unified patch) — lets a programmatic caller read change magnitude and
  *  the patch without re-parsing the human `output` string. */
@@ -374,7 +374,7 @@ export interface GitDiffSummary {
   additions: number;
   /** Count of removed lines. */
   deletions: number;
-  /** `additions + deletions` — total changed lines (Claude's `changes`). */
+  /** `additions + deletions` — total changed lines (the reference's `changes`). */
   changes: number;
   /** Unified diff text (bounded by the edit diff cap). */
   patch: string;
@@ -383,7 +383,7 @@ export interface GitDiffSummary {
 /**
  * Live, structured progress for a long-running shell/task tool, carried so a
  * frontend can render a "(elapsed · N lines)" affordance without re-parsing the
- * streamed text. Consolidates Claude's shell/task progress schemas — the
+ * streamed text. Consolidates the reference's shell/task progress schemas — the
  * `onProgress(lastLines, allLines, totalLines, totalBytes, isIncomplete)` callback
  * (utils/Shell.ts `ExecOptions`, utils/task/TaskOutput.ts `ProgressCallback`) plus
  * the UI timer fields (tools/PowerShellTool/UI.tsx, components/BashModeProgress.tsx:
@@ -410,80 +410,80 @@ export interface ToolResult {
   output: string;
   isError?: boolean;
   /** Free-form structured hints attached to a result. Well-known keys the bash
-   *  tool sets (parity with Claude Code's shell result fields):
+   *  tool sets (parity with the reference's shell result fields):
    *  - `preSpawnError`: `'cwd-missing' | 'spawn-failure'` — the command never ran
    *    because the shell could not be spawned (a deleted working directory, or a
    *    pre-exec spawn failure). Distinguishes a setup failure from a command that
-   *    ran and exited non-zero or timed out, mirroring Claude's dedicated
+   *    ran and exited non-zero or timed out, mirroring the reference's dedicated
    *    `preSpawnError` result field (`ShellCommand.createFailedCommand`).
    *  - `assistantAutoBackgrounded`: `true` when a long foreground command was
    *    auto-moved to the background in assistant/detached mode so the main agent
-   *    stays responsive (Claude's `shouldAutoBackground` / assistant blocking
+   *    stays responsive (the reference's `shouldAutoBackground` / assistant blocking
    *    budget). Accompanied by `backgrounded: true` and the `taskId`.
    *  - `backgroundedByUser`: `true` when the model EXPLICITLY requested
    *    `run_in_background: true` (as opposed to an auto-move on timeout, which sets
    *    `assistantAutoBackgrounded`). Accompanied by `backgrounded: true` and the
-   *    `taskId`. Parity: Claude's `ExecResult.backgroundedByUser`.
+   *    `taskId`. Parity: the reference's `ExecResult.backgroundedByUser`.
    *  - `outputFilePath` / `outputFileSize`: set when stdout overflowed the inline
    *    cap and the FULL output was persisted to disk — the absolute path and its
    *    byte size, so a programmatic caller reads them without re-parsing the spill
-   *    banner. Parity: Claude's `ExecResult.outputFilePath` / `outputFileSize`.
+   *    banner. Parity: the reference's `ExecResult.outputFilePath` / `outputFileSize`.
    *  - `pluginHints`: `PluginRecommendationHint[]` — install suggestions parsed
    *    from an `<ami-hint type="plugin" .../>` tag a command emitted on stderr
-   *    (set only when `AMI_PLUGIN_HINTS` is enabled; Claude's stderr-hint plugin
+   *    (set only when `AMI_PLUGIN_HINTS` is enabled; the reference's stderr-hint plugin
    *    recommendation).
    *  - `sedSimulatedEdit`: `true` when a `sed -i` in-place substitution was applied
    *    as an in-memory FILE EDIT (write of the `applySedSubstitution` result)
    *    instead of running the real `sed` binary, accompanied by `filePath`. This
    *    guarantees the written bytes equal the before → after diff the permission
-   *    prompt previewed — parity with Claude Code's `_simulatedSedEdit` exactness
+   *    prompt previewed — parity with the reference's `_simulatedSedEdit` exactness
    *    guarantee (SedEditPermissionRequest).
    *
-   *  Keys the file_edit tool sets on a SUCCESSFUL edit (parity with Claude Code's
+   *  Keys the file_edit tool sets on a SUCCESSFUL edit (parity with the reference's
    *  FileEditTool `outputSchema`), so a programmatic caller reads them without
    *  re-parsing the text `output`:
    *  - `filePath`: `string` — the edited path.
    *  - `editMode`: `'single' | 'multiple'` — whether one edit or an `edits[]` batch
-   *    was applied (Claude's IDEDiffConfig `editMode` discriminator), letting a
+   *    was applied (the reference's IDEDiffConfig `editMode` discriminator), letting a
    *    diff/permission UI branch on single-vs-batch presentation.
    *  - `replaceAll`: `boolean` — whether every occurrence was replaced.
    *  - `userModified`: `boolean` — whether the applied bytes diverged from the
    *    model's proposal via an interactive accept-with-edits path. Always `false`
    *    in AMI (the permission layer is allow/deny, with no in-prompt diff editor);
-   *    emitted to match Claude's output contract.
+   *    emitted to match the reference's output contract.
    *  - `gitDiff`: {@link GitDiffSummary} — change counts + unified patch (omitted on
    *    the diff-cost-capped success paths, where no per-line diff is computed).
    *
-   *  Keys the lsp tool sets on a successful query (parity with Claude Code's LSPTool
+   *  Keys the lsp tool sets on a successful query (parity with the reference's LSPTool
    *  `formatResult` structured return), so a programmatic caller reads the hit count
    *  without re-parsing the formatted text:
    *  - `resultCount`: `number` — total hits for the operation. For a hierarchical
    *    `documentSymbol` result this is the RECURSIVE nested-symbol total (a class
-   *    plus its methods), matching Claude's `countSymbols`; for other ops it is the
+   *    plus its methods), matching the reference's `countSymbols`; for other ops it is the
    *    count of valid locations/symbols/calls (1/0 for `hover`).
    *  - `fileCount`: `number` — number of DISTINCT files the hits span. */
   metadata?: Record<string, unknown>;
   /** Structured per-hunk diff for a file-mutating result, carried alongside the
-   *  text `output` for programmatic rendering. Parity: Claude's `structuredPatch`. */
+   *  text `output` for programmatic rendering. Parity: the reference's `structuredPatch`. */
   structuredPatch?: DiffHunk[];
   /** The edit's per-hunk {@link structuredPatch} was deliberately OMITTED (left
    *  `[]`) because the file exceeded the diff-scan cap — the change happened but
-   *  its location could not be rendered. Parity: Claude's readEditContext
+   *  its location could not be rendered. Parity: the reference's readEditContext
    *  `truncated: true` signal, which lets a replay/introspection surface say
    *  "edit location not shown — file too large to scan" instead of mistaking an
    *  empty patch for "no change". Only set on a SUCCESSFUL, size-capped edit. */
   structuredPatchTruncated?: boolean;
   /** The tool call was canceled before/while running (e.g. the surrounding batch
-   *  was aborted) — distinct from a tool that ran and errored. Parity: Claude's
+   *  was aborted) — distinct from a tool that ran and errored. Parity: the reference's
    *  `CANCEL_MESSAGE` content marker. Drives a dedicated "canceled" render state
    *  via {@link classifyToolResultState}. */
   canceled?: boolean;
   /** The user actively rejected this tool call at a permission prompt (deny), so it
-   *  never ran. Parity: Claude's `REJECT_MESSAGE` content marker. Distinct from an
+   *  never ran. Parity: the reference's `REJECT_MESSAGE` content marker. Distinct from an
    *  execution error. Drives the "rejected" render state. */
   rejected?: boolean;
   /** The tool call was interrupted (user pressed stop / server abort) with no real
-   *  result. Parity: Claude's `INTERRUPT_MESSAGE_FOR_TOOL_USE`. Distinct from a tool
+   *  result. Parity: the reference's `INTERRUPT_MESSAGE_FOR_TOOL_USE`. Distinct from a tool
    *  that produced an error output. Drives the "interrupted" render state. */
   interrupted?: boolean;
   /** Severity of a failing result, for tools that distinguish a RECOVERABLE
@@ -492,7 +492,7 @@ export interface ToolResult {
    *  file was not read first, the edit is a no-op, or the file changed since it was
    *  read) — the call still carries `isError: true`, but a frontend/transcript can
    *  present it as an "ask and retry" prompt rather than a hard stop. `'error'` (or
-   *  absent) is a plain fatal error. Parity: Claude's FileEditTool validation
+   *  absent) is a plain fatal error. Parity: the reference's FileEditTool validation
    *  `behavior: 'ask' | 'error'`. Classified by {@link classifyToolResultState}. */
   behavior?: 'ask' | 'error';
   /** Final streamed-progress snapshot for a long-running shell/task tool, so a
@@ -504,7 +504,7 @@ export interface ToolResult {
    *  resumed/replayed session can render a per-result timestamp. Deliberately
    *  OPTIONAL: pre-timestamp results replayed from an older transcript omit it and
    *  must still render — never assume it is present. Populate/read via
-   *  {@link resolveSentAt}. Parity: Claude's BriefTool output `sentAt`. */
+   *  {@link resolveSentAt}. Parity: the reference's BriefTool output `sentAt`. */
   sentAt?: string;
   /** The USER-facing payload, decoupled from the model-facing `output`. When a tool
    *  wants the model to receive only a terse receipt (e.g. "Message delivered to
@@ -512,7 +512,7 @@ export interface ToolResult {
    *  content here and a short receipt in `output`. Renderers show this to the user;
    *  the model context keeps `output`. Selected via {@link selectUserFacingOutput} /
    *  {@link selectModelFacingOutput}. Absent → both audiences see `output`. Parity:
-   *  Claude's BriefTool `output.data` (UI) vs `mapToolResultToToolResultBlockParam`
+   *  the reference's BriefTool `output.data` (UI) vs `mapToolResultToToolResultBlockParam`
    *  model receipt. */
   userFacingContent?: string;
   /** When true, a frontend MUST NOT render this tool result in the transcript — the
@@ -522,14 +522,14 @@ export interface ToolResult {
    *  the user-facing render is suppressed, so this never hides information from the
    *  model. Absent / `false` ⇒ render normally. Honor it uniformly via
    *  {@link shouldRenderToolResult} rather than reading the flag directly. Parity:
-   *  Claude's `renderToolResultMessage` returning `null` to suppress a redundant
+   *  the reference's `renderToolResultMessage` returning `null` to suppress a redundant
    *  tool-result ("Suppress cleanup result — the batched shutdown message covers this",
    *  TeamDeleteTool/UI.tsx). */
   suppressRender?: boolean;
 }
 
 /** The collapse "kind" a single tool call contributes to a consecutive
- *  read/search group. Parity: Claude's `getToolSearchOrReadInfo` discriminator
+ *  read/search group. Parity: the reference's `getToolSearchOrReadInfo` discriminator
  *  (`utils/collapseReadSearch.ts`). `absorbed` tool calls (e.g. `tool_search`)
  *  belong to the group visually but increment no count. */
 export type ToolGroupKind =
@@ -548,7 +548,7 @@ export type ToolGroupKind =
 
 /** Aggregated per-kind counts for a collapsed run of consecutive read/search
  *  tool calls, so a frontend can render one summary row ("Read 4 files · Searched
- *  3×") instead of a wall of individual rows. Parity: Claude's
+ *  3×") instead of a wall of individual rows. Parity: the reference's
  *  `CollapsedReadSearchGroup` schema (`components/messages/CollapsedReadSearchContent.tsx`).
  *  Built by {@link aggregateToolGroupCounts}. */
 export interface ToolGroupCounts {
@@ -570,7 +570,7 @@ export interface ToolGroupCounts {
 
 /** Parsed form of a `<channel source="…" user="…" chat_id="…">…</channel>`
  *  wrapper that an external channel (e.g. a chat/MCP bridge) prepends to an
- *  inbound user message. Parity: Claude's channel-message schema
+ *  inbound user message. Parity: the reference's channel-message schema
  *  (`components/messages/UserChannelMessage.tsx`, `services/mcp/channelNotification.ts`).
  *  `source` is mandatory and always written first; every other attribute
  *  (`user`, `chat_id`, `thread_ts`, …) is optional and carried in {@link attrs}. */
@@ -588,7 +588,7 @@ export interface ChannelMessageMeta {
 
 /** Per-host outbound-network allow/deny lists for the sandbox. `deniedHosts`
  *  takes precedence over `allowedHosts`. Proxy ports route the container's
- *  outbound traffic through a host proxy (parity: Claude's SandboxNetworkConfig). */
+ *  outbound traffic through a host proxy (parity: the reference's SandboxNetworkConfig). */
 export interface SandboxNetworkConfig {
   /** Hostnames/domains permitted for outbound network (allowlist). */
   allowedHosts?: string[];
@@ -609,18 +609,18 @@ export interface SandboxNetworkConfig {
    *  from user settings or folded-in `web_fetch` allow rules is IGNORED, so a
    *  lower tier can never widen managed egress. `deniedHosts` still applies (deny
    *  wins), and an empty/absent managed list means NO outbound host is allowed
-   *  (full egress block). Mirrors Claude's
+   *  (full egress block). Mirrors the reference's
    *  `shouldAllowManagedSandboxDomainsOnly()` / `allowManagedDomainsOnly`.
    *  Additive: undefined/false leaves the normal allowlist behavior unchanged. */
   allowManagedDomainsOnly?: boolean;
   /** The admin/managed-provided outbound allowlist honored (and used EXCLUSIVELY)
    *  when {@link allowManagedDomainsOnly} is set. Ignored otherwise. Mirrors the
-   *  policy-tier `sandbox.network.allowedDomains` Claude uses under managed-only. */
+   *  policy-tier `sandbox.network.allowedDomains` the reference uses under managed-only. */
   managedAllowedHosts?: string[];
 }
 
 /** Granular filesystem carve-outs layered on top of the project-only writable
- *  mount (parity: Claude's SandboxFilesystemConfig). Deny wins over allow, and
+ *  mount (parity: the reference's SandboxFilesystemConfig). Deny wins over allow, and
  *  `allowRead` re-opens specific paths inside a `denyRead` region. */
 export interface SandboxFilesystemConfig {
   /** Extra absolute paths writable inside the sandbox (merged with Edit allow rules). */
@@ -634,7 +634,7 @@ export interface SandboxFilesystemConfig {
   /** ENTERPRISE managed-policy lockdown: when true the read RE-allow carve-outs are
    *  forced to {@link managedAllowRead} ONLY — any `allowRead` from user settings is
    *  IGNORED, so a lower tier cannot re-open a managed-denied read path. `denyRead`
-   *  still applies. Mirrors Claude's `allowManagedReadPathsOnly`
+   *  still applies. Mirrors the reference's `allowManagedReadPathsOnly`
    *  (sandbox-adapter's `shouldAllowManagedReadPathsOnly()` gate on non-policy
    *  `allowRead`). Additive: undefined/false leaves `allowRead` behavior unchanged. */
   allowManagedReadPathsOnly?: boolean;
@@ -644,7 +644,7 @@ export interface SandboxFilesystemConfig {
 }
 
 /** Custom seccomp syscall-filter configuration for the sandbox backend.
- *  Parity: Claude's `sandbox.seccomp.bpfPath` / `sandbox.seccomp.applyPath`
+ *  Parity: the reference's `sandbox.seccomp.bpfPath` / `sandbox.seccomp.applyPath`
  *  (bubblewrap sandbox-runtime). AMI sandboxes via Docker, so the ADDITIVE,
  *  architecture-native analog is a Docker seccomp JSON profile: when
  *  {@link profilePath} is set it is passed to the container as
@@ -670,7 +670,7 @@ export interface SandboxPolicy {
    *  to exactly `false`, the non-container branch NEVER wraps a command with the
    *  unshare backend even when a trigger pattern matches — the config-level
    *  analogue of the {@link import('./tools/tool-gates').DISABLE_HOST_SANDBOX_ENV}
-   *  env knob. Default (unset/true) keeps the auto-wrap on. Parity: Claude Code's
+   *  env knob. Default (unset/true) keeps the auto-wrap on. Parity: the reference's
    *  `SandboxManager.isSandboxingEnabled()`. Does NOT affect `mode: 'container'`,
    *  which is a separate, stronger boundary. */
   enabled?: boolean;
@@ -696,7 +696,7 @@ export interface SandboxPolicy {
    *  commands that WILL actually be wrapped by the host (unshare) auto-sandbox are
    *  auto-allowed (per {@link import('./tools/bash-sandbox').commandWillBeHostSandboxed}),
    *  while sandbox-incompatible commands fall through to a regular permission prompt —
-   *  Claude Code's "auto-allow" sandbox mode (try sandboxed, else regular
+   *  the reference's "auto-allow" sandbox mode (try sandboxed, else regular
    *  permissions). Parity: enterprise `sandbox.autoAllowBashIfSandboxed`. Hardline
    *  blocks, `dangerouslyDisableSandbox`, explicit deny rules, and (in host mode)
    *  sensitive-path reads/writes still prompt. */
@@ -716,20 +716,20 @@ export interface SandboxPolicy {
    *  Default (unset/true) keeps the warn-and-run-on-host behavior; `false` makes
    *  the host sandbox a hard gate — a command that would otherwise degrade to the
    *  weaker ulimits-only path (no namespace isolation) is REFUSED instead. Mirrors
-   *  Claude Code's `areUnsandboxedCommandsAllowed()` / `, fallback allowed` status.
+   *  the reference's `areUnsandboxedCommandsAllowed()` / `, fallback allowed` status.
    *  Security-weakening when true; surfaced by {@link import('./tools/bash-sandbox').describeSandboxSecurityTradeoffs}. */
   allowUnsandboxedFallback?: boolean;
   /** OPT-IN security relaxation for NESTED sandbox environments (inside an outer
    *  container / CI runner where the user-namespace UID map is already consumed):
    *  when true the host unshare backend drops the `--map-root-user` flag that fails
    *  in a nested user namespace, allowing a (weaker) sandbox to still start. Mirrors
-   *  Claude Code's `enableWeakerNestedSandbox`. **Reduces security** — see
+   *  the reference's `enableWeakerNestedSandbox`. **Reduces security** — see
    *  {@link import('./tools/bash-sandbox').describeSandboxSecurityTradeoffs}. Default false. */
   enableWeakerNestedSandbox?: boolean;
   /** OPT-IN security relaxation of NETWORK isolation: when true the host unshare
    *  backend does NOT bind `/dev/null` over the default-denied Unix domain sockets,
    *  so a local trust/CA service (e.g. a MITM proxy's cert validator) remains
-   *  reachable. Mirrors Claude Code's `enableWeakerNetworkIsolation`. **Reduces
+   *  reachable. Mirrors the reference's `enableWeakerNetworkIsolation`. **Reduces
    *  security** — opens a potential data-exfiltration vector; see
    *  {@link import('./tools/bash-sandbox').describeSandboxSecurityTradeoffs}. Default false. */
   enableWeakerNetworkIsolation?: boolean;
@@ -739,7 +739,7 @@ export interface SandboxPolicy {
    *  `args` are extra flags prepended to every ripgrep invocation; `argv0` is the explicit
    *  argv[0] handed to the child (for a multi-call / busybox-style binary that dispatches on
    *  argv[0]==='rg' while `command` is the wrapper path). Consumed by
-   *  {@link import('./tools/ripgrep-config').resolveRipgrepConfig}. Parity: Claude Code's
+   *  {@link import('./tools/ripgrep-config').resolveRipgrepConfig}. Parity: the reference's
    *  sandbox `ripgrep: { command, args, argv0 }` setting. */
   ripgrep?: { command: string; args?: string[]; argv0?: string };
 }
@@ -761,24 +761,24 @@ export interface ToolContext {
    *  matching lines — or even its path — never leak into results, in every output mode. Populated
    *  by the tool executor from the permission manager right after the per-call check (same seam as
    *  allowedReadRoots). Absent/empty → only the hardcoded VCS exclusions apply (bare engines/tests
-   *  with no permission manager). Mirrors Claude Code's read-deny → `--glob !pattern` injection. */
+   *  with no permission manager). Mirrors the reference's read-deny → `--glob !pattern` injection. */
   readIgnorePatterns?: string[];
   /** Env vars exported into the `bash` tool's subprocess for the active skill — notably
    *  CLAUDE_SKILL_DIR (and CLAUDE_PLUGIN_ROOT for plugin-packaged skills), so imported
-   *  Claude-Code skills that shell out via `$CLAUDE_SKILL_DIR/scripts/...` work (issue #22). */
+   *  the reference skills that shell out via `$CLAUDE_SKILL_DIR/scripts/...` work (issue #22). */
   skillEnv?: Record<string, string>;
   /** Force the per-call permission check to run even when a hook / auto-approval path
    *  would otherwise bypass it (a forked/untrusted sub-agent context that must not
    *  inherit the parent's auto-grants). When `true`, callers MUST route through the
    *  normal permission flow regardless of any auto-approve verdict. Resolve the final
-   *  decision with {@link shouldForcePermissionCheck}. Parity: Claude's forked-agent
+   *  decision with {@link shouldForcePermissionCheck}. Parity: the reference's forked-agent
    *  `requireCanUseTool` override (utils/forkedAgent.ts). */
   requireCanUseTool?: boolean;
   abortSignal: AbortSignal;
   /** Early-wake hook for the `sleep` tool: returns true when inbound user input is
    *  queued (e.g. a mid-turn message pushed via injectMidTurnUserMessage). When
    *  present, `sleep` polls it and resolves early so the agent reacts promptly
-   *  instead of blocking the full duration. Parity: Claude's SleepTool polls
+   *  instead of blocking the full duration. Parity: the reference's SleepTool polls
    *  `hasCommandsInQueue()` and wakes within ~1s of an inbound channel message. */
   hasQueuedInput?: () => boolean;
   onProgress?: (data: string) => void;
@@ -788,7 +788,7 @@ export interface ToolContext {
   /** Subset of {@link filesRead} read only as a PARTIAL view (offset/limit or a
    *  size-truncated read). A partial read does NOT satisfy the read-before-OVERWRITE
    *  guard — overwriting the whole file after seeing only part silently clobbers the
-   *  unseen remainder. Parity: Claude's `readTimestamp.isPartialView`. */
+   *  unseen remainder. Parity: the reference's `readTimestamp.isPartialView`. */
   filesReadPartial?: Set<string>;
   /** Session id for session/agent-scoped tool state (e.g. todo_write store, T2).
    *  Populated by the engine; absent in bare/test contexts (falls back to global). */
@@ -823,7 +823,7 @@ export interface ToolContext {
    * instead of re-deriving the stance from scratch. Re-rendering a fork child's
    * stance can diverge from the parent (e.g. a cold→warm feature flag, a differently
    * ordered skill block) and bust the provider prompt cache at the first differing
-   * byte — so a cache-identical fork pays full input-token cost. Parity with Claude
+   * byte — so a cache-identical fork pays full input-token cost. Parity with the reference
    * Code's FORK_AGENT threading `toolUseContext.renderedSystemPrompt` instead of
    * calling `getSystemPrompt()` again (forkSubagent.ts:L44-L71). Only consumed by the
    * fork branch of the task tool; other modes keep their own authoritative prompt. */
@@ -833,7 +833,7 @@ export interface ToolContext {
    * `fork`-mode child so it inherits the parent's EXACT tool pool (same tools, same
    * order) rather than a freshly-rebuilt general pool. Rebuilding the pool under a
    * child's permission mode can reorder tools or change a tool-def's serialization,
-   * which busts the prompt cache at the first differing tool. Parity with Claude
+   * which busts the prompt cache at the first differing tool. Parity with the reference
    * Code's `useExactTools` / `tools:['*']` fork inheritance (forkSubagent.ts:L44-L71,
    * resumeAgent.ts:L183-L190). The fork branch selects from the live tool registry in
    * this order; the universal subagent denylist/depth gate still applies afterwards. */
@@ -846,7 +846,7 @@ export interface ToolContext {
    * `{tool:'bash', pattern:'git:*', action:'allow'}`), computed via the canonical
    * {@link scopedToolAllowRules}. The engine applies them to the SESSION permission
    * context for as long as the inline skill stays active and removes them when it is
-   * deactivated or replaced — parity with Claude Code's security-review command,
+   * deactivated or replaced — parity with the reference's security-review command,
    * which injects a command's allowed-tools into `alwaysAllowRules.command` for the
    * duration of that command. Decoupled from `isStanceSkill`, so a plain inline
    * skill (or a skill-backed slash command) can pre-approve its own scoped commands
@@ -871,7 +871,7 @@ export interface ToolContext {
   outputBudget?: { bashMaxChars?: number; taskTailLines?: number; taskMaxChars?: number; fileReadMaxTokens?: number; fileReadMaxSizeBytes?: number };
   /** Parent engine's thinking config, inherited by subagents unless overridden. */
   _parentThinking?: ThinkingConfig;
-  /** Optional sub-agent handoff safety classifier (parity: Claude's classifyHandoffIfNeeded).
+  /** Optional sub-agent handoff safety classifier (parity: the reference's classifyHandoffIfNeeded).
    *  When provided, it reviews an autonomous (yolo/auto) sub-agent's tool calls before the
    *  result is handed back to the parent; omitted, the task tool uses its built-in
    *  dangerous-command heuristic. See tools/handoff-review.ts. */
@@ -884,7 +884,7 @@ export interface ToolContext {
   /** Parent engine's LIVE permission mode (the resolved stance, incl. yolo/propagation).
    *  Forwarded so the task tool can CLAMP a spawned subagent's permission mode: a custom
    *  (non-built-in) agent definition may tighten but never ESCALATE past the parent's
-   *  stance. Parity: Claude's runAgent permission clamp + source-trust gate. */
+   *  stance. Parity: the reference's runAgent permission clamp + source-trust gate. */
   _parentPermissionMode?: string;
   /** Session-wide web-search budget with token-bucket refill to stop runaway loops. */
   _webSearchBudget?: { count: number; max: number; lastRefillTime?: number; refillRate?: number };
@@ -923,12 +923,12 @@ export interface ToolContext {
   /** True when the user EDITED this tool call's input at the permission prompt before
    *  approving it (the executed input differs from the model's original). Threaded by the
    *  permission layer so a tool can tailor its behavior/telemetry to a human-corrected call.
-   *  Parity: Claude's toolUseContext `userModified` (services/tools/toolExecution.ts). */
+   *  Parity: the reference's toolUseContext `userModified` (services/tools/toolExecution.ts). */
   userModified?: boolean;
 }
 
 /** Result of a tool's structured pre-execution {@link ToolDefinition.validateInput}
- *  (parity: Claude's `ValidationResult`): either success, or a machine-readable
+ *  (parity: the reference's `ValidationResult`): either success, or a machine-readable
  *  `errorCode` plus a model-facing `message`, produced BEFORE the permission check
  *  and before the tool body runs. */
 export type ToolValidationResult =
@@ -936,7 +936,7 @@ export type ToolValidationResult =
   | { result: false; message: string; errorCode: number };
 
 /** Fine-grained read/search/list classification of a single tool invocation
- *  (parity: Claude's `isSearchOrReadCommand(input)`), used to drive concise,
+ *  (parity: the reference's `isSearchOrReadCommand(input)`), used to drive concise,
  *  action-specific transcript summaries. */
 export interface ToolAccessClassification {
   isSearch: boolean;
@@ -954,7 +954,7 @@ export interface ToolDefinition {
    *  writable for others — e.g. the config tool only reads on `get` but mutates on
    *  `set`. When present, the permission layer trusts this verdict so a read
    *  auto-allows without a prompt while a write stays on the permission-asking path.
-   *  Parity: Claude's `Tool.isReadOnly(input)`. */
+   *  Parity: the reference's `Tool.isReadOnly(input)`. */
   isReadOnlyForInput?: (input: Record<string, unknown>) => boolean;
   /** Whether this tool may run CONCURRENTLY with other calls in the same turn's
    *  batch. Either a static flag OR — like {@link isReadOnlyForInput} — an
@@ -962,7 +962,7 @@ export interface ToolDefinition {
    *  must serialize for others (e.g. a read that targets a file another call in the
    *  batch writes) can decide per call. When absent, the executor falls back to the
    *  per-invocation read-only verdict (read-only ⇒ concurrency-safe). Resolve a tool
-   *  call's verdict with {@link isToolConcurrencySafe}. Parity: Claude's
+   *  call's verdict with {@link isToolConcurrencySafe}. Parity: the reference's
    *  `Tool.isConcurrencySafe(input)` (toolOrchestration / StreamingToolExecutor). */
   isConcurrencySafe?: boolean | ((input: Record<string, unknown>) => boolean);
   /** True for tools originating from MCP servers — used for auto-deferral when schema tokens exceed the context budget. */
@@ -981,90 +981,90 @@ export interface ToolDefinition {
    *  arguments). Absent / `false` = closed-world (fully local, deterministic).
    *  Resolve uniformly — never read this field directly — via
    *  {@link resolveToolOpenWorld}, which handles both forms and a throwing
-   *  predicate. Parity: Claude's `Tool.isOpenWorld?(input)` (the reference consults
+   *  predicate. Parity: the reference's `Tool.isOpenWorld?(input)` (the reference consults
    *  it input-aware as `tool.isOpenWorld?.(input)`; MCPTool defaults false,
    *  overridden per-MCP-tool from the server's `annotations.openWorldHint`). */
   isOpenWorld?: boolean | ((input: Record<string, unknown>) => boolean);
   /** Extra capability keywords (3-10 words) weighted by `tool_search`, using terms
    *  NOT already in the name/description (e.g. 'jupyter' for notebook_edit) so a
-   *  deferred tool is findable by synonym. Parity: Claude's `Tool.searchHint`. */
+   *  deferred tool is findable by synonym. Parity: the reference's `Tool.searchHint`. */
   searchHint?: string;
   /** When true, keep this (native) tool OUT of the default advertised set and surface
    *  it on demand via `tool_search` — the per-tool opt-in equivalent of MCP schema-size
-   *  auto-deferral. Parity: Claude's `Tool.shouldDefer`. */
+   *  auto-deferral. Parity: the reference's `Tool.shouldDefer`. */
   shouldDefer?: boolean;
   /** Per-tool self-declared opt-OUT of deferral: force-KEEP this tool in the initial
    *  advertised set (full schema) even when it would otherwise be deferred behind
    *  `tool_search` (e.g. an MCP tool subject to schema-size auto-deferral). An MCP
    *  server sets this on a tool via `_meta['anthropic/alwaysLoad'] === true`. Checked
-   *  before the `isMcp` auto-defer rule. Parity: Claude's `Tool.alwaysLoad`
+   *  before the `isMcp` auto-defer rule. Parity: the reference's `Tool.alwaysLoad`
    *  (ToolSearchTool/prompt.ts — `if (tool.alwaysLoad === true) return false`). */
   alwaysLoad?: boolean;
   /** Input-aware irreversible-operation predicate (delete / overwrite / send). Absent
    *  or `false` = not destructive. Lets the permission layer add an extra guard for ANY
-   *  tool, not just bash. Parity: Claude's `Tool.isDestructive(input)`. */
+   *  tool, not just bash. Parity: the reference's `Tool.isDestructive(input)`. */
   isDestructive?: (input: Record<string, unknown>) => boolean;
   /** Runtime availability gate — when it returns false the tool is dropped from the
-   *  advertised set (feature flag / env condition). Parity: Claude's `Tool.isEnabled()`. */
+   *  advertised set (feature flag / env condition). Parity: the reference's `Tool.isEnabled()`. */
   isEnabled?: (context?: ToolContext) => boolean;
   /** Per-tool cap (chars) on result size before spill-to-disk, overriding the
    *  engine-global default; `Infinity` = never spill. Parity: `maxResultSizeChars`. */
   maxResultSizeChars?: number;
   /** Alternate names this tool also answers to, for legacy/compat dispatch
-   *  (e.g. `KillShell` → task_stop). Parity: Claude's tool `aliases`. */
+   *  (e.g. `KillShell` → task_stop). Parity: the reference's tool `aliases`. */
   aliases?: string[];
   /** Force the provider to constrain generated arguments to exactly match
    *  {@link inputSchema} (OpenAI/Anthropic strict/structured tool mode). Parity: strict. */
   strict?: boolean;
   /** JSON Schema describing the tool's structured result — used to validate a
-   *  persisted/resumed tool result before rendering it. Parity: Claude's `Tool.outputSchema`. */
+   *  persisted/resumed tool result before rendering it. Parity: the reference's `Tool.outputSchema`. */
   outputSchema?: ToolInputSchema;
   /** What happens to an in-flight call when the user submits a new message:
    *  `'cancel'` aborts and discards the result; `'block'` (default) runs to completion
-   *  while the message waits. Parity: Claude's `Tool.interruptBehavior()`. */
+   *  while the message waits. Parity: the reference's `Tool.interruptBehavior()`. */
   interruptBehavior?: 'cancel' | 'block';
   /** Structured pre-execution validation run BEFORE the permission check; returns a
    *  machine-readable {@link ToolValidationResult} so the model gets a clean, schema-derived
-   *  correction without entering the tool body. Parity: Claude's `Tool.validateInput`. */
+   *  correction without entering the tool body. Parity: the reference's `Tool.validateInput`. */
   validateInput?: (input: Record<string, unknown>, context: ToolContext) => Promise<ToolValidationResult>;
   /** Compact human-readable activity phrase for progress UIs (e.g. "Reading src/foo.ts")
-   *  computed from the input. Parity: Claude's `Tool.getActivityDescription(input)`. */
+   *  computed from the input. Parity: the reference's `Tool.getActivityDescription(input)`. */
   getActivityDescription?: (input: Record<string, unknown>) => string;
   /** Fine-grained per-invocation read/search/list classification driving transcript
-   *  summaries. Parity: Claude's `Tool.isSearchOrReadCommand(input)`. */
+   *  summaries. Parity: the reference's `Tool.isSearchOrReadCommand(input)`. */
   isSearchOrReadCommand?: (input: Record<string, unknown>) => ToolAccessClassification;
   /** The wall-clock timeout budget (ms) this invocation will be killed at, resolved from
    *  the input (and any env/default knobs). Lets the executor surface a "N/budget elapsed"
    *  affordance on a long-running call so the user can see how close it is to its timeout
-   *  boundary. Return `undefined` when the tool has no bounded budget. Parity: Claude's
+   *  boundary. Return `undefined` when the tool has no bounded budget. Parity: the reference's
    *  `timeoutMs` threaded through ShellProgressMessage / BashToolResultMessage
    *  (tools/BashTool/UI.tsx, tools/PowerShellTool/UI.tsx). */
   getProgressBudgetMs?: (input: Record<string, unknown>) => number | undefined;
   /** Compact representation of this tool use fed to an auto-mode security classifier
-   *  (`''` = skip). Parity: Claude's `Tool.toAutoClassifierInput(input)`. */
+   *  (`''` = skip). Parity: the reference's `Tool.toAutoClassifierInput(input)`. */
   toAutoClassifierInput?: (input: Record<string, unknown>) => string;
   /** Long-form proactive-use / when-to-use (and when-NOT-to-use) guidance carried
    *  alongside the terse `description` and surfaced to the model. Parity: TodoWrite prompt. */
   prompt?: string;
   /** Tool-authored concise transcript label for a call, preferred by renderers over the
-   *  generic field-sniffer/JSON fallback. Parity: Claude's `renderToolUseMessage`. */
+   *  generic field-sniffer/JSON fallback. Parity: the reference's `renderToolUseMessage`. */
   renderUseMessage?: (input: Record<string, unknown>) => string;
   /** Input-derived display name for a tool call, so a renderer can show a human-friendly
    *  header (e.g. "Creating worktree") computed from the arguments instead of the raw tool
-   *  name. Empty string => fall back to {@link name}. Parity: Claude's `Tool.userFacingName(input)`
+   *  name. Empty string => fall back to {@link name}. Parity: the reference's `Tool.userFacingName(input)`
    *  (components/tasks/renderToolActivity.tsx). */
   userFacingName?: (input: Record<string, unknown>) => string;
   /** When true, this tool is a transparent wrapper: renderers show only its progress/result
    *  and suppress the tool-name header row (e.g. a passthrough/forwarding tool). Parity:
-   *  Claude's `Tool.isTransparentWrapper` (components/messages/AssistantToolUseMessage.tsx). */
+   *  the reference's `Tool.isTransparentWrapper` (components/messages/AssistantToolUseMessage.tsx). */
   isTransparentWrapper?: boolean;
   /** Per-tool predicate deciding whether a result string is truncated (e.g. exceeded a
    *  line-count cap), so a renderer can show a "truncated" affordance without re-deriving
-   *  the tool's own limit. Parity: Claude's `Tool.isResultTruncated(output)` (MCPTool). */
+   *  the tool's own limit. Parity: the reference's `Tool.isResultTruncated(output)` (MCPTool). */
   isResultTruncated?: (output: string) => boolean;
   /** Semantic equality of two parsed inputs for this tool, used to dedup repeated identical
    *  calls (order-insensitive / field-normalized where the generic deep-equal is too strict).
-   *  Absent => callers fall back to structural equality. Parity: Claude's
+   *  Absent => callers fall back to structural equality. Parity: the reference's
    *  `Tool.inputsEquivalent(a, b)`. */
   inputsEquivalent?: (a: Record<string, unknown>, b: Record<string, unknown>) => boolean;
   /** Per-tool opt-in to Anthropic fine-grained tool streaming (`eager_input_streaming`):
@@ -1073,12 +1073,12 @@ export interface ToolDefinition {
    *  process-wide `SUPERINFERENCE_FINE_GRAINED_TOOL_STREAMING` env knob (which opts in every
    *  tool), this flag opts in ONLY this tool even when the global knob is off. Applied only
    *  on the first-party `api.anthropic.com` path (proxies/Bedrock/Vertex 400 on the field).
-   *  Parity: Claude's per-tool `eager_input_streaming` on the cached tool schema. */
+   *  Parity: the reference's per-tool `eager_input_streaming` on the cached tool schema. */
   eagerInputStreaming?: boolean;
   /** Per-tool opt-in to GROUPED rendering: when `true`, consecutive calls to this
    *  tool are collapsed into one summary row by a group-aware renderer instead of
    *  each call drawing its own header. Absent / `false` ⇒ render each call
-   *  individually. Resolve with {@link shouldRenderGroupedToolUse}. Parity: Claude's
+   *  individually. Resolve with {@link shouldRenderGroupedToolUse}. Parity: the reference's
    *  per-tool `renderGroupedToolUse` opt-in (utils/groupToolUses.ts). */
   renderGroupedToolUse?: boolean;
   execute(input: Record<string, unknown>, context: ToolContext): Promise<ToolResult>;
@@ -1136,7 +1136,7 @@ export interface ProviderConfig {
    * Force or constrain the model's tool selection for this request. `'auto'` lets
    * the model decide (the API default), `'required'` forces it to call SOME tool,
    * `'none'` forbids tool calls, and `{ type: 'tool', toolName }` pins one specific
-   * tool. Mirrors Claude Code's `tool_choice` request parameter (services/api/claude.ts).
+   * tool. Mirrors the reference's `tool_choice` request parameter (services/api/claude.ts).
    * Threaded into the AI SDK `toolChoice` option; omitted (model default) when unset.
    */
   toolChoice?: 'auto' | 'required' | 'none' | { type: 'tool'; toolName: string };
@@ -1146,7 +1146,7 @@ export interface ProviderConfig {
    * in the output). Useful for bounded classifier / validator outputs and format
    * fencing — a caller can terminate on a delimiter (e.g. `['</answer>']`).
    * Forwarded verbatim as the AI SDK `stopSequences` option; omitted (no stop
-   * strings) when unset or empty. Mirrors Claude Code's `stop_sequences` request
+   * strings) when unset or empty. Mirrors the reference's `stop_sequences` request
    * parameter (utils/sideQuery.ts).
    */
   stopSequences?: string[];
@@ -1154,12 +1154,12 @@ export interface ProviderConfig {
    * Stable user/session identifier forwarded to the provider as the request
    * metadata user id — Anthropic `metadata.user_id`, OpenAI `user`. A non-lock-in
    * input parameter that drives abuse detection and can influence rate-limit
-   * bucketing. Mirrors Claude Code's `getAPIMetadata().user_id` (services/api/claude.ts).
+   * bucketing. Mirrors the reference's `getAPIMetadata().user_id` (services/api/claude.ts).
    * Populated from this field or the AMI_METADATA_USER_ID / CLAUDE_CODE_METADATA_USER_ID
    * env knob ({@link resolveMetadataUserId}); unset ⇒ no metadata is sent.
    *
    * `extra` carries arbitrary correlation fields (device/session ids, deployment
-   * tags) merged into the forwarded metadata value, mirroring Claude Code's
+   * tags) merged into the forwarded metadata value, mirroring the reference's
    * `CLAUDE_CODE_EXTRA_METADATA` JSON knob (also populatable via AMI_EXTRA_METADATA /
    * CLAUDE_CODE_EXTRA_METADATA). When present, the value becomes a JSON object
    * `{ ...extra, user_id? }` so a gateway can parse every field.
@@ -1170,7 +1170,7 @@ export interface ProviderConfig {
    * one-off auxiliary model calls (compaction summaries, insight extraction) whose
    * prefix no future turn will ever read back — writing a fresh cache entry for them
    * is pure cost with no hit. The read path is unaffected; only the Anthropic
-   * `cache_control` write markers are dropped. Mirrors Claude Code's `skipCacheWrite`.
+   * `cache_control` write markers are dropped. Mirrors the reference's `skipCacheWrite`.
    */
   skipCacheWrite?: boolean;
   /**
@@ -1178,7 +1178,7 @@ export interface ProviderConfig {
    * {@link streamChatCompletionWithRetry} after a gateway/proxy rejects the beta
    * header with a 400 — the first retry drops the ENTIRE beta set (not just the
    * extended-cache token), since a strict proxy that rejects one unknown beta
-   * typically rejects every one. Mirrors Claude Code's gateway beta-rejection
+   * typically rejects every one. Mirrors the reference's gateway beta-rejection
    * fallback covering all beta headers. Not user-facing; off by default.
    */
   disableBetas?: boolean;
@@ -1189,7 +1189,7 @@ export interface ProviderConfig {
    * endpoint — `streamChatCompletionWithRetry` makes ONE bounded, token-capped
    * non-streaming request (AI SDK `generateText`) and replays its result as the
    * normal stream, recovering a turn a proxy would otherwise have killed. Mirrors
-   * Claude Code's executeNonStreamingRequest fallback (services/api/claude.ts).
+   * the reference's executeNonStreamingRequest fallback (services/api/claude.ts).
    * Also enabled process-wide via SUPERINFERENCE_NONSTREAMING_FALLBACK /
    * CLAUDE_CODE_NONSTREAMING_FALLBACK. Off by default (streaming-only retry is
    * unchanged); an explicit falsy config value overrides a truthy env knob.
@@ -1204,7 +1204,7 @@ export interface ProviderConfig {
    * `response_format: { type: 'json_schema' }`, Anthropic tool-schema). Set on
    * auxiliary/LLM-judge calls (e.g. the critic's {approved,score,reason} verdict)
    * so a formatting miss can never masquerade as a substantive negative verdict.
-   * Omitted (free-form text) when unset. Mirrors Claude Code's `outputFormat:
+   * Omitted (free-form text) when unset. Mirrors the reference's `outputFormat:
    * { type: 'json_schema', schema }` on auxiliary queries (commands/rename/
    * generateSessionName.ts → services/api/claude.ts output_config.format).
    */
@@ -1263,7 +1263,7 @@ export interface StreamChunk {
   responseHeaders?: Record<string, string>;
 }
 
-/** Per-request API service tier the model call ran under (parity: Claude's usage
+/** Per-request API service tier the model call ran under (parity: the reference's usage
  *  `service_tier`, default 'standard'). A throughput/latency class reflected per
  *  request for cost/latency attribution. */
 export const SERVICE_TIERS = ['standard', 'priority', 'batch'] as const;
@@ -1286,14 +1286,14 @@ export interface UsageStats {
   cacheHitRate?: number;
   /** Estimated dollar savings from prompt caching. */
   cachedCostSavings?: number;
-  /** API service tier the request(s) ran under (parity: Claude usage `service_tier`,
+  /** API service tier the request(s) ran under (parity: the reference usage `service_tier`,
    *  default 'standard'). Carried for cost/latency attribution. */
   serviceTier?: ServiceTier;
   /** Count of server-side web-search requests folded into this usage record
-   *  (parity: Claude `server_tool_use.web_search_requests`). */
+   *  (parity: the reference `server_tool_use.web_search_requests`). */
   webSearchRequests?: number;
   /** Count of server-side web-fetch requests folded into this usage record
-   *  (parity: Claude `server_tool_use.web_fetch_requests`). */
+   *  (parity: the reference `server_tool_use.web_fetch_requests`). */
   webFetchRequests?: number;
 }
 
@@ -1349,7 +1349,7 @@ export const ENGINE_EVENT_TYPES = [
 ] as const;
 
 /** A single todo item as rendered to the user (T1/T5). `id` is optional
- *  (Claude-Code parity); `activeForm` is the present-continuous label shown while
+ *  (the reference parity); `activeForm` is the present-continuous label shown while
  *  the item is in progress. */
 export interface TodoItemView {
   id?: string;
@@ -1359,7 +1359,7 @@ export interface TodoItemView {
 }
 
 /**
- * One selectable option in an AskUserQuestion prompt (parity: Claude's
+ * One selectable option in an AskUserQuestion prompt (parity: the reference's
  * `QuestionOption`). Single source of truth for the option shape, shared by the
  * `user_question` {@link EngineEvent} and the {@link EngineConfig.onUserQuestion}
  * callback so the carried fields can never drift between emit and handler.
@@ -1368,23 +1368,23 @@ export interface UserQuestionOption {
   label: string;
   description: string;
   /** Markdown preview rendered in a bordered box when this option is focused
-   *  (side-by-side preview panel). Parity: Claude's `option.preview`. */
+   *  (side-by-side preview panel). Parity: the reference's `option.preview`. */
   preview?: string;
   /** When true the option is shown but not selectable (dimmed; Enter/number/space
-   *  refuse to act on it). Parity: Claude's `option.disabled`. */
+   *  refuse to act on it). Parity: the reference's `option.disabled`. */
   disabled?: boolean;
   /** Controls whether this option's DESCRIPTION column renders dimmed. Descriptions
    *  are dimmed by default (the secondary-context look); set `false` to keep a
    *  particular option's description at full brightness so a load-bearing note
    *  (e.g. a warning or the recommended choice's rationale) is not visually
-   *  demoted. Parity: Claude's CustomSelect per-option `dimDescription` override
+   *  demoted. Parity: the reference's CustomSelect per-option `dimDescription` override
    *  (which defaults to dimmed but can be turned off per option). */
   dimDescription?: boolean;
 }
 
 /**
  * A per-question annotation the user attached to their AskUserQuestion answer,
- * relayed back to the model as structured context (parity: Claude's AskUserQuestion
+ * relayed back to the model as structured context (parity: the reference's AskUserQuestion
  * per-option preview/notes annotation value). Keyed by question text in the
  * `user_question` {@link EngineEvent}'s `annotations` map. Typed (rather than an
  * opaque `unknown`) so the preview the user actually chose and any free-text notes
@@ -1399,13 +1399,13 @@ export interface UserQuestionAnnotation {
 }
 
 /** Three-state terminal outcome of a (sub)agent/task, distinguishing a clean finish
- *  from an error from a user/abort stop (parity: Claude's task_notification `status`:
+ *  from an error from a user/abort stop (parity: the reference's task_notification `status`:
  *  'completed' | 'failed' | 'stopped'). Richer than a bare success boolean. */
 export const TASK_TERMINAL_STATUS = ['completed', 'failed', 'stopped'] as const;
 export type TaskTerminalStatus = (typeof TASK_TERMINAL_STATUS)[number];
 
 /** Live machine-readable usage snapshot for a running (sub)agent, carried on progress
- *  and terminal events (parity: Claude's task_progress usage `{ total_tokens, tool_uses,
+ *  and terminal events (parity: the reference's task_progress usage `{ total_tokens, tool_uses,
  *  duration_ms }`). */
 export interface TaskUsageSnapshot {
   /** Total tokens consumed by the (sub)agent so far. */
@@ -1416,7 +1416,7 @@ export interface TaskUsageSnapshot {
   durationMs: number;
 }
 
-/** Persisted per-skill usage statistic (parity: Claude Code's global-config
+/** Persisted per-skill usage statistic (parity: the reference's global-config
  *  `skillUsage` map, `utils/suggestions/skillUsageTracking.ts`). Keyed by skill name
  *  in the global config, each entry records how many times the skill was invoked and
  *  when it was last used (epoch ms). Lets a skill's frecency ranking survive across
@@ -1433,7 +1433,7 @@ export interface SkillUsageStat {
  *  `now`, returning a NEW map (the input is never mutated). The single canonical
  *  increment+stamp formula so every persistence call site agrees — bumps `usageCount`
  *  and refreshes `lastUsedAt`. A malformed/absent prior entry is treated as a zero
- *  baseline. Parity: Claude's `skillUsage[name] = { usageCount: prev+1, lastUsedAt: now }`. */
+ *  baseline. Parity: the reference's `skillUsage[name] = { usageCount: prev+1, lastUsedAt: now }`. */
 export function mergeSkillUsageStat(
   record: Record<string, SkillUsageStat> | undefined,
   name: string,
@@ -1447,7 +1447,7 @@ export function mergeSkillUsageStat(
 }
 
 /** The operating MODE a session ran under, persisted so `--resume` can reconcile a
- *  resumed session against the live environment (parity: Claude Code's
+ *  resumed session against the live environment (parity: the reference's
  *  `coordinatorMode.ts` `SessionMode` / `matchSessionMode`). `'coordinator'` is the
  *  pure-orchestrator stance (SUPERINFERENCE_COORDINATOR_MODE); `'normal'` is the
  *  default implementer stance. Distinct from permission mode and sandbox mode. */
@@ -1467,7 +1467,7 @@ export interface SessionModeReconciliation {
 /**
  * Reconcile a resumed session's STORED operating mode against the CURRENT (live) mode,
  * returning what the caller should do. Pure — it mutates nothing and reads no globals, so
- * every resume path can share one decision formula. Branch logic mirrors Claude Code's
+ * every resume path can share one decision formula. Branch logic mirrors the reference's
  * `matchSessionMode` (coordinator/coordinatorMode.ts):
  *   - `stored === undefined` → no-op (`changed:false`), back-compat for sessions saved
  *     before operating-mode tracking existed (they carry no mode to match).
@@ -1493,12 +1493,12 @@ export function reconcileSessionMode(
  * The kind of live activity a relayed `subagent_progress` event describes. The
  * base kinds (`text`/`thinking`/`tool`) carry the sub-agent's streamed prose,
  * reasoning, and tool calls; `error`/`retry` surface failure + retry liveness on
- * the roster the moment they happen (parity: Claude Code's AgentTool relaying a
+ * the roster the moment they happen (parity: the reference's AgentTool relaying a
  * sub-agent's error/retry so the roster reflects it instead of appearing frozen).
  * `waiting` surfaces that the sub-agent is BLOCKED on an interactive
  * approval/question (a permission `ask`, an `AskUserQuestion`, or plan-mode
  * consent) so the roster shows "awaiting approval" instead of freezing on the
- * child's last tool/text row — parity: Claude Code's swarmWorkerHandler
+ * child's last tool/text row — parity: the reference's swarmWorkerHandler
  * `pendingWorkerRequest` "waiting for leader approval" affordance + the
  * AssistantToolUseMessage hook-progress "waiting" subtree.
  */
@@ -1507,7 +1507,7 @@ export type SubagentActivity = 'text' | 'thinking' | 'tool' | 'error' | 'retry' 
 /**
  * Why a request is being retried, carried on the `retry_attempt` {@link EngineEvent}
  * so a frontend can render a connection/timeout/idle retry distinctly from an
- * HTTP-status retry (which has a real `statusCode`). Parity: Claude's withRetry cause
+ * HTTP-status retry (which has a real `statusCode`). Parity: the reference's withRetry cause
  * classification (services/api/withRetry.ts) distinguishing HTTP errors from
  * connection resets, request timeouts, and idle-stream aborts.
  *   - `http`               — the server returned a real HTTP status (429/500/503/529…).
@@ -1528,11 +1528,11 @@ export type EngineEvent =
        *  call without re-parsing `data`. Revealed only past the
        *  {@link MIN_SLOW_PROGRESS_REVEAL_SECONDS} threshold (see
        *  {@link shouldRevealSlowProgress}) so brief commands don't flicker a timer.
-       *  Parity: Claude's bash_progress/powershell_progress `elapsedTimeSeconds`
+       *  Parity: the reference's bash_progress/powershell_progress `elapsedTimeSeconds`
        *  (components/messages/CollapsedReadSearchContent.tsx). Omitted when unmeasured. */
       elapsedSeconds?: number;
       /** Total output lines seen so far for the running command, for the live
-       *  "· N lines" counter. Parity: Claude's shell-progress `totalLines`. Omitted
+       *  "· N lines" counter. Parity: the reference's shell-progress `totalLines`. Omitted
        *  when the tool does not count lines. */
       totalLines?: number }
   | { type: 'tool_use_result'; toolCallId: string; toolName: string; output: string; isError: boolean;
@@ -1540,7 +1540,7 @@ export type EngineEvent =
        *  rather than echoing a confirmation row, while the model still receives the
        *  `output` in context. Set only for a routed / async-request `send_message`
        *  control send (see {@link shouldSuppressSendMessageTranscript}) — the parity
-       *  of Claude Code's SendMessageTool renderToolResultMessage null-render branches
+       *  of the reference's SendMessageTool renderToolResultMessage null-render branches
        *  (tools/SendMessageTool/UI.tsx). Absent/false → render normally. */
       suppressTranscript?: boolean;
       /** Per-hunk structured diff of a file-mutating result, forwarded from the
@@ -1558,7 +1558,7 @@ export type EngineEvent =
        *  engine queues these into the pending-tool-image path (gated on vision
        *  support) so they are injected as a user image message before the next model
        *  turn, exactly like a tool-produced image. Absent for ordinary results.
-       *  Parity: Claude's `PermissionDecision.contentBlocks` image blocks flowing
+       *  Parity: the reference's `PermissionDecision.contentBlocks` image blocks flowing
        *  back as tool_result content. */
       resultImages?: ImageContent[] }
   | { type: 'turn_complete'; content: string | null; toolCalls: ToolCallContent[]; finishReason?: string }
@@ -1566,16 +1566,16 @@ export type EngineEvent =
   | { type: 'error'; error: string }
   // `statusCode` is `null` for a connection-level failure that produced NO HTTP
   // response (timeout / network drop), distinct from a real HTTP status such as 429
-  // or 503 (parity: Claude's SDKAPIRetryMessage `error_status: number | null`). It is
+  // or 503 (parity: the reference's SDKAPIRetryMessage `error_status: number | null`). It is
   // now OPTIONAL: a connection/timeout/idle retry may omit it entirely and carry only
   // `errorKind`, so a frontend never has to render a meaningless "HTTP null".
-  // `errorKind` discriminates WHY the retry fired (parity: Claude's withRetry cause
+  // `errorKind` discriminates WHY the retry fired (parity: the reference's withRetry cause
   // classification) so connection/timeout/idle retries render distinctly from an
   // HTTP-status retry even when no status is present.
   | { type: 'retry_attempt'; attempt: number; maxRetries: number; delayMs: number; statusCode?: number | null; errorKind?: RetryErrorKind }
   // `retryAfterMs` (rate-limit category only): the server-directed wait the engine
   // derived from the `Retry-After` header / 429 body ("try again in Ns"), so a UI
-  // can show WHEN the limit resets (parity: Claude's getLimitReachedText "· resets
+  // can show WHEN the limit resets (parity: the reference's getLimitReachedText "· resets
   // <time>"), not just a bare "[RATE_LIMITED]". Absent when no hint was provided.
   | { type: 'error_classified'; category: string; retryable: boolean; willRetry: boolean; message?: string; retryAfterMs?: number }
   | { type: 'provider_changed'; provider: string; model: string; reason: string }
@@ -1588,7 +1588,7 @@ export type EngineEvent =
        *  the TOOL INPUT that triggered this question (e.g. the command/file a
        *  permission-style ask refers to), so the user sees WHAT is being asked about
        *  without it crowding the main `question`. `null`/empty are normalized to
-       *  undefined by {@link sanitizeToolInputSummary}. Parity: Claude's PromptDialog
+       *  undefined by {@link sanitizeToolInputSummary}. Parity: the reference's PromptDialog
        *  `toolInputSummary` rendered in the `titleRight` slot. */
       toolInputSummary?: string | null }
   | { type: 'session_title'; title: string }
@@ -1599,7 +1599,7 @@ export type EngineEvent =
    *  `cwd`, active `model` + `permissionMode`, the resolved `tools` (names), the
    *  live `mcpServers` ([{name,status}]) and the running `version`. Emitted from a
    *  SINGLE engine site so the TUI and the detached/SDK runner receive an IDENTICAL
-   *  shape (the TUI↔CLI parity invariant). Parity: Claude Code's `system/init`
+   *  shape (the TUI↔CLI parity invariant). Parity: the reference's `system/init`
    *  snapshot message (utils/messages/systemInit.ts `buildSystemInitMessage`). */
   | { type: 'session_init'; sessionId: string; cwd: string; model: string; permissionMode: string; tools: string[]; mcpServers: { name: string; status: string }[]; version: string }
   /** Progressive memory-pressure warning. `level` is the escalation tier the live
@@ -1607,7 +1607,7 @@ export type EngineEvent =
    *  the warning×2 escalation ceiling OR the independent absolute CRITICAL ceiling).
    *  The tier lets a frontend surface DISTINCT severity wording ('High' vs 'Critical'
    *  vs 'Severe') and escalate the notification kind at the top tier, rather than a
-   *  single flat "high memory" message. Parity: Claude Code's `useMemoryUsage`
+   *  single flat "high memory" message. Parity: the reference's `useMemoryUsage`
    *  high/critical status drives distinct notification severity. Always `>= 1` because
    *  the event is only emitted when the tier rises above 0. */
   | { type: 'memory_warning'; level: 1 | 2 | 3; rssBytes: number; thresholdBytes: number; recoverySteps: string[] }
@@ -1619,13 +1619,13 @@ export type EngineEvent =
        *  mode (`explore`/`plan`/`general`) or a named agent definition. Distinct from
        *  {@link agentName} (a per-spawn display/identity name) — two agents can share a name
        *  but differ in type. Lets a roster surface the classification at a glance. Parity:
-       *  Claude's `task_started` event `task_type` (sdkEventQueue.ts). Omitted when unset. */
+       *  the reference's `task_started` event `task_type` (sdkEventQueue.ts). Omitted when unset. */
       taskType?: string }
   | { type: 'subagent_progress'; nodeId: string; depth: number; activity: SubagentActivity; detail: string; usage?: TaskUsageSnapshot; lastToolName?: string;
       /** A concise mid-turn progress summary for the sub-agent's work so far (a forked
        *  summarizer phrase emitted periodically), distinct from the per-step `detail`
        *  activity line — lets a roster show "what this agent is accomplishing" rather
-       *  than only its latest raw action. Parity: Claude's task progress `summary`
+       *  than only its latest raw action. Parity: the reference's task progress `summary`
        *  field alongside `last_tool_name` (utils/task/sdkProgress.ts). Omitted until a
        *  summary has been computed. */
       summary?: string }
@@ -1634,20 +1634,20 @@ export type EngineEvent =
   /** An MCP server pushed a resource-update (`notifications/resources/updated`) or
    *  resource-list-change (`notifications/resources/list_changed`) notification.
    *  Carries server provenance so the user has an audit trail of WHICH server
-   *  changed WHAT (and why, for a list change). Parity: Claude's
+   *  changed WHAT (and why, for a list change). Parity: the reference's
    *  `UserResourceUpdateMessage`. `uri` is empty for a whole-list change. */
   | { type: 'mcp_resource_update'; server: string; uri: string; reason?: string }
   /** A polled MCP tool's output changed between polls. Carries server + tool
    *  provenance so the user has an audit trail of WHICH polled tool (on WHICH server)
    *  produced new output. The engine also injects a model-facing
-   *  `<mcp-polling-update type="tool" …>` user turn. Parity: Claude's
+   *  `<mcp-polling-update type="tool" …>` user turn. Parity: the reference's
    *  `UserResourceUpdateMessage` polling branch. */
   | { type: 'mcp_polling_update'; server: string; tool: string; reason?: string }
   /** An MCP server's connection state changed mid-session in a user-relevant way:
    *  `'lost'` (a ready server dropped), `'recovered'` (it came back after a drop), or
    *  `'failed'` (reconnection was abandoned). Carries server provenance + an optional
    *  `detail` (the raw state / attempt count) so a dropped tool/MCP connection is
-   *  surfaced proactively instead of silently vanishing. Parity: Claude's IDE/MCP
+   *  surfaced proactively instead of silently vanishing. Parity: the reference's IDE/MCP
    *  connection status indicator (`useIDEStatusIndicator`). */
   | { type: 'mcp_connection_changed'; server: string; state: 'lost' | 'recovered' | 'failed'; detail?: string }
   /** A project instruction file (CLAUDE.md / AGENTS.md) `@import`ed a file OUTSIDE
@@ -1656,7 +1656,7 @@ export type EngineEvent =
    *  `instructionsLoaded` hook with `loadReason:'import-blocked-outside-workspace'`.
    *  This event surfaces it so an interactive user sees WHICH external paths were
    *  dropped instead of acting on instruction files that were quietly truncated.
-   *  `paths` lists every blocked import drained together. Parity: Claude Code's
+   *  `paths` lists every blocked import drained together. Parity: the reference's
    *  `ClaudeMdExternalIncludesDialog` (enumerated external-import warning). */
   | { type: 'external_import_blocked'; paths: string[] }
   /** An inbound peer/teammate message arrived on this session's mailbox and was
@@ -1664,7 +1664,7 @@ export type EngineEvent =
    *  `<peer-message>` user turn for the model, but the TUI renders from EngineEvents,
    *  not the message list — so without this event the human never sees that a peer
    *  spoke. Carries the sender (`from`), the relayed `body`, and the optional
-   *  per-message `summary`/roster `color` the sender stamped. Parity: Claude Code's
+   *  per-message `summary`/roster `color` the sender stamped. Parity: the reference's
    *  dedicated `UserTeammateMessage` transcript renderer. */
   | { type: 'peer_message'; from: string; body: string; summary?: string; color?: string }
   /** A backgrounded task (bash/agent/monitor) reached a terminal state. The engine
@@ -1672,11 +1672,11 @@ export type EngineEvent =
    *  each completion distinctly to the TUI/detached frontend with its status-aware
    *  `summary` phrase (`completed (exit code: 0)` / `failed with exit code 1` /
    *  `was stopped`) so a finished/failed/killed background task is visible inline
-   *  instead of only in the model's context. Parity: Claude Code's shell/local-agent
+   *  instead of only in the model's context. Parity: the reference's shell/local-agent
    *  completion notification. `outputFile` is the on-disk path the task's captured
    *  output was streamed to (the `${taskId}.output` spool), so a frontend can offer a
    *  "view full output" affordance that reads the complete transcript instead of only
-   *  the collapsed summary. Parity: Claude Code's task terminal notification
+   *  the collapsed summary. Parity: the reference's task terminal notification
    *  `output_file` field (`utils/sdkEventQueue.ts`). Omitted only on a legacy direct
    *  emit that never recorded a spool path. */
   | { type: 'background_task_complete'; taskId: string; status: string; summary: string; outputFile?: string }
@@ -1687,7 +1687,7 @@ export type EngineEvent =
    *  (`'success'` | `'error'` | `'cancelled'`), with the command hook's `exitCode` and
    *  SEPARATELY-captured `stdout`/`stderr` rather than one merged blob, plus the
    *  installing plugin's provenance when the hook came from a bundle. Emitted once per
-   *  async hook from a SINGLE engine site. Parity: Claude Code's
+   *  async hook from a SINGLE engine site. Parity: the reference's
    *  `finalizeHook`/`emitHookResponse` structured async-hook response
    *  (utils/hooks/AsyncHookRegistry.ts). */
   | { type: 'hook_response'; event: string; outcome: 'success' | 'error' | 'cancelled'; exitCode?: number; stdout?: string; stderr?: string; pluginName?: string; pluginId?: string }
@@ -1697,7 +1697,7 @@ export type EngineEvent =
    *  `maxTurns` and the `turnCount` actually run) instead of a generic `error`, letting
    *  a frontend render the limit neutrally rather than as a stream/engine failure. The
    *  terminal `done` event still carries `exitReason: 'max_turns'` for exit-code
-   *  mapping. Parity: Claude Code's `max_turns_reached` informational attachment
+   *  mapping. Parity: the reference's `max_turns_reached` informational attachment
    *  (query.ts) — an expected boundary the UI renders neutrally, distinct from an error. */
   | { type: 'max_turns_reached'; maxTurns: number; turnCount: number }
   /** The autonomous-mode safety classifier is ACTIVELY evaluating an about-to-be
@@ -1709,7 +1709,7 @@ export type EngineEvent =
    *  has no signal that an approval is not instantaneous/unchecked. This event brackets
    *  that async check so a frontend can surface an in-flight "safety check in progress"
    *  indicator and the engine's {@link ToolConfirmationService} can track the checking
-   *  state (parity: Claude Code's `CLASSIFIER_CHECKING` set +
+   *  state (parity: the reference's `CLASSIFIER_CHECKING` set +
    *  `setClassifierChecking`/`clearClassifierChecking`/`isClassifierChecking`/
    *  `subscribeClassifierChecking` in `classifierApprovals.ts`). Emitted only when a
    *  classifier is installed and actually consulted for this call. */
@@ -1718,7 +1718,7 @@ export type EngineEvent =
    *  AMI can write learned corrections back into a project `SKILL.md` (the `/skill
    *  improve` flow + `SkillImprovementSurvey` apply affordance); this event makes
    *  that otherwise-silent feature OBSERVABLE so the TUI, a diagnostic, and
-   *  `ami --introspect` can see WHEN it fired — mirroring Claude Code's structured
+   *  `ami --introspect` can see WHEN it fired — mirroring the reference's structured
    *  `skill_improvement_detected` signal (utils/hooks/skillImprovement.ts) and its
    *  survey appeared/responded lifecycle events (hooks/useSkillImprovementSurvey.ts),
    *  minus the vendor telemetry routing. `phase` discriminates the moment:
@@ -1761,7 +1761,7 @@ export const AGENT_TURN_STOP_REASONS = ['finished', 'errored', 'needs-input', 'e
 export type AgentTurnStopReason = (typeof AGENT_TURN_STOP_REASONS)[number];
 
 /**
- * Natural-language auto-mode (YOLO) rule configuration (parity: Claude's
+ * Natural-language auto-mode (YOLO) rule configuration (parity: the reference's
  * `settings.autoMode` / `AutoModeConfig`): plain-English allow / soft-deny rules
  * plus an environment description that are substituted into the security-classifier
  * prompt, an optional dedicated classifier model, and a two-stage strategy selector.
@@ -1783,7 +1783,7 @@ export interface AutoModeConfig {
    *  salient value) instead of the default verbose human sentence. JSON escaping keeps
    *  hostile tool input from breaking out of its string context to forge another
    *  transcript line. Off (undefined/false) → the default descriptive rendering. Parity:
-   *  Claude's `AutoModeConfig.jsonlTranscript` / `isJsonlTranscriptEnabled` →
+   *  the reference's `AutoModeConfig.jsonlTranscript` / `isJsonlTranscriptEnabled` →
    *  `toCompactBlock` ({@code {"Bash":"ls"}} vs {@code `Bash ls`}). */
   jsonlTranscript?: boolean;
 }
@@ -1798,7 +1798,7 @@ export interface EngineConfig {
   /** Max time (ms) to wait for MCP servers to connect before the first submit proceeds (default 3000). */
   mcpStartupBudgetMs?: number;
   /**
-   * Auto-connect to a code-editor-launched MCP endpoint at startup (Claude-parity
+   * Auto-connect to a code-editor-launched MCP endpoint at startup (the reference-parity
    * `autoConnectIde`). One input to the auto-connect waterfall — a supported editor
    * terminal, an inherited `AMI_SSE_PORT`, or a truthy `AMI_AUTO_CONNECT_IDE` also
    * enable it; an explicit falsy `AMI_AUTO_CONNECT_IDE` is a hard opt-out. Only
@@ -1820,7 +1820,7 @@ export interface EngineConfig {
    *  the (possibly lower) {@link memoryWarningRssBytes} warning threshold. This is a
    *  second, absolute threshold rather than a value derived from the warning one, so
    *  an operator can keep an early soft warning while only declaring a hard-critical
-   *  state at a true memory ceiling. Parity: Claude Code's useMemoryUsage two
+   *  state at a true memory ceiling. Parity: the reference's useMemoryUsage two
    *  independent absolute thresholds (HIGH 1.5 GiB / CRITICAL 2.5 GiB). Default 2.5 GiB. */
   memoryCriticalRssBytes?: number;
   /** Injectable RSS reader for tests (defaults to process.memoryUsage().rss). */
@@ -1844,7 +1844,7 @@ export interface EngineConfig {
    * Tool names to exclude from this engine's toolset. Used for hook-spawned
    * sub-engines (prompt/agent hooks) so a verification hook cannot recursively
    * spawn subagents (`task`) or enter the interactive `plan_mode`
-   * (Claude Code's ALL_AGENT_DISALLOWED_TOOLS).
+   * (the reference's ALL_AGENT_DISALLOWED_TOOLS).
    */
   disallowedTools?: string[];
   onPermissionRequest?: (toolName: string, input: Record<string, unknown>) => Promise<boolean>;
@@ -1852,7 +1852,7 @@ export interface EngineConfig {
   permissionPromptHandler?: import('./permissions').PermissionPromptHandler;
   /**
    * Name of a registered tool to DELEGATE every non-interactive ("ask") permission decision
-   * to (parity: Claude Code's `--permission-prompt-tool <name>`). In a headless/detached run,
+   * to (parity: the reference's `--permission-prompt-tool <name>`). In a headless/detached run,
    * instead of auto-denying an `ask`, the engine invokes this tool with
    * `{ tool_name, input, tool_use_id }` and parses its JSON result into an allow/deny decision
    * (see core `parsePermissionPromptToolResult`). The named tool is removed from the advertised
@@ -1911,7 +1911,7 @@ export interface EngineConfig {
    * both preserves full structured context and maximizes prompt-cache prefix
    * sharing. Routed through the same validation/healing as a session restore so a
    * trailing/orphaned tool_use cannot produce an API-invalid transcript. Parity:
-   * Claude Code's `buildForkedMessages` + `filterIncompleteToolCalls` (runAgent.ts).
+   * the reference's `buildForkedMessages` + `filterIncompleteToolCalls` (runAgent.ts).
    */
   initialMessages?: Message[];
   /** Override the default session directory (~/.ami/projects/<cwd-slug>/sessions/). */
@@ -1938,20 +1938,20 @@ export interface EngineConfig {
    * Managed hook kill-switch mirrored from the merged config's `disableAllHooks`.
    * When true the engine calls `HookManager.setDisableAllHooks(true, true)` before
    * loading hooks, so ZERO hooks register/run for the whole session. Managed-tier
-   * only; see {@link ProjectConfig}. Parity: Claude Code's `disableAllHooks`.
+   * only; see {@link ProjectConfig}. Parity: the reference's `disableAllHooks`.
    */
   disableAllHooks?: boolean;
   /**
    * Managed hook lockdown mirrored from the merged config's `allowManagedHooksOnly`.
    * When true the engine calls `HookManager.setAllowManagedHooksOnly(true)` so only
    * admin/managed-sourced hooks load (user/project/plugin hooks blocked). Managed-tier
-   * only; see {@link ProjectConfig}. Parity: Claude Code's `allowManagedHooksOnly`.
+   * only; see {@link ProjectConfig}. Parity: the reference's `allowManagedHooksOnly`.
    */
   allowManagedHooksOnly?: boolean;
   /** Permission rules evaluated in order; first match wins. */
   permissionRules?: Array<{ tool: string; pattern?: string; action: 'allow' | 'deny' | 'ask' }>;
   /** Least-privilege capability ceiling for a forked/background sub-engine (parity:
-   *  Claude's forked-agent `canUseTool`). A HARD cap enforced ahead of every mode —
+   *  the reference's forked-agent `canUseTool`). A HARD cap enforced ahead of every mode —
    *  confines the sub-agent to read-only bash and/or writes within a directory even
    *  under auto-allow. Set by the skill tool when a forked skill declares a sandbox;
    *  undefined for the main engine (inert). */
@@ -1982,7 +1982,7 @@ export interface EngineConfig {
    *  handling always apply regardless). */
   httpHookPolicy?: import('./hooks').HttpHookPolicy;
   /** Invocation-scoped hooks a forked skill or spawned subagent contributes from its
-   *  OWN definition's frontmatter `hooks` field (parity with Claude Code's
+   *  OWN definition's frontmatter `hooks` field (parity with the reference's
    *  registerFrontmatterHooks). Registered on this (sub-)engine's HookManager AFTER
    *  the file-loaded hooks, so they layer on top for the lifetime of the sub-engine
    *  and are torn down when it shuts down. Threaded by the skill/task tools from
@@ -1990,7 +1990,7 @@ export interface EngineConfig {
   frontmatterHooks?: import('./hooks').HookConfigEntry[];
   /** True when {@link frontmatterHooks} come from a SUBAGENT's own frontmatter (set by
    *  the task tool): a `stop` hook is remapped to `subagentStop` on registration, since a
-   *  completing subagent fires SubagentStop (parity: Claude Code registerFrontmatterHooks
+   *  completing subagent fires SubagentStop (parity: the reference registerFrontmatterHooks
    *  `isAgent`). Left false/undefined for forked-skill hooks, which keep `stop`. */
   frontmatterHooksIsAgent?: boolean;
   /** Human-readable origin of {@link frontmatterHooks} (e.g. `agent 'reviewer'` /
@@ -2004,7 +2004,7 @@ export interface EngineConfig {
   outputStyle?: string;
   /** Managed allowlist of selectable models; non-listed models are blocked.
    *
-   *  UNSET-vs-EMPTY semantics (parity: Claude Code modelAllowlist.ts L103-108):
+   *  UNSET-vs-EMPTY semantics (parity: the reference modelAllowlist.ts L103-108):
    *  - UNSET (`undefined`) ⇒ NO restriction — any model may be selected.
    *  - DEFINED but EMPTY (`[]`) ⇒ HARD LOCKDOWN — EVERY user-initiated model switch
    *    (`/model`, `/architect <model>`) is blocked; the admin has disallowed all
@@ -2030,7 +2030,7 @@ export interface EngineConfig {
    *  through the `user_message` tool (two-way synced with the tool's availability).
    *  Opt-in and gated by {@link isOutputGateEnabled} (AMI_OUTPUT_GATE). DISTINCT from
    *  the `concise` output STYLE toggled by `/brief` (terseness, a presentation
-   *  overlay) — this gates the output CHANNEL, not verbosity. Parity: Claude Code's
+   *  overlay) — this gates the output CHANNEL, not verbosity. Parity: the reference's
    *  brief-only mode (`isBriefOnly` + `setUserMsgOptIn`, commands/brief.ts). */
   outputGateMode?: boolean;
   /** Handler for AskUserQuestion tool. The UI implements this to show
@@ -2056,7 +2056,7 @@ export interface EngineConfig {
    *  query-source provenance tag (`agent:builtin:<type>` / `agent:default` /
    *  `agent:custom`) stamped on this engine's turn/api-call analytics events so local
    *  usage introspection can be segmented by agent category. Absent on the main thread.
-   *  Parity: Claude's getQuerySourceForAgent (promptCategory.ts). */
+   *  Parity: the reference's getQuerySourceForAgent (promptCategory.ts). */
   agentType?: string;
   /** Whether {@link agentType} names a BUILT-IN agent identity (vs a user-defined/custom
    *  one). Non-built-in collapses the provenance tag to `agent:custom` so a custom agent
@@ -2124,7 +2124,7 @@ export interface EngineConfig {
    *  premature; the engine retries up to this many times first, then falls back.
    *  A genuine model-unavailable (e.g. `model_not_found`) is unaffected and still
    *  falls back immediately. Default: 3. Env: SUPERINFERENCE_MAX_529_RETRIES
-   *  (CLAUDE_CODE_MAX_529_RETRIES accepted as an alias). Parity: Claude Code's
+   *  (CLAUDE_CODE_MAX_529_RETRIES accepted as an alias). Parity: the reference's
    *  MAX_529_RETRIES threshold before FallbackTriggeredError. */
   max529RetriesBeforeFallback?: number;
   /** Maximum delay cap for transient error backoff, in ms. Default: 30 000 (30s).
@@ -2150,7 +2150,7 @@ export interface EngineConfig {
   _autoModeClassifierRunner?: unknown;
 
   // -------------------------------------------------------------------------
-  // Parity config knobs (Claude Code settings.json / CLI flags). All optional;
+  // Parity config knobs (the reference settings.json / CLI flags). All optional;
   // each is consumed by its owning subsystem (prompt assembly, permissions,
   // memory, MCP, sandbox, UI). Added here as the single config surface so the
   // CLI resolver and `ami --introspect` thread them to the engine.
@@ -2242,7 +2242,7 @@ export interface EngineConfig {
    *  stream and summarized as a "+K more tool use" line appended to the skill's
    *  result. `0` surfaces the result only. Default (unset / negative / non-finite)
    *  keeps AMI's full live streaming — every nested event is surfaced (verbose).
-   *  Parity: Claude Code's SkillTool `MAX_PROGRESS_MESSAGES_TO_SHOW` (=3) + `verbose`
+   *  Parity: the reference's SkillTool `MAX_PROGRESS_MESSAGES_TO_SHOW` (=3) + `verbose`
    *  flag, adapted to AMI's live-stream model (opt-in cap; verbose is the default). */
   maxSkillProgressMessages?: number;
   /** Map of canonical model id → provider-specific model string (e.g. a Bedrock
@@ -2275,7 +2275,7 @@ export interface EngineConfig {
   /** Explicit column width for the inline diff preview shown in a file-edit permission
    *  prompt. When unset, the width is derived from the verbose flag by
    *  {@link resolveDiffPreviewWidth} ({@link VERBOSE_DIFF_PREVIEW_WIDTH} vs
-   *  {@link COMPACT_DIFF_PREVIEW_WIDTH}). Parity: Claude's
+   *  {@link COMPACT_DIFF_PREVIEW_WIDTH}). Parity: the reference's
    *  `NotebookEditPermissionRequest` `verbose ? 120 : 80` diff width. */
   diffPreviewWidth?: number;
 }
@@ -2292,7 +2292,7 @@ export const MAX_LSP_RECOMMENDATION_IGNORED_COUNT = 5;
  * Whether LSP-plugin recommendations are currently suppressed for a config.
  * Disabled when the user explicitly turned them off, OR they have ignored at
  * least {@link MAX_LSP_RECOMMENDATION_IGNORED_COUNT} recommendations. Pure —
- * mirrors Claude's `isLspRecommendationsDisabled()`.
+ * mirrors the reference's `isLspRecommendationsDisabled()`.
  */
 export function isLspRecommendationDisabled(
   config: Pick<EngineConfig, 'lspRecommendationDisabled' | 'lspRecommendationIgnoredCount'>,
@@ -2325,7 +2325,7 @@ export interface PromptSuggestionResolution {
 
 /**
  * Decide whether AI-generated inline prompt suggestions are enabled, matching
- * Claude's precedence: an explicit env override wins; otherwise non-interactive
+ * the reference's precedence: an explicit env override wins; otherwise non-interactive
  * sessions are always off; otherwise the config toggle decides (default ON).
  */
 export function shouldEnablePromptSuggestion(resolution: PromptSuggestionResolution = {}): boolean {
@@ -2337,19 +2337,19 @@ export function shouldEnablePromptSuggestion(resolution: PromptSuggestionResolut
 // ---------------------------------------------------------------------------
 // w88 parity primitives — pure, dependency-free building blocks for the typed
 // schema additions above (event fields, ToolResult/ToolDefinition/SystemMessage
-// fields). Each mirrors a specific Claude Code behavior; display/rendering stays
+// fields). Each mirrors a specific the reference behavior; display/rendering stays
 // in the cli layer, these only derive/validate data.
 // ---------------------------------------------------------------------------
 
 /** Minimum wall-clock seconds an in-flight command must have been running before a
  *  live "(elapsed · N lines)" progress suffix is revealed, so brief commands never
- *  flicker a timer. Parity: Claude's 2-second slow-command reveal threshold
+ *  flicker a timer. Parity: the reference's 2-second slow-command reveal threshold
  *  (components/messages/CollapsedReadSearchContent.tsx). */
 export const MIN_SLOW_PROGRESS_REVEAL_SECONDS = 2;
 
 /** Whether a running tool call has been slow enough to reveal its live elapsed/line
  *  progress affordance. `undefined`/unmeasured elapsed ⇒ not revealed. Pure; mirrors
- *  Claude's `elapsedTimeSeconds >= 2` gate for the ticking progress suffix. */
+ *  the reference's `elapsedTimeSeconds >= 2` gate for the ticking progress suffix. */
 export function shouldRevealSlowProgress(
   elapsedSeconds: number | undefined,
   thresholdSeconds: number = MIN_SLOW_PROGRESS_REVEAL_SECONDS,
@@ -2360,7 +2360,7 @@ export function shouldRevealSlowProgress(
 /** Normalize a {@link EngineEvent}'s `toolInputSummary` (a `user_question` field): a
  *  `null`, `undefined`, or whitespace-only value collapses to `undefined` so a
  *  renderer can treat "no summary" uniformly; otherwise the trimmed text is returned.
- *  Parity: Claude's PromptDialog `toolInputSummary?: string | null` handling. */
+ *  Parity: the reference's PromptDialog `toolInputSummary?: string | null` handling. */
 export function sanitizeToolInputSummary(summary: string | null | undefined): string | undefined {
   if (summary == null) return undefined;
   const trimmed = summary.trim();
@@ -2370,14 +2370,14 @@ export function sanitizeToolInputSummary(summary: string | null | undefined): st
 /** Resolve a {@link ToolResult.sentAt} emit timestamp: keep an already-stamped value
  *  (so a resumed/replayed result shows its ORIGINAL time), otherwise stamp `nowIso`
  *  (defaulting to the current clock). This enforces the "optional for replay, stamped
- *  once at execution" invariant in one place. Parity: Claude's BriefTool
+ *  once at execution" invariant in one place. Parity: the reference's BriefTool
  *  `sentAt = new Date().toISOString()` captured at execution and preserved on resume. */
 export function resolveSentAt(existing: string | undefined, nowIso: string = new Date().toISOString()): string {
   return existing ?? nowIso;
 }
 
 /** The MODEL-facing output for a {@link ToolResult}: always the terse `output`
- *  (the model never re-ingests a decoupled user-facing payload). Parity: Claude's
+ *  (the model never re-ingests a decoupled user-facing payload). Parity: the reference's
  *  `mapToolResultToToolResultBlockParam` returning only the receipt. */
 export function selectModelFacingOutput(result: Pick<ToolResult, 'output'>): string {
   return result.output;
@@ -2385,13 +2385,13 @@ export function selectModelFacingOutput(result: Pick<ToolResult, 'output'>): str
 
 /** The USER-facing output for a {@link ToolResult}: the decoupled
  *  {@link ToolResult.userFacingContent} when set, else the plain `output`. Parity:
- *  Claude's BriefTool `output.data` (UI) vs the model receipt. */
+ *  the reference's BriefTool `output.data` (UI) vs the model receipt. */
 export function selectUserFacingOutput(result: Pick<ToolResult, 'output' | 'userFacingContent'>): string {
   return result.userFacingContent ?? result.output;
 }
 
 /** Whether a tool opts into grouped (collapsed) rendering of consecutive calls.
- *  Absent field ⇒ `false` (render each call individually). Parity: Claude's per-tool
+ *  Absent field ⇒ `false` (render each call individually). Parity: the reference's per-tool
  *  `renderGroupedToolUse` opt-in. */
 export function shouldRenderGroupedToolUse(tool: Pick<ToolDefinition, 'renderGroupedToolUse'>): boolean {
   return tool.renderGroupedToolUse === true;
@@ -2399,12 +2399,12 @@ export function shouldRenderGroupedToolUse(tool: Pick<ToolDefinition, 'renderGro
 
 /** Resolve a tool's open-world (SSRF/egress-surface) status for a SPECIFIC input,
  *  the single place {@link ToolDefinition.isOpenWorld} is consulted so both forms —
- *  a plain `boolean` and Claude's input-aware `isOpenWorld?(input)` predicate — are
+ *  a plain `boolean` and the reference's input-aware `isOpenWorld?(input)` predicate — are
  *  handled uniformly. A throwing predicate degrades to `false` (closed-world), never
  *  propagating, mirroring the reference's safe `tool.isOpenWorld?.(input) || false`
  *  consult (cli/print.ts, MCPToolDetailView). Absent field ⇒ `false`.
  *  `input` defaults to `{}` for a tool-level query (the badge/introspection case,
- *  parity with Claude's `tool.isOpenWorld?.({})`). */
+ *  parity with the reference's `tool.isOpenWorld?.({})`). */
 export function resolveToolOpenWorld(
   tool: Pick<ToolDefinition, 'isOpenWorld'>,
   input: Record<string, unknown> = {},
@@ -2422,7 +2422,7 @@ export function resolveToolOpenWorld(
 
 /** Whether a {@link SystemMessage} is a proactive `'suggestion'` (e.g. a
  *  skill-improvement confirmation), so a renderer can style it apart from ordinary
- *  system output. Parity: Claude's `'suggestion'` message subtype. */
+ *  system output. Parity: the reference's `'suggestion'` message subtype. */
 export function isSuggestionMessage(message: Pick<SystemMessage, 'kind'>): boolean {
   return message.kind === 'suggestion';
 }
@@ -2430,7 +2430,7 @@ export function isSuggestionMessage(message: Pick<SystemMessage, 'kind'>): boole
 /** Final permission-check decision for a tool call given an upstream auto-approval
  *  verdict and a {@link ToolContext.requireCanUseTool} override: the override FORCES a
  *  real check (returns `true`) even when `autoApproved` is `true`; otherwise an
- *  auto-approval skips the check (returns `false`). Parity: Claude's forked-agent
+ *  auto-approval skips the check (returns `false`). Parity: the reference's forked-agent
  *  `requireCanUseTool` that re-asserts the permission gate past hook auto-approval. */
 export function shouldForcePermissionCheck(opts: {
   requireCanUseTool?: boolean;
@@ -2443,12 +2443,12 @@ export function shouldForcePermissionCheck(opts: {
 /** Persisted metadata attached to a conversation-summary (compaction) marker so it is
  *  re-rendered inline in history: how many messages were summarized, the direction of
  *  the summary, and the optional user focus/context note. Validate raw/persisted input
- *  with {@link validateSummarizeMetadata}. Parity: Claude's `summarizeMetadata`
+ *  with {@link validateSummarizeMetadata}. Parity: the reference's `summarizeMetadata`
  *  ({messagesSummarized, direction, userContext}) on the summary user message. */
 export interface SummarizeMetadata {
   /** Number of prior messages folded into the summary. */
   messagesSummarized: number;
-  /** Which end of the transcript was summarized. Parity: Claude's `direction`. */
+  /** Which end of the transcript was summarized. Parity: the reference's `direction`. */
   direction?: 'before' | 'after';
   /** Optional free-text focus/context the user supplied to steer the summary
    *  (re-rendered as `Context: "…"`). */
@@ -2551,13 +2551,13 @@ export interface EngineSubmitOptions {
    *  while dynamic overlays and `appendSystemPrompt` STILL apply on top. This is a
    *  distinct, weaker tier than {@link systemPromptOverride} (which is a HARD,
    *  byte-exact replace that drops append and every dynamic section). Parity:
-   *  Claude Code's `customSystemPrompt` (`--system-prompt`) vs `overrideSystemPrompt`
+   *  the reference's `customSystemPrompt` (`--system-prompt`) vs `overrideSystemPrompt`
    *  priority order in `utils/systemPrompt.ts` — custom replaces the default but
    *  append is still honored, whereas override short-circuits everything. */
   customSystemPrompt?: string;
   /** Text appended to the END of the active system prompt (default / override / agent)
    *  for this turn, preserving the full prompt rather than replacing it. Parity:
-   *  Claude's per-call `appendSystemPrompt`. */
+   *  the reference's per-call `appendSystemPrompt`. */
   appendSystemPrompt?: string;
   contextFiles?: ContextFile[];
   /** JSON Schema for structured output. When provided, the model output is validated against this schema. */
@@ -2574,7 +2574,7 @@ export interface EngineSubmitOptions {
    * Document attachments (e.g. PDFs) for this user turn. Attached to the user
    * message as native `document` content blocks when the active model supports
    * documents ({@link modelSupportsDocuments}); otherwise ignored with a note so
-   * the model can tell the user. Parity: Claude's `document` content block emitted
+   * the model can tell the user. Parity: the reference's `document` content block emitted
    * by the Read tool for PDFs.
    */
   documents?: DocumentContent[];
@@ -2582,7 +2582,7 @@ export interface EngineSubmitOptions {
    * Per-turn total output-token budget for this submit. When set, the engine sizes
    * the request `max_tokens` against the remaining budget and decrements it across
    * context-manager compaction boundaries ({@link nextTaskBudgetRemaining}) so a long,
-   * multi-compaction turn stays under the ceiling. Parity: Claude's query-time
+   * multi-compaction turn stays under the ceiling. Parity: the reference's query-time
    * `taskBudget: { total }` with server-side `task_budget.remaining` countdown
    * (query.ts beta `task-budgets-2026-03-13`).
    */
@@ -2592,7 +2592,7 @@ export interface EngineSubmitOptions {
 /**
  * A per-turn output-token budget carried on {@link EngineSubmitOptions.taskBudget}.
  * `total` is the ceiling for the whole turn; the engine tracks a separate remaining
- * figure that is decremented at each compaction boundary. Parity: Claude's
+ * figure that is decremented at each compaction boundary. Parity: the reference's
  * `OutputConfig.task_budget` ({ total, remaining }).
  */
 export interface TaskBudget {
@@ -2602,7 +2602,7 @@ export interface TaskBudget {
 
 /**
  * Compute the remaining output-token budget after a context-manager compaction.
- * Mirrors Claude's per-compact carryover
+ * Mirrors the reference's per-compact carryover
  * `remaining = max(0, (remaining ?? total) - preCompactContextTokens)` (query.ts):
  * the first compaction subtracts from `total`, each subsequent one from the prior
  * remaining, and the result never goes negative. Pure.
@@ -2844,7 +2844,7 @@ function sanitizeSandboxPolicy(sandbox: SandboxPolicy): SandboxPolicy {
 
 // ---------------------------------------------------------------------------
 // w96 parity primitives — pure, dependency-light building blocks. Each mirrors a
-// specific Claude Code behavior; display/rendering stays in the cli layer, these
+// specific the reference behavior; display/rendering stays in the cli layer, these
 // only derive/validate data.
 // ---------------------------------------------------------------------------
 
@@ -2864,7 +2864,7 @@ export interface InferenceConfigImmediacy {
 /**
  * Whether inference-config commands (`/model`, `/thinking`, `/fast`) should apply
  * immediately to an in-flight turn rather than deferring to turn end. Matches
- * Claude's `shouldInferenceConfigCommandBeImmediate()`: a privileged user OR an
+ * the reference's `shouldInferenceConfigCommandBeImmediate()`: a privileged user OR an
  * enabled experiment forces it on; otherwise the persisted config toggle decides
  * (default OFF). Pure.
  */
@@ -2874,16 +2874,16 @@ export function isInferenceConfigImmediate(r: InferenceConfigImmediacy = {}): bo
 
 // --- Diff-preview width (parity: NotebookEditPermissionRequest `verbose ? 120 : 80`) ---
 
-/** Diff-preview column width used in verbose mode. Parity: Claude's `120`. */
+/** Diff-preview column width used in verbose mode. Parity: the reference's `120`. */
 export const VERBOSE_DIFF_PREVIEW_WIDTH = 120;
-/** Diff-preview column width used in compact (non-verbose) mode. Parity: Claude's `80`. */
+/** Diff-preview column width used in compact (non-verbose) mode. Parity: the reference's `80`. */
 export const COMPACT_DIFF_PREVIEW_WIDTH = 80;
 
 /**
  * Column width for the inline diff preview in a file-edit permission prompt. An
  * explicit {@link EngineConfig.diffPreviewWidth} override wins; otherwise the width
  * follows the verbose flag ({@link VERBOSE_DIFF_PREVIEW_WIDTH} vs
- * {@link COMPACT_DIFF_PREVIEW_WIDTH}). Parity: Claude's `verbose ? 120 : 80`. Pure.
+ * {@link COMPACT_DIFF_PREVIEW_WIDTH}). Parity: the reference's `verbose ? 120 : 80`. Pure.
  */
 export function resolveDiffPreviewWidth(
   verbose: boolean,
@@ -2897,7 +2897,7 @@ export function resolveDiffPreviewWidth(
 // --- Symlink disclosure in the edit-approval prompt (parity: ShowInIDEPrompt.tsx) ---
 
 /** Informed-consent disclosure describing that a file-edit target is a symlink
- *  pointing somewhere other than the literal edit path. Parity: Claude's
+ *  pointing somewhere other than the literal edit path. Parity: the reference's
  *  `ShowInIDEPrompt` `symlinkTarget` note. */
 export interface SymlinkEditDisclosure {
   /** Realpath the edited symlink resolves to. */
@@ -2911,7 +2911,7 @@ export interface SymlinkEditDisclosure {
 /**
  * Build the symlink-target disclosure for a file-edit permission prompt. Returns
  * `undefined` when there is no symlink target or it resolves to the same path being
- * edited (not a redirecting symlink). Otherwise mirrors Claude's wording: a target
+ * edited (not a redirecting symlink). Otherwise mirrors the reference's wording: a target
  * that escapes the working directory ⇒
  * `"This will modify <target> (outside working directory) via a symlink"`, an
  * in-workspace target ⇒ `"Symlink target: <target>"`. Pure.
@@ -2933,7 +2933,7 @@ export function describeSymlinkEdit(
 // --- Worker/subagent attribution badge (parity: WorkerBadge.tsx) ---
 
 /** Identity of a non-primary swarm worker/subagent requesting a permission, so a
- *  prompt can render a colored `● @name` badge. Parity: Claude's `WorkerBadge`
+ *  prompt can render a colored `● @name` badge. Parity: the reference's `WorkerBadge`
  *  props ({ name, color }). */
 export interface WorkerAttribution {
   /** Display name of the requesting worker (rendered as `@name`). */
@@ -2945,7 +2945,7 @@ export interface WorkerAttribution {
 /**
  * Whether a permission prompt should show a worker-attribution badge. The badge is
  * shown ONLY when the request originates from a named, non-primary subagent — the
- * primary session never badges itself. Parity: Claude renders `WorkerBadge` only for
+ * primary session never badges itself. Parity: the reference renders `WorkerBadge` only for
  * swarm workers. Pure.
  */
 export function shouldShowWorkerBadge(
@@ -2957,15 +2957,15 @@ export function shouldShowWorkerBadge(
 
 // --- In-REPL startup notification queue (parity: context/notifications.tsx) ---
 
-/** Default auto-dismiss timeout for a {@link ReplNotification}. Parity: Claude's
+/** Default auto-dismiss timeout for a {@link ReplNotification}. Parity: the reference's
  *  `DEFAULT_TIMEOUT_MS = 8000`. */
 export const DEFAULT_NOTIFICATION_TIMEOUT_MS = 8000;
 
-/** Priority tier of a {@link ReplNotification}. Parity: Claude's notification
+/** Priority tier of a {@link ReplNotification}. Parity: the reference's notification
  *  `Priority`. */
 export type NotificationPriority = 'low' | 'medium' | 'high' | 'immediate';
 
-/** A transient in-REPL startup notification. Parity: Claude's `Notification`
+/** A transient in-REPL startup notification. Parity: the reference's `Notification`
  *  (context/notifications.tsx) minus the React-specific JSX variant. */
 export interface ReplNotification {
   /** Stable identity; a later notification with the same key folds over the earlier. */
@@ -2987,7 +2987,7 @@ export function resolveNotificationTimeout(n: Pick<ReplNotification, 'timeoutMs'
 
 /**
  * Compute the next notification queue after an incoming notification arrives,
- * mirroring Claude's queue semantics: the incoming notification's `invalidates`
+ * mirroring the reference's queue semantics: the incoming notification's `invalidates`
  * keys are dropped from the queue; an existing entry with the SAME key is folded
  * (replaced) by the incoming one; an `'immediate'` notification jumps to the front,
  * any other is appended. Pure — returns a new array, never mutates `existing`.
@@ -3004,7 +3004,7 @@ export function planNotificationQueue(
 // --- Slash-command lifecycle beacon (parity: utils/commandLifecycle.ts) ---
 
 /**
- * Lifecycle phase of a single slash-command invocation. Parity: Claude Code's
+ * Lifecycle phase of a single slash-command invocation. Parity: the reference's
  * `commandLifecycle.ts` `CommandLifecycleState` (`'started' | 'completed'`), the
  * lightweight signal a UI/observer consumes to track in-flight command
  * invocations (by {@link SlashCommandLifecycleEvent.uuid}) and render affordances
@@ -3014,7 +3014,7 @@ export type SlashCommandLifecycleState = 'started' | 'completed';
 
 /** The canonical analytics-event TYPE AMI records each slash-command lifecycle
  *  transition under, so observers (the usage view, remote-control, a `/` spinner)
- *  query ONE event name via `getEventsByType`. Parity: Claude's per-command
+ *  query ONE event name via `getEventsByType`. Parity: the reference's per-command
  *  started/completed notification, routed through AMI's analytics surface. */
 export const SLASH_COMMAND_LIFECYCLE_EVENT = 'slash_command_lifecycle';
 
@@ -3022,7 +3022,7 @@ export const SLASH_COMMAND_LIFECYCLE_EVENT = 'slash_command_lifecycle';
  * Structured payload for one slash-command lifecycle transition. `uuid` pairs the
  * `'started'` and `'completed'` records of a single invocation so an observer can
  * measure in-flight commands and their duration; `command` is the
- * display-redacted command line (never the raw argument text). Parity: Claude's
+ * display-redacted command line (never the raw argument text). Parity: the reference's
  * `notifyCommandLifecycle(uuid, state)`.
  */
 export interface SlashCommandLifecycleEvent {

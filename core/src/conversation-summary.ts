@@ -6,7 +6,7 @@ import { FILE_MUTATING_TOOLS } from './tools/background-live-turns';
 import { isHumanTurn } from './message-display';
 
 /**
- * File-extension → human language label, mirroring Claude Code's insights
+ * File-extension → human language label, mirroring the reference's insights
  * `EXTENSION_TO_LANGUAGE`. Used to build a per-language histogram from the
  * `file_path` the model already passes to mutating tools (no extra data).
  */
@@ -33,7 +33,7 @@ const EXTENSION_TO_LANGUAGE: Record<string, string> = {
 
 /**
  * Map a file path to a language label via its extension, or `null` when the
- * extension is unknown. Mirrors Claude Code's `getLanguageFromPath`.
+ * extension is unknown. Mirrors the reference's `getLanguageFromPath`.
  */
 export function getLanguageFromPath(filePath: string): string | null {
   const dot = filePath.lastIndexOf('.');
@@ -45,7 +45,7 @@ export function getLanguageFromPath(filePath: string): string | null {
 }
 
 /**
- * Categorise a tool-error result string into a stable bucket, mirroring Claude
+ * Categorise a tool-error result string into a stable bucket, mirroring the reference
  * Code's insights error taxonomy. Returns `'Other'` for unrecognised failures.
  */
 export function categorizeToolError(content: string): string {
@@ -121,7 +121,7 @@ export interface ConversationMeta {
   gitCommits: number;
   /** Number of `bash` tool calls whose command contained `git push`. */
   gitPushes: number;
-  /** Capability-class flags derived from tool-name shape, matching Claude Code's
+  /** Capability-class flags derived from tool-name shape, matching the reference's
    *  insights special-casing: any `mcp__*` tool, `web_search`, `web_fetch`, and
    *  the `task` sub-agent tool. */
   usesMcp: boolean;
@@ -133,7 +133,7 @@ export interface ConversationMeta {
   /** Error counts bucketed by {@link categorizeToolError}. */
   toolErrorCategories: Map<string, number>;
   /** Human think-time between an assistant turn and the following human turn,
-   *  in seconds, filtered to the plausible 2s–3600s window (matching Claude
+   *  in seconds, filtered to the plausible 2s–3600s window (matching the reference
    *  Code's insights response-time analysis). Order of occurrence. */
   userResponseTimes: number[];
   /** Median of {@link userResponseTimes} in seconds, or 0 when none. */
@@ -154,7 +154,7 @@ const RESPONSE_TIME_BUCKETS: ReadonlyArray<{ label: string; maxSec: number }> = 
 /**
  * Bucket response times (seconds) into the fixed {@link RESPONSE_TIME_BUCKETS}
  * histogram — the data a usage chart renders. Buckets with a zero count are
- * omitted so the caller only renders populated bars. Mirrors Claude Code's
+ * omitted so the caller only renders populated bars. Mirrors the reference's
  * insights response-time histogram.
  */
 export function responseTimeHistogram(timesSec: number[]): Map<string, number> {
@@ -203,7 +203,7 @@ export function extractConversationMeta(messages: Message[]): ConversationMeta {
         humanTurnCount++;
         // Human think-time: gap from the last assistant turn to this human turn,
         // filtered to the plausible 2s–3600s window (anything shorter is a
-        // tool-loop echo, longer is an away session), matching Claude Code.
+        // tool-loop echo, longer is an away session), matching the reference.
         if (lastAssistantTs != null && typeof ts === 'number') {
           const gapSec = (ts - lastAssistantTs) / 1000;
           if (gapSec > 2 && gapSec < 3600) userResponseTimes.push(gapSec);
@@ -299,7 +299,7 @@ export function getConversationDuration(messages: Message[]): number {
 
 /**
  * Format a millisecond duration as a compact `h/m/s` string (e.g. `1h 2m`,
- * `3m 4s`, `5s`) rather than raw milliseconds — matching Claude Code's
+ * `3m 4s`, `5s`) rather than raw milliseconds — matching the reference's
  * CompactSummary duration wording. Sub-second durations read as `0s`.
  */
 export function formatDuration(ms: number): string {
@@ -318,7 +318,7 @@ export function formatDuration(ms: number): string {
  * tools by use count, a files-modified count, and a formatted duration. Ends
  * with an affordance hint telling the user how to see the full breakdown.
  *
- * Mirrors the wording/affordance of Claude Code's CompactSummary surface. The
+ * Mirrors the wording/affordance of the reference's CompactSummary surface. The
  * exact rendering (colours, layout) is left to each frontend; this returns the
  * capability-defining string so TUI and detached stay 1:1.
  */

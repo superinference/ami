@@ -2,7 +2,7 @@
  * Per-activity read/search/list classification + human-readable activity phrases
  * for a sub-agent's live progress.
  *
- * Parity with Claude Code's `getToolSearchOrReadInfo`
+ * Parity with the reference's `getToolSearchOrReadInfo`
  * (tasks/LocalAgentTask/utils/collapseReadSearch) and the per-tool
  * `Tool.getActivityDescription(input)` / `Tool.isSearchOrReadCommand(input)`
  * hooks (per-tool definitions): each recorded tool activity is pre-classified as a SEARCH
@@ -44,13 +44,13 @@ const NATIVE_READ_TOOLS = new Set([
 
 /** Native AMI tools that are LIST (directory-enumeration) operations. Split from
  *  the READ set so a summary can say "Listed N directories" rather than the
- *  misleading "Read N files" (parity: Claude's BASH_LIST_COMMANDS split). */
+ *  misleading "Read N files" (parity: the reference's BASH_LIST_COMMANDS split). */
 const NATIVE_LIST_TOOLS = new Set([
   'list_dir',
 ]);
 
 // Bash sub-commands that classify a shell call as search / read / list. Ported
-// verbatim from Claude Code's BashTool classifier (BASH_SEARCH/READ/LIST_COMMANDS)
+// verbatim from the reference's BashTool classifier (BASH_SEARCH/READ/LIST_COMMANDS)
 // so a read-only shell command (`cat`, `grep`, `ls`) collapses in live progress
 // exactly as the equivalent native tool would, while a mutating command does not.
 const BASH_SEARCH_COMMANDS = new Set(['find', 'grep', 'rg', 'ag', 'ack', 'locate', 'which', 'whereis']);
@@ -71,7 +71,7 @@ const NONE: ToolAccessClassification = { isSearch: false, isRead: false, isList:
  * sub-commands. A compound command is classified by the UNION of every
  * non-neutral sub-command; if ANY sub-command is not a known search/read/list op
  * (i.e. a mutation), the whole command is classified as none (not collapsible),
- * matching Claude's `isSearchOrReadBashCommand`.
+ * matching the reference's `isSearchOrReadBashCommand`.
  */
 export function classifyBashAccess(command: string): ToolAccessClassification {
   if (typeof command !== 'string' || command.trim() === '') return NONE;
@@ -172,7 +172,7 @@ export function collapseActivityRun(collapsible: readonly boolean[]): string | u
 
 /**
  * Collapse the trailing run of consecutive read/search operations in a recorded
- * tool-NAME list into a single compact progress label. Mirrors Claude Code's
+ * tool-NAME list into a single compact progress label. Mirrors the reference's
  * collapseReadSearch. Prefer {@link collapseActivityRun} with input-aware flags
  * (so a read-only bash command collapses too) where the inputs are available.
  */
@@ -180,7 +180,7 @@ export function collapseReadSearchRun(toolNames: readonly string[]): string | un
   return collapseActivityRun(toolNames.map((n) => isReadOrSearchActivity(n)));
 }
 
-/** Resolves a human-readable activity phrase for a tool call (parity: Claude's
+/** Resolves a human-readable activity phrase for a tool call (parity: the reference's
  *  `ActivityDescriptionResolver`). */
 export type ActivityDescriptionResolver = (
   toolName: string,
@@ -224,7 +224,7 @@ function notebookCellLabel(inp: Record<string, unknown>): string | undefined {
  * test"). Returns `undefined` for a tool with no meaningful phrase so the caller
  * falls back to its own summary. This is the shared implementation each tool's
  * {@link ToolDefinition.getActivityDescription} hook delegates to, so there is no
- * second copy of the phrasing rules. Parity: Claude's per-tool
+ * second copy of the phrasing rules. Parity: the reference's per-tool
  * `getActivityDescription(input)`.
  */
 export function describeToolActivity(
@@ -252,7 +252,7 @@ export function describeToolActivity(
       return p ? `Editing ${truncate(p)}` : 'Editing file';
     }
     case 'notebook_edit': {
-      // Parity: Claude's NotebookEdit getActivityDescription ("Editing notebook
+      // Parity: the reference's NotebookEdit getActivityDescription ("Editing notebook
       // <summary>"), and consistent with cli/src/subagent-roster.ts, which already
       // uses the "Editing notebook" verb. Surface the TARGETED cell (cell_id, else
       // the positional cell-N alias derived from cell_number) so the live-progress
@@ -293,13 +293,13 @@ export function describeToolActivity(
     }
     case 'enter_worktree': {
       // Human-friendly present-tense progress label while the worktree is created,
-      // distinct from the raw snake_case tool name. Parity: Claude's EnterWorktreeTool
+      // distinct from the raw snake_case tool name. Parity: the reference's EnterWorktreeTool
       // userFacingName() => 'Creating worktree'.
       const label = firstString(inp.name, inp.description);
       return label ? `Creating worktree ${truncate(label)}` : 'Creating worktree';
     }
     case 'exit_worktree': {
-      // Parity: Claude's ExitWorktreeTool human-friendly progress label, with the
+      // Parity: the reference's ExitWorktreeTool human-friendly progress label, with the
       // keep-vs-remove action surfaced.
       const action = firstString(inp.action);
       return action ? `Exiting worktree (${truncate(action)})` : 'Exiting worktree';
@@ -314,7 +314,7 @@ export function describeToolActivity(
  * by name (or alias) and prefer its own
  * {@link ToolDefinition.getActivityDescription} hook, falling back to the shared
  * {@link describeToolActivity} phrasing when a tool does not define one. Parity:
- * Claude's `createActivityDescriptionResolver(tools)`.
+ * the reference's `createActivityDescriptionResolver(tools)`.
  */
 export function createActivityDescriptionResolver(
   tools: readonly ToolDefinition[],

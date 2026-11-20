@@ -23,7 +23,7 @@ const FILE_MODE = 0o600;
 // debug body (tool input/output, API payload, etc.) is persisted; both helpers
 // collapse newlines into `\n` and append a `... (N chars)` suffix that reveals
 // the ORIGINAL length so a truncated record is never mistaken for the whole
-// payload. Mirrors Claude Code's DEBUG_MSG_LIMIT / debugTruncate / debugBody
+// payload. Mirrors the reference's DEBUG_MSG_LIMIT / debugTruncate / debugBody
 // (bridge/debugUtils.ts) — a single knob instead of scattered magic slices.
 // ---------------------------------------------------------------------------
 const DEFAULT_DEBUG_MSG_LIMIT = 2000;
@@ -41,7 +41,7 @@ function getDebugMsgLimit(): number {
 /**
  * Collapse newlines and truncate a string for debug logging, appending
  * `... (N chars)` with the original length when it overflows the limit. Mirrors
- * Claude Code's `debugTruncate`.
+ * the reference's `debugTruncate`.
  */
 export function debugTruncate(s: string): string {
   const flat = s.replace(/\r\n|\r|\n/g, '\\n');
@@ -54,7 +54,7 @@ export function debugTruncate(s: string): string {
  * Serialize a JSON-serializable value, REDACT credentials, THEN truncate to the
  * limit (redact-before-truncate so a secret split across the cut boundary is
  * still removed). Circular/unstringifiable values fall back to `String(data)`.
- * Mirrors Claude Code's `debugBody`.
+ * Mirrors the reference's `debugBody`.
  */
 export function debugBody(data: unknown): string {
   let raw: string;
@@ -79,7 +79,7 @@ export function debugBody(data: unknown): string {
 /**
  * Ordered log severities. Records tagged below the active minimum level are
  * dropped before they touch disk, letting a user raise or lower verbosity at
- * runtime without a rebuild. Mirrors Claude Code's DebugLogLevel.
+ * runtime without a rebuild. Mirrors the reference's DebugLogLevel.
  */
 export type LogLevel = 'verbose' | 'debug' | 'info' | 'warn' | 'error';
 
@@ -98,7 +98,7 @@ const DEFAULT_MIN_LEVEL: LogLevel = 'debug';
  * Claude-compatible `CLAUDE_CODE_DEBUG_LOG_LEVEL`, and falls back safely to
  * `'debug'` on an unset or invalid value (so `verbose` high-volume diagnostics
  * are filtered out by default). Read per call so a value set mid-session (and in
- * tests) takes effect immediately. Mirrors Claude Code's getMinDebugLogLevel.
+ * tests) takes effect immediately. Mirrors the reference's getMinDebugLogLevel.
  */
 function getMinLogLevel(): LogLevel {
   const raw = (process.env.AMI_DEBUG_LOG_LEVEL ?? process.env.CLAUDE_CODE_DEBUG_LOG_LEVEL)
@@ -111,7 +111,7 @@ function getMinLogLevel(): LogLevel {
 }
 
 // ---------------------------------------------------------------------------
-// Debug component/category filter (AMI's analogue of Claude Code's
+// Debug component/category filter (AMI's analogue of the reference's
 // `--debug=<pattern>` / debugFilter.ts). The `AMI_DEBUG_COMPONENTS` spec is a
 // comma list that selects which log lines reach disk by their component tag and
 // any category heuristically extracted from the message:
@@ -119,11 +119,11 @@ function getMinLogLevel(): LogLevel {
 //   - `!1p,!file`   → exclusive: show everything EXCEPT `1p` and `file`
 //   - `*` / empty / undefined / whitespace → no filtering (show all; default)
 //   - a mixed spec (`api,!file`) is invalid and falls back to show-all
-// This mirrors Claude Code's parseDebugFilter/extractDebugCategories/
+// This mirrors the reference's parseDebugFilter/extractDebugCategories/
 // shouldShowDebugCategories so a user can narrow noisy debug output by subsystem.
 // ---------------------------------------------------------------------------
 
-/** Parsed debug-filter configuration. Mirrors Claude Code's `DebugFilter`. */
+/** Parsed debug-filter configuration. Mirrors the reference's `DebugFilter`. */
 export interface DebugFilter {
   include: string[];
   exclude: string[];
@@ -142,7 +142,7 @@ const debugFilterCache = new Map<string, DebugFilter | null>();
  *   - stray empty tokens (`api,,hooks`)     → dropped
  *   - mixed inclusive + exclusive tokens    → null (invalid → show all)
  * Tokens are trimmed and lowercased for case-insensitive matching. Mirrors
- * Claude Code's `parseDebugFilter`.
+ * the reference's `parseDebugFilter`.
  */
 export function parseDebugFilter(filterString?: string): DebugFilter | null {
   const key = filterString ?? '\u0000undefined';
@@ -184,7 +184,7 @@ export function parseDebugFilter(filterString?: string): DebugFilter | null {
  * `[CATEGORY] msg`, `MCP server "name": msg`, and a `1p event:` marker. Heuristic
  * matches are bounded (secondary category must be <30 chars and contain no space)
  * to keep pathological input from being treated as a category, and the result is
- * de-duped. Mirrors Claude Code's `extractDebugCategories`.
+ * de-duped. Mirrors the reference's `extractDebugCategories`.
  */
 export function extractDebugCategories(message: string): string[] {
   const categories: string[] = [];
@@ -230,7 +230,7 @@ export function extractDebugCategories(message: string): string[] {
  * Decide whether a line with the given categories passes the filter. Fail-closed:
  * when a filter is active but no categories were found, the line is dropped in
  * BOTH modes (uncategorized output is excluded by default when a user has scoped
- * debugging). Mirrors Claude Code's `shouldShowDebugCategories`.
+ * debugging). Mirrors the reference's `shouldShowDebugCategories`.
  */
 export function shouldShowDebugCategories(categories: string[], filter: DebugFilter | null): boolean {
   if (!filter) return true;
@@ -259,7 +259,7 @@ function categoriesForLine(component: string, msg: string): string[] {
 // Destination resolution — override the on-disk log location.
 // ---------------------------------------------------------------------------
 /**
- * Resolve the active log directory + file via a path waterfall (mirrors Claude
+ * Resolve the active log directory + file via a path waterfall (mirrors the reference
  * Code's getDebugLogPath): an explicit file override wins, then a directory
  * override (AMI first, then the Claude-compatible env), else the default tmp
  * location. Resolved once per init so rotation and byte-accounting stay
@@ -281,7 +281,7 @@ function resolveLogTarget(): { dir: string; file: string } {
  * concurrent sessions never interleave and each run is independently readable;
  * otherwise the shared `engine.log`. The id is validated with the same
  * path-safety guard the skill catalog uses, so a malicious value cannot escape
- * the log directory. Mirrors Claude Code's per-session `<sessionId>.txt`.
+ * the log directory. Mirrors the reference's per-session `<sessionId>.txt`.
  */
 function logFileName(): string {
   const sid = process.env.AMI_DEBUG_SESSION_ID?.trim();
@@ -299,7 +299,7 @@ function hasPerSessionFile(): boolean {
  * For per-session runs, maintain a `latest` symlink in the log directory that
  * points at the active session file so a bug-report/`/doctor`/share flow can
  * always jump straight to the current session's log. Best-effort: silently
- * no-ops on a platform/filesystem that forbids symlinks. Mirrors Claude Code's
+ * no-ops on a platform/filesystem that forbids symlinks. Mirrors the reference's
  * `debug/latest` symlink affordance.
  */
 function updateLatestSymlink(): void {
@@ -345,7 +345,7 @@ let inMemoryErrors: Array<{ error: string; timestamp: string }> = [];
 /**
  * Return a copy of the recent-errors ring (most recent last). Surfaced by
  * `/doctor` so a user hitting a session bug can see the last errors without
- * tailing the on-disk log. Mirrors Claude Code's getInMemoryErrors.
+ * tailing the on-disk log. Mirrors the reference's getInMemoryErrors.
  */
 export function getInMemoryErrors(): Array<{ error: string; timestamp: string }> {
   return [...inMemoryErrors];
@@ -368,7 +368,7 @@ function pushErrorRing(text: string): void {
 /**
  * Standard enrichment fields stamped onto every persisted error entry (the dated
  * JSONL error sink below) AND merged into the structured `data` of each
- * `logError()` debug line. Mirrors Claude Code's errorLogSink `appendToLog`,
+ * `logError()` debug line. Mirrors the reference's errorLogSink `appendToLog`,
  * which tags every record with `cwd` + `sessionId` + `version` so a later
  * bug-report/triage flow can attribute an error to the exact run, working
  * directory, and build that produced it. `sessionId` reuses `AMI_DEBUG_SESSION_ID`
@@ -426,7 +426,7 @@ function rotate(): void {
 // (bounded, oldest evicted) and replayed IN ORDER the instant a later write
 // succeeds, so no line logged before the sink is ready is silently dropped.
 // The on-disk file is AMI's "sink"; {@link flushPendingLogWrites} is the
-// idempotent drain. Mirrors Claude Code's errorQueue + drain-on-attach.
+// idempotent drain. Mirrors the reference's errorQueue + drain-on-attach.
 // ---------------------------------------------------------------------------
 const MAX_PENDING_WRITES = 100;
 let pendingWrites: string[] = [];
@@ -497,7 +497,7 @@ function ensureDir(): void {
  * the `AMI_DEBUG_TO_STDERR` env flag and the Claude-compatible
  * `--debug-to-stderr` / `-d2e` argv flags. When active, `log()` writes the
  * formatted line to stderr and bypasses the file writer, so a user can stream
- * debug output live without a log file. Mirrors Claude Code's `isDebugToStdErr`.
+ * debug output live without a log file. Mirrors the reference's `isDebugToStdErr`.
  */
 function isDebugToStderr(): boolean {
   return (
@@ -514,7 +514,7 @@ function isDebugToStderr(): boolean {
 // captured so a bug report never lacks the log). These knobs are the
 // Claude-compatible debug-mode signal that additionally FORCES logging on where
 // it would otherwise be suppressed (notably under `NODE_ENV=test`), and provide
-// the on/off affordance Claude exposes via `DEBUG`/`--debug`. Mirrors Claude
+// the on/off affordance the reference exposes via `DEBUG`/`--debug`. Mirrors the reference
 // Code's isDebugMode / enableDebugLogging.
 // ---------------------------------------------------------------------------
 // Mid-session runtime enable (the `/debug on` path). Starts false.
@@ -525,7 +525,7 @@ let runtimeDebugEnabled = false;
  * `AMI_DEBUG` env vars, the `--debug` / `-d` / `--debug=<pattern>` argv flags,
  * the stderr-routing flag, and a mid-session runtime enable. Evaluated per call
  * (no memoization) so a value set in-session — or in a test — takes effect
- * immediately. Mirrors Claude Code's isDebugMode.
+ * immediately. Mirrors the reference's isDebugMode.
  */
 export function isDebugMode(): boolean {
   return (
@@ -544,7 +544,7 @@ export function isDebugMode(): boolean {
  * Turn debug logging on for the rest of the session (the `/debug on` path), so
  * capture can start WITHOUT a restart — even under test-env suppression.
  * Idempotent; returns whether debug mode was ALREADY active before the call.
- * Mirrors Claude Code's enableDebugLogging.
+ * Mirrors the reference's enableDebugLogging.
  */
 export function enableDebugLogging(): boolean {
   const wasActive = isDebugMode();
@@ -557,7 +557,7 @@ export function enableDebugLogging(): boolean {
  * `undefined` in a non-node/degraded runtime. Behavior-preserving indirection so
  * {@link shouldPersistToDisk}'s non-node boundary guard is exercisable in a test
  * (via `mock.method(runtimeHooks, 'nodeVersion', () => undefined)`) without
- * deleting the real `process` global. Mirrors Claude Code's `typeof process`
+ * deleting the real `process` global. Mirrors the reference's `typeof process`
  * boundary guard in shouldLogDebugMessage.
  */
 export const runtimeHooks = {
@@ -565,7 +565,7 @@ export const runtimeHooks = {
 };
 
 /**
- * Boundary gate applied before any at-rest write (mirrors Claude Code's
+ * Boundary gate applied before any at-rest write (mirrors the reference's
  * shouldLogDebugMessage prelude):
  *   1. a hard non-node-runtime guard so logging never throws in a degraded env;
  *   2. `NODE_ENV=test` suppression — avoids cross-test contamination of the
@@ -600,7 +600,7 @@ export function log(
   const line = redactCredentials(composed) + '\n';
 
   // Live stderr routing: stream the formatted line to stderr and bypass the file
-  // writer entirely (parity with Claude's --debug-to-stderr).
+  // writer entirely (parity with the reference's --debug-to-stderr).
   if (isDebugToStderr()) {
     try { process.stderr.write(line); } catch {}
     return;
@@ -608,7 +608,7 @@ export function log(
 
   // Boundary gate (non-node runtime / NODE_ENV=test / AMI_DISABLE_DEBUG_LOG
   // data-minimization opt-out) — skip all at-rest work when it says so. Mirrors
-  // Claude Code's shouldLogDebugMessage prelude.
+  // the reference's shouldLogDebugMessage prelude.
   if (!shouldPersistToDisk()) return;
 
   ensureDir();
@@ -685,44 +685,44 @@ export function logError(component: string, error: string, context?: Record<stri
   const enriched = `${httpErrorContext(httpError)}${error}`;
   // Every error entry is stamped with the standard enrichment fields (sessionId
   // + cwd + version) so it is attributable to the exact run; caller-supplied
-  // structured context is merged on top (and can override). Mirrors Claude Code's
+  // structured context is merged on top (and can override). Mirrors the reference's
   // errorLogSink entry enrichment.
   const dataContext = { ...standardLogFields(), ...restContext };
 
   // Hard-fail mode: surface silently-swallowed errors by throwing immediately,
   // so a logged error crashes the run instead of being buried. Checked FIRST so
-  // it fires regardless of the error-reporting opt-out. Mirrors Claude Code's
+  // it fires regardless of the error-reporting opt-out. Mirrors the reference's
   // `--hard-fail` (AMI gates on the `AMI_LOG_HARD_FAIL` env flag).
   if (isEnvTruthy(process.env.AMI_LOG_HARD_FAIL)) {
     throw new Error(`[HARD FAIL] [${component}] ${enriched}`);
   }
 
-  // Opt-out of error capture entirely (data minimization). Mirrors Claude Code's
+  // Opt-out of error capture entirely (data minimization). Mirrors the reference's
   // `DISABLE_ERROR_REPORTING` knob: skip both the in-memory ring and disk.
   if (isEnvTruthy(process.env.DISABLE_ERROR_REPORTING)) return;
 
   // Always capture the error in the in-memory ring (redacted, bounded) so it is
   // retrievable for diagnostics/bug reports even if the disk write is filtered
-  // or fails. Mirrors Claude Code's "always add to in-memory log" behavior.
+  // or fails. Mirrors the reference's "always add to in-memory log" behavior.
   pushErrorRing(`[${component}] ${enriched}`);
   log(component, `ERROR: ${enriched}`, dataContext, 'error');
   // Also append a machine-readable record to the dated structured error sink
   // (no-op unless AMI_ERRORS_DIR is configured). Carries the same enrichment so a
-  // per-run JSONL error log is independently greppable. Mirrors Claude Code's
+  // per-run JSONL error log is independently greppable. Mirrors the reference's
   // errorLogSink dated-JSONL file.
   appendErrorRecord({ level: 'error', component, error: enriched, ...dataContext });
 }
 
 // ---------------------------------------------------------------------------
 // Dated structured JSONL error sink (opt-in, PII-redacted) — a machine-readable
-// per-run error log SEPARATE from the human debug log. Mirrors Claude Code's
+// per-run error log SEPARATE from the human debug log. Mirrors the reference's
 // errorLogSink: one date-stamped `.jsonl` file whose records carry the standard
 // enrichment fields, so errors from a run can be parsed/triaged after the fact.
 // ---------------------------------------------------------------------------
 /**
  * Convert a Date to a filesystem-safe, lexically-sortable stamp by replacing the
  * `:` and `.` that some filesystems forbid with `-` (e.g.
- * `2026-11-17T08-30-00-000Z`). Mirrors Claude Code's `dateToFilename` so dated
+ * `2026-11-17T08-30-00-000Z`). Mirrors the reference's `dateToFilename` so dated
  * log files sort by time and never collide on a colon.
  */
 export function dateToFilename(date: Date): string {
@@ -730,11 +730,11 @@ export function dateToFilename(date: Date): string {
 }
 
 // Resolved ONCE per process so every error in a run lands in the same JSONL file
-// (a stable per-run log), matching Claude Code's module-level dated filename.
+// (a stable per-run log), matching the reference's module-level dated filename.
 const ERROR_LOG_DATE = dateToFilename(new Date());
 
 /**
- * Resolve the structured error-sink directory from `AMI_ERRORS_DIR` (Claude-
+ * Resolve the structured error-sink directory from `AMI_ERRORS_DIR` (the reference-
  * compatible `CLAUDE_CODE_ERRORS_DIR` fallback), or undefined when neither is
  * set — so the dated JSONL error file is strictly opt-in and zero-cost by
  * default.
@@ -748,7 +748,7 @@ function getErrorsDir(): string | undefined {
  * Path to the active structured error-log file — `<errorsDir>/<date>.jsonl` — or
  * null when the sink is not configured. Introspection surface (consumed by
  * `/debug`) so a user/bug-report flow can point straight at the machine-readable
- * error log. Mirrors Claude Code's `getErrorsPath`.
+ * error log. Mirrors the reference's `getErrorsPath`.
  */
 export function getErrorsPath(): string | null {
   const dir = getErrorsDir();
@@ -776,7 +776,7 @@ function appendErrorRecord(record: Record<string, unknown>): void {
 /**
  * Extract a human-readable server message from an error's response payload.
  * Accepts a raw string body, `{ message }`, or `{ error: { message } }`.
- * Mirrors Claude Code's `extractServerMessage`.
+ * Mirrors the reference's `extractServerMessage`.
  */
 export function extractServerMessage(data: unknown): string | undefined {
   if (typeof data === 'string') {
@@ -822,7 +822,7 @@ export function extractServerMessage(data: unknown): string | undefined {
  *
  * It additionally surfaces the network error CODE (`error.code`, e.g.
  * `ECONNREFUSED` / `ETIMEDOUT`) so a pure connection failure that carries no url
- * or status is still attributable — Claude Code's `api.ts` logs exactly
+ * or status is still attributable — the reference's `api.ts` logs exactly
  * `err.code ?? 'unknown'` on a network error. Returns `''` only when NOTHING safe
  * to log is found.
  *
@@ -832,7 +832,7 @@ export function extractServerMessage(data: unknown): string | undefined {
  * `error.config.data` (the POST body, which for auth/token exchanges holds the raw
  * credential) and `error.config.headers` (the `Authorization` header) are never
  * touched, so a secret in the outgoing request can never reach the log through
- * this path. Mirrors the explicit "do not log err.config.data" guard in Claude
+ * this path. Mirrors the explicit "do not log err.config.data" guard in the reference
  * Code's `api.ts` and the axios-error enrichment in its `errorLogSink`.
  */
 export function httpErrorContext(error: unknown): string {
@@ -845,7 +845,7 @@ export function httpErrorContext(error: unknown): string {
   if (typeof url !== 'string' || url === '') {
     // No request URL. Still surface a bare network error CODE so a connection
     // failure (ECONNREFUSED/ETIMEDOUT) remains attributable; the request body and
-    // headers are never read, mirroring Claude Code's "log err.code alone" guard.
+    // headers are never read, mirroring the reference's "log err.code alone" guard.
     return code ? `[code=${code}] ` : '';
   }
 
@@ -878,7 +878,7 @@ function isENOENT(e: unknown): boolean {
  * the size, positioned-read the trailing window (default 64KB), then keep the
  * last `maxLines` lines. Debug logs grow unbounded in long sessions, so a full
  * read would spike RSS. A missing file is special-cased (`missing: true`) so a
- * caller can distinguish "no log yet" from a real read failure. Mirrors Claude
+ * caller can distinguish "no log yet" from a real read failure. Mirrors the reference
  * Code's bundled debug-skill tail read.
  */
 export function readLogTail(opts?: { file?: string; maxBytes?: number; maxLines?: number }): LogTailResult {
@@ -916,7 +916,7 @@ export function readLogTail(opts?: { file?: string; maxBytes?: number; maxLines?
  * Compact one value for a diagnostic description: `Array[N]`, `Object{N keys}`,
  * strings truncated to 80 chars with an ellipsis, everything else `String(v)`.
  * Keeps diagnostic lines bounded and readable. Mirrors the per-value summary in
- * Claude Code's slow-operation description builder.
+ * the reference's slow-operation description builder.
  */
 export function summarizeValue(v: unknown): string {
   if (Array.isArray(v)) return `Array[${v.length}]`;
@@ -936,7 +936,7 @@ export interface CapturedApiRequest {
 }
 
 /** How many of the most recent API requests the diagnostic ring keeps (parity:
- *  Claude Code's `MAX_CACHED_REQUESTS = 5` dumpPrompts ring). */
+ *  the reference's `MAX_CACHED_REQUESTS = 5` dumpPrompts ring). */
 export const MAX_CACHED_API_REQUESTS = 5;
 
 /** Bounded FIFO ring of the most recent {@link MAX_CACHED_API_REQUESTS} requests
@@ -947,7 +947,7 @@ const apiRequestRing: CapturedApiRequest[] = [];
 /**
  * Record an API request's parameters onto the bounded diagnostic ring so a later
  * bug report or `/doctor` can include "the last few calls that led to the failure"
- * (parity: Claude Code's `addApiRequestToCache`, which keeps the last
+ * (parity: the reference's `addApiRequestToCache`, which keeps the last
  * {@link MAX_CACHED_API_REQUESTS}). String values are credential-redacted on
  * capture so an API key in a header never lingers in memory. Pushing past the cap
  * drops the oldest entry.
@@ -1006,7 +1006,7 @@ export function shouldSurfaceToTelemetry(level: LogLevel): boolean {
  * human debug log and the analytics pipeline; by contract callers MUST NOT pass
  * PII (file paths, prompts, project/repo names), only coarse level/event/data.
  * JSON-encoded one-object-per-line so each record is independently parseable and
- * cannot be split by embedded newlines. Mirrors Claude Code's
+ * cannot be split by embedded newlines. Mirrors the reference's
  * `logForDiagnosticsNoPII`.
  */
 /**
@@ -1110,7 +1110,7 @@ function getSlowOpThresholdMs(): number {
  * `duration_ms`, plus automatic slow-operation detection: if the op exceeds
  * `AMI_SLOW_OPERATION_THRESHOLD_MS` a `[SLOW OPERATION DETECTED]` warn record is
  * emitted. `getData` optionally extracts extra fields from the result for the
- * completion event. Mirrors Claude Code's `withDiagnosticsTiming` +
+ * completion event. Mirrors the reference's `withDiagnosticsTiming` +
  * slow-operation logging. The original error is always rethrown unchanged.
  */
 export async function withDiagnosticsTiming<T>(

@@ -16,20 +16,20 @@ export interface SuperInferenceConfig {
   enforcing?: boolean;
   /** Dedicated model for the LLM critic/reviewer; '' (default) inherits the main-loop
    *  model. Lets the critic run on a cheaper/stronger model than the agent loop
-   *  (parity: Claude's advisor `advisorModel`/`baseModel`). */
+   *  (parity: the reference's advisor `advisorModel`/`baseModel`). */
   criticModel?: string;
   /** Whether the user may override {@link criticModel} (true) or it is pinned by an
    *  experiment/managed policy (false). When false, UI/config surfaces must treat the
-   *  critic model as fixed. Default true. Parity: Claude's advisor `canUserConfigure`. */
+   *  critic model as fixed. Default true. Parity: the reference's advisor `canUserConfigure`. */
   canUserConfigureCriticModel?: boolean;
   /** Max critic-approved entries retained in the memory gate's ring (oldest/lowest-scored
    *  evicted past this). Promotes the gate's hardcoded cap to a config knob. Default 100. */
   memoryMaxEntries?: number;
   /** Max entries the gate emits (top-N by critic score) into retriever/persisted context.
-   *  Default: inherits {@link memoryMaxEntries}. Parity: Claude's top-N memory selection. */
+   *  Default: inherits {@link memoryMaxEntries}. Parity: the reference's top-N memory selection. */
   memoryMaxEmitEntries?: number;
   /** Age (days) past which a gate entry carries an inline staleness caveat when emitted.
-   *  Default 7. Parity: Claude's memoryFreshnessText staleness threshold. */
+   *  Default 7. Parity: the reference's memoryFreshnessText staleness threshold. */
   memoryStalenessDays?: number;
 }
 
@@ -40,23 +40,23 @@ export interface CriticDecision {
   /** Set when the critic could not render a genuine verdict (network error, timeout,
    *  aborted stream, or unparseable output) — DISTINCT from a substantive rejection, so
    *  the engine can soften the belief floor instead of treating it as a real "no".
-   *  Parity: Claude's AdvisorMessage "Advisor unavailable (code)" error branch. */
+   *  Parity: the reference's AdvisorMessage "Advisor unavailable (code)" error branch. */
   unavailable?: boolean;
   /** Machine-readable error code when {@link unavailable} is set. */
   errorCode?: string;
   /** Model that produced this critic/advisor verdict (the resolved critic model, which
    *  may differ from the main-loop model), for review attribution in the transcript.
-   *  Parity: Claude's advisor-message model attribution. */
+   *  Parity: the reference's advisor-message model attribution. */
   model?: string;
   /** True when the advisor's reasoning came back encrypted/redacted yet the verdict is
    *  still a COMPLETE review (not an {@link unavailable} failure) — the score/approval
-   *  stand; only the rationale was withheld. Parity: Claude's redacted-review completion
+   *  stand; only the rationale was withheld. Parity: the reference's redacted-review completion
    *  state (a redacted advisor output is still a finished review). */
   redacted?: boolean;
   /** Token usage for THIS auxiliary reviewer call, tagged with the resolved reviewer
    *  {@link model}, so a usage view can attribute reviewer-model spend distinctly from
    *  the main loop. Absent when the provider reported no usage (e.g. an unavailable
-   *  review). Parity: Claude's getAdvisorUsage (per-auxiliary-model usage breakdown). */
+   *  review). Parity: the reference's getAdvisorUsage (per-auxiliary-model usage breakdown). */
   usage?: {
     model: string;
     promptTokens: number;
@@ -85,7 +85,7 @@ type CriticModelKnob = Pick<SuperInferenceConfig, 'criticModel' | 'canUserConfig
  * Resolve the effective critic/reviewer model from a USER config tier and a
  * MANAGED (operator/experiment policy) tier, honouring {@link SuperInferenceConfig.canUserConfigureCriticModel}.
  *
- * Parity: Claude Code's advisor `canUserConfigure` lock. When a managed policy pins the
+ * Parity: the reference's advisor `canUserConfigure` lock. When a managed policy pins the
  * reviewer model (`canUserConfigureCriticModel === false`) the user's `criticModel`
  * override is IGNORED and the pinned managed model stands (or `''` = inherit the main-loop
  * model when the policy locked it without naming its own model). Absent a managed opinion,

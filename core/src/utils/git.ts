@@ -26,7 +26,7 @@ const GIT_NO_PROMPT_ENV = {
  */
 export function getGitBranch(cwd: string): string | undefined {
   // PII-free timing+outcome diagnostic around the git-discovery probe (parity with
-  // Claude Code's find_git_root_* / is_git_check_* instrumentation): lets a caller
+  // the reference's find_git_root_* / is_git_check_* instrumentation): lets a caller
   // introspect "why is branch detection slow / did it find a branch" via the
   // AMI_DIAGNOSTICS_FILE channel without ever logging the branch name itself.
   const startTime = Date.now();
@@ -83,7 +83,7 @@ function runGit(cwd: string, args: string[]): { code: number; stdout: string } |
  * gitignore (`core.excludesFile`) — none of which the in-process glob/ignore
  * matchers can see. `filePath` may be absolute or relative to `cwd`.
  *
- * Exit-code branching mirrors Claude Code's `isPathGitignored`:
+ * Exit-code branching mirrors the reference's `isPathGitignored`:
  *   0   → path is ignored        → true
  *   1   → path is not ignored    → false
  *   128 → `cwd` is not a git repo → false (fail OPEN — never spuriously hide a
@@ -101,7 +101,7 @@ export function isPathGitignored(filePath: string, cwd: string): boolean {
  * Resolve git's GLOBAL ignore file (`core.excludesFile`): `$XDG_CONFIG_HOME/git/ignore`
  * when `XDG_CONFIG_HOME` is set, else `~/.config/git/ignore`. Pure (home dir + env
  * injected) so the resolution is unit-testable without touching the real `$HOME`.
- * Parity with Claude Code's `getGlobalGitignorePath()` (`utils/git/gitignore.ts`),
+ * Parity with the reference's `getGlobalGitignorePath()` (`utils/git/gitignore.ts`),
  * extended with the XDG_CONFIG_HOME precedence git itself honours. This is the ONE
  * canonical resolver: the `@`-file picker (common/src/autocomplete-provider.ts)
  * re-exports it rather than defining its own, so the global-ignore WRITE path
@@ -122,7 +122,7 @@ export function getGlobalGitignorePath(
  * gitignore so a locally-generated, never-shared file (e.g.
  * `.ami/permissions.local.json`) is
  * actually kept out of version control — making good on the "gitignored" promise
- * AMI's project-local save destination already advertises. Mirrors Claude Code's
+ * AMI's project-local save destination already advertises. Mirrors the reference's
  * `addFileGlobRuleToGitignore` (`utils/git/gitignore.ts` L53-99), SYNC to fit
  * AMI's synchronous git helpers and the synchronous permission-save path:
  *   1. no-op outside a git repo — nothing to ignore ({@link isGitRepo});
@@ -280,7 +280,7 @@ export function getRepoRemoteHash(cwd: string): string | null {
 
 /**
  * Trust classification of a repo's `origin` remote, used to pick a safe default
- * for identity-leaking behavior (commit/PR attribution). Parity with Claude
+ * for identity-leaking behavior (commit/PR attribution). Parity with the reference
  * Code's repo-class gating (`getRepoClassCached()` →
  * `internal`/`external`/`none`): the classification is keyed to whether the push
  * target is a remote the user positively owns.
@@ -292,7 +292,7 @@ export function getRepoRemoteHash(cwd: string): string | null {
  *
  * Callers that want a fail-safe-ON policy (tighten when ownership is NOT
  * confirmed) should treat anything other than `owned` as untrusted — `external`
- * and `none` both fall to the strict side, matching Claude's "only a confirmed
+ * and `none` both fall to the strict side, matching the reference's "only a confirmed
  * internal repo relaxes the guard" rule.
  */
 export type RepoRemoteClass = 'owned' | 'external' | 'none';
@@ -393,7 +393,7 @@ function readRefFrom(gitDir: string, ref: string, depth: number): string | null 
  * when the ref is absent/unreadable, the ref string is unsafe (contains a `..`
  * or empty segment), or `cwd` is not a git working tree.
  *
- * Mirrors Claude Code's `resolveRef` fast-path (utils/worktree.ts): when
+ * Mirrors the reference's `resolveRef` fast-path (utils/worktree.ts): when
  * `origin/<default>` already exists locally the base SHA is obtained without
  * spawning `git fetch`/`git rev-parse`, skipping a multi-second commit-graph scan
  * on very large clones while still giving the caller the base commit.
@@ -412,7 +412,7 @@ export function resolveRef(cwd: string, ref: string): string | null {
  * `.git` pointer file DIRECTLY — no git subprocess, no upward `findGitRoot` walk.
  * A `rev-parse HEAD` spawn burns ~15-55ms of process overhead even for a 2ms task,
  * so a fast-resume probe that may run on every `enter_worktree` reads the ref store
- * off disk instead (parity with Claude Code's `readWorktreeHeadSha`).
+ * off disk instead (parity with the reference's `readWorktreeHeadSha`).
  *
  * `<worktreePath>/.git` for a linked worktree is a FILE containing `gitdir: <path>`;
  * HEAD lives in that per-worktree gitdir, while a branch HEAD's `refs/heads/<name>`
@@ -452,7 +452,7 @@ export function readWorktreeHeadSha(worktreePath: string): string | null {
 /**
  * In-progress (transient) multi-step git operations, keyed by the on-disk marker
  * the operation leaves in the git dir, in the priority order git itself resolves
- * them. Mirrors Claude Code's `isGitTransientState` indicator set
+ * them. Mirrors the reference's `isGitTransientState` indicator set
  * (utils/commitAttribution.ts) plus `REVERT_HEAD` for an in-progress revert.
  */
 const GIT_TRANSIENT_MARKERS: ReadonlyArray<readonly [marker: string, label: string]> = [
@@ -509,7 +509,7 @@ export function findRemoteBase(
   }
 
   for (const candidate of candidates) {
-    // fs-level ref read first (no subprocess) — parity with Claude's resolveRef
+    // fs-level ref read first (no subprocess) — parity with the reference's resolveRef
     // fast-path: when the remote-tracking ref already exists locally we skip
     // spawning `git rev-parse`. `runGit` stays the authority for anything the fs
     // read can't settle (e.g. a non-`origin/` candidate).
@@ -529,12 +529,12 @@ export function findRemoteBase(
  * Return `true` when `cwd` is inside a git working tree, `false` otherwise (not a
  * repo, or git unavailable — fails CLOSED so a precondition guard treats "can't tell"
  * as "not a repo"). Delegates to `git rev-parse --is-inside-work-tree` via the shared
- * no-shell {@link runGit} runner (injection-safe, hard timeout). Parity with Claude
+ * no-shell {@link runGit} runner (injection-safe, hard timeout). Parity with the reference
  * Code's `getIsGit()` precondition check (used by worktree-spawning commands like
  * `/batch`). Shared helper so worktree-dependent callers don't each re-spawn git.
  */
 export function isGitRepo(cwd: string): boolean {
-  // PII-free timing+outcome diagnostic (parity with Claude Code's
+  // PII-free timing+outcome diagnostic (parity with the reference's
   // is_git_check_started / is_git_check_completed): records how long the repo probe
   // took and whether `cwd` is a work tree, with no path/identity data.
   const startTime = Date.now();
@@ -574,7 +574,7 @@ export function getIsClean(cwd: string, options?: { ignoreUntracked?: boolean })
 /**
  * Average characters per changed line — the heuristic used to turn a
  * `git diff --stat` line count into an approximate character volume. Parity with
- * Claude Code's `getGitDiffSize` (utils/commitAttribution.ts), which multiplies
+ * the reference's `getGitDiffSize` (utils/commitAttribution.ts), which multiplies
  * `insertions + deletions` by this constant as a cheap proxy for change size.
  */
 export const AVG_CHARS_PER_DIFF_LINE = 40;
@@ -585,7 +585,7 @@ export const AVG_CHARS_PER_DIFF_LINE = 40;
  * using the {@link AVG_CHARS_PER_DIFF_LINE} chars-per-line heuristic:
  * `(insertions + deletions) * 40`. A cheap "how much changed" proxy that never
  * reads a single hunk. Returns `0` when there are no staged changes, the path has
- * none, or git is unavailable. Parity with Claude Code's `getGitDiffSize`.
+ * none, or git is unavailable. Parity with the reference's `getGitDiffSize`.
  *
  * Read-only: uses the shared no-shell {@link runGit} runner with
  * `--no-optional-locks` so it never disturbs a concurrent index lock.
@@ -613,7 +613,7 @@ export function getStagedDiffSize(cwd: string, filePath?: string): number {
  * Return `true` when `filePath` is staged for DELETION in `cwd` — the staged
  * `git diff --cached --name-status` reports a `D` status for it — and `false`
  * otherwise (modified/added, no staged change, or git unavailable). Parity with
- * Claude Code's `isFileDeleted` (utils/commitAttribution.ts): lets attribution /
+ * the reference's `isFileDeleted` (utils/commitAttribution.ts): lets attribution /
  * change-size logic honestly flag a file whose content no longer exists on disk.
  *
  * Read-only: uses the shared no-shell {@link runGit} runner with
@@ -637,7 +637,7 @@ export type GitRefExec = (args: string[], opts: { cwd: string; stdio?: 'ignore' 
 
 /**
  * Resolve a repository's default branch, offline-friendly and with NO network
- * call (parity with Claude Code's `computeDefaultBranch`). One canonical
+ * call (parity with the reference's `computeDefaultBranch`). One canonical
  * algorithm, consumed by both `enter_worktree` (worktree base selection) and the
  * `/commit-push-pr` branch-creation guard so the two never drift:
  *   1. read the `origin/HEAD` symref directly (`git symbolic-ref` — no `git remote
@@ -664,20 +664,20 @@ export function computeDefaultBranch(cwd: string, exec: GitRefExec): string {
 /**
  * Upper bound on a SINGLE untracked file that {@link captureUntrackedFiles} will
  * read (500 MB). A larger file is skipped — never slurped into memory. Parity with
- * Claude Code's `MAX_FILE_SIZE_BYTES` (utils/git.ts).
+ * the reference's `MAX_FILE_SIZE_BYTES` (utils/git.ts).
  */
 export const UNTRACKED_MAX_FILE_SIZE_BYTES = 500 * 1024 * 1024;
 
 /**
  * Aggregate ceiling across all captured files (5 GB). Once adding the next file
- * would cross this, the scan stops. Parity with Claude Code's
+ * would cross this, the scan stops. Parity with the reference's
  * `MAX_TOTAL_SIZE_BYTES`.
  */
 export const UNTRACKED_MAX_TOTAL_SIZE_BYTES = 5 * 1024 * 1024 * 1024;
 
 /**
  * Hard cap on how many untracked files are captured (20000), so a pathological
- * working tree can never produce an unbounded result. Parity with Claude Code's
+ * working tree can never produce an unbounded result. Parity with the reference's
  * `MAX_FILE_COUNT`.
  */
 export const UNTRACKED_MAX_FILE_COUNT = 20000;
@@ -686,7 +686,7 @@ export const UNTRACKED_MAX_FILE_COUNT = 20000;
  * Initial read buffer for binary detection + content reuse (64 KB). Covers most
  * source files in a single read; {@link isBinaryContent} scans only its first 8 KB
  * for the binary heuristic, so the extra bytes exist purely to avoid a second read
- * when the file turns out to be text. Parity with Claude Code's `SNIFF_BUFFER_SIZE`.
+ * when the file turns out to be text. Parity with the reference's `SNIFF_BUFFER_SIZE`.
  */
 export const UNTRACKED_SNIFF_BUFFER_SIZE = 64 * 1024;
 
@@ -698,7 +698,7 @@ export interface CapturedUntrackedFile {
 
 /**
  * Tunable bounds for {@link captureUntrackedFiles}. Every field defaults to the
- * exported `UNTRACKED_*` constant (Claude-parity defaults); a caller that needs a
+ * exported `UNTRACKED_*` constant (the reference-parity defaults); a caller that needs a
  * tighter budget (e.g. a bug-report attachment) can override any of them.
  */
 export interface CaptureUntrackedOptions {
@@ -712,7 +712,7 @@ export interface CaptureUntrackedOptions {
  * Capture the content of every untracked file in `cwd` (`git ls-files --others
  * --exclude-standard`) as a bounded, binary-safe, memory-safe snapshot — a reusable
  * building block for checkpoint / share-state / issue-replay capture. Parity with
- * Claude Code's `captureUntrackedFiles` (utils/git.ts L616-713), tuned identically:
+ * the reference's `captureUntrackedFiles` (utils/git.ts L616-713), tuned identically:
  *
  *  - zero-I/O skip by {@link hasBinaryExtension binary extension};
  *  - per-file ({@link UNTRACKED_MAX_FILE_SIZE_BYTES}), total

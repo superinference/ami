@@ -9,7 +9,7 @@ const ALLOWED_KEYS = new Set(['id', 'name']);
  * cron_run — fire ONE scheduled job immediately (run-now), without waiting for its
  * cron time.
  *
- * PARITY (additive): Claude's trigger API exposes a `{action: "run", trigger_id}`
+ * PARITY (additive): the reference's trigger API exposes a `{action: "run", trigger_id}`
  * run-now action (src/skills/bundled/scheduleRemoteAgents.ts:L191) to execute a
  * scheduled job on demand — invaluable for testing a schedule's prompt. AMI already
  * had the scheduler primitive `CronScheduler.runNow(id, agentId)` (advances the

@@ -8,12 +8,12 @@ import { validateBoundedIntEnvVar } from '../config';
 
 /**
  * Default cap on how long a blocking task_output wait runs before giving up and
- * returning the still-running status. Mirrors Claude Code's TaskOutputTool
+ * returning the still-running status. Mirrors the reference's TaskOutputTool
  * `timeout: z.number().default(30000)` — a 30s block by default (not the 10-minute
  * ceiling), so a block-by-default poll can't park the turn for minutes.
  */
 const DEFAULT_WAIT_TIMEOUT_MS = 30 * 1000;
-/** Hard upper bound on the blocking wait timeout (mirrors Claude's 600000 cap). */
+/** Hard upper bound on the blocking wait timeout (mirrors the reference's 600000 cap). */
 const MAX_WAIT_TIMEOUT_MS = 10 * 60 * 1000;
 const WAIT_POLL_INTERVAL_MS = 400;
 /**
@@ -28,7 +28,7 @@ const MAX_OUTPUT_CHARS_MAX = 1_000_000;
 
 /**
  * PARITY (additive): operator-tunable hard character cap on returned task output,
- * mirroring Claude Code's `getMaxTaskOutputLength()` (outputFormatting.ts), which
+ * mirroring the reference's `getMaxTaskOutputLength()` (outputFormatting.ts), which
  * reads `TASK_MAX_OUTPUT_LENGTH` through `validateBoundedIntEnvVar`. AMI reads
  * `AMI_TASK_MAX_OUTPUT_CHARS` through the SAME canonical bounded-int validator so
  * the knob can never disable the cap or set an unbounded value: absent/garbage →
@@ -42,13 +42,13 @@ export function maxOutputChars(): number {
     max: MAX_OUTPUT_CHARS_MAX,
   }).effective;
 }
-/** Default number of tail lines returned when none is requested (mirrors Claude). */
+/** Default number of tail lines returned when none is requested (mirrors the reference). */
 const DEFAULT_TAIL_LINES = 50;
 /**
  * Byte ceiling for the task-output read. The process manager reads only the last
  * `TASK_OUTPUT_READ_BYTES` of the on-disk log (a positioned tail read) instead of
  * loading the whole file into memory on every poll — bounding memory/IO no matter
- * how large the log grew (mirrors Claude Code's tailFile byte cap). Set well above
+ * how large the log grew (mirrors the reference's tailFile byte cap). Set well above
  * the default char cap so the char cap, not the byte window, is the effective limit
  * for normal output while still reporting how much earlier output was elided.
  */
@@ -56,20 +56,20 @@ const TASK_OUTPUT_READ_BYTES = 512 * 1024;
 /**
  * Hard ceiling for a per-call `tail_bytes` byte window. A model can request a
  * larger or smaller on-disk tail read than the default window, but never above
- * this cap — mirrors Claude Code's DEFAULT_MAX_READ_BYTES (~8MB) upper bound so a
+ * this cap — mirrors the reference's DEFAULT_MAX_READ_BYTES (~8MB) upper bound so a
  * single read can't be asked to slurp an unbounded log into memory.
  */
 const MAX_READ_BYTES = 8 * 1024 * 1024;
 
 /** Max length of a recognizable task id in an agent-output file path. */
 const AGENT_OUTPUT_TASK_ID_MAX = 20;
-/** Charset a task id must match to be recognized in a path (mirrors Claude Code). */
+/** Charset a task id must match to be recognized in a path (mirrors the reference). */
 const AGENT_OUTPUT_TASK_ID_RE = /^[a-zA-Z0-9_-]+$/;
 const AGENT_OUTPUT_SUFFIX = '.output';
 
 /**
  * PARITY (additive): recognize an agent/background-task output FILE path and extract
- * its task id. Mirrors Claude Code's `getAgentOutputTaskId` (FileReadTool/UI.tsx):
+ * its task id. Mirrors the reference's `getAgentOutputTaskId` (FileReadTool/UI.tsx):
  * an agent output file follows the layout `…/tasks/<taskId>.output`, and the id is
  * validated as non-empty, at most 20 chars, and `[a-zA-Z0-9_-]` only. AMI writes
  * these as `projectStateDir(cwd,'tasks')/<taskId>.output` (task.ts), so we match a
@@ -115,7 +115,7 @@ function filterAndTail(chunk: string, re: RegExp | undefined, tail: number): str
 
 /**
  * PARITY (additive): truncation / total-size indicator with a full-output pointer.
- * Claude Code's shell-detail view detects that the shown tail is only a window into
+ * the reference's shell-detail view detects that the shown tail is only a window into
  * a larger file (`bytesTotal > content.length`) and renders "Showing N lines of
  * <size>". We do the same for the tool result: when the process manager can report
  * the total bytes written and the emitted tail is smaller than that total, append
@@ -143,7 +143,7 @@ function truncationIndicator(
   let msg = `Showing ${shownLines} lines (${formatSize(shownBytes)}) of ${formatSize(bytesTotal)} total — tail only, ${formatSize(omitted)} of earlier output omitted`;
   // PARITY (additive): when the process manager extrapolated a total line count
   // from the tail sample (byte-bounded read), surface it so the model has a sense
-  // of how many lines exist above the shown window (Claude Code's progress counter).
+  // of how many lines exist above the shown window (the reference's progress counter).
   if (typeof result.totalLinesEstimate === 'number' && result.totalLinesEstimate > shownLines) {
     msg += ` (~${result.totalLinesEstimate} lines total)`;
   }
@@ -155,7 +155,7 @@ function truncationIndicator(
 export const taskOutputTool: ToolDefinition = {
   name: 'task_output',
   // PARITY (additive): dedicated tool-search hint + back-compat aliases so a model
-  // or an old transcript/SDK caller using Claude's renamed `AgentOutputTool` /
+  // or an old transcript/SDK caller using the reference's renamed `AgentOutputTool` /
   // `BashOutputTool` names still resolves to this tool.
   searchHint: 'read output/logs from a background task',
   aliases: ['AgentOutputTool', 'BashOutputTool'],
@@ -181,7 +181,7 @@ export const taskOutputTool: ToolDefinition = {
       filter: {
         type: 'string',
         description: 'Regular expression; only output lines matching it are returned (applied before tail). ' +
-          'Mirrors Claude Code BashOutput\'s filter. An invalid pattern is reported as an error.',
+          'Mirrors the reference BashOutput\'s filter. An invalid pattern is reported as an error.',
       },
       since_offset: {
         type: 'number',
@@ -190,14 +190,14 @@ export const taskOutputTool: ToolDefinition = {
       },
       wait: {
         type: 'boolean',
-        // PARITY: mirror Claude Code's `block: z.boolean().default(true)` — a
+        // PARITY: mirror the reference's `block: z.boolean().default(true)` — a
         // task_output call BLOCKS for completion by default. Pass false for a
         // one-shot non-blocking status snapshot of a still-running task.
         description: 'Block until the task reaches a terminal state (completed/failed/killed), then return its final output (default true). Pass false for a quick non-blocking status snapshot.',
       },
       tail_bytes: {
         type: 'number',
-        // PARITY (additive): mirror Claude Code's byte-bounded tail read
+        // PARITY (additive): mirror the reference's byte-bounded tail read
         // (ShellDetailDialog reads only the last N bytes / DEFAULT_MAX_READ_BYTES).
         // Lets the model peek at just the last few KB of a huge log, or widen the
         // window, without pulling the whole file. Clamped to [1, MAX_READ_BYTES].
@@ -209,7 +209,7 @@ export const taskOutputTool: ToolDefinition = {
       },
       timeout_ms: {
         type: 'number',
-        // PARITY: mirror Claude Code's `timeout: z.number().min(0).max(600000)`
+        // PARITY: mirror the reference's `timeout: z.number().min(0).max(600000)`
         // schema bound. The runtime also clamps to this ceiling, but advertising
         // the bound lets the provider/validator reject an out-of-range value up
         // front instead of silently honoring an unbounded wait.
@@ -233,7 +233,7 @@ export const taskOutputTool: ToolDefinition = {
     // broken slice. coerceNumber accepts only a finite number (or numeric string),
     // floors to an int, clamps at 0, and otherwise falls back to the default.
     const tail = coerceNumber(input.tail, DEFAULT_TAIL_LINES, { integer: true, min: 0 });
-    // FUNCTIONAL (parity): block-by-default. Mirrors Claude Code's TaskOutputTool
+    // FUNCTIONAL (parity): block-by-default. Mirrors the reference's TaskOutputTool
     // `block: semanticBoolean(z.boolean().default(true))` — task_output BLOCKS until
     // the task reaches a terminal state unless the model explicitly opts out with
     // wait:false (a quick non-blocking status poll). A missing/null wait defaults to
@@ -241,7 +241,7 @@ export const taskOutputTool: ToolDefinition = {
     // is coerced via coerceBool as before.
     const wait = input.wait === undefined || input.wait === null ? true : coerceBool(input.wait);
 
-    // FUNCTIONAL (parity): optional regex line filter, mirroring Claude Code's
+    // FUNCTIONAL (parity): optional regex line filter, mirroring the reference's
     // BashOutput `filter`. Compile in the tool so an INVALID pattern surfaces a
     // clear error (instead of silently matching nothing) and the valid RegExp is
     // handed to the process manager, which filters BEFORE applying the tail.
@@ -275,7 +275,7 @@ export const taskOutputTool: ToolDefinition = {
     // FUNCTIONAL (parity, additive): optional per-call byte window for the on-disk
     // tail read. Defaults to the standard TASK_OUTPUT_READ_BYTES window; a supplied
     // value is floored to an int and clamped to [1, MAX_READ_BYTES] (a 0/garbage
-    // value falls back to the default). Mirrors Claude Code's byte-bounded tail read.
+    // value falls back to the default). Mirrors the reference's byte-bounded tail read.
     const readBytes = coerceNumber(input.tail_bytes, TASK_OUTPUT_READ_BYTES, {
       integer: true,
       min: 1,
@@ -297,10 +297,10 @@ export const taskOutputTool: ToolDefinition = {
       while (result && result.status === 'running' && Date.now() < deadline) {
         if (context.abortSignal?.aborted) { waitAborted = true; break; }
         // Live progress while blocking so the TUI shows the wait isn't a hang
-        // (mirrors Claude's "waiting for task" progress line). Emitted each poll
+        // (mirrors the reference's "waiting for task" progress line). Emitted each poll
         // with the task id, status, and elapsed time.
         const secs = (result.elapsedMs / 1000).toFixed(0);
-        // The "esc to give additional instructions" affordance mirrors Claude
+        // The "esc to give additional instructions" affordance mirrors the reference
         // Code's renderToolUseProgressMessage — it tells the user the blocking
         // wait is interruptible (AMI honours esc→abort at L227), instead of the
         // wait looking like an opaque hang.
@@ -325,7 +325,7 @@ export const taskOutputTool: ToolDefinition = {
       `Elapsed: ${elapsed}`,
     ];
 
-    // Introspection marker (parity: Claude Code's resumeAgent resumed-vs-fresh
+    // Introspection marker (parity: the reference's resumeAgent resumed-vs-fresh
     // distinction): tell the model this agent is a RESUMED continuation of a prior
     // session, not a first run, so it can interpret the output/stats accordingly.
     // Defensive typeof guard so a minimal manager stub (tests) is a no-op.
@@ -342,7 +342,7 @@ export const taskOutputTool: ToolDefinition = {
     // ready result — discriminate the two non-ready causes so the model doesn't
     // mistake a partial read for a completed result:
     //   - aborted: the wait was interrupted (abort signal) before the task finished
-    //     (mirrors Claude Code throwing AbortError from waitForTaskCompletion);
+    //     (mirrors the reference throwing AbortError from waitForTaskCompletion);
     //   - timed out: the wait deadline elapsed while the task kept running.
     if (waitAborted) {
       lines.push('Retrieval: wait aborted — interrupted before the task reached a terminal state (task still running; output below is a partial snapshot).');
@@ -363,7 +363,7 @@ export const taskOutputTool: ToolDefinition = {
       } else {
         lines.push(`Result: failure (exit code ${result.exitCode})`);
         // FUNCTIONAL (parity): actionable remediation hint on a failed task
-        // (mirrors Claude Code's failed-task notifications, which point the user at
+        // (mirrors the reference's failed-task notifications, which point the user at
         // a fallback / retry instead of just reporting the failure). A bare exit
         // code leaves the model to guess the next step; attach a concrete one —
         // point at the full on-disk log when its path is known so the model/user
@@ -376,7 +376,7 @@ export const taskOutputTool: ToolDefinition = {
       }
     }
 
-    // Structured worker-result USAGE block (parity with Claude Code's coordinator
+    // Structured worker-result USAGE block (parity with the reference's coordinator
     // result envelope, which documents `usage: { total_tokens, tool_uses,
     // duration_ms }`). For a TERMINAL agent task, append a single canonical usage
     // line — duration + total tokens + tool uses — built from the tracked entry's
@@ -398,7 +398,7 @@ export const taskOutputTool: ToolDefinition = {
       }
     }
 
-    // Dedup (parity with Claude Code's TaskOutputTool flipping `task.notified` on a
+    // Dedup (parity with the reference's TaskOutputTool flipping `task.notified` on a
     // successful read): once the model has consumed a TERMINAL task's output, latch
     // it so the engine's completion-drain does not re-announce a result the model
     // already has (which would invite a wasteful re-poll). Running tasks are left
@@ -408,7 +408,7 @@ export const taskOutputTool: ToolDefinition = {
       context.processManager.markNotified(taskId);
     }
 
-    // Clean final-answer preference (parity: Claude Code's TaskOutputTool returning
+    // Clean final-answer preference (parity: the reference's TaskOutputTool returning
     // the agent's in-memory final answer over the raw transcript). When a TERMINAL
     // agent task has written a `.result` sidecar — its last text-bearing turn only —
     // hand THAT back as the deliverable instead of the noisy streamed transcript, and
@@ -458,7 +458,7 @@ export const taskOutputTool: ToolDefinition = {
       lines.push('', filterRe ? '(no output matching filter yet)' : '(no output yet)');
     }
 
-    // FUNCTIONAL (parity with Claude Code's UserLocalCommandOutputMessage keeping
+    // FUNCTIONAL (parity with the reference's UserLocalCommandOutputMessage keeping
     // stderr a DISTINCT, separately-labelled block): surface the task's stderr in its
     // own section so a command whose only output is a diagnostic on stderr is still
     // visible and distinguishable from stdout (AMI's merged output file alone cannot
@@ -471,7 +471,7 @@ export const taskOutputTool: ToolDefinition = {
       }
     }
 
-    // outputFileRedundant optimization (parity with Claude Code's TaskOutput
+    // outputFileRedundant optimization (parity with the reference's TaskOutput
     // deleting the on-disk copy when the whole output already fit inline into the
     // tool_result): a TERMINAL task whose ENTIRE output was read here (bytesOmitted
     // === 0 — nothing was tail-truncated) no longer needs its duplicate on-disk

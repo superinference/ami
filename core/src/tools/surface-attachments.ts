@@ -6,7 +6,7 @@ import { isImagePath } from './file-read';
 import { plural } from './tool-utils';
 
 /**
- * Model-driven attachment surfacing (agent -> user). Mirrors Claude Code's
+ * Model-driven attachment surfacing (agent -> user). Mirrors the reference's
  * BriefTool / SendUserMessage attachments affordance (BriefTool/BriefTool.ts +
  * BriefTool/attachments.ts): the model attaches file paths — "photos,
  * screenshots, diffs, logs, or any file the user should see alongside your
@@ -23,14 +23,14 @@ import { plural } from './tool-utils';
  * / file:// / WSL normalization. The resolved records are emitted on
  * {@link SURFACE_ATTACHMENT_METADATA_KEY} so a frontend renders the attachments
  * to the user; the tool OUTPUT carries only the model-facing delivery
- * confirmation (parity with Claude's mapToolResultToToolResultBlockParam).
+ * confirmation (parity with the reference's mapToolResultToToolResultBlockParam).
  */
 
 /** Well-known {@link ToolResult.metadata} key carrying the resolved attachment
  *  records a frontend renders to the user (agent -> user surfacing). */
 export const SURFACE_ATTACHMENT_METADATA_KEY = 'surfacedAttachments';
 
-/** Message-intent label, mirroring Claude's BriefTool `status` enum. */
+/** Message-intent label, mirroring the reference's BriefTool `status` enum. */
 const INTENTS = ['normal', 'proactive'] as const;
 type Intent = (typeof INTENTS)[number];
 
@@ -52,7 +52,7 @@ export interface SurfacedAttachment {
 export type StatFn = (p: string) => { isFile(): boolean; size: number };
 
 /** Expand a model-provided attachment path: a leading `~` to the home dir, then
- *  resolve relative paths against the tool `cwd`. Mirrors Claude's `expandPath`
+ *  resolve relative paths against the tool `cwd`. Mirrors the reference's `expandPath`
  *  used by BriefTool/attachments.ts (tilde + absolute/resolve), NOT the heavier
  *  free-text normalization the user-input side needs. */
 export function expandAttachmentPath(raw: string, cwd: string): string {
@@ -61,7 +61,7 @@ export function expandAttachmentPath(raw: string, cwd: string): string {
   return path.isAbsolute(s) ? s : path.resolve(cwd, s);
 }
 
-/** Model-facing delivery confirmation, mirroring Claude's BriefTool
+/** Model-facing delivery confirmation, mirroring the reference's BriefTool
  *  `mapToolResultToToolResultBlockParam`:
  *  `Message delivered to user.` + ` (N attachment(s) included)` when N > 0. */
 export function formatAttachmentDelivery(count: number): string {
@@ -73,7 +73,7 @@ export function formatAttachmentDelivery(count: number): string {
  * Validate + resolve a set of model-provided attachment paths into
  * {@link SurfacedAttachment} records. Returns the first actionable error
  * (not-a-regular-file / does-not-exist-with-cwd / permission-denied),
- * mirroring Claude's `validateAttachmentPaths` messages. `statFn` defaults to
+ * mirroring the reference's `validateAttachmentPaths` messages. `statFn` defaults to
  * `fs.statSync` (the operation — it yields the size) and is injectable for tests.
  */
 export function resolveSurfacedAttachments(

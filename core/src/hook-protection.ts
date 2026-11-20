@@ -25,7 +25,7 @@ const TIER_PRIORITY: Record<HookTier, number> = {
  * introspection surface can explain WHAT each event does and WHY some are
  * protected, instead of just gating on an opaque name.
  *
- * Mirrors Claude Code's `getHookEventMetadata` (summary + description per event),
+ * Mirrors the reference's `getHookEventMetadata` (summary + description per event),
  * but scoped to AMI's internal prompt-assembly / protection events, which live in
  * a different namespace from the public lifecycle hook events documented in
  * `hooks.ts` (`getHookEventMetadata`). The two catalogs are disjoint by design.
@@ -137,7 +137,7 @@ export function isProtectedEvent(event: string): boolean {
  * The hook tiers permitted to register a protected event: every tier except the
  * untrusted `user` tier (see {@link canHookEvent}). Used by
  * {@link describeProtectedEventBlock} to tell a blocked author which tiers IS
- * allowed — mirroring Claude Code's "what-is-allowed + what-to-do" phrasing.
+ * allowed — mirroring the reference's "what-is-allowed + what-to-do" phrasing.
  */
 export function tiersAllowedForProtectedEvent(): HookTier[] {
   return HOOK_TIERS.filter((t) => t !== 'user');
@@ -149,7 +149,7 @@ export function tiersAllowedForProtectedEvent(): HookTier[] {
  * Unlike the former terse `User-tier hook cannot intercept protected event "x"`,
  * this NAMES the offending hook (when a name/command is available), EXPLAINS why
  * the event is protected (from {@link HOOK_EVENT_INFO}), and STATES which tiers
- * may register it and how to proceed — matching Claude Code's richer blocked
+ * may register it and how to proceed — matching the reference's richer blocked
  * messaging (which always tells the user what is allowed and what to do).
  */
 export function describeProtectedEventBlock(event: string, tier: HookTier, name?: string): string {
@@ -180,7 +180,7 @@ export function canHookEvent(event: string, tier: HookTier): boolean {
 
 /**
  * Defense-in-depth workspace-trust gate, orthogonal to the tier-based
- * {@link canHookEvent} check. Mirrors Claude Code's shouldSkipHookDueToTrust:
+ * {@link canHookEvent} check. Mirrors the reference's shouldSkipHookDueToTrust:
  * when the workspace trust dialog has NOT been accepted, EVERY hook of EVERY
  * tier is skipped in an interactive session (a declined-trust workspace must
  * not fire SessionEnd/SubagentStop/etc. hooks — a real CVE class). In
@@ -194,7 +194,7 @@ export function shouldSkipHookDueToTrust(trusted: boolean, interactive: boolean)
 /**
  * Provenance of a hook registration, used by the managed-only policy filter.
  *
- * Mirrors Claude Code's distinction between admin/managed-settings hooks and
+ * Mirrors the reference's distinction between admin/managed-settings hooks and
  * lower-trust sources (plugin bundles, session/frontmatter-derived agent/skill
  * hooks, and user/project filesystem hooks) that `allowManagedHooksOnly` must
  * strip so they cannot bypass org policy. AMI's tier model (see {@link HookTier})
@@ -218,7 +218,7 @@ export function isManagedHookSource(kind: HookSourceKind): boolean {
  * When `managedOnly` is OFF every provenance runs; when ON only admin/managed
  * hooks run — plugin, project, user, and config (and any session/frontmatter-
  * derived) hooks are stripped BEFORE they enter the chain, not merely reordered.
- * Parity: Claude Code's getHooksConfig → shouldAllowManagedHooksOnly branch,
+ * Parity: the reference's getHooksConfig → shouldAllowManagedHooksOnly branch,
  * which skips plugin matchers and session hooks entirely under the policy.
  */
 export function canRunHookUnderManagedOnly(kind: HookSourceKind, managedOnly: boolean): boolean {
@@ -250,7 +250,7 @@ export function sortHooksByTier(hooks: HookRegistration[]): HookRegistration[] {
  *
  * `passthrough` is a FOURTH, neutral state distinct from `allow`: a hook can
  * observe an event and decline to influence the decision (abstain) without
- * pinning the outcome to `allow`. Mirrors Claude Code's hook precedence, where
+ * pinning the outcome to `allow`. Mirrors the reference's hook precedence, where
  * `allow` only wins when nothing is set yet while `passthrough` is a true no-op.
  * Precedence (strictest wins): passthrough < allow < ask < deny.
  */
@@ -273,22 +273,22 @@ export interface HookVerdictCheck {
   verdict: HookVerdict;
   isStricter: boolean;
   /**
-   * Human-readable explanation of WHY this verdict fired — Claude Code pairs every
+   * Human-readable explanation of WHY this verdict fired — the reference pairs every
    * hook decision with `reason` / `permissionDecisionReason` so a deny/ask is not
    * opaque in the transcript or to the user. Optional: a `passthrough`/abstain
    * verdict needs no reason.
    */
   reason?: string;
   /**
-   * Flow control (Claude Code `continue`): when `false`, halt the agentic loop
+   * Flow control (the reference `continue`): when `false`, halt the agentic loop
    * after this hook. `undefined`/`true` = keep going.
    */
   continue?: boolean;
-  /** Suppress the hook's stdout from the transcript (Claude Code `suppressOutput`). */
+  /** Suppress the hook's stdout from the transcript (the reference `suppressOutput`). */
   suppressOutput?: boolean;
-  /** Reason shown to the user when {@link HookVerdictCheck.continue} is `false` (Claude Code `stopReason`). */
+  /** Reason shown to the user when {@link HookVerdictCheck.continue} is `false` (the reference `stopReason`). */
   stopReason?: string;
-  /** System message to surface after the hook (Claude Code `systemMessage`). */
+  /** System message to surface after the hook (the reference `systemMessage`). */
   systemMessage?: string;
 }
 
@@ -352,7 +352,7 @@ export function mergeHookVerdictChecks(
  * from a plugin/hook payload. Rather than silently coercing an unrecognized
  * value to the least-strict rank (which would let a real `deny` be dropped when
  * compared against garbage), any value outside the known verdict set throws —
- * mirroring Claude Code's `processHookJSONOutput`, which rejects unknown
+ * mirroring the reference's `processHookJSONOutput`, which rejects unknown
  * decision types instead of proceeding on malformed input.
  */
 export function isStricterVerdict(current: string, previous: string): boolean {
@@ -444,7 +444,7 @@ export function hookEntrySignature(h: HookSignatureInput): string {
 /**
  * Capture a startup baseline of hook signatures.
  *
- * Mirrors Claude Code's `captureHooksConfigSnapshot` (taken after `setCwd`,
+ * Mirrors the reference's `captureHooksConfigSnapshot` (taken after `setCwd`,
  * re-captured after a worktree chdir) whose explicit purpose is "to avoid hidden
  * hook modifications": a settings file edited mid-session — e.g. by a
  * prompt-injected file edit or a tool call — must not silently introduce new

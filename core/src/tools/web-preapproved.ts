@@ -1,6 +1,6 @@
 /**
  * Built-in preapproved trusted-domain config knob for web_fetch (parity with
- * Claude Code's WebFetchTool/preapproved.ts).
+ * the reference's WebFetchTool/preapproved.ts).
  *
  * For legal and security reasons web_fetch normally only fetches domains the
  * caller provided (per-call allowed_domains, or an interactive approval). We make
@@ -173,7 +173,7 @@ export function isPreapprovedHost(hostname: string, pathname: string): boolean {
 
 /**
  * Match a per-call `allowed_domains` / `blocked_domains` entry against a request's
- * host (+ pathname). Two entry forms are supported (parity with Claude's
+ * host (+ pathname). Two entry forms are supported (parity with the reference's
  * preapproved path-scoped allowlist, generalized to the caller-supplied rule list):
  *
  *  - **host-only** (`example.com`) — matches the host exactly OR any subdomain of
@@ -205,7 +205,7 @@ export function matchDomainRule(host: string, pathname: string, entry: string): 
 /**
  * The raw-markdown passthrough gate for web_fetch: decide whether a fetched
  * response from a preapproved trusted-docs host should be returned VERBATIM,
- * skipping the lossy secondary-model summarization pass. Mirrors Claude Code's
+ * skipping the lossy secondary-model summarization pass. Mirrors the reference's
  * WebFetchTool branch (`isPreapprovedUrl(url) && content.length <
  * MAX_MARKDOWN_LENGTH`): raw passthrough requires BOTH
  *   - the host (+ path, via {@link isPreapprovedHost}'s segment-boundary rule) is
@@ -218,7 +218,7 @@ export function matchDomainRule(host: string, pathname: string, entry: string): 
  * query host-preapproval separately (for the relaxed summary guidelines) without
  * a meaningful cost.
  *
- * ADDITIVE / SUPERSET NOTE: Claude restricts the raw path to `text/markdown`
+ * ADDITIVE / SUPERSET NOTE: the reference restricts the raw path to `text/markdown`
  * responses; AMI applies it to any textual content on a preapproved host (HTML is
  * already converted to markdown before this gate), which better serves the intent
  * of not lossy-paraphrasing authoritative reference docs. The content-type is

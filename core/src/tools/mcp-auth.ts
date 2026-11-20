@@ -12,7 +12,7 @@ const OAUTH_TRANSPORTS = new Set(['sse', 'http']);
  * - `auth_url`   — interactive consent is still required; `metadata.auth_url`
  *                  carries the (secret-scrubbed) authorization URL to relay to
  *                  the user so a detached/headless run can complete auth out of
- *                  band (mirrors Claude Code's `McpAuthOutput.status:'auth_url'`).
+ *                  band (mirrors the reference's `McpAuthOutput.status:'auth_url'`).
  * - `unsupported`— the server's transport cannot carry an OAuth flow.
  * - `error`      — the attempt failed; see `metadata.error_kind`.
  */
@@ -26,7 +26,7 @@ const MCP_COMMAND_HINT = 'run /mcp to manage and authenticate MCP servers intera
  * Coarse classification of a failed authentication attempt, surfaced via
  * `ToolResult.metadata.error_kind` so the model can decide whether to re-auth
  * (`auth`), wait/retry (`network`), fix configuration (`config`), or escalate
- * (`unknown`) — mirroring Claude Code's `/mcp` auth-state surfacing instead of
+ * (`unknown`) — mirroring the reference's `/mcp` auth-state surfacing instead of
  * lumping every failure into one opaque bucket.
  */
 export const MCP_AUTH_ERROR_KINDS = ['auth', 'network', 'config', 'unknown'] as const;
@@ -159,7 +159,7 @@ export function createMcpAuthTool(serverName: string, config?: McpAuthServerConf
 
       // Force re-login: drop any cached/valid credential FIRST so the ensuing
       // (re)connect cannot short-circuit on a still-valid token and must re-run the
-      // consent flow — parity with Claude Code's `mcp xaa login --force`. A no-op
+      // consent flow — parity with the reference's `mcp xaa login --force`. A no-op
       // for a server with no persisted credential (never authenticated / stdio).
       if (force) mcpManager.forgetOAuthToken?.(serverName);
 
@@ -169,7 +169,7 @@ export function createMcpAuthTool(serverName: string, config?: McpAuthServerConf
       // as soon as the consent leg produces one (status "auth_url") WITHOUT hanging
       // on the interactive browser leg — the reconnect/tool-swap finishes in the
       // background. A detached/headless run can then relay the URL to the user,
-      // mirroring Claude Code's skipBrowserOpen McpAuthTool. The call honors
+      // mirroring the reference's skipBrowserOpen McpAuthTool. The call honors
       // `context.abortSignal` so an in-flight flow can be cancelled. Managers that
       // only expose `reconnect` fall back to the blocking re-establish path below.
       let activeAuthUrl: string | undefined;
@@ -209,7 +209,7 @@ export function createMcpAuthTool(serverName: string, config?: McpAuthServerConf
       }
       // Active non-blocking flow surfaced a consent URL before the background
       // reconnect finished — relay it immediately (status "auth_url") so the model
-      // can share it, exactly like Claude Code's skipBrowserOpen McpAuthTool. The
+      // can share it, exactly like the reference's skipBrowserOpen McpAuthTool. The
       // URL is scrubbed of any embedded credential before it reaches the model.
       if (activeAuthUrl) {
         const authUrl = redactAuthUrl(activeAuthUrl);
@@ -223,7 +223,7 @@ export function createMcpAuthTool(serverName: string, config?: McpAuthServerConf
       // interactive consent — e.g. a headless authorizer captured an
       // authorization URL without completing the browser leg. In that case we
       // surface the URL (status "auth_url") instead of claiming a false success,
-      // mirroring Claude Code's auth_url result and the "report success only when
+      // mirroring the reference's auth_url result and the "report success only when
       // auth actually happens" guarantee.
       const after = mcpManager.getServerStatus?.(serverName)?.state;
       if (after !== 'ready') {

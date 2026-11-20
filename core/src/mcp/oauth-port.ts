@@ -4,7 +4,7 @@
  *
  * A hardcoded callback port (e.g. 33418) breaks whenever something else already
  * holds it — a second concurrent auth flow, a leftover listener, or an unrelated
- * local service. Mirroring Claude Code's `oauthPort` helper, this:
+ * local service. Mirroring the reference's `oauthPort` helper, this:
  *   1. honors an operator-pinned port via `MCP_OAUTH_CALLBACK_PORT` (so a user
  *      behind a firewall can allow-list a stable callback port);
  *   2. probes a preferred port, then a bounded run of sequential neighbours
@@ -27,7 +27,7 @@ export const DEFAULT_OAUTH_CALLBACK_PORT = 33418;
 /** Loopback host the OAuth redirect listener binds to. */
 export const OAUTH_CALLBACK_HOST = '127.0.0.1';
 
-/** Env var (Claude-parity) pinning a fixed OAuth callback port. */
+/** Env var (the reference-parity) pinning a fixed OAuth callback port. */
 export const OAUTH_CALLBACK_PORT_ENV = 'MCP_OAUTH_CALLBACK_PORT';
 
 /**

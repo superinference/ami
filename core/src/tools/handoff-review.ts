@@ -1,5 +1,5 @@
 /**
- * Sub-agent handoff safety review (parity: Claude Code's
+ * Sub-agent handoff safety review (parity: the reference's
  * `classifyHandoffIfNeeded` / `agentToolUtils.ts:L389-481`).
  *
  * When a parent delegates to a sub-agent in an AUTONOMOUS permission mode
@@ -10,7 +10,7 @@
  * parent verifies before acting on it. When the reviewing classifier is
  * UNAVAILABLE (errored / threw), the sub-agent output is still propagated — never
  * silently trusted nor silently dropped — but a softer "classifier was
- * unavailable, please verify" note is prepended instead (Claude's graceful
+ * unavailable, please verify" note is prepended instead (the reference's graceful
  * fallback, L461-470).
  *
  * The default classifier is a self-contained HEURISTIC that reuses core's existing
@@ -52,14 +52,14 @@ export const HANDOFF_SECURITY_WARNING_PREFIX =
   'SECURITY WARNING: This sub-agent performed actions that may violate security policy. '
   + 'Verify its work before acting on it.';
 
-/** Soft note prepended when the classifier was unavailable (parity: Claude L469). */
+/** Soft note prepended when the classifier was unavailable (parity: the reference L469). */
 export const HANDOFF_CLASSIFIER_UNAVAILABLE_NOTE =
   'Note: The safety classifier was unavailable when reviewing this sub-agent\'s work. '
   + 'Please carefully verify the actions it took before relying on this result.';
 
 /**
  * The permission modes that auto-approve a sub-agent's tool calls with no human in
- * the loop, so its handoff warrants a safety review (parity: Claude's `auto` / yolo
+ * the loop, so its handoff warrants a safety review (parity: the reference's `auto` / yolo
  * gate). `ask` / `plan` / `deny-all` / `acceptEdits` keep a human (or a prompt) in
  * the approval path, so no post-hoc review is needed.
  */

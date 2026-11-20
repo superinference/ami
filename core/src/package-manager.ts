@@ -7,7 +7,7 @@
  * can tell the user the CORRECT upgrade command for their install method instead
  * of always printing the generic `curl … install.sh` line.
  *
- * Parity with Claude Code's `utils/nativeInstaller/packageManagers.ts`
+ * Parity with the reference's `utils/nativeInstaller/packageManagers.ts`
  * (`getPackageManager` cascade + `getOsRelease`/`isDistroFamily` gating + the
  * per-manager detectors). The algorithm:
  *   1. Exec-PATH classifiers (sync, cheap): a Homebrew Caskroom path, a winget

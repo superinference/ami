@@ -3,7 +3,7 @@
  * platform-conditional branch normalizes through, instead of the ad-hoc
  * `process.platform === 'win32'` / `!== 'linux'` string comparisons that were
  * scattered across the tree (repl, bash-sandbox, desktop-notify, tui-selection,
- * system-prompt, …). Parity with Claude Code's `utils/platform.ts` /
+ * system-prompt, …). Parity with the reference's `utils/platform.ts` /
  * `utils/systemDirectories.ts`:
  *
  *   - {@link getPlatform} returns the five-member {@link Platform} enum
@@ -33,7 +33,7 @@ import { findOnPath } from './which';
 import { log } from '../logger';
 
 /**
- * The normalized host-platform classes AMI reasons about. Mirrors Claude Code's
+ * The normalized host-platform classes AMI reasons about. Mirrors the reference's
  * `Platform` type exactly.
  */
 export type Platform = 'macos' | 'windows' | 'wsl' | 'linux' | 'unknown';
@@ -42,12 +42,12 @@ export type Platform = 'macos' | 'windows' | 'wsl' | 'linux' | 'unknown';
  * The allow-list of host platforms AMI officially supports — the single building
  * block any platform-gating decision (startup warning, capability check, feature
  * guard) normalizes through instead of ad-hoc `=== 'win32'` comparisons. Parity
- * with Claude Code's `SUPPORTED_PLATFORMS` config constant (`utils/platform.ts`),
+ * with the reference's `SUPPORTED_PLATFORMS` config constant (`utils/platform.ts`),
  * which drives its platform-gating/warnings.
  *
  * AMI is a unix-first CLI whose bash/tooling path assumes a POSIX host, so the
  * supported set is `macos`, `linux`, and `wsl` (a Linux kernel under WSL). This is
- * an intentional, documented divergence from Claude Code's Desktop-integration list
+ * an intentional, documented divergence from the reference's Desktop-integration list
  * (`['macos', 'wsl']`, which gates a macOS/WSL-only Claude Desktop MCP feature AMI
  * has no equivalent of): AMI's allow-list reflects the platforms AMI itself runs on,
  * so native `windows` and the `unknown` long-tail (freebsd/sunos/aix/…) are the
@@ -64,7 +64,7 @@ export const SUPPORTED_PLATFORMS: readonly Platform[] = Object.freeze([
  * True when the given platform (default: the detected host via {@link getPlatform})
  * is in the {@link SUPPORTED_PLATFORMS} allow-list. The single predicate every
  * platform-gating decision should call so the "is this host officially supported"
- * question can never drift between sites. Parity with Claude Code's
+ * question can never drift between sites. Parity with the reference's
  * `SUPPORTED_PLATFORMS.includes(getPlatform())` gating checks.
  */
 export function isSupportedPlatform(platform: Platform = getPlatform()): boolean {
@@ -165,7 +165,7 @@ function defaultMuslProbe(p: string): boolean {
  * `x64→x86_64` / `arm64→aarch64` normalization), error-safe so an unreadable
  * `/lib` degrades to `false` (glibc). The zero-options path is memoized (libc is
  * fixed for a process); pass options to classify an explicit host or inject the
- * stat seam in tests. Parity with Claude Code's `isMuslEnvironment`
+ * stat seam in tests. Parity with the reference's `isMuslEnvironment`
  * (`utils/envDynamic.ts`) runtime fallback — AMI is unbundled node, so it always
  * uses the runtime stat (CC's compile-time IS_LIBC_MUSL/GLIBC flags don't apply).
  */
@@ -204,7 +204,7 @@ export interface NpmWindowsPathOptions {
  * platform's binaries), so this flags it for a diagnostic. Off-WSL it is always
  * `false` — the question is meaningless on a native host. The zero-options path is
  * memoized (the resolved npm location is fixed for a process); pass options to
- * inject the WSL/resolver seams in tests. Parity with Claude Code's
+ * inject the WSL/resolver seams in tests. Parity with the reference's
  * `isNpmFromWindowsPath` (`utils/env.ts`).
  */
 export function isNpmFromWindowsPath(opts?: NpmWindowsPathOptions): boolean {
@@ -253,7 +253,7 @@ export interface SystemDirectoriesOptions {
  * USERPROFILE folders on windows, standard `~/Desktop` etc. on macos). An
  * `unknown` platform falls back to the safe defaults AND emits a debug log so an
  * unrecognized runtime is observable rather than silently mis-handled. Faithful
- * port of Claude Code's `getSystemDirectories`.
+ * port of the reference's `getSystemDirectories`.
  */
 export function getSystemDirectories(opts?: SystemDirectoriesOptions): SystemDirectories {
   const platform = opts?.platform ?? getPlatform();

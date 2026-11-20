@@ -17,7 +17,7 @@ import * as os from 'node:os';
  * The binfmt_misc interop handler WSL registers so Windows `.exe`s can run from
  * inside the distro — the single most reliable on-disk WSL marker (present on
  * every WSL1/WSL2 distro, absent on native Linux), independent of whether the
- * interop env vars happen to be exported in the current shell. Parity with Claude
+ * interop env vars happen to be exported in the current shell. Parity with the reference
  * Code's `isWslEnvironment` (`utils/env.ts`), which keys solely off this file.
  */
 const WSL_INTEROP_MARKER = '/proc/sys/fs/binfmt_misc/WSLInterop';
@@ -26,7 +26,7 @@ const WSL_INTEROP_MARKER = '/proc/sys/fs/binfmt_misc/WSLInterop';
  * True when running under Windows Subsystem for Linux — detected via the
  * WSL-specific env vars (`WSL_DISTRO_NAME`/`WSL_INTEROP`), the presence of the
  * WSL interop binfmt marker ({@link WSL_INTEROP_MARKER}, the reliable file-system
- * signal Claude Code's `isWslEnvironment` uses — catches a WSL shell that did not
+ * signal the reference's `isWslEnvironment` uses — catches a WSL shell that did not
  * export the interop env vars), or the `microsoft`/`wsl` marker in the kernel
  * release string. The single canonical WSL detector shared by every consumer
  * (ripgrep timeout tuning, cross-OS lock-reclaim guards, the Windows-npm PATH
@@ -117,7 +117,7 @@ export interface BoundedEnvIntResult {
  * the default), this CLAMPS an over-cap value to `upperLimit` and reports it.
  *
  * Pass `log` to emit the diagnostic `message` whenever the value is rejected
- * (`invalid`) or clamped (`capped`) — parity with Claude Code's
+ * (`invalid`) or clamped (`capped`) — parity with the reference's
  * `validateBoundedIntEnvVar`, which calls `logForDebugging` on those paths so a
  * misconfigured override surfaces to the debug log, not only to the return value.
  * The callback is injected (rather than importing a logger here) so this module
@@ -185,7 +185,7 @@ export const AMI_ENV_INT_LIMITS: readonly EnvLimitSpec[] = [
   { name: 'CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS', defaultValue: 20, upperLimit: 1000, min: 1 },
   { name: 'CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION', defaultValue: 200, upperLimit: 100_000, min: 1 },
   { name: 'CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH', defaultValue: 0, upperLimit: 100, min: 0 },
-  // Output-length caps (parity: Claude Code's Doctor env-validation surface,
+  // Output-length caps (parity: the reference's Doctor env-validation surface,
   // Doctor.tsx L142-161 — BASH_MAX_OUTPUT_LENGTH / TASK_MAX_OUTPUT_LENGTH). These
   // are the knobs the bash/task tools already clamp at their enforcing call sites
   // (resolveBashMaxOutput → BASH_MAX_OUTPUT_UPPER_LIMIT; resolveTaskMaxChars →
@@ -203,7 +203,7 @@ export const AMI_ENV_INT_LIMITS: readonly EnvLimitSpec[] = [
  * and the {@link AMI_ENV_INT_LIMITS} catalog.
  *
  * Pass `options.log` to also emit each non-valid finding's message to the debug
- * logger (parity with Claude Code's per-validation `logForDebugging` call); the
+ * logger (parity with the reference's per-validation `logForDebugging` call); the
  * callback is injected so this module stays dependency-free.
  */
 export function collectEnvLimitDiagnostics(
@@ -261,7 +261,7 @@ export function parseEnvBool(envVar: string | undefined, fallback = false): bool
 }
 
 /**
- * The Claude-parity "explicit opt-out" falsy vocabulary for {@link isEnvDefinedFalsy}
+ * The reference-parity "explicit opt-out" falsy vocabulary for {@link isEnvDefinedFalsy}
  * — a strict subset of {@link parseEnvBool}'s falsy tokens. An empty string is
  * deliberately NOT in this set: a variable set to `""` reads as *unset*, not as an
  * explicit disable, so a default-ON knob stays on. Mirrors `envUtils.isEnvDefinedFalsy`.
@@ -280,7 +280,7 @@ const ENV_DEFINED_FALSY = new Set(['0', 'false', 'no', 'off']);
  *
  * Canonical home for the helper every layer shares (the MCP IDE auto-connect
  * override, the CLI update-check / syntax-highlight / personality opt-outs) — a
- * single definition instead of a per-site re-derivation (§0b.6). Mirrors Claude
+ * single definition instead of a per-site re-derivation (§0b.6). Mirrors the reference
  * Code's `envUtils.isEnvDefinedFalsy`, the hard-opt-out companion to a truthy check.
  */
 export function isEnvDefinedFalsy(value: string | boolean | undefined): boolean {
@@ -423,7 +423,7 @@ function stripInlineComment(s: string): string {
 
 /**
  * Parse `.env`-format text into a key/value record, matching the conventions of
- * the standard dotenv ecosystem (and Claude Code's loader):
+ * the standard dotenv ecosystem (and the reference's loader):
  *
  * - Blank lines and `#` comment lines are ignored.
  * - An optional `export ` prefix is stripped (`export FOO=bar`).

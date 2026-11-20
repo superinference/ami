@@ -146,7 +146,7 @@ export function verifyRequestSignature(
   // Enrich expiry/skew failures with the concrete time delta (and the window
   // that was exceeded) so operators get an actionable diagnostic — e.g.
   // "signature expired (stale by 1m 40s, max age 5m)" — instead of a bare
-  // label. Mirrors Claude Code's jwtUtils, which renders every expiry/skew
+  // label. Mirrors the reference's jwtUtils, which renders every expiry/skew
   // message with a human-readable duration via a shared formatDuration helper;
   // here we reuse AMI's canonical formatDuration (conversation-summary) rather
   // than duplicating it. The stable "signature expired" / "signature timestamp

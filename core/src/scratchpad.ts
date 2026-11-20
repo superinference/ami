@@ -8,7 +8,7 @@
 // truth for the scratchpad env knob + path resolution + containment so the system
 // prompt and the permission carve-out agree on exactly one directory.
 //
-// Parity: Claude Code's `isScratchpadEnabled` / `getScratchpadDir` / `isScratchpadPath`
+// Parity: the reference's `isScratchpadEnabled` / `getScratchpadDir` / `isScratchpadPath`
 // (utils/permissions/filesystem.ts L293-424) — a per-session temp dir auto-allowed
 // for read+write. AMI's superset: the dir is OPERATOR-configured (via
 // `SUPERINFERENCE_SCRATCHPAD_DIR`), so it can point at any mounted scratch volume /
@@ -40,7 +40,7 @@ export function resolveScratchpadDir(env: NodeJS.ProcessEnv = process.env): stri
 
 /**
  * Whether the scratchpad carve-out is active (a dir is configured). AMI's equivalent
- * of Claude's `isScratchpadEnabled()` feature gate — here the gate IS "did the
+ * of the reference's `isScratchpadEnabled()` feature gate — here the gate IS "did the
  * operator point us at a scratchpad dir".
  */
 export function isScratchpadEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -53,7 +53,7 @@ export function isScratchpadEnabled(env: NodeJS.ProcessEnv = process.env): boole
  * SECURITY: the candidate is `path.normalize`d first so a traversal payload
  * (`<scratchpad>/../../etc/passwd`) that textually starts with the scratchpad
  * prefix but escapes it is collapsed to its real target BEFORE the prefix test and
- * therefore does NOT match — mirroring Claude's `normalize()`-before-`startsWith`
+ * therefore does NOT match — mirroring the reference's `normalize()`-before-`startsWith`
  * scratchpad check (filesystem.ts L419-424). Callers should pass an already
  * symlink-resolved path (the permission layer resolves via `resolveForCheck`); the
  * normalize here defends the lexical layer regardless.

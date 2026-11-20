@@ -2,7 +2,7 @@
 //
 // This is the ONE shared implementation (AGENTS.md No-Duplication Rule): the
 // tool-repetition signature hasher and the skill-catalog content-cache checksum
-// both need a key-order-insensitive serialization, and Claude Code computes the
+// both need a key-order-insensitive serialization, and the reference computes the
 // same thing (`sortKeysDeep` + `JSON.stringify` → sha256) in its policyLimits /
 // remoteManagedSettings HTTP-cache layers. Rather than re-spell the recursion per
 // site, every caller imports from here.
@@ -31,7 +31,7 @@ export function stableStringify(value: unknown): string {
  * Deterministic `sha256:<hex>` content checksum over the deep-key-sorted
  * serialization of `value`. Two structurally-equal inputs (any key order) yield
  * the same checksum, so it is a stable HTTP content-cache key — identical in
- * spirit to Claude Code's `computeChecksum` (`sha256:` + hex). Used to skip
+ * spirit to the reference's `computeChecksum` (`sha256:` + hex). Used to skip
  * re-downloading a remote catalog whose content has not changed.
  */
 export function stableChecksum(value: unknown): string {

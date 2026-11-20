@@ -66,7 +66,7 @@ export interface TurnBudgetStatus {
 
 /**
  * Render a per-turn token-budget suffix for the turn-completion line, matching
- * Claude's `TurnDurationMessage` budget display:
+ * the reference's `TurnDurationMessage` budget display:
  *  - within budget: `{tokens} / {limit} ({pct}%)`
  *  - once exceeded: `{tokens} used ({limit} min ✓)` (the limit was a minimum and met)
  *  - a trailing ` · {n} nudge(s)` is appended when the model was nudged about the
@@ -127,7 +127,7 @@ function pluralize(count: number, singular: string, plural = `${singular}s`): st
 }
 
 /**
- * Render a USD amount, mirroring Claude's `formatCost` (cost-tracker.ts): amounts
+ * Render a USD amount, mirroring the reference's `formatCost` (cost-tracker.ts): amounts
  * over $0.50 round to 2 decimals, smaller amounts keep 4 so sub-cent costs stay
  * visible. Non-finite / non-positive inputs degrade to `$0.00`.
  */
@@ -138,7 +138,7 @@ function formatCostUsd(cost: number): string {
 
 /**
  * PARITY: render a {@link TurnSummary} as a human-readable, column-aligned report —
- * the counterpart to Claude's `formatTotalCost` (cost-tracker.ts:L228) usage summary.
+ * the counterpart to the reference's `formatTotalCost` (cost-tracker.ts:L228) usage summary.
  * Raw getters expose bare numbers (milliseconds, unseparated integers, unrounded
  * floats); this is the single formatting layer that turns them into the `/status`
  * introspection output:

@@ -38,7 +38,7 @@ export const OAUTH_HTTP_TIMEOUT_MS = 30_000;
  * call, but the browser-consent leg is an out-of-band human step with no HTTP
  * request to time out — if the user never completes it (closes the tab, loses the
  * redirect) the `authorize()` promise would hang forever. This 5-minute cap
- * (parity with Claude's `Authentication timeout`) tears down a stuck consent leg.
+ * (parity with the reference's `Authentication timeout`) tears down a stuck consent leg.
  */
 export const OAUTH_FLOW_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -60,12 +60,12 @@ export class OAuthFlowTimeoutError extends Error {
  * `expires_in` AND the access token is not a JWT carrying an `exp` claim. Without
  * this a tokenless-of-expiry grant would be treated as never-expiring and only a
  * reactive 401 would ever refresh it; a sane default keeps such tokens on a
- * proactive refresh/expiry schedule (parity with Claude's 3600s default).
+ * proactive refresh/expiry schedule (parity with the reference's 3600s default).
  */
 export const DEFAULT_TOKEN_LIFETIME_SEC = 3600;
 
 /**
- * Env var (Claude-parity) overriding the Client ID Metadata Document URL used for
+ * Env var (the reference-parity) overriding the Client ID Metadata Document URL used for
  * CIMD (SEP-991). When set, it takes precedence over any configured
  * `clientMetadataUrl`, so an operator can point the flow at a testing / FedStart
  * metadata document without editing server config.
@@ -76,7 +76,7 @@ export const MCP_OAUTH_CLIENT_METADATA_URL_ENV = 'MCP_OAUTH_CLIENT_METADATA_URL'
  * Resolve the Client ID Metadata Document URL (CIMD / SEP-991) for an OAuth flow:
  * the `MCP_OAUTH_CLIENT_METADATA_URL` env override wins, else the operator-configured
  * `clientMetadataUrl`, else undefined (CIMD disabled — fall back to Dynamic Client
- * Registration). Unlike Claude Code, AMI ships NO hardcoded default document (that
+ * Registration). Unlike the reference, AMI ships NO hardcoded default document (that
  * would point at a vendor's infrastructure); CIMD is strictly opt-in. A resolved URL
  * MUST be https:// — a `client_id` that is a URL is a public identifier the auth
  * server dereferences, so a plaintext one is refused.
@@ -326,7 +326,7 @@ export type OAuthLogger = (event: OAuthLogEvent) => void;
  * hash — not the name alone — prevents credentials being reused across two servers
  * that share a name but differ in URL/transport/headers, or across a reconfigured
  * server whose endpoint changed (the old grant no longer applies). Parity with
- * Claude Code's `getServerKey`.
+ * the reference's `getServerKey`.
  */
 export function mcpCredentialKey(
   serverName: string,
@@ -425,7 +425,7 @@ export interface OAuthTokens {
  * metadata. Caching this across sessions lets a cold process refresh an existing
  * (file-persisted) token WITHOUT first re-running the RFC 9728 → RFC 8414 discovery
  * chain — which otherwise requires provoking a fresh 401 before a refresh can even
- * reach the token endpoint. Parity with Claude Code's persisted `discoveryState`.
+ * reach the token endpoint. Parity with the reference's persisted `discoveryState`.
  */
 export interface DiscoveryState {
   resource: string;
@@ -971,7 +971,7 @@ export function pickClientAuthMethod(supported: string[] | undefined, hasSecret:
 
 /**
  * Environment variable supplying a confidential-client secret for MCP OAuth
- * (parity with Claude Code's `readClientSecret()` env precedence — auth.ts
+ * (parity with the reference's `readClientSecret()` env precedence — auth.ts
  * `readClientSecret`). A secret provided here is read at connect time and NEVER
  * written into the plaintext server config, so it does not land in argv/`ps`,
  * shell history, or `.ami/mcp.json`.
@@ -981,7 +981,7 @@ export const MCP_CLIENT_SECRET_ENV = 'MCP_CLIENT_SECRET';
 /**
  * Resolve the effective confidential-client secret for an MCP OAuth session.
  *
- * Precedence (Claude-parity `readClientSecret`): an explicitly-configured secret
+ * Precedence (the reference-parity `readClientSecret`): an explicitly-configured secret
  * wins (it may itself be a `${secret:…}`/`${VAR}` reference the caller already
  * resolved); otherwise fall back to the {@link MCP_CLIENT_SECRET_ENV} environment
  * variable so a secret can be supplied via the environment instead of being
@@ -989,7 +989,7 @@ export const MCP_CLIENT_SECRET_ENV = 'MCP_CLIENT_SECRET';
  * either source is treated as absent (public client — no secret). Returns
  * `undefined` when neither source provides one.
  *
- * Unlike Claude's helper this never prompts on a TTY: connect-time resolution is
+ * Unlike the reference's helper this never prompts on a TTY: connect-time resolution is
  * non-interactive by design (the interactive masked prompt belongs to the
  * add-server command layer). The env fallback is the parity-relevant,
  * platform-free part and is the single source used by {@link McpOAuthSession}.
@@ -1085,8 +1085,8 @@ export const ID_TOKEN_TYPE = 'urn:ietf:params:oauth:token-type:id_token';
 /**
  * Env var gating the Cross-App Access (XAA / SEP-990) browserless SSO flow. XAA is
  * an ENTERPRISE feature that bypasses the interactive consent screen using a shared
- * corporate IdP, so — matching Claude Code's `CLAUDE_CODE_ENABLE_XAA` gate — it is
- * OFF unless an operator explicitly opts in. Unlike Claude, AMI uses a vendor-neutral
+ * corporate IdP, so — matching the reference's `CLAUDE_CODE_ENABLE_XAA` gate — it is
+ * OFF unless an operator explicitly opts in. Unlike the reference, AMI uses a vendor-neutral
  * name.
  */
 export const MCP_ENABLE_XAA_ENV = 'MCP_ENABLE_XAA';
@@ -1103,7 +1103,7 @@ export function isXaaEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
 
 /**
  * Input shape for the browserless Cross-App Access (XAA / SEP-990) token exchange.
- * Mirrors Claude Code's `XaaConfig`: the credentials registered at the MCP server's
+ * Mirrors the reference's `XaaConfig`: the credentials registered at the MCP server's
  * authorization server (`clientId`/`clientSecret`) PLUS the credentials + pre-obtained
  * OIDC id_token for the shared enterprise IdP the token-exchange runs against.
  */
@@ -1333,7 +1333,7 @@ export interface RefreshSchedulerTimers {
 }
 
 /**
- * Single-target proactive token-refresh scheduler (parity with Claude Code's
+ * Single-target proactive token-refresh scheduler (parity with the reference's
  * `createTokenRefreshScheduler`, scoped to one MCP server). It fires an injected
  * `onRefresh` shortly BEFORE a token expires so a long-running session never
  * presents an expired token mid-request, rather than relying only on a reactive 401.
@@ -1545,7 +1545,7 @@ export class FileOAuthTokenStore extends OAuthTokenStore {
    * would get `invalid_grant` and corrupt the shared token file. The lock is an
    * atomic `mkdir` of `<file>.lock` (atomic on POSIX and Windows); on contention
    * it retries with jittered backoff, steals a stale lock left by a crashed holder
-   * (older than `lockStaleMs`), and — matching Claude Code — proceeds WITHOUT the
+   * (older than `lockStaleMs`), and — matching the reference — proceeds WITHOUT the
    * lock rather than failing the refresh if it cannot be acquired. The lock dir is
    * always removed in a finally so a clean exit never leaves it behind.
    */
@@ -1764,10 +1764,10 @@ export class McpOAuthSession implements McpOAuthProvider {
     this.resource = opts.serverUrl;
     this.effectiveClientId = opts.clientId;
     // Confidential-client secret: configured value wins, else the MCP_CLIENT_SECRET
-    // env var (Claude-parity readClientSecret precedence) so the secret need not be
+    // env var (the reference-parity readClientSecret precedence) so the secret need not be
     // inlined into the plaintext server config.
     this.effectiveClientSecret = resolveClientSecret(opts.clientSecret, opts.env);
-    // clientId-change invalidation (parity with Claude's xaaIdpCommand): if a static
+    // clientId-change invalidation (parity with the reference's xaaIdpCommand): if a static
     // clientId is configured and differs from the one the persisted tokens were minted
     // under, the stored grant is for the OLD client registration — it would fail with
     // opaque `invalid_client`. Drop the stale tokens so a fresh consent runs under the
@@ -1859,7 +1859,7 @@ export class McpOAuthSession implements McpOAuthProvider {
    * (so concurrent AMI processes do not each burn the single-use rotating
    * refresh_token): after acquiring the lock we re-read the token file, and if a
    * sibling process already landed a still-valid access token we adopt it and skip
-   * the network POST entirely (re-read-after-lock dedup — parity with Claude's
+   * the network POST entirely (re-read-after-lock dedup — parity with the reference's
    * `refreshAuthorization`).
    */
   private async doRefresh(): Promise<string | null> {
@@ -1924,7 +1924,7 @@ export class McpOAuthSession implements McpOAuthProvider {
   }
 
   async onUnauthorized(wwwAuthenticate: string | null): Promise<boolean> {
-    // Reactive clock-drift recovery (parity with Claude's withOAuth401Retry): the
+    // Reactive clock-drift recovery (parity with the reference's withOAuth401Retry): the
     // server returned 401 even though the stored token may look locally valid.
     // Attempt ONE silent refresh (RFC 6749 §6) before driving a full interactive
     // re-consent — a drifted clock or an early server-side invalidation is fixed by
@@ -1994,7 +1994,7 @@ export class McpOAuthSession implements McpOAuthProvider {
   }
 
   /**
-   * Granular credential invalidation (parity with Claude Code's
+   * Granular credential invalidation (parity with the reference's
    * `invalidateCredentials`). Clears exactly the slice of local auth state named by
    * `scope`, leaving the rest intact so a caller can force the MINIMAL re-work:
    *   - `tokens`    — drop the access/refresh tokens (next request re-auths/refreshes);
@@ -2035,7 +2035,7 @@ export class McpOAuthSession implements McpOAuthProvider {
     // SAME insufficient scope and mask the step-up; force full interactive consent.
     // A step-up IS a re-authentication, so revoke the abandoned token server-side
     // (RFC 7009, best-effort — a no-op when the AS advertises no revocation
-    // endpoint) before re-consenting, matching Claude's revoke-then-reauth.
+    // endpoint) before re-consenting, matching the reference's revoke-then-reauth.
     await this.revoke();
     return this.performAuthorization(wwwAuthenticate, parsed.scope);
   }

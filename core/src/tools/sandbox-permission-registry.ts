@@ -1,7 +1,7 @@
 /**
  * Sandbox (network-host) permission-delegation registry.
  *
- * PARITY (Claude's `useSwarmPermissionPoller` sandbox registry —
+ * PARITY (the reference's `useSwarmPermissionPoller` sandbox registry —
  * `pendingSandboxCallbacks` / `processSandboxPermissionResponse`, and the combined
  * `clearAllPendingCallbacks` on `/clear`): a SECOND, distinct delegation registry
  * (separate from the tool-permission flow) that handles per-host sandbox EGRESS
@@ -9,8 +9,8 @@
  * egress allowlist, it escalates a per-host request to the team leader and the
  * leader's allow/deny decision is applied here.
  *
- * ARCHITECTURE NOTE (intentional divergence from Claude's promise-callback shape):
- * Claude resolves the worker's blocked call synchronously via an INDEPENDENT
+ * ARCHITECTURE NOTE (intentional divergence from the reference's promise-callback shape):
+ * the reference resolves the worker's blocked call synchronously via an INDEPENDENT
  * permission poller (`useSwarmPermissionPoller`) that runs regardless of the main
  * agent loop. AMI has no such independent poller — its mailbox is drained between
  * turns by the engine loop itself — so a worker that blocked inside a tool call
@@ -44,7 +44,7 @@ const sessionGrantedHosts = new Set<string>();
  * Durably-REMEMBERED egress hosts, lazily hydrated from {@link sandboxHostsPath}
  * on first membership check. These come from the "allow and don't ask again"
  * verdict ({@link persistSandboxHostGrant}) and survive `/clear` and restarts —
- * the parity analog of Claude's `persistToSettings:true` network-egress response.
+ * the parity analog of the reference's `persistToSettings:true` network-egress response.
  * `undefined` until loaded so a config-dir change (test isolation) re-reads.
  */
 let persistedGrantedHosts: Set<string> | undefined;
@@ -104,7 +104,7 @@ export function recordSandboxHostGrant(host: string): void {
 /**
  * Remember an egress host DURABLY ("allow and don't ask again"): record the session
  * grant AND append it to the on-disk {@link sandboxHostsPath} store so it is never
- * re-prompted in future sessions. This is the parity analog of Claude's
+ * re-prompted in future sessions. This is the parity analog of the reference's
  * `persistToSettings:true` on a per-host network-egress response (allow-and-remember,
  * as opposed to allow-once). Idempotent; ignores empty input. The disk write is
  * crash-safe (atomic rename, owner-only) and fail-soft — a write error still leaves
@@ -152,7 +152,7 @@ export function getGrantedSandboxHosts(): string[] {
  * the host is recorded as granted (the worker's next sandboxed command may reach
  * it); on deny nothing is granted (fail-closed — a denied/absent decision never
  * opens egress). Returns `true` when a grant was recorded, `false` otherwise.
- * Called by the worker's mailbox poller (`relayIncomingMessage`). Mirrors Claude's
+ * Called by the worker's mailbox poller (`relayIncomingMessage`). Mirrors the reference's
  * `processSandboxPermissionResponse`.
  */
 export function processSandboxPermissionResponse(params: {
@@ -174,7 +174,7 @@ export function processSandboxPermissionResponse(params: {
 
 // ---------------------------------------------------------------------------
 // In-flight per-host egress approval requests — the leader-side reviewable QUEUE
-// and the worker-side pending marker. PARITY: Claude's AppState
+// and the worker-side pending marker. PARITY: the reference's AppState
 // `workerSandboxPermissions.queue` + `pendingSandboxRequest`
 // (state/AppStateStore.ts L362-384). The grant store above records the OUTCOME of
 // an approval; this models the REQUESTS still awaiting a leader decision — the
@@ -187,7 +187,7 @@ export function processSandboxPermissionResponse(params: {
 
 /**
  * One in-flight per-host egress approval request, as held in the leader-side
- * queue. Mirrors Claude's `workerSandboxPermissions.queue` entry shape.
+ * queue. Mirrors the reference's `workerSandboxPermissions.queue` entry shape.
  */
 export interface WorkerSandboxRequest {
   requestId: string;
@@ -218,7 +218,7 @@ function safeSelectedSandboxIndex(): number {
  * `requestId` (a re-sent request never double-queues). An empty `requestId` or
  * `host` is rejected (fail-closed — an unidentifiable request can never be
  * approved). `createdAt` defaults to now when omitted. Returns `true` when a new
- * entry was queued, `false` when rejected or a duplicate. Mirrors Claude pushing
+ * entry was queued, `false` when rejected or a duplicate. Mirrors the reference pushing
  * onto `workerSandboxPermissions.queue`.
  */
 export function enqueueWorkerSandboxRequest(
@@ -275,7 +275,7 @@ export function moveSelectedSandboxRequest(delta: number): WorkerSandboxRequest 
  * LEADER SIDE: remove (resolve) the queued request `requestId` once a decision has
  * been made, keeping the selected index valid (shifted left if the removed entry
  * was at/before the cursor). Returns the removed entry, or `undefined` if no such
- * request was queued. Mirrors Claude splicing the entry out of
+ * request was queued. Mirrors the reference splicing the entry out of
  * `workerSandboxPermissions.queue` after an allow/deny.
  */
 export function resolveWorkerSandboxRequest(requestId: string): WorkerSandboxRequest | undefined {
@@ -296,7 +296,7 @@ export function resolveWorkerSandboxRequest(requestId: string): WorkerSandboxReq
  * WORKER SIDE: record that this worker is blocked waiting on the leader to approve
  * egress to `host` (request `requestId`). Shown as the worker's "pending sandbox
  * request" affordance while it waits. An empty requestId/host clears any pending
- * marker (fail-closed). Mirrors Claude setting `pendingSandboxRequest`.
+ * marker (fail-closed). Mirrors the reference setting `pendingSandboxRequest`.
  */
 export function setPendingSandboxRequest(requestId: string, host: string): void {
   const id = requestId?.trim() ?? '';
@@ -315,7 +315,7 @@ export function clearPendingSandboxRequest(): void {
 }
 
 /**
- * PARITY (Claude's `createSandboxAskCallback` prompt wording — structuredIO.ts
+ * PARITY (the reference's `createSandboxAskCallback` prompt wording — structuredIO.ts
  * L745 `Allow network connection to ${host}?`): the EXACT user-facing message an
  * interactive per-host sandbox egress approval shows. Centralized so the host
  * backend, the container backend, and the web_fetch egress gate all ask with
@@ -326,7 +326,7 @@ export function sandboxNetworkAskMessage(host: string): string {
 }
 
 /**
- * PARITY (interactive per-host sandbox egress gate — Claude's `SandboxAskCallback`):
+ * PARITY (interactive per-host sandbox egress gate — the reference's `SandboxAskCallback`):
  * the env gate `AMI_SANDBOX_NETWORK_ASK` that turns the LOCAL deny-by-default
  * outbound posture on. When enabled, a network egress to a host that is neither
  * pre-allowlisted nor already granted is surfaced for an interactive allow/deny
@@ -342,7 +342,7 @@ export function isSandboxNetworkAskEnabled(env: NodeJS.ProcessEnv = process.env)
 }
 
 /**
- * The runtime per-host network-egress request shape, parity with Claude's
+ * The runtime per-host network-egress request shape, parity with the reference's
  * `NetworkHostPattern` handed to a `SandboxAskCallback`. `port` is optional and
  * carried for parity; the grant is keyed on `host` (DNS, case-insensitive).
  */
@@ -352,32 +352,32 @@ export interface NetworkHostPattern {
 }
 
 /**
- * PARITY (Claude's `SandboxAskCallback`): a callback invoked when a sandboxed/
+ * PARITY (the reference's `SandboxAskCallback`): a callback invoked when a sandboxed/
  * network egress is attempted to a host that is not already permitted. Resolves
  * `true` to allow the connection, `false` to deny it (fail-closed on error).
  */
 export type SandboxAskCallback = (hostPattern: NetworkHostPattern) => Promise<boolean>;
 
 /**
- * PARITY (interactive per-host sandbox network approval — Claude's
+ * PARITY (interactive per-host sandbox network approval — the reference's
  * `createSandboxAskCallback` + REPL `sandboxAskCallback`): decide whether an
  * outbound connection to `host` may proceed, prompting the user ON DEMAND when it
  * is not already permitted. Semantics:
  *   - an empty host → `false` (fail-closed);
  *   - a host already granted this session ({@link isSandboxHostGranted}) → `true`
- *     with no re-prompt (idempotent, mirrors Claude not re-asking a granted host);
+ *     with no re-prompt (idempotent, mirrors the reference not re-asking a granted host);
  *   - otherwise, when a {@link PermissionPromptHandler} is available, prompt with
  *     the exact {@link sandboxNetworkAskMessage} wording. An allow* verdict RECORDS
  *     the grant ({@link recordSandboxHostGrant}) — so the SAME host is subsequently
  *     reachable from both the bash sandbox allowlist (host + container backends fold
  *     {@link getGrantedSandboxHosts}) and further web fetches — and returns `true`;
  *     a deny/cancel returns `false`;
- *   - no handler available → `false` (fail-closed, mirroring Claude's `catch → deny`).
+ *   - no handler available → `false` (fail-closed, mirroring the reference's `catch → deny`).
  * A handler that throws is caught and treated as a deny (fail-closed). This is the
  * single canonical approval entry point reused by every egress site (no parallel
  * approval path).
  *
- * ALLOW-ONCE vs ALLOW-AND-REMEMBER (parity with Claude's `{ allow, persistToSettings }`
+ * ALLOW-ONCE vs ALLOW-AND-REMEMBER (parity with the reference's `{ allow, persistToSettings }`
  * network-egress response): the handler's verdict distinguishes a one-shot allow from
  * a "don't ask again" grant. An `allow_pattern` verdict (the prompt's "always allow
  * this host" option) is DURABLY remembered ({@link persistSandboxHostGrant}) so the
@@ -414,10 +414,10 @@ export async function requestSandboxHostAccess(
 }
 
 /**
- * PARITY (Claude's `createSandboxAskCallback`): build a {@link SandboxAskCallback}
+ * PARITY (the reference's `createSandboxAskCallback`): build a {@link SandboxAskCallback}
  * bound to a permission handler + abort signal, delegating each decision to the
  * canonical {@link requestSandboxHostAccess}. Lets a consumer hand a plain
- * `(hostPattern) => Promise<boolean>` to a sandbox/egress layer exactly as Claude's
+ * `(hostPattern) => Promise<boolean>` to a sandbox/egress layer exactly as the reference's
  * callback is shaped, without re-implementing the approval logic.
  */
 export function createSandboxAskCallback(
@@ -430,12 +430,12 @@ export function createSandboxAskCallback(
 /**
  * Clear this session's sandbox-host grants. Called from the `/clear` session reset
  * alongside the rest of the session-cache eviction so stale cross-agent approval
- * state never leaks into a fresh conversation (parity with Claude's
+ * state never leaks into a fresh conversation (parity with the reference's
  * `clearAllPendingCallbacks`, which clears the sandbox registry together with the
  * tool-permission registry on `/clear`).
  *
  * DURABLY-REMEMBERED hosts ({@link persistSandboxHostGrant}, "don't ask again") are
- * deliberately KEPT — they are the user's persistent allowlist, equivalent to Claude's
+ * deliberately KEPT — they are the user's persistent allowlist, equivalent to the reference's
  * `persistToSettings:true` hosts, which `/clear` must not forget. The lazy-load flag
  * is reset so the next membership check re-reads the on-disk store (which also lets a
  * test that points {@link sandboxHostsPath} at a fresh dir pick up the new store).

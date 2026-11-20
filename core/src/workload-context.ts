@@ -4,7 +4,7 @@
  * This is AMI's single canonical primitive for "what triggered the current
  * turn" — a cron-scheduled turn, a forked/detached slash command, a sub-agent,
  * etc. — queryable from ANY code on the async chain via {@link getWorkload}
- * without threading a handle. Mirrors Claude Code's `utils/workloadContext.ts`.
+ * without threading a handle. Mirrors the reference's `utils/workloadContext.ts`.
  *
  * WHY AsyncLocalStorage (not a global mutable slot / push-pop stack):
  * void-detached background work (cron fire callbacks, forked slash commands,
@@ -28,7 +28,7 @@ import { AsyncLocalStorage } from 'async_hooks';
  * The fixed, low-cardinality workload vocabulary. Kept lowercase so it matches
  * the server-side entrypoint sanitizer (`[a-z0-9_-]{0,32}`) and AMI's analytics
  * invocation-source segmentation. `cron` distinguishes a scheduler-fired turn
- * from an interactive/detached one (Claude's `WORKLOAD_CRON`).
+ * from an interactive/detached one (the reference's `WORKLOAD_CRON`).
  */
 export type Workload = 'cron';
 

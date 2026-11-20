@@ -1,7 +1,7 @@
 /**
  * TMUX SOCKET ISOLATION (core helper)
  * ===================================
- * Canonical home for AMI's isolated-tmux-socket logic. Parity with Claude Code's
+ * Canonical home for AMI's isolated-tmux-socket logic. Parity with the reference's
  * `src/utils/tmuxSocket.ts`.
  *
  * WHY THIS EXISTS

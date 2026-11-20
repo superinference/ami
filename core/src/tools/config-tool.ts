@@ -11,7 +11,7 @@ import { isSpecialFileStat } from '../path-safety';
  * Metadata describing a single supported config setting. This registry is the
  * single source of truth for which keys the config tool may read/write, their
  * type, their enumerated options (if any), nested storage path, and optional
- * write-validation / read-formatting hooks. Mirrors Claude Code's
+ * write-validation / read-formatting hooks. Mirrors the reference's
  * SUPPORTED_SETTINGS registry (tools/ConfigTool/supportedSettings.ts).
  */
 export interface SettingConfig {
@@ -26,7 +26,7 @@ export interface SettingConfig {
   /**
    * Optional ASYNC per-setting write validation, run after the synchronous
    * checks and only when the write would actually change the value. Mirrors
-   * Claude Code's `validateOnWrite` hook (tools/ConfigTool/ConfigTool.ts): a
+   * the reference's `validateOnWrite` hook (tools/ConfigTool/ConfigTool.ts): a
    * semantic/reachability check that may need I/O — e.g. confirming a `model`
    * id is actually served by the configured provider — so an invalid-but-
    * well-formed value is rejected at write time instead of only failing later
@@ -93,7 +93,7 @@ export const SUPPORTED_SETTINGS: Record<string, SettingConfig> = {
     validateOnWrite: nonEmptyString('model'),
     asyncValidateOnWrite: validateModelOnWrite,
     // An unset model falls back to the built-in default; surface that resolved
-    // state on read instead of a bare `undefined` (mirrors Claude's model
+    // state on read instead of a bare `undefined` (mirrors the reference's model
     // null -> "default" formatting), so a `get model` on a fresh config is
     // self-explanatory rather than looking empty/broken.
     formatOnRead: (v: unknown) => (v === undefined || v === null ? 'default' : v),
@@ -314,7 +314,7 @@ function coerceValue(type: SettingConfig['type'], value: unknown): { value?: unk
  * Builds the `## Model` section appended to the tool description, enumerating the
  * known-good model ids per provider plus the short aliases, so the model has a
  * concrete list of valid values to pick when it wants to change the `model` key
- * (mirrors Claude's generateModelSection, which special-cases the model setting
+ * (mirrors the reference's generateModelSection, which special-cases the model setting
  * with a per-value listing and a try/catch static fallback). The provider lister
  * is injected so a registry failure degrades to a static fallback line rather
  * than breaking the whole tool description. Uses the SYNCHRONOUS static registry
@@ -417,12 +417,12 @@ export const configTool: ToolDefinition = {
     required: ['action'],
   },
   isReadOnly: false,
-  // Dynamic read-vs-write classification (parity: Claude's ConfigTool.isReadOnly =
+  // Dynamic read-vs-write classification (parity: the reference's ConfigTool.isReadOnly =
   // `value === undefined`). A config call only mutates on-disk config when it is a
   // `set` that carries a value (a plain `get`, or a `set` with no value — which is a
   // no-op error — reads nothing on disk). Reporting the read case as read-only lets
   // the permission layer auto-allow config reads without a prompt while keeping every
-  // actual write on the permission-asking path, matching Claude's auto-allow-reads /
+  // actual write on the permission-asking path, matching the reference's auto-allow-reads /
   // ask-on-set affordance exactly. See core/tools/tool-categories.isToolReadOnlyForInput.
   isReadOnlyForInput: (input: Record<string, unknown>): boolean =>
     !(input.action === 'set' && input.value !== undefined),
@@ -452,7 +452,7 @@ export const configTool: ToolDefinition = {
 };
 
 function readConfigRaw(configPath: string): { config?: Record<string, unknown>; error?: string; absent?: boolean; unreadable?: string } {
-  // Special-file containment before the read (parity: Claude's safeResolvePath
+  // Special-file containment before the read (parity: the reference's safeResolvePath
   // special-file check before a settings read). A config path must be a regular
   // file: `fs.readFileSync` on a FIFO blocks indefinitely waiting for a writer
   // (a hang that looks like a frozen tool), and a socket/char/block device is
@@ -510,7 +510,7 @@ function writeConfigMutation(configPath: string, mutate: (cfg: Record<string, un
 /**
  * Validate the on-disk config file against the FULL schema and report, structured,
  * every parse/field/unknown-key problem plus the list of valid keys so the model can
- * self-correct the file. Parity: Claude Code's schema-aware settings validation that
+ * self-correct the file. Parity: the reference's schema-aware settings validation that
  * returns the per-field error list AND the schema. Read-only. Uses the single canonical
  * {@link validateConfigFileContent} — no parallel validation logic.
  */

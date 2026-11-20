@@ -23,7 +23,7 @@ function cellSourceToString(source: string | string[] | undefined): string {
 }
 
 /** Derive the notebook's programming language from `metadata.language_info.name`,
- *  defaulting to 'python' when absent/blank. Parity: Claude's NotebookEditTool
+ *  defaulting to 'python' when absent/blank. Parity: the reference's NotebookEditTool
  *  (L379 — `notebook.metadata.language_info?.name ?? 'python'`), so the result
  *  carries language context for the edited cell. Exported as the single canonical
  *  notebook-language source reused by the permission-time cell preview (common/
@@ -39,7 +39,7 @@ export function deriveNotebookLanguage(nb: { metadata?: Record<string, unknown> 
 
 /** Derive the syntax-highlight language for a single cell: a markdown cell is
  *  highlighted as 'markdown', any other (code) cell as the notebook's programming
- *  language. Parity: Claude's NotebookEditPermissionRequest (L40 —
+ *  language. Parity: the reference's NotebookEditPermissionRequest (L40 —
  *  `cell_type === 'markdown' ? 'markdown' : 'python'`), generalized so a non-Python
  *  kernel's code cells get the correct language rather than a hardcoded 'python'.
  *  Exported so the permission-time preview derives the cell's highlight language
@@ -50,7 +50,7 @@ export function deriveCellLanguage(cellType: string | undefined, notebookLanguag
 
 /** Structured, machine-readable result surface for `notebook_edit`, carried on
  *  {@link ToolResult.metadata} and described by the tool's `outputSchema`. Parity:
- *  Claude's NotebookEditTool output `data` (new_source / cell_type / language /
+ *  the reference's NotebookEditTool output `data` (new_source / cell_type / language /
  *  edit_mode / cell_id / error / notebook_path / original_file / updated_file), so
  *  a resume/SDK/non-LLM caller — and attribution tracking — can branch on the
  *  before/after content and resolved language without parsing the human message. */
@@ -134,7 +134,7 @@ export const notebookEditTool: ToolDefinition = {
       },
     },
     required: ['notebook_path', 'new_source'],
-    // Strict object (parity: Claude's z.strictObject): reject unknown/typo'd
+    // Strict object (parity: the reference's z.strictObject): reject unknown/typo'd
     // parameters up front via the shared tool-input validator so a hallucinated
     // key fails loudly instead of being silently dropped.
     additionalProperties: false,
@@ -143,13 +143,13 @@ export const notebookEditTool: ToolDefinition = {
   // Discovery hint for tool_search using synonyms NOT already in the name/
   // description, so a deferred notebook_edit is findable by "jupyter"/"ipynb".
   searchHint: 'jupyter ipynb notebook cell code markdown edit insert delete',
-  // Human-friendly affordance label (parity: Claude's NotebookEditTool
+  // Human-friendly affordance label (parity: the reference's NotebookEditTool
   // `userFacingName: () => 'Edit Notebook'`). Surfaced as introspection/affordance
   // metadata via `ami --introspect` so the stable snake_case id (`notebook_edit`)
   // carries a readable name for discovery/tooling. Static — the label does not
   // depend on the call arguments.
   userFacingName: () => 'Edit Notebook',
-  // Human-readable live-progress phrase (parity: Claude's NotebookEdit
+  // Human-readable live-progress phrase (parity: the reference's NotebookEdit
   // getActivityDescription -> "Editing notebook <summary>"). Delegates to the ONE
   // canonical phrasing rule (describeToolActivity) so a sub-agent's task_list
   // progressSummary — resolved via createActivityDescriptionResolver, which prefers
@@ -160,7 +160,7 @@ export const notebookEditTool: ToolDefinition = {
   },
   // PARITY (additive): structured-result schema describing the machine-readable
   // outcome AMI carries on `ToolResult.metadata` ({@link NotebookEditMetadata}).
-  // Mirrors Claude's NotebookEditTool `outputSchema` (new_source / cell_type /
+  // Mirrors the reference's NotebookEditTool `outputSchema` (new_source / cell_type /
   // language / edit_mode / cell_id / error / notebook_path / original_file /
   // updated_file) so a resume/SDK/non-LLM caller — and attribution tracking — can
   // branch on the before/after notebook content and resolved language without
@@ -216,7 +216,7 @@ export const notebookEditTool: ToolDefinition = {
     const nullCheck = validateFilePath(notebookPath || '');
     if (nullCheck) return nullCheck;
 
-    // PARITY (Claude write-path glob guard; mirrors file-edit.ts): a glob pattern
+    // PARITY (the reference write-path glob guard; mirrors file-edit.ts): a glob pattern
     // is never a valid write/edit target — the tool uses the path literally, so a
     // `*`/`?` wildcard can only be a model mistake that would create a literally
     // named file or silently miss the intended notebook. Reject with an actionable,
@@ -253,7 +253,7 @@ export const notebookEditTool: ToolDefinition = {
       };
     }
 
-    // FUNCTIONAL (Claude parity, errorCode 5): when inserting a new cell there is
+    // FUNCTIONAL (the reference parity, errorCode 5): when inserting a new cell there is
     // no existing cell to inherit the type from, so cell_type is required. Without
     // this guard a bare insert silently defaulted to a code cell, which can produce
     // the wrong cell kind (e.g. markdown content persisted as a code cell).
@@ -292,9 +292,9 @@ export const notebookEditTool: ToolDefinition = {
     }
 
     if (path.extname(resolved) !== '.ipynb') {
-      // FUNCTIONAL (Claude parity, errorCode 2): append a recovery affordance so a
+      // FUNCTIONAL (the reference parity, errorCode 2): append a recovery affordance so a
       // wrong-file-type call is not a dead end — the model is told exactly which
-      // tool to reach for instead. Mirrors Claude's NotebookEditTool message
+      // tool to reach for instead. Mirrors the reference's NotebookEditTool message
       // ("For editing other file types, use the FileEdit tool.").
       return {
         output: 'Error: File must be a Jupyter notebook (.ipynb file). For editing other file types, use the file_edit tool.',
@@ -360,7 +360,7 @@ export const notebookEditTool: ToolDefinition = {
     }
 
     // --- Resolve cell_id to cell_number ---
-    // Claude resolution order (NotebookEditTool L270-288): match the cell's ACTUAL
+    // the reference resolution order (NotebookEditTool L270-288): match the cell's ACTUAL
     // id first, and only fall back to the positional "cell-N" alias when no real id
     // matches. The alias regex is strictly anchored (/^cell-(\d+)$/) so a real id
     // like "cell-foo" or "cell-2x" is never mis-parsed as an index.
@@ -408,18 +408,18 @@ export const notebookEditTool: ToolDefinition = {
     // Unified diff of the replaced cell's source, appended to the output below.
     let replaceDiff: string | undefined;
     // Source of the cell removed by a delete, captured BEFORE the splice so the
-    // confirmation can surface what was deleted (parity with Claude's
+    // confirmation can surface what was deleted (parity with the reference's
     // NotebookEditToolDiff, which shows the deleted cell's source on delete).
     let deletedSource: string | undefined;
     // The stable id and resolved type of the cell actually touched by this edit,
     // surfaced in the confirmation message and the structured metadata so the model
     // (or a non-LLM/SDK caller) can correlate the edit back to a specific cell.
-    // Parity: Claude's `new_cell_id` + `cell_type` result fields (NotebookEditTool
+    // Parity: the reference's `new_cell_id` + `cell_type` result fields (NotebookEditTool
     // L379-389, L444-446).
     let affectedCellId: string | undefined;
     let affectedCellType: string | undefined;
 
-    // For insert mode with cell_id match, insert AFTER the matched cell (Claude behavior)
+    // For insert mode with cell_id match, insert AFTER the matched cell (the reference behavior)
     let effectiveIndex: number;
     if (cellNumber !== undefined && cellNumber !== null) {
       if (editMode === 'insert' && cellId) {
@@ -510,7 +510,7 @@ export const notebookEditTool: ToolDefinition = {
       } else {
         const target = notebook.cells[effectiveIndex];
         // Capture the old source BEFORE overwriting so the confirmation can show a
-        // minimal unified diff of what changed in the cell (parity with Claude
+        // minimal unified diff of what changed in the cell (parity with the reference
         // Code's notebook-edit diff preview).
         replaceDiff = buildUnifiedDiff(
           cellSourceToString(target.source),
@@ -634,7 +634,7 @@ export const notebookEditTool: ToolDefinition = {
           ? `Inserted new ${affectedCellType ?? cellType ?? 'code'} cell at index ${effectiveIndex}${idSuffix}`
           : `Replaced cell ${effectiveIndex}${idSuffix}`;
 
-    // Per-mode cell preview (parity with Claude's NotebookEditToolDiff, which
+    // Per-mode cell preview (parity with the reference's NotebookEditToolDiff, which
     // renders a distinct body per edit_mode): a unified diff of old→new source for
     // REPLACE, the new cell source for INSERT, and the removed cell source for
     // DELETE. Previously only replace surfaced a preview; insert/delete returned a

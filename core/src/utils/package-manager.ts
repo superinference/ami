@@ -1,7 +1,7 @@
 /**
  * Python package-manager detection + install-command construction.
  *
- * Parity with Claude Code's `detectPythonPackageManager` / `installIt2`
+ * Parity with the reference's `detectPythonPackageManager` / `installIt2`
  * (utils/swarm/backends/it2Setup.ts): when an external Python-based CLI tool
  * (e.g. a pip/uv-installable language server) is missing, AMI can tell the user
  * HOW to bootstrap it instead of only reporting "not found".
@@ -24,7 +24,7 @@ import { firstAvailableBinary, isBinaryInstalled } from './which';
 
 /**
  * Logical Python package-manager kind, with aliases collapsed. Listed in order
- * of preference. `'uvx'` denotes `uv` (the type name is kept for Claude-Code
+ * of preference. `'uvx'` denotes `uv` (the type name is kept for the reference
  * schema compatibility); `'pip'` covers both `pip` and `pip3`.
  */
 export type PythonPackageManager = 'uvx' | 'pipx' | 'pip';
@@ -66,7 +66,7 @@ export function detectPythonPackageManager(
 /**
  * Build the spawn-ready install invocation for `tool` using `packageManager`.
  * Pure data — this does NOT execute anything; the caller decides whether/how to
- * run it (under its own permission + supply-chain gate). Mirrors Claude Code's
+ * run it (under its own permission + supply-chain gate). Mirrors the reference's
  * `installIt2` command table:
  *   - uv:   `uv tool install <tool>`   (isolated global install)
  *   - pipx: `pipx install <tool>`      (isolated global install)
@@ -78,7 +78,7 @@ export function detectPythonPackageManager(
  * untrusted project lets a planted `uv.toml`/`pip.conf` with `index-url =
  * http://attacker/...` silently redirect the download to a malicious PyPI mirror.
  * Pinning the install cwd to `$HOME` defeats that project-level redirection.
- * Parity with Claude Code's `installIt2`, which spawns every installer with
+ * Parity with the reference's `installIt2`, which spawns every installer with
  * `cwd: homedir()` for exactly this reason (utils/swarm/backends/it2Setup.ts
  * L95-96). The `--user` flag on pip additionally avoids a sudo escalation.
  */

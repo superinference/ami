@@ -1,7 +1,7 @@
 /**
  * Memory / transcript file-access classifier.
  *
- * Parity with Claude Code's `utils/memoryFileDetection.ts` +
+ * Parity with the reference's `utils/memoryFileDetection.ts` +
  * `utils/sessionFileAccessHooks.ts`: given a tool name and its raw input,
  * classify whether the call is touching a memory or session-transcript file.
  * This is a pure, telemetry-independent predicate the engine/TUI can use to
@@ -32,7 +32,7 @@ export interface MemoryDirs {
 /**
  * Normalize a path/pattern to a stable string-comparable form: forward-slash
  * separators and, on Windows (case-insensitive filesystem), lowercase. Mirrors
- * Claude Code's `toComparable`.
+ * the reference's `toComparable`.
  */
 function toComparable(p: string): string {
   const posixForm = p.split('\\').join('/');
@@ -69,7 +69,7 @@ export function detectSessionFileType(
 
 /**
  * Classify a GLOB/PATTERN string (Grep `glob`/`include`, Glob `pattern`), where
- * we only have intent, not a real path. Mirrors Claude Code's
+ * we only have intent, not a real path. Mirrors the reference's
  * `detectSessionPatternType` heuristics.
  */
 export function detectSessionPatternType(
@@ -108,7 +108,7 @@ function filePathFromInput(toolName: string, input: unknown): string | null {
 
 /**
  * Classify a tool CALL (name + raw input) to its session-file type, checking an
- * explicit path first and the glob/pattern heuristics second — matching Claude
+ * explicit path first and the glob/pattern heuristics second — matching the reference
  * Code's `getSessionFileTypeFromInput` ordering. Returns `null` for a tool whose
  * input does not target a session file.
  */
@@ -157,7 +157,7 @@ export function classifyToolSessionFileType(
  * Reusable predicate: does this tool call touch a memory or session file?
  * True when the call targets a `session_memory` file (Read/Grep/Glob) OR a
  * Read/Edit whose `file_path` lies within the memory dir (covers stored memory,
- * the MEMORY.md index, and the nested `team/` store). Mirrors Claude Code's
+ * the MEMORY.md index, and the nested `team/` store). Mirrors the reference's
  * `isMemoryFileAccess` (session_memory OR isAutoMemFile/isTeamMemFile).
  */
 export function isMemoryFileAccess(
@@ -178,7 +178,7 @@ export function isMemoryFileAccess(
 /**
  * The tool names whose calls can TOUCH a memory/session file — the allowlist a
  * transcript walker filters `tool_use` blocks by before applying
- * {@link isMemoryFileAccess}. Parity with Claude Code's
+ * {@link isMemoryFileAccess}. Parity with the reference's
  * `MEMORY_ACCESS_TOOL_NAMES` (utils/attribution.ts): read, grep, glob, edit and
  * write (AMI tool names). A tool outside this set can never be a memory access,
  * so the walker skips it cheaply before the structural predicate runs.
@@ -201,7 +201,7 @@ export interface MemoryToolUseBlock {
 
 /**
  * A minimal shape of one transcript entry (reference-journal `AssistantEntry` /
- * Claude Code `Entry`): the walker only needs the entry `type` and the
+ * the reference `Entry`): the walker only needs the entry `type` and the
  * assistant message's `content` blocks. Deliberately structural so it accepts
  * both a live {@link MemoryToolUseBlock}-bearing message and a persisted journal
  * line without coupling to either concrete type.
@@ -217,7 +217,7 @@ export interface MemoryAccessEntry {
  * suffix. Walks each `assistant` entry's `tool_use` blocks, filters by
  * {@link MEMORY_ACCESS_TOOL_NAMES}, then applies the SAME {@link isMemoryFileAccess}
  * predicate the PostToolUse session-file-access guard uses — so a hook and this
- * counter never disagree. Parity with Claude Code's
+ * counter never disagree. Parity with the reference's
  * `countMemoryFileAccessFromEntries` (utils/attribution.ts L213-243), covering
  * read/grep/glob/edit/write (not just reads).
  *
@@ -264,7 +264,7 @@ const AGENT_MEMORY_GLOB_MARKERS = [
  * pattern reads as a session file ({@link detectSessionPatternType}) or reaches
  * an agent-memory tree. Used by collapse/badge logic so a grep/glob whose only
  * filter is a memory glob (no concrete path) is still recognized as a memory
- * search. Parity with Claude Code's `isAutoManagedMemoryPattern`
+ * search. Parity with the reference's `isAutoManagedMemoryPattern`
  * (utils/memoryFileDetection.ts L277-289).
  */
 export function isAutoManagedMemoryPattern(pattern: string): boolean {

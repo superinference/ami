@@ -15,7 +15,7 @@
  * durable buffer→drain pattern the background-task completion notices use, so an
  * update that fired while no API call was in flight is still surfaced, never lost.
  *
- * Parity: Claude Code's `UserResourceUpdateMessage` (server-attributed resource
+ * Parity: the reference's `UserResourceUpdateMessage` (server-attributed resource
  * refresh line with an optional reason).
  */
 
@@ -32,7 +32,7 @@ export interface McpResourceUpdateNotice {
 
 /**
  * Format a resource-update notice as a one-line provenance string with explicit
- * server attribution and an optional ` · reason` suffix. Mirrors Claude's
+ * server attribution and an optional ` · reason` suffix. Mirrors the reference's
  * refresh-arrow line. A whole-list change (empty `uri`) renders the server plus
  * the reason only.
  */

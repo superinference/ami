@@ -5,11 +5,11 @@ import { truncateActivity } from './text-truncate';
 import { plural } from '../utils/string';
 
 /**
- * PARITY (Claude Code BackgroundTask.tsx `activityLimit`, `truncate(cmd, limit,
+ * PARITY (the reference BackgroundTask.tsx `activityLimit`, `truncate(cmd, limit,
  * true)`): width budget for the free-text activity column (a shell task's
  * description/command or an agent's live summary). Bounds a single pathological
  * long/multi-line value to one tidy line so it can't dominate a row or inflate
- * the tool result. Wider than Claude's 40-col TUI budget because this is the
+ * the tool result. Wider than the reference's 40-col TUI budget because this is the
  * model-facing listing, but still bounded.
  */
 const MAX_ACTIVITY_WIDTH = 120;
@@ -71,7 +71,7 @@ const STATUS_ICON: Record<TaskStatus, string> = {
 export function formatTaskStatus(task: Pick<BackgroundProcess, 'status' | 'exitCode'>): string {
   const icon = STATUS_ICON[task.status] ?? '•';
   if (task.status === 'running') return `${icon} running`;
-  // A queued/not-yet-started task (parity: Claude's getStatusText 'is pending') —
+  // A queued/not-yet-started task (parity: the reference's getStatusText 'is pending') —
   // rendered distinctly from running so the model can tell "accepted, waiting to
   // start" from "actively executing". No exit code (it hasn't run).
   if (task.status === 'pending') return `${icon} pending`;
@@ -91,7 +91,7 @@ export function summarizeTasks(tasks: Pick<BackgroundProcess, 'status'>[]): Reco
 }
 
 /**
- * PARITY (Claude Code's getPillLabel / LocalShellTask `kind`): count tasks by
+ * PARITY (the reference's getPillLabel / LocalShellTask `kind`): count tasks by
  * their authoritative {@link BackgroundProcess.kind} discriminator — the per-type
  * label split ("1 shell, 1 monitor") that the footer pill shows. Branches on the
  * `kind` FIELD, not the brittle command-string heuristics ({@link isAgentTask} /
@@ -110,8 +110,8 @@ export function summarizeTaskKinds(
 }
 
 /**
- * PARITY (Claude Code's getPillLabel): render a per-type count summary using
- * Claude's footer nouns and pluralisation — `1 shell` / `2 shells`, `1 agent` /
+ * PARITY (the reference's getPillLabel): render a per-type count summary using
+ * the reference's footer nouns and pluralisation — `1 shell` / `2 shells`, `1 agent` /
  * `2 agents`, `1 monitor` / `2 monitors`. Zero-count kinds are dropped; an
  * all-zero input renders the empty string so the caller can suppress the line.
  */
@@ -125,7 +125,7 @@ export function formatKindSummary(counts: { bash: number; monitor: number; agent
 }
 
 /**
- * PARITY (Claude Code's pillLabel `identity.teamName` distinct-team count, rendered
+ * PARITY (the reference's pillLabel `identity.teamName` distinct-team count, rendered
  * as "N teams"): the number of DISTINCT non-empty team names among the given tasks.
  * A background agent spawned into a swarm team carries its
  * {@link BackgroundProcess.teamName}; solo agents / bash / monitor tasks carry none
@@ -148,7 +148,7 @@ function isTerminal(status: TaskStatus): boolean {
 
 export const taskListTool: ToolDefinition = {
   name: 'task_list',
-  // PARITY (Claude Code TaskListTool/prompt.ts:28-48): a tool description that
+  // PARITY (the reference TaskListTool/prompt.ts:28-48): a tool description that
   // teaches WHEN to call it plus closes the list→inspect/act loop by naming the
   // follow-up tools the returned taskId feeds into. AMI's listing unlocks
   // task_output (read/wait) and task_kill (stop); the model should learn that
@@ -186,7 +186,7 @@ export const taskListTool: ToolDefinition = {
       return { output: 'Error: Background process manager is not available.', isError: true };
     }
 
-    // Opportunistic retention GC (parity: Claude Code's `evictAfter` panel grace):
+    // Opportunistic retention GC (parity: the reference's `evictAfter` panel grace):
     // reap terminal tasks whose grace window has elapsed before we list, so a long
     // session doesn't accumulate stale completed rows / orphaned output files
     // without a background timer. Optional-chained so a minimal manager stub (older
@@ -263,7 +263,7 @@ export const taskListTool: ToolDefinition = {
           ref += ' [aborting]';
         }
         parts.push(ref);
-        // Final-result vs live-progress stats (parity: Claude Code's
+        // Final-result vs live-progress stats (parity: the reference's
         // AsyncAgentDetailDialog, which shows a FINISHED agent's `result` totals
         // separately from the in-flight `progress` totals). For a TERMINAL agent
         // prefer the authoritative result totals recorded at completion, falling
@@ -275,13 +275,13 @@ export const taskListTool: ToolDefinition = {
         if (typeof dispTokens === 'number' && dispTokens > 0) {
           parts.push(formatTokenCount(dispTokens));
         }
-        // Live tool-call progress counter (parity: Claude Code's
+        // Live tool-call progress counter (parity: the reference's
         // task.progress.toolCount) — how many tool calls this background agent has
         // made so far. Gated on >0 so a just-spawned agent shows no noise tag.
         if (typeof dispTools === 'number' && dispTools > 0) {
           parts.push(`${dispTools} ${dispTools === 1 ? 'tool' : 'tools'}`);
         }
-        // Live AI progress summary (parity: Claude Code's CoordinatorAgentStatus
+        // Live AI progress summary (parity: the reference's CoordinatorAgentStatus
         // `progress.summary`, which takes PRECEDENCE over the static description):
         // for a still-RUNNING agent, surface what it is doing right now, plus an
         // activity-direction indicator — "idle Ns" once no progress signal has
@@ -289,7 +289,7 @@ export const taskListTool: ToolDefinition = {
         // quiet one. Both are omitted for a terminal agent / when unset.
         if (t.status === 'running') {
           // Prefer the authoritative AI summary over the raw tool-tick progress
-          // summary (parity: Claude Code's LocalAgentTask summary precedence — a raw
+          // summary (parity: the reference's LocalAgentTask summary precedence — a raw
           // progress tick never clobbers the LLM summary). effectiveSummary() encodes
           // agentSummary ?? progressSummary; optional-chained for a minimal stub.
           const summary = context.processManager!.effectiveSummary?.(t.taskId) ?? t.progressSummary;
@@ -301,7 +301,7 @@ export const taskListTool: ToolDefinition = {
             }
           }
         }
-        // Incremental progress since the previous task_list (parity: Claude's
+        // Incremental progress since the previous task_list (parity: the reference's
         // lastReportedToolCount/lastReportedTokenCount delta caching "for computing
         // deltas in notifications"). For a still-RUNNING agent, surface what changed
         // since the last listing so the model sees forward progress at a glance. The
@@ -320,14 +320,14 @@ export const taskListTool: ToolDefinition = {
           }
         }
       } else {
-        // Width-bounded activity column (parity: Claude's BackgroundTask
+        // Width-bounded activity column (parity: the reference's BackgroundTask
         // `truncate(command/description, activityLimit, true)`): collapse a
         // multi-line description to one line and cap its width so one long shell
         // task can't blow out the row / inflate the tool result.
         parts.push(truncateActivity(t.description, MAX_ACTIVITY_WIDTH, true));
       }
 
-      // Attention badge (parity: Claude Code's ultraplanPhase / waiting-for-input
+      // Attention badge (parity: the reference's ultraplanPhase / waiting-for-input
       // pill): a still-running task signalling it needs the user's attention — the
       // stall watchdog sets `needs_input` when a task blocks on an interactive
       // prompt; an orchestrator can set `plan_ready` when a plan awaits review.
@@ -337,7 +337,7 @@ export const taskListTool: ToolDefinition = {
         else if (t.attentionState === 'plan_ready') parts.push('[plan ready]');
       }
 
-      // Lifecycle badges for an in-process agent (parity: Claude Code's
+      // Lifecycle badges for an in-process agent (parity: the reference's
       // InProcessTeammateTask isIdle / shutdownRequested): a graceful shutdown in
       // flight is shown so the reader knows the agent will stop after its current
       // turn, and an explicit idle flag (set when the agent finished its turn and is
@@ -364,16 +364,16 @@ export const taskListTool: ToolDefinition = {
       .map(s => `${counts[s]} ${s}`)
       .join(', ');
 
-    // PARITY (Claude getPillLabel): per-type breakdown from the authoritative
+    // PARITY (the reference getPillLabel): per-type breakdown from the authoritative
     // `kind` field (shells/agents are drawn from the listed tasks). Internal MCP
     // monitors are intentionally kept OUT of the per-task listing (an AMI
     // differentiator — they are framework plumbing), but their running count is
     // surfaced here from the unfiltered set so the model can still see "N monitor"
-    // without the noise lines, mirroring Claude's footer monitor count.
+    // without the noise lines, mirroring the reference's footer monitor count.
     const kindCounts = summarizeTaskKinds(tasks);
     kindCounts.monitor = all.filter(t => t.kind === 'monitor' && t.status === 'running').length;
     const kindSummary = formatKindSummary(kindCounts);
-    // Distinct-team tally (parity: Claude pillLabel "N teams") appended to the
+    // Distinct-team tally (parity: the reference pillLabel "N teams") appended to the
     // by-type line when any agent carries a team identity.
     const teamCount = countDistinctTeams(tasks);
     const teamSuffix = teamCount > 0
@@ -386,7 +386,7 @@ export const taskListTool: ToolDefinition = {
       ? `Background tasks (${tasks.length}):`
       : `Background tasks (${tasks.length} of ${visible.length}):`;
 
-    // Bounded tool result (parity: Claude Code `maxResultSizeChars` on the task
+    // Bounded tool result (parity: the reference `maxResultSizeChars` on the task
     // tools): cap the listing so a very large task set can't flood the model's
     // context. Rather than slicing mid-row (which leaves a half-rendered line and
     // hides how much was dropped), keep WHOLE task rows up to the char budget and

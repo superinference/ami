@@ -6,7 +6,7 @@ import { formatFileSize } from './utils/format';
  * Render milliseconds as seconds with one fixed decimal place (e.g. `1234` → `"1.2s"`).
  * Unlike a composite duration string, this ALWAYS keeps the decimal — use it for
  * sub-minute timings where the fractional second is meaningful (TTFT, hook durations,
- * slow-op lines). Mirrors Claude's utils/format.ts `formatSecondsShort`.
+ * slow-op lines). Mirrors the reference's utils/format.ts `formatSecondsShort`.
  */
 export function formatSecondsShort(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
@@ -71,7 +71,7 @@ export interface SlowWarning {
   text: string;
 }
 
-/** Thresholds for {@link slowWarning}; omitted fields use Claude-parity defaults. */
+/** Thresholds for {@link slowWarning}; omitted fields use the reference-parity defaults. */
 export interface SlowWarningOpts {
   /** delta over this (ms) is "slow" (default 100). */
   slowMs?: number;
@@ -83,7 +83,7 @@ export interface SlowWarningOpts {
 
 /**
  * Classify one operation's elapsed time into a bottleneck affordance severity,
- * mirroring Claude's queryProfiler getSlowWarning. UI-agnostic: returns a severity
+ * mirroring the reference's queryProfiler getSlowWarning. UI-agnostic: returns a severity
  * + short label the frontend maps to its own glyph/colour, so the threshold policy
  * lives in ONE place (core) instead of being re-encoded at each render site.
  *
@@ -197,7 +197,7 @@ export interface TraceEvent {
 /**
  * Declarative startup phase-boundary config: each named phase is a
  * `[startCheckpoint, endCheckpoint]` pair of {@link Profiler.mark} labels, mirroring
- * Claude's startupProfiler `PHASE_DEFINITIONS`. {@link Profiler.getPhaseDurations}
+ * the reference's startupProfiler `PHASE_DEFINITIONS`. {@link Profiler.getPhaseDurations}
  * resolves it into named elapsed-ms numbers.
  */
 export type PhaseDefinitions = Record<string, readonly [string, string]>;
@@ -222,7 +222,7 @@ export interface RequestPhase {
   durationMs: number;
 }
 
-/** The hierarchy level of a trace span (free-form; the well-known kinds mirror Claude). */
+/** The hierarchy level of a trace span (free-form; the well-known kinds mirror the reference). */
 export type SpanType = 'interaction' | 'llm_request' | 'tool' | 'tool.execution' | 'tool.blocked_on_user' | string;
 
 /** Opaque handle returned by {@link Profiler.beginSpan}; consumed by {@link Profiler.endSpan}. */
@@ -275,7 +275,7 @@ interface SpanRecord {
  * Bounded-memory timing aggregate: keeps count/sum/min/max (and sum-of-squares for
  * stddev) EXACT while retaining at most `size` raw samples via Algorithm R, so
  * percentiles are estimated without memory growing with the number of observations.
- * Mirrors Claude's RESERVOIR_SIZE histogram store.
+ * Mirrors the reference's RESERVOIR_SIZE histogram store.
  */
 class TimingAggregate {
   private _count = 0;
@@ -347,14 +347,14 @@ export interface ProfilerOpts {
   /**
    * Max retained timeline checkpoints; oldest are evicted past this so a
    * long-running session's `mark()` stream can't grow unbounded (mirrors
-   * Claude's perfetto MAX_EVENTS cap). Default 10000.
+   * the reference's perfetto MAX_EVENTS cap). Default 10000.
    */
   maxCheckpoints?: number;
   /** RNG injection for deterministic reservoir sampling (testability). */
   rand?: () => number;
   /**
    * Labels whose name starts with any of these prefixes are NEVER flagged as a
-   * slow operation (Claude excludes the model-prompt op from its slow-sync
+   * slow operation (the reference excludes the model-prompt op from its slow-sync
    * watchdog so the LLM's own latency doesn't drown the signal). Default empty.
    */
   slowExcludePrefixes?: string[];
@@ -437,7 +437,7 @@ export class Profiler {
    *
    * Optionally emits a `started → completed|failed` lifecycle (with elapsed ms and,
    * on success, data pulled from the result via `getData`) so a caller can mirror
-   * Claude's withDiagnosticsTiming structured logging without re-implementing the
+   * the reference's withDiagnosticsTiming structured logging without re-implementing the
    * timing/try-catch per call site.
    */
   async timeAsync<T>(
@@ -472,7 +472,7 @@ export class Profiler {
   /**
    * Milliseconds elapsed since process (context) start. `performance.now()` is
    * measured relative to `performance.timeOrigin` (process start), so this is the
-   * same clock Claude's headlessProfiler uses for its time_to_* cold-start fields —
+   * same clock the reference's headlessProfiler uses for its time_to_* cold-start fields —
    * monotonic and immune to wall-clock jumps.
    */
   timeSinceProcessStart(): number {
@@ -513,7 +513,7 @@ export class Profiler {
    * Recent slow operations (most-recent last). `limit` keeps only the last N;
    * `maxAgeMs` (TTL) drops entries older than that many ms relative to now, so a
    * live diagnostic surfaces only *recent* anomalies rather than the whole
-   * session's backlog (mirrors Claude's DevBar recent-slow-ops window).
+   * session's backlog (mirrors the reference's DevBar recent-slow-ops window).
    */
   getSlowOperations(limit?: number, maxAgeMs?: number): SlowOperation[] {
     let all = [...this._slowOps];
@@ -526,7 +526,7 @@ export class Profiler {
 
   /**
    * Render the most-recent slow operations as a single human-readable line for a live
-   * diagnostic bar, mirroring Claude's DevBar (`slow sync: op (1.2s) · op (0.3s)`).
+   * diagnostic bar, mirroring the reference's DevBar (`slow sync: op (1.2s) · op (0.3s)`).
    * Returns '' when no slow op falls in the window, so a frontend can hide the line
    * entirely. UI-agnostic: no colour/glyph — the frontend adds its own chrome.
    */
@@ -571,14 +571,14 @@ export class Profiler {
   /**
    * Render the timeline as aligned text (label, +cumulative, Δdelta, RSS/Heap).
    * `totalPad`/`deltaPad` control the padStart widths of the cumulative and delta
-   * columns so callers can align to their expected magnitude (Claude's
+   * columns so callers can align to their expected magnitude (the reference's
    * formatTimelineLine uses 8/7 for startup, 10/9 for query); defaults match the
    * previous hard-coded 7/6 so existing callers are unchanged.
    *
    * Memory is rendered via the shared {@link formatFileSize} humanizer — the SAME
    * helper every other size/limit message uses — so a GB-scale RSS reads as `2GB`
    * instead of the old ad-hoc heap-only `2048.0MB`, and both RSS and Heap are shown
-   * (parity with Claude's profilerBase formatTimelineLine `RSS: .., Heap: ..`).
+   * (parity with the reference's profilerBase formatTimelineLine `RSS: .., Heap: ..`).
    */
   formatTimeline(opts?: FormatTimelineOpts): string {
     const rows = this.getTimeline();
@@ -593,7 +593,7 @@ export class Profiler {
 
   /**
    * Derive per-phase durations by pairing `<phase>_start` / `<phase>_end` checkpoints
-   * (mirrors Claude's getPhaseSummary). A phase with a start but no matching end is
+   * (mirrors the reference's getPhaseSummary). A phase with a start but no matching end is
    * omitted. Returns phase → elapsed ms.
    */
   getPhaseSummary(): Record<string, number> {
@@ -614,13 +614,13 @@ export class Profiler {
   /**
    * Resolve a declarative {@link PhaseDefinitions} map into named elapsed-ms numbers
    * by pairing each phase's `[startCheckpoint, endCheckpoint]` against the FIRST
-   * occurrence of each checkpoint label in the recorded timeline (mirrors Claude's
+   * occurrence of each checkpoint label in the recorded timeline (mirrors the reference's
    * startupProfiler PHASE_DEFINITIONS). A phase whose start OR end checkpoint was
    * never marked is omitted, so the caller only sees measurable phases.
    */
   getPhaseDurations(defs: PhaseDefinitions): Record<string, number> {
     // First-occurrence index of each checkpoint label (some fire more than once;
-    // the first is the authoritative boundary, matching Claude's ordered marks).
+    // the first is the authoritative boundary, matching the reference's ordered marks).
     const firstTime = new Map<string, number>();
     for (const cp of this._checkpoints) {
       if (!firstTime.has(cp.label)) firstTime.set(cp.label, cp.time);
@@ -663,7 +663,7 @@ export class Profiler {
   /**
    * Observe one value into a named histogram (bounded reservoir, reusing the same
    * {@link TimingAggregate} store the timing path uses so there is ONE sampling
-   * implementation). Mirrors Claude's stats.tsx `observe`. NaN is ignored.
+   * implementation). Mirrors the reference's stats.tsx `observe`. NaN is ignored.
    */
   observe(name: string, value: number): void {
     if (Number.isNaN(value)) return;
@@ -675,7 +675,7 @@ export class Profiler {
   /**
    * Flat O(1) snapshot of every generic metric as one numeric record — counters and
    * gauges verbatim, sets as cardinality, and each non-empty histogram expanded into
-   * `<name>_count/_min/_max/_avg/_p50/_p95/_p99`. Mirrors Claude's stats.tsx `getAll()`
+   * `<name>_count/_min/_max/_avg/_p50/_p95/_p99`. Mirrors the reference's stats.tsx `getAll()`
    * (e.g. for a `lastSessionMetrics` dump) so a consumer needs no post-hoc aggregation.
    */
   getAll(): Record<string, number> {
@@ -804,7 +804,7 @@ export class Profiler {
   /**
    * Finalize any turn that called beginTurn() but never endTurn() — an engine abort,
    * crash, or teardown. Each pending turn is recorded as an `incomplete` turn with its
-   * elapsed-so-far duration (mirrors Claude's closeOpenSpans), so an aborted run's
+   * elapsed-so-far duration (mirrors the reference's closeOpenSpans), so an aborted run's
    * partial turn still appears in the report instead of vanishing, and the
    * turnStartTimes map can't leak start entries that never get an endTurn(). Clears
    * the pending-start map and returns the number of turns finalized.
@@ -851,7 +851,7 @@ export class Profiler {
   /**
    * TTL safety-net: evict started-but-never-ended turn records older than
    * `maxAgeMs` so an aborted/exception run can't leak `turnStartTimes` entries
-   * until reset() (mirrors Claude's sessionTracing orphaned-span cleanup sweep).
+   * until reset() (mirrors the reference's sessionTracing orphaned-span cleanup sweep).
    * Unlike closeOpenTurns() this DROPS the start without recording a turn — use
    * it for periodic background cleanup. A start that already ended normally is
    * never touched; a negative `maxAgeMs` is a no-op. Returns the count evicted.
@@ -935,7 +935,7 @@ export class Profiler {
    * Decompose a turn's TTFT into pre-request overhead (everything before the request
    * hit the wire = requestSetupMs + queryOverheadMs) vs network latency (the remaining
    * time on the wire until the first streamed chunk), with each as a percentage of the
-   * total — mirroring Claude's queryProfiler TTFT report split. Network is clamped >= 0
+   * total — mirroring the reference's queryProfiler TTFT report split. Network is clamped >= 0
    * (overhead can exceed a tiny TTFT). Returns null for an unknown turn or when TTFT
    * isn't meaningful (<= 0).
    */
@@ -959,7 +959,7 @@ export class Profiler {
    * Decompose a turn's single LLM request into labelled phases — `request_setup`
    * (build time before the wire), `first_token` (setup-end → first streamed chunk),
    * `sampling` (first chunk → stream end), and a `retries` count derived from
-   * attemptStartTimes — mirroring Claude's perfetto per-request sub-spans so a
+   * attemptStartTimes — mirroring the reference's perfetto per-request sub-spans so a
    * consumer can see where the time inside a request went. Returns null for an
    * unknown turn. (ITPS/OTPS/cache-hit-rate are already on {@link TurnTiming}.)
    */
@@ -984,7 +984,7 @@ export class Profiler {
    * on a "turns" track carrying its per-request span params (speculative flag,
    * query source, message id, cache hit rate, token throughput). Timestamps are
    * microseconds anchored at the earliest recorded event. Returns [] when nothing
-   * was recorded. Mirrors Claude's perfettoTracing exporter (UI-agnostic core).
+   * was recorded. Mirrors the reference's perfettoTracing exporter (UI-agnostic core).
    */
   toTraceEvents(opts?: { pid?: number }): TraceEvent[] {
     const times: number[] = this._checkpoints.map(c => c.time);
@@ -1108,7 +1108,7 @@ export class Profiler {
 
   /**
    * Reconstruct the full span forest: every root span (one with no in-tree parent)
-   * with its nested children across all agents. Mirrors Claude's sessionTracing span
+   * with its nested children across all agents. Mirrors the reference's sessionTracing span
    * tree so a report can show which llm_request/tool ran inside which interaction.
    */
   getSpanTree(): SpanNode[] {
@@ -1122,7 +1122,7 @@ export class Profiler {
   }
 
   /**
-   * Group spans into per-agent swimlane tracks (parity with Claude's perfetto
+   * Group spans into per-agent swimlane tracks (parity with the reference's perfetto
    * per-agent process/thread tracks). Each track holds the spans OWNED by that agent
    * (same-agent children nested; cross-agent children surface as their own agent's
    * roots) plus the agent's parent-agent link, so a swarm's teammate/subagent timings
@@ -1168,7 +1168,7 @@ export class Profiler {
  * the "1% low" FPS (frame rate at the slowest 1% of frames, the p99 frame time) —
  * via {@link getMetrics}.
  *
- * Matches Claude Code's `utils/fpsTracker.ts` algorithm EXACTLY (parity):
+ * Matches the reference's `utils/fpsTracker.ts` algorithm EXACTLY (parity):
  *   - `averageFps` is WALL-CLOCK based — `totalFrames / (elapsedBetweenFirstAndLastRecord / 1000)` —
  *     i.e. the frame rate ACHIEVED over the recording window, not the inverse of the mean
  *     frame duration (two frames recorded 1s apart is 2fps regardless of how fast each
@@ -1246,7 +1246,7 @@ export class FpsTracker {
 
 /**
  * Percentile of a numeric sample using linear interpolation between neighbouring
- * ranks — the NIST/"linear" method Claude's stats.tsx percentile() uses
+ * ranks — the NIST/"linear" method the reference's stats.tsx percentile() uses
  * (`index = p/100*(n-1)`; interpolate between floor/ceil). Delegates to the ONE
  * canonical implementation in utils/reservoir so core carries a single percentile
  * algorithm instead of a nearest-rank vs linear split (no-duplication). Input need

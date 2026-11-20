@@ -18,7 +18,7 @@ import { isSafeRelativePath } from './skill-catalog';
 import { estimateTokens } from './utils/tokens';
 import { escapeRegExp } from './utils/string';
 
-/** The classification tokens a command/skill may declare (parity with Claude's
+/** The classification tokens a command/skill may declare (parity with the reference's
  *  command `kind`). `'workflow'` badges a workflow-backed command in help/typeahead;
  *  a plain skill declares none. */
 export const SKILL_KINDS = ['workflow'] as const;
@@ -38,18 +38,18 @@ export interface SkillDefinition {
   disallowedTools?: string[]; // Tools to exclude (blacklist, applied after allowedTools)
   argumentHint?: string;  // Hint text for the argument (e.g., "<file-path>")
   argumentNames?: string[]; // Declared positional argument names (frontmatter `arguments`), bound to $name placeholders
-  /** Alternate names that ALSO resolve to this skill (parity with Claude's bundled
+  /** Alternate names that ALSO resolve to this skill (parity with the reference's bundled
    *  skill `aliases`). Registered as secondary lookup keys so `getSkill`/`getSkillContent`
    *  and the skill tool accept any alias without a second definition. Never shadows a
    *  real skill name. Parsed via {@link parseSkillAliases}. */
   aliases?: string[];
-  /** Runtime availability predicate (parity with Claude's bundled skill `isEnabled`).
+  /** Runtime availability predicate (parity with the reference's bundled skill `isEnabled`).
    *  When present and it returns `false`, the skill is hidden from listings/context and
    *  cannot be invoked — letting a dependency/feature-gated skill ship but stay dormant
    *  until its precondition holds. Absent ⇒ always enabled. Evaluated via
    *  {@link isSkillEnabled} (a throwing predicate is treated as disabled). */
   isEnabled?: () => boolean;
-  /** DECLARATIVE environment/feature-flag gate (parity with Claude's bundled skills
+  /** DECLARATIVE environment/feature-flag gate (parity with the reference's bundled skills
    *  that register conditionally on an environment/config flag, e.g. `stuck.ts`'s
    *  env-gated registration and `index.ts`'s feature-flag-gated bundled set). The
    *  skill is available ONLY when EVERY named environment variable is set to a
@@ -62,7 +62,7 @@ export interface SkillDefinition {
   requiredEnv?: string[];
   /** When true, invoking this skill with no argument is an error that returns
    *  {@link missingArgumentMessage} (or a generated help line) instead of running an
-   *  argument-less skill body (parity with Claude's required-argument skills, e.g.
+   *  argument-less skill body (parity with the reference's required-argument skills, e.g.
    *  `/batch`'s MISSING_INSTRUCTION_MESSAGE). */
   requiresArgument?: boolean;
   /** Custom help/examples message returned when a {@link requiresArgument} skill is
@@ -70,23 +70,23 @@ export interface SkillDefinition {
   missingArgumentMessage?: string;
   /** When true, the skill may only run inside a git working tree — invoking it from a
    *  non-git cwd returns an up-front, explanatory precondition message instead of
-   *  letting a later worktree/PR step fail with a low-level error (parity with Claude
+   *  letting a later worktree/PR step fail with a low-level error (parity with the reference
    *  Code's `getIsGit()` guard in worktree-spawning commands like `/batch`). Checked by
    *  the skill tool via {@link isGitRepo}; declarative metadata (reviewed-safe). */
   requiresGitRepo?: boolean;
-  /** Least-privilege sandbox for a FORKED skill (parity with Claude's forked-agent
+  /** Least-privilege sandbox for a FORKED skill (parity with the reference's forked-agent
    *  `createAutoMemCanUseTool`): when true, the forked sub-engine's `bash` is capped to
    *  read-only commands via a {@link ToolCapabilityCeiling} — a HARD cap enforced ahead
    *  of the sub-engine's permission mode. Declarative metadata; frontmatter
    *  `read-only-bash: true`. No effect on an inline skill. */
   sandboxReadOnlyBash?: boolean;
-  /** Directories a FORKED skill's file writes are confined to (parity with Claude's
+  /** Directories a FORKED skill's file writes are confined to (parity with the reference's
    *  autoMem write-path confinement, writes only within the memory dir). When set, the
    *  forked sub-engine denies edit/write outside these roots regardless of mode.
    *  Relative entries resolve against the skill's run cwd. Frontmatter
    *  `confine-writes-to:` (comma/newline list). Declarative metadata. */
   sandboxWriteRoots?: string[];
-  /** Programmatic dynamic-prompt builder (parity with Claude's bundled-skill
+  /** Programmatic dynamic-prompt builder (parity with the reference's bundled-skill
    *  `getPromptForCommand(args)`, e.g. `/batch`, `/claude-api`). When present, the
    *  skill body is COMPUTED per invocation from the raw argument string (plus any
    *  runtime state the builder closes over) instead of the static {@link content}
@@ -94,46 +94,46 @@ export interface SkillDefinition {
    *  or branch on the environment. May be sync or async. The content resolver
    *  prefers it over `content`; resolve via {@link resolveSkillPrompt}. */
   getPromptForCommand?: (args: string) => string | Promise<string>;
-  /** Supporting resource files bundled WITH the skill (parity with Claude's bundled
+  /** Supporting resource files bundled WITH the skill (parity with the reference's bundled
    *  `SKILL_FILES`: a map of skill-relative path → inlined file content). The skill
    *  body may reference these companion docs/examples; read one safely (with
    *  path-traversal rejection) via {@link getSkillFile}. */
   files?: Record<string, string>;
-  /** Affordance text shown while the skill is executing (parity with Claude's
+  /** Affordance text shown while the skill is executing (parity with the reference's
    *  command/skill `progressMessage`, which defaults to `'running'`). Resolved —
    *  with the default fallback — via {@link skillProgressMessage}. */
   progressMessage?: string;
   /** When true, invoking this skill/command JUMPS the message queue and executes
-   *  at once instead of waiting for the next stop point (parity with Claude's
+   *  at once instead of waiting for the next stop point (parity with the reference's
    *  command `immediate`). Checked via {@link isSkillImmediate}. */
   immediate?: boolean;
-  /** The shell a skill/command's inline `!`-blocks run under (parity with Claude's
+  /** The shell a skill/command's inline `!`-blocks run under (parity with the reference's
    *  `shell:` frontmatter). Absent ⇒ the executor defaults to bash — resolve with
    *  the fallback via {@link shellForExecution}. Parsed/validated via
    *  {@link parseShellFrontmatter}. */
   shell?: FrontmatterShell;
   /** Author-defined named template variables substituted into the skill body:
    *  every `{{key}}` token in {@link content} is replaced with `templateVars[key]`
-   *  (parity with Claude's bundled-skill `SKILL_MODEL_VARS`) so centrally-maintained
+   *  (parity with the reference's bundled-skill `SKILL_MODEL_VARS`) so centrally-maintained
    *  wording updates in one place. An unknown token is left intact. Applied via
    *  {@link applySkillTemplateVariables}. */
   templateVars?: Record<string, string>;
   /** When true, the skill's invocation ARGUMENTS are sensitive and must be masked
    *  (as `***`) wherever the invocation is echoed — the permission-prompt summary,
-   *  transcript, and conversation history (parity with Claude's command
+   *  transcript, and conversation history (parity with the reference's command
    *  `isSensitive`). Resolve a display-safe argument string via
    *  {@link redactSkillArgs}. */
   isSensitive?: boolean;
-  /** Hide the skill from user-facing help/typeahead listings (parity with Claude's
+  /** Hide the skill from user-facing help/typeahead listings (parity with the reference's
    *  command `isHidden`). A hidden skill is STILL invocable by its exact name; it is
    *  only omitted from the `/skills` catalog. Checked via {@link isSkillHidden}. */
   isHidden?: boolean;
-  /** Overrides the name shown for the skill in listings (parity with Claude's
+  /** Overrides the name shown for the skill in listings (parity with the reference's
    *  command `userFacingName()`) WITHOUT changing the canonical lookup `name`.
    *  Resolved — with the `name` fallback — via {@link skillUserFacingName}. */
   userFacingName?: string;
   /** Base directory exported to the skill's `!`-blocks / hooks as
-   *  `CLAUDE_PLUGIN_ROOT` (and the `AMI_PLUGIN_ROOT` alias) — parity with Claude's
+   *  `CLAUDE_PLUGIN_ROOT` (and the `AMI_PLUGIN_ROOT` alias) — parity with the reference's
    *  PromptCommand `skillRoot`. Lets a plugin/disk skill reference its bundle files
    *  by an absolute `${CLAUDE_PLUGIN_ROOT}/...` path regardless of the session cwd.
    *  Resolved — with a fallback to the skill's own on-disk directory — via
@@ -142,22 +142,22 @@ export interface SkillDefinition {
    *  member (declarative metadata, not injectable auto-run code). */
   skillRoot?: string;
   /** Discriminator badging a workflow-backed command/skill in help/typeahead
-   *  (parity with Claude's command `kind: 'workflow'`). Purely a classification
+   *  (parity with the reference's command `kind: 'workflow'`). Purely a classification
    *  surfaced by the listing; absent ⇒ a plain skill. Read via {@link skillKind}. */
   kind?: SkillKind;
   /** When true, the skill is UNAVAILABLE in a non-interactive (detached / `--prompt`)
-   *  run (parity with Claude's command `disableNonInteractive`). An explicit
+   *  run (parity with the reference's command `disableNonInteractive`). An explicit
    *  {@link supportsNonInteractive} overrides it. Gated via
    *  {@link isSkillAvailableNonInteractive}. */
   disableNonInteractive?: boolean;
-  /** Tri-state non-interactive opt-in (parity with Claude's command
+  /** Tri-state non-interactive opt-in (parity with the reference's command
    *  `supportsNonInteractive`). `false` ⇒ unavailable in a non-interactive run;
    *  `true` ⇒ always available regardless of {@link disableNonInteractive}; absent ⇒
    *  defer to {@link disableNonInteractive}. Gated via
    *  {@link isSkillAvailableNonInteractive}. */
   supportsNonInteractive?: boolean;
   /** Invocation-scoped lifecycle hooks declared in the skill's frontmatter (parity
-   *  with Claude Code's PromptCommand `hooks` + registerFrontmatterHooks). When a
+   *  with the reference's PromptCommand `hooks` + registerFrontmatterHooks). When a
    *  FORKED skill carries these, they are registered on its sub-engine for the
    *  duration of the invocation and torn down when the fork finishes — letting an
    *  individual skill contribute e.g. a preToolUse guard scoped to its own run
@@ -167,7 +167,7 @@ export interface SkillDefinition {
    *  self-granted `auto-allow` permissionMode is refused. */
   hooks?: HookConfigEntry[];
   context?: 'inline' | 'fork'; // Execution mode: inline injects as system message, fork spawns subagent
-  /** Named agent type a FORKED skill runs as (parity with Claude's PromptCommand
+  /** Named agent type a FORKED skill runs as (parity with the reference's PromptCommand
    *  `agent?: string`). When set, the forked sub-engine is bound to this agent's
    *  system prompt (and its model/maxTurns as a fallback when the skill does not
    *  override them) instead of a generic agent-agnostic sub-engine — so a fork can
@@ -219,22 +219,22 @@ export function isStanceSkill(skill: SkillDefinition): boolean {
 }
 
 /**
- * Where an agent definition was loaded from (parity with Claude Code's agent source
+ * Where an agent definition was loaded from (parity with the reference's agent source
  * tiers — `built-in`, `plugin`, `policySettings`, `userSettings`, `localSettings`,
  * `projectSettings`, `flagSettings`). A higher-priority same-named agent SHADOWS a
  * lower one; the load order in `SkillManager.loadAll` realizes the precedence. The
  * AMI tiers:
  *   - `built-in` — the bundled baseline agents.
  *   - `plugin`   — contributed by an installed plugin bundle.
- *   - `managed`  — enterprise/policy-managed (Claude's `policySettings`): admin-provided
+ *   - `managed`  — enterprise/policy-managed (the reference's `policySettings`): admin-provided
  *                  and READ-ONLY (see {@link AGENT_NONEDITABLE_SOURCES}).
  *   - `user`     — the user's home-level agents (`~/.claude`/`~/.ami`), shared across projects.
- *   - `local`    — project-LOCAL, non-shared agents (Claude's `localSettings`): editable,
+ *   - `local`    — project-LOCAL, non-shared agents (the reference's `localSettings`): editable,
  *                  override `user`, and are not committed to the team's shared config.
  *   - `project`  — the project's committed/shared agents (`.claude`/`.ami`), the team default.
- *   - `flag`     — injected via a CLI flag for a single run (Claude's `flagSettings`):
+ *   - `flag`     — injected via a CLI flag for a single run (the reference's `flagSettings`):
  *                  highest-priority and READ-ONLY (a per-run override, not a persisted file).
- * Mirrors Claude Code's agent source groups so `/agents` can group and flag shadowed
+ * Mirrors the reference's agent source groups so `/agents` can group and flag shadowed
  * entries instead of silently dropping the loser.
  */
 export const AGENT_SOURCES = [
@@ -244,14 +244,14 @@ export type AgentSource = (typeof AGENT_SOURCES)[number];
 
 /**
  * A source *selector* for an agent listing: a concrete {@link AgentSource} or the
- * aggregate `'all'` (every source). Mirrors Claude Code's rich agent-source
+ * aggregate `'all'` (every source). Mirrors the reference's rich agent-source
  * parameter (`'all' | 'built-in' | 'plugin' | SettingSource`), collapsed onto
  * AMI's four provenance tiers plus the aggregate.
  */
 export type AgentSourceSelector = AgentSource | 'all';
 
 /**
- * Human-readable display name for an agent source selector (parity with Claude
+ * Human-readable display name for an agent source selector (parity with the reference
  * Code's `getAgentSourceDisplayName`, components/agents/utils.ts). Turns a raw
  * provenance token ('built-in', 'plugin', 'user', 'project') — or the aggregate
  * 'all' — into the short prose label an `/agents` listing groups under, so a user
@@ -290,7 +290,7 @@ export interface AgentDefinition {
   systemPrompt: string;   // The agent's system prompt (markdown body)
   filePath: string;
   /** The agent definition's on-disk FILE basename (with extension), tracked
-   *  SEPARATELY from the resolved {@link name} (parity with Claude's agentFileUtils,
+   *  SEPARATELY from the resolved {@link name} (parity with the reference's agentFileUtils,
    *  which distinguishes the file name from the frontmatter agent type). When a file
    *  declares a `name:` frontmatter that differs from its filename, the frontmatter
    *  wins for the canonical {@link name} but the filename is retained here so a
@@ -301,7 +301,7 @@ export interface AgentDefinition {
   maxTurns?: number;
   /** Allowed tool names. `undefined` ⇒ ALL tools (no restriction); a present but
    *  EMPTY array ⇒ NO tools (an explicit deny-everything allowlist) — the two are
-   *  distinct, matching Claude Code's agent `tools` semantics (ConfirmStep). An
+   *  distinct, matching the reference's agent `tools` semantics (ConfirmStep). An
    *  empty allowlist resolves to a zero-tool set, which the task tool's zero-tool
    *  boundary guard then rejects with an actionable error rather than silently
    *  granting every tool. */
@@ -309,7 +309,7 @@ export interface AgentDefinition {
   disallowedTools?: string[];
   /** Permission mode override for sub-agent invocation. `'plan'` runs the sub-agent
    *  in read-only plan mode (reads/searches allowed, mutations denied). `'bubble'`
-   *  is the sentinel (parity with Claude Code's async/background-agent `bubble`
+   *  is the sentinel (parity with the reference's async/background-agent `bubble`
    *  permission mode): instead of pinning a fixed mode, the spawned agent runs with
    *  the PARENT's live permission stance so every permission decision bubbles up to
    *  the parent terminal rather than auto-denying — resolved at spawn time by
@@ -324,7 +324,7 @@ export interface AgentDefinition {
    *  source. Undefined on the active (winning) agent. */
   overriddenBy?: AgentSource;
   /** The agent bundle's root directory — its on-disk provenance base (parity with
-   *  Claude Code's agent `baseDir`). For a PLUGIN agent this is the plugin bundle
+   *  the reference's agent `baseDir`). For a PLUGIN agent this is the plugin bundle
    *  root so the agent's bundled assets resolve under a stable path regardless of
    *  the session cwd; for a disk agent it is the directory the `.md` lives in. It is
    *  exported to the agent's frontmatter {@link hooks} as `CLAUDE_PLUGIN_ROOT` (and
@@ -334,20 +334,20 @@ export interface AgentDefinition {
    *  {@link SkillDefinition.skillRoot} / {@link skillPluginRoot} pair. */
   baseDir?: string;
   /** Orchestrator delegation hint — the "when should the parent pick this agent"
-   *  cue, distinct from `description` (parity with Claude's agent `whenToUse`).
+   *  cue, distinct from `description` (parity with the reference's agent `whenToUse`).
    *  Parsed from a `when-to-use`/`when_to_use` frontmatter key. */
   whenToUse?: string;
   /** Per-agent display color used to tint the subagent's badge/label in listings
-   *  (parity with Claude's agent `color`). `undefined` ⇒ the UI picks a default. */
+   *  (parity with the reference's agent `color`). `undefined` ⇒ the UI picks a default. */
   color?: AgentColorName;
   /** Display color for the agent's DESCRIPTION badge, distinct from {@link color}
-   *  (which tints the agent-type badge) — parity with Claude's AgentProgressLine
+   *  (which tints the agent-type badge) — parity with the reference's AgentProgressLine
    *  `descriptionColor`. Normalized/validated via {@link parseAgentColor}. */
   descriptionColor?: AgentColorName;
-  /** Project-context knob (parity with Claude's agent `omitClaudeMd`). AMI subagents
+  /** Project-context knob (parity with the reference's agent `omitClaudeMd`). AMI subagents
    *  run on a REPLACED lean/identity prompt that already carries NEITHER the project
    *  CLAUDE.md/AGENTS.md NOR the session-start git status — a token-saving superset
-   *  perk, stronger than Claude Code's per-agent `omitClaudeMd` (which only lets
+   *  perk, stronger than the reference's per-agent `omitClaudeMd` (which only lets
    *  read-only agents DROP a context they otherwise get). So AMI inverts the knob into
    *  an OPT-IN: an explicit `omit-claude-md: false` requests the project instruction
    *  context back (consumed by the task tool's {@link resolveAgentProjectContext});
@@ -355,34 +355,34 @@ export interface AgentDefinition {
    *  load warning via {@link validateAgentDefinition}. */
   omitClaudeMd?: boolean;
   /** Require plan-mode approval before this delegated agent may implement/mutate
-   *  (parity with Claude's swarm teammate `planModeRequired`). An invalid
+   *  (parity with the reference's swarm teammate `planModeRequired`). An invalid
    *  (non-boolean) value surfaces a load warning via {@link validateAgentDefinition}. */
   planModeRequired?: boolean;
-  /** Persistent-memory storage scope for the agent (parity with Claude's agent
+  /** Persistent-memory storage scope for the agent (parity with the reference's agent
    *  `memory`): user / project / local. */
   memory?: AgentMemoryScope;
-  /** Run the subagent in an isolated git worktree by default (parity with Claude's
+  /** Run the subagent in an isolated git worktree by default (parity with the reference's
    *  agent `isolation`). */
   isolation?: AgentIsolationMode;
   /** When true, spawning this agent defaults to background/detached execution
    *  unless the caller explicitly overrides `run_in_background` (parity with
-   *  Claude's agent `background`). */
+   *  the reference's agent `background`). */
   background?: boolean;
   /** MCP server names this agent REQUIRES to be available before it can run
-   *  (parity with Claude's agent `requiredMcpServers`). Each entry is matched
+   *  (parity with the reference's agent `requiredMcpServers`). Each entry is matched
    *  case-insensitively as a substring against the live server names; when any
    *  requirement is unmet the agent is filtered out of the spawnable set. See
    *  {@link hasRequiredMcpServers} / {@link filterAgentsByMcpRequirements}. */
   requiredMcpServers?: string[];
   /** Per-subagent MCP servers to launch for this agent's run, additive to the
-   *  parent's servers (parity with Claude's per-agent `mcpServers`). Mirrors the
+   *  parent's servers (parity with the reference's per-agent `mcpServers`). Mirrors the
    *  stance `mcpServers` shape on {@link SkillDefinition}. */
   mcpServers?: Record<string, McpServerConfig>;
   /** Names of skills to PRELOAD into this agent's context when it is spawned
-   *  (parity with Claude's agent `skills` allowlist). Normalized via
+   *  (parity with the reference's agent `skills` allowlist). Normalized via
    *  {@link parseAgentSkills}. */
   skills?: string[];
-  /** Agent-lifecycle hooks declared in the agent's frontmatter (parity with Claude
+  /** Agent-lifecycle hooks declared in the agent's frontmatter (parity with the reference
    *  Code's agent `hooks` field + registerFrontmatterHooks with `isAgent=true`).
    *  When a NAMED subagent carries these, they are registered on its spawned
    *  sub-engine for the duration of that agent's run and torn down when it finishes
@@ -392,21 +392,21 @@ export interface AgentDefinition {
    *  (a privilege-escalation vector) alongside permission-mode / mcp-servers. */
   hooks?: HookConfigEntry[];
   /** Restrict which sub-agent *types* this agent may itself spawn via the task
-   *  tool (parity with Claude's `allowedAgentTypes` metadata). `undefined`/empty
+   *  tool (parity with the reference's `allowedAgentTypes` metadata). `undefined`/empty
    *  ⇒ no restriction. Checked with {@link canSpawnAgentType}. */
   allowedAgentTypes?: string[];
   /** Default thinking/reasoning-effort budget for this subagent's run (parity with
-   *  Claude's agent `effort`). A named level (`low`|`medium`|`high`|`xhigh`|`max`)
+   *  the reference's agent `effort`). A named level (`low`|`medium`|`high`|`xhigh`|`max`)
    *  OR the decimal string of a non-negative integer (raw token budget) — normalized
    *  at load time via {@link parseEffort}. Applied as the sub-engine's thinking level
    *  UNLESS the spawning task call passes an explicit per-call `effort` override. */
   effort?: string;
   /** Text auto-prepended to the agent's FIRST user turn when it is spawned (parity
-   *  with Claude's agent `initialPrompt`). Lets an agent definition seed its run with
+   *  with the reference's agent `initialPrompt`). Lets an agent definition seed its run with
    *  a standing instruction ahead of the caller's task prompt. Only applied on the
    *  initial spawn, never when resuming an existing agent session. */
   initialPrompt?: string;
-  /** Dynamic/computed system-prompt builder (parity with Claude's agent
+  /** Dynamic/computed system-prompt builder (parity with the reference's agent
    *  `getSystemPrompt({ toolUseContext })`). When present, the agent's system prompt
    *  is COMPUTED at spawn time from runtime context (e.g. the live set of custom
    *  skills/commands/agents/MCP servers) instead of the static {@link systemPrompt}
@@ -414,12 +414,12 @@ export interface AgentDefinition {
    *  which falls back to `systemPrompt` when the builder is absent. */
   getSystemPrompt?: (ctx?: Record<string, unknown>) => string | Promise<string>;
   /** Provenance flag recording that this agent definition was AUTO-GENERATED (e.g.
-   *  by a creation wizard / model) rather than hand-authored (parity with Claude's
+   *  by a creation wizard / model) rather than hand-authored (parity with the reference's
    *  agent `wasGenerated`). Surfaced in `/agents` so a user can tell generated
    *  definitions apart; parsed via {@link parseBooleanFlag}. */
   wasGenerated?: boolean;
   /** How this agent's {@link systemPrompt} combines with the base subagent stance
-   *  when the agent is spawned (parity with Claude's swarm teammate
+   *  when the agent is spawned (parity with the reference's swarm teammate
    *  `systemPromptMode`). `'append'` layers the agent's prompt AFTER the default
    *  subagent stance (the agent EXTENDS the base guidance); `'replace'`/`'default'`
    *  (and absent) make the agent's prompt the authoritative identity that fully
@@ -427,7 +427,7 @@ export interface AgentDefinition {
    *  {@link parseSystemPromptMode}; honored in the task tool's spawn path. */
   systemPromptMode?: SystemPromptMode;
   /** Short, strongly-flagged hard constraint reinforced separately from
-   *  {@link systemPrompt} (parity with Claude's `criticalSystemReminder_EXPERIMENTAL`).
+   *  {@link systemPrompt} (parity with the reference's `criticalSystemReminder_EXPERIMENTAL`).
    *  A must-hold rule — e.g. "no project writes", "you MUST end with VERDICT:" — is
    *  appended to the agent's authoritative system prompt as a conspicuous reminder so
    *  it does not drift into the surrounding prose. Parsed from a
@@ -437,7 +437,7 @@ export interface AgentDefinition {
 }
 
 /**
- * The named display colors an agent may declare (parity with Claude Code's
+ * The named display colors an agent may declare (parity with the reference's
  * `AGENT_COLORS` / `AgentColorName`). Purely presentational metadata: it tints the
  * subagent's badge/label so concurrent agents are visually distinguishable. The
  * sentinel `'automatic'` (and any unrecognized value) maps to `undefined` so the
@@ -451,7 +451,7 @@ export type AgentColorName = (typeof AGENT_COLORS)[number];
 /**
  * Normalize a raw frontmatter `color` value to a known {@link AgentColorName}.
  * Case-insensitive; the `'automatic'` sentinel and any unrecognized value (or
- * non-string) return `undefined` (UI default). Mirrors Claude Code's
+ * non-string) return `undefined` (UI default). Mirrors the reference's
  * ColorPicker, where `'automatic'` is an explicit option that clears the color.
  */
 export function parseAgentColor(value: unknown): AgentColorName | undefined {
@@ -461,7 +461,7 @@ export function parseAgentColor(value: unknown): AgentColorName | undefined {
 }
 
 /**
- * The persistent-memory storage scopes an agent may declare (parity with Claude
+ * The persistent-memory storage scopes an agent may declare (parity with the reference
  * Code's `AgentMemoryScope`): `user` (home), `project` (committed), or `local`
  * (project-local, non-shared).
  */
@@ -480,9 +480,9 @@ export function parseMemoryScope(value: unknown): AgentMemoryScope | undefined {
 }
 
 /**
- * The isolation modes an agent may declare (parity with Claude Code's agent
+ * The isolation modes an agent may declare (parity with the reference's agent
  * `isolation`). AMI supports `worktree` (run the subagent in an isolated git
- * worktree). Claude's ant-only `remote` mode has no AMI analogue and is rejected.
+ * worktree). the reference's ant-only `remote` mode has no AMI analogue and is rejected.
  */
 export const AGENT_ISOLATION_MODES = ['worktree'] as const;
 export type AgentIsolationMode = (typeof AGENT_ISOLATION_MODES)[number];
@@ -498,7 +498,7 @@ export function parseIsolationMode(value: unknown): AgentIsolationMode | undefin
 }
 
 /**
- * Parse a raw frontmatter `background` value (parity with Claude Code's agent
+ * Parse a raw frontmatter `background` value (parity with the reference's agent
  * `background` parsing). Accepts the string/boolean forms `'true'`/`true` →
  * `true` and `'false'`/`false`/omitted → `undefined`; ANY other value is
  * `invalid` (the caller surfaces a load warning) and yields `undefined` so a
@@ -512,7 +512,7 @@ export function parseBackgroundFlag(value: unknown): { value: boolean | undefine
 }
 
 /**
- * Parse a generic TRI-STATE boolean frontmatter flag (parity with Claude Code's
+ * Parse a generic TRI-STATE boolean frontmatter flag (parity with the reference's
  * boolean agent/command knobs such as `wasGenerated`). Unlike
  * {@link parseBackgroundFlag} — whose `false` collapses to `undefined` because a
  * default-off background flag has no "explicitly off" state — this PRESERVES an
@@ -562,7 +562,7 @@ function normalizeNameList(value: unknown): string[] {
 
 /**
  * Parse a frontmatter `skills` field into the ordered list of skill names to
- * preload into a spawned agent's context (parity with Claude's agent `skills`).
+ * preload into a spawned agent's context (parity with the reference's agent `skills`).
  * Accepts a comma/whitespace string or a string array; see
  * {@link normalizeNameList} for the normalization rules.
  */
@@ -572,7 +572,7 @@ export function parseAgentSkills(value: unknown): string[] {
 
 /**
  * Parse a frontmatter `allowedAgentTypes` field into the ordered list of
- * sub-agent types this agent may itself spawn (parity with Claude's
+ * sub-agent types this agent may itself spawn (parity with the reference's
  * `allowedAgentTypes` metadata, which splits a comma-delimited rule string).
  * Accepts a comma/whitespace string or a string array.
  */
@@ -593,7 +593,7 @@ export function canSpawnAgentType(agent: Pick<AgentDefinition, 'allowedAgentType
 }
 
 /**
- * True when every MCP server the agent REQUIRES is available (parity with Claude
+ * True when every MCP server the agent REQUIRES is available (parity with the reference
  * Code's `hasRequiredMcpServers`). With no requirements the agent is always
  * available. Each required pattern must match at least one available server name
  * as a case-insensitive substring.
@@ -612,7 +612,7 @@ export function hasRequiredMcpServers(
 
 /**
  * Filter a list of agents down to those whose required MCP servers are all
- * available (parity with Claude Code's `filterAgentsByMcpRequirements`). Agents
+ * available (parity with the reference's `filterAgentsByMcpRequirements`). Agents
  * with unmet requirements are dropped from the spawnable/listable set.
  */
 export function filterAgentsByMcpRequirements<T extends Pick<AgentDefinition, 'requiredMcpServers'>>(
@@ -625,7 +625,7 @@ export function filterAgentsByMcpRequirements<T extends Pick<AgentDefinition, 'r
 /**
  * The property names a skill/command definition may carry that are known to be
  * SAFE — i.e. they do not themselves grant a capability that should require user
- * consent (parity with Claude Code's `SAFE_SKILL_PROPERTIES`). Any property
+ * consent (parity with the reference's `SAFE_SKILL_PROPERTIES`). Any property
  * OUTSIDE this allowlist that carries a meaningful (non-empty) value means the
  * skill is doing something new/unknown and must not be auto-allowed. This is
  * forward-compatible by construction: a newly-added-but-unlisted property forces
@@ -663,7 +663,7 @@ export const SAFE_SKILL_PROPERTIES: ReadonlySet<string> = new Set([
 
 /**
  * True when a skill/command object carries ONLY {@link SAFE_SKILL_PROPERTIES}
- * (parity with Claude Code's `skillHasOnlySafeProperties`). A property outside
+ * (parity with the reference's `skillHasOnlySafeProperties`). A property outside
  * the allowlist is tolerated only when it has no meaningful value (`undefined`,
  * `null`, an empty array, or an empty object); any meaningful unlisted value
  * returns `false` so the caller routes the skill through the permission gate.
@@ -738,7 +738,7 @@ export function sanitizeSkillArgs(args: Record<string, string>): Record<string, 
  * Boundary-validate a skill's invocation arguments against the hard caps
  * ({@link MAX_SKILL_ARG_NAMES} / {@link MAX_SKILL_ARG_NAME_LENGTH} /
  * {@link MAX_SKILL_ARG_VALUE_LENGTH} / {@link MAX_SKILL_ARG_TOTAL_CHARS}) and
- * return an ACTIONABLE verdict (parity with Claude Code's skill/agent input
+ * return an ACTIONABLE verdict (parity with the reference's skill/agent input
  * validators, which return a concrete negative result + a warning on invalid
  * input so a caller can degrade gracefully). `valid` is `false` whenever ANY hard
  * cap is exceeded — previously it was hard-coded `true`, so a caller trusting
@@ -840,7 +840,7 @@ export function isValidEffort(value: unknown): boolean {
 
 /**
  * The ways a spawned agent's system prompt combines with the base subagent stance
- * (parity with Claude's swarm teammate `systemPromptMode`). `'append'` extends the
+ * (parity with the reference's swarm teammate `systemPromptMode`). `'append'` extends the
  * base stance; `'replace'`/`'default'` substitute it. Shared by the per-spawn
  * `system_prompt_mode` task-tool input AND {@link AgentDefinition.systemPromptMode}
  * so the two never drift apart.
@@ -862,11 +862,11 @@ export function parseSystemPromptMode(value: unknown): SystemPromptMode | undefi
 
 /**
  * Validate a skill/agent *identifier* against the shared name rule (parity with
- * Claude Code's `validateAgentType`): a non-empty token that starts and ends with
+ * the reference's `validateAgentType`): a non-empty token that starts and ends with
  * an alphanumeric, contains only letters/numbers/hyphens, and is 3–50 characters.
  * Returns a human-readable error message for the first rule violated, or `null`
  * when the name is valid — so a creation flow can surface the problem inline. The
- * checks are ordered exactly like Claude's (required → charset → min → max).
+ * checks are ordered exactly like the reference's (required → charset → min → max).
  */
 function validateIdentifierName(kind: string, value: string): string | null {
   if (!value) return `${kind} is required`;
@@ -879,7 +879,7 @@ function validateIdentifierName(kind: string, value: string): string | null {
 }
 
 /**
- * Validate an agent *type* identifier (parity with Claude's `validateAgentType`).
+ * Validate an agent *type* identifier (parity with the reference's `validateAgentType`).
  * Returns the human-readable error message for the first failed rule, or `null`
  * when valid. Consumed by {@link validateAgentDefinition} (as a load-time warning)
  * and by any agent-creation flow that wants to reject a bad name inline.
@@ -934,7 +934,7 @@ export function parseArgumentNames(value: unknown): string[] {
 
 /**
  * Parse a frontmatter `aliases` field into the alternate lookup names a skill may
- * be invoked by (parity with Claude's bundled skill `aliases`). Accepts a
+ * be invoked by (parity with the reference's bundled skill `aliases`). Accepts a
  * comma/whitespace string or a string array; de-duplicated, length- and
  * count-capped via {@link normalizeNameList}. Any other value yields `[]`.
  */
@@ -944,7 +944,7 @@ export function parseSkillAliases(value: unknown): string[] {
 
 /**
  * True when EVERY environment variable named in `required` is set to a non-empty
- * value in `env` (parity with Claude's env/feature-flag-gated bundled skills). An
+ * value in `env` (parity with the reference's env/feature-flag-gated bundled skills). An
  * absent/empty requirement list is trivially satisfied; a variable that is unset,
  * `undefined`, or an empty/whitespace-only string fails the gate. A non-string
  * entry is ignored (treated as "no requirement" for that slot) so a malformed
@@ -964,7 +964,7 @@ export function requiredEnvSatisfied(
 }
 
 /**
- * True when a skill is currently available (parity with Claude's bundled skill
+ * True when a skill is currently available (parity with the reference's bundled skill
  * `isEnabled` + its env/feature-flag-gated registration). A skill is enabled when
  * BOTH gates pass: (1) its declarative {@link SkillDefinition.requiredEnv} — every
  * named env var is set non-empty (evaluated via {@link requiredEnvSatisfied}
@@ -992,7 +992,7 @@ export function isSkillEnabled(
  * {@link SkillDefinition.requiresArgument} is invoked with no argument. Returns the
  * author's {@link SkillDefinition.missingArgumentMessage} verbatim when it is a
  * non-empty string; otherwise a generated usage line that includes the skill's
- * `argumentHint` when present (parity with Claude's required-argument skills, which
+ * `argumentHint` when present (parity with the reference's required-argument skills, which
  * return a custom help/examples message, e.g. `/batch`).
  */
 export function missingSkillArgumentMessage(
@@ -1008,7 +1008,7 @@ export function missingSkillArgumentMessage(
 }
 
 /** The permission-mode values an agent/skill definition may declare. `'plan'` runs
- *  the sub-agent in read-only PLAN mode (parity with Claude Code's `plan` agent
+ *  the sub-agent in read-only PLAN mode (parity with the reference's `plan` agent
  *  permission mode): the permission engine auto-allows read/search tools and DENIES
  *  every mutating call, so a planning subagent can investigate and propose without
  *  touching the workspace. It is strictly MORE restrictive than `ask` (see task.ts's
@@ -1018,7 +1018,7 @@ export function missingSkillArgumentMessage(
 export const AGENT_PERMISSION_MODES = ['auto-allow', 'ask', 'deny-all', 'plan'] as const;
 
 /** The `'bubble'` permission-mode SENTINEL an agent definition may declare (parity
- *  with Claude Code's async/background-agent `bubble` permission mode,
+ *  with the reference's async/background-agent `bubble` permission mode,
  *  runAgent.ts:L440-L463). It is NOT one of {@link AGENT_PERMISSION_MODES} (the real
  *  engine modes kept in lockstep with the engine's `PERMISSION_MODES`) — it means
  *  "do not pin a mode of my own; run with the parent's LIVE stance so every
@@ -1164,14 +1164,14 @@ export function validateAgentDefinition(
 // ---------------------------------------------------------------------------
 
 /**
- * Resolve a skill's prompt/body for a given argument string (parity with Claude's
+ * Resolve a skill's prompt/body for a given argument string (parity with the reference's
  * bundled-skill `getPromptForCommand(args)`). When the skill declares a
  * {@link SkillDefinition.getPromptForCommand} builder, it is invoked (awaited) with
  * the raw `args` string and its return value becomes the body — allowing per-call
  * validation, lazy content loading, or environment branching. A builder that
  * returns a non-string (malformed) yields `''`.
  *
- * GRACEFUL DEGRADATION (parity with Claude Code's bundled claude-api skill, whose
+ * GRACEFUL DEGRADATION (parity with the reference's bundled claude-api skill, whose
  * dynamic prompt builder wraps its project-environment detection in a try/catch and
  * falls back to the static reference when detection throws): when the builder THROWS
  * — e.g. its environment/feature detection fails — the static
@@ -1197,7 +1197,7 @@ export async function resolveSkillPrompt(
 }
 
 /**
- * Safely read a companion file bundled with a skill (parity with Claude's bundled
+ * Safely read a companion file bundled with a skill (parity with the reference's bundled
  * `SKILL_FILES` lookup). Returns the inlined content for `relPath` when it exists
  * in {@link SkillDefinition.files}, or `null` when there are no bundled files, the
  * path is not a string, the path is unsafe (absolute or containing `..`
@@ -1216,11 +1216,11 @@ export function getSkillFile(
 }
 
 /** The affordance shown while a COMMAND runs when it declares no custom message
- *  (parity with Claude's default command `progressMessage` of `'running'`). */
+ *  (parity with the reference's default command `progressMessage` of `'running'`). */
 export const DEFAULT_SKILL_PROGRESS_MESSAGE = 'running';
 
 /** The affordance shown while a SKILL loads when it declares no custom message
- *  (parity with Claude Code's loadPluginCommands, which defaults a skill-sourced
+ *  (parity with the reference's loadPluginCommands, which defaults a skill-sourced
  *  entry's `progressMessage` to `'loading'` rather than a command's `'running'`). */
 export const SKILL_LOADING_PROGRESS_MESSAGE = 'loading';
 
@@ -1237,7 +1237,7 @@ function declaredProgressMessage(
 }
 
 /**
- * The kind-aware DEFAULT progress affordance (parity with Claude Code's
+ * The kind-aware DEFAULT progress affordance (parity with the reference's
  * loadPluginCommands `progressMessage: isSkill ? 'loading' : 'running'`): a
  * skill-sourced entry defaults to {@link SKILL_LOADING_PROGRESS_MESSAGE}
  * (`'loading'`), a command-sourced entry to {@link DEFAULT_SKILL_PROGRESS_MESSAGE}
@@ -1250,7 +1250,7 @@ export function defaultProgressMessage(isSkill: boolean): string {
 
 /**
  * The progress/affordance message to show while a skill executes (parity with
- * Claude's command `progressMessage`). Returns the skill's own trimmed
+ * the reference's command `progressMessage`). Returns the skill's own trimmed
  * {@link SkillDefinition.progressMessage} when it is a non-empty string, otherwise
  * {@link DEFAULT_SKILL_PROGRESS_MESSAGE}.
  */
@@ -1262,7 +1262,7 @@ export function skillProgressMessage(
 
 /**
  * The progress/affordance message for a skill OR command entry, defaulting by its
- * KIND when no custom message is declared (parity with Claude Code's
+ * KIND when no custom message is declared (parity with the reference's
  * loadPluginCommands `progressMessage: isSkill ? 'loading' : 'running'`). An
  * author-declared {@link SkillDefinition.progressMessage} always wins; otherwise a
  * skill-sourced entry (`isSkill = true`) falls back to `'loading'` and a
@@ -1277,7 +1277,7 @@ export function progressMessageForKind(
 }
 
 // ---------------------------------------------------------------------------
-// Skill-metadata flags — declarative command/skill knobs (parity with Claude's
+// Skill-metadata flags — declarative command/skill knobs (parity with the reference's
 // command `isSensitive` / `isHidden` / `userFacingName()` /
 // `disableNonInteractive` / `supportsNonInteractive`). Pure predicates; the skill
 // tool (core) and the `/skills` listing (common) wire them into the real echo /
@@ -1291,7 +1291,7 @@ export const REDACTED_SKILL_ARGS = '***';
  * Display-safe form of a skill's raw argument string. When the skill declares
  * {@link SkillDefinition.isSensitive} and `rawArgs` is a non-empty string, returns
  * {@link REDACTED_SKILL_ARGS} so the arguments are never echoed into a permission
- * prompt, transcript, or history (parity with Claude's `isSensitive` arg masking).
+ * prompt, transcript, or history (parity with the reference's `isSensitive` arg masking).
  * A non-sensitive skill — or an empty/whitespace argument — returns `rawArgs`
  * unchanged.
  */
@@ -1307,7 +1307,7 @@ export function redactSkillArgs(
 
 /**
  * True when a skill is HIDDEN from user-facing help/typeahead listings (parity
- * with Claude's command `isHidden`). A hidden skill stays invocable by its exact
+ * with the reference's command `isHidden`). A hidden skill stays invocable by its exact
  * name; it is only omitted from catalog listings such as `/skills`.
  */
 export function isSkillHidden(skill: Pick<SkillDefinition, 'isHidden'>): boolean {
@@ -1315,7 +1315,7 @@ export function isSkillHidden(skill: Pick<SkillDefinition, 'isHidden'>): boolean
 }
 
 /**
- * The name to DISPLAY for a skill in listings (parity with Claude's command
+ * The name to DISPLAY for a skill in listings (parity with the reference's command
  * `userFacingName()`): the trimmed {@link SkillDefinition.userFacingName} when it
  * is a non-empty string, otherwise the canonical {@link SkillDefinition.name}.
  */
@@ -1330,7 +1330,7 @@ export function skillUserFacingName(
 
 /**
  * Whether a skill may be invoked in the CURRENT interactivity mode (parity with
- * Claude's command `disableNonInteractive` / `supportsNonInteractive` gating). In
+ * the reference's command `disableNonInteractive` / `supportsNonInteractive` gating). In
  * an interactive run every skill is available. In a non-interactive (detached /
  * `--prompt`) run a skill is unavailable when it declares
  * `supportsNonInteractive === false`, OR it declares `disableNonInteractive` and
@@ -1348,7 +1348,7 @@ export function isSkillAvailableNonInteractive(
 
 /**
  * Resolve the base directory a skill exports to its `!`-blocks / hooks as
- * `CLAUDE_PLUGIN_ROOT` (parity with Claude's PromptCommand `skillRoot`). Returns
+ * `CLAUDE_PLUGIN_ROOT` (parity with the reference's PromptCommand `skillRoot`). Returns
  * the skill's explicit {@link SkillDefinition.skillRoot} when it is a non-empty
  * string; otherwise falls back to the directory of its real on-disk
  * {@link SkillDefinition.filePath} (a `<builtin>`/in-memory sentinel or a bare
@@ -1370,7 +1370,7 @@ export function skillPluginRoot(
 
 /**
  * Resolve the base directory an AGENT exports to its frontmatter `!`-blocks /
- * hooks as `CLAUDE_PLUGIN_ROOT` (parity with Claude Code's agent `baseDir`). The
+ * hooks as `CLAUDE_PLUGIN_ROOT` (parity with the reference's agent `baseDir`). The
  * agent analogue of {@link skillPluginRoot}: returns the agent's explicit
  * {@link AgentDefinition.baseDir} when it is a non-empty string; otherwise falls
  * back to the directory of its real on-disk {@link AgentDefinition.filePath} (a
@@ -1393,7 +1393,7 @@ export function agentPluginRoot(
 
 /**
  * The classification of a command/skill for help/typeahead badging (parity with
- * Claude's command `kind`). Returns the declared {@link SkillDefinition.kind}
+ * the reference's command `kind`). Returns the declared {@link SkillDefinition.kind}
  * (currently only `'workflow'`) or `undefined` for a plain skill.
  */
 export function skillKind(skill: Pick<SkillDefinition, 'kind'>): SkillKind | undefined {
@@ -1402,7 +1402,7 @@ export function skillKind(skill: Pick<SkillDefinition, 'kind'>): SkillKind | und
 
 /**
  * Estimate the context-budget cost (in tokens) of a skill's FRONTMATTER only —
- * name + description + whenToUse (parity with Claude's
+ * name + description + whenToUse (parity with the reference's
  * `estimateSkillFrontmatterTokens`). The full body is loaded only on invocation,
  * so the listing cost is just the always-present metadata. Reuses the canonical
  * {@link estimateTokens} heuristic so there is a single token estimator.
@@ -1418,7 +1418,7 @@ export function estimateSkillFrontmatterTokens(
 
 /**
  * Resolve an agent's system prompt for a given runtime context (parity with
- * Claude's agent `getSystemPrompt({ toolUseContext })`). When the agent declares a
+ * the reference's agent `getSystemPrompt({ toolUseContext })`). When the agent declares a
  * {@link AgentDefinition.getSystemPrompt} builder it is invoked (awaited) with
  * `ctx` and its return value becomes the prompt; a non-string return yields `''`.
  * With no builder, the static {@link AgentDefinition.systemPrompt} is returned.
@@ -1436,7 +1436,7 @@ export async function resolveAgentSystemPrompt(
 
 // ---------------------------------------------------------------------------
 // Agent skill preloading — assemble the system-prompt block for the skills an
-// agent definition declares via its `skills` allowlist (parity with Claude's
+// agent definition declares via its `skills` allowlist (parity with the reference's
 // runAgent skill preloading: inline each named skill's body into the spawned
 // agent's context AND report which skills loaded vs. which names could not be
 // resolved). Pure core helper; the task tool (core) wires it into the spawn path.
@@ -1461,7 +1461,7 @@ export interface PreloadedSkillsResult {
 
 /**
  * Build the preloaded-skills prompt block for an agent's `skills` allowlist
- * (parity with Claude's runAgent skill preloading). For each requested name,
+ * (parity with the reference's runAgent skill preloading). For each requested name,
  * `resolve` is consulted (the SkillManager's name/alias lookup); a skill that
  * resolves, is {@link isSkillEnabled}, and has a non-empty body is inlined under a
  * `## <name>` sub-heading, and its canonical name recorded in `loaded`. Any name
@@ -1496,7 +1496,7 @@ export function buildPreloadedSkillsBlock(
 
 /**
  * Resolve a requested skill name against a candidate set using the SAME ordered,
- * multi-strategy lookup Claude Code's runAgent `resolveSkillName` uses for agent
+ * multi-strategy lookup the reference's runAgent `resolveSkillName` uses for agent
  * `skills:` frontmatter preloading — so a plugin-namespaced skill still resolves
  * when its bare name is unavailable (e.g. taken by another plugin's skill of the
  * same name, so only the `plugin:name` form is registered):
@@ -1560,14 +1560,14 @@ export function resolveSkillName(
 
 // ---------------------------------------------------------------------------
 // Skill-improvement suggestions — a structured descriptor for applying concrete,
-// section-scoped edits to a named skill (parity with Claude's
+// section-scoped edits to a named skill (parity with the reference's
 // SkillImprovementSuggestion / SkillUpdate schema). Pure data + validation; the
 // apply/survey flow (model call + file write) lives in the upper layers.
 // ---------------------------------------------------------------------------
 
 /**
  * One concrete, section-scoped edit to apply to a skill definition (parity with
- * Claude Code's `SkillUpdate`). `section` names the part of the skill to change,
+ * the reference's `SkillUpdate`). `section` names the part of the skill to change,
  * `change` is the edit to integrate, and `reason` is the (optional) rationale.
  */
 export interface SkillUpdate {
@@ -1577,7 +1577,7 @@ export interface SkillUpdate {
 }
 
 /**
- * A structured suggestion to improve a named skill (parity with Claude Code's
+ * A structured suggestion to improve a named skill (parity with the reference's
  * `SkillImprovementSuggestion`): the target skill plus the list of edits to apply.
  */
 export interface SkillImprovementSuggestion {
@@ -1622,7 +1622,7 @@ export function isValidSkillImprovement(value: unknown): value is SkillImproveme
 
 /**
  * Render a list of {@link SkillUpdate}s into the `- <section>: <change>` bullet
- * list Claude feeds the editor model when applying an improvement
+ * list the reference feeds the editor model when applying an improvement
  * (`applySkillImprovement`). Entries are normalized via {@link parseSkillUpdates}
  * first so invalid updates are excluded.
  */
@@ -1634,7 +1634,7 @@ export function formatSkillUpdates(updates: SkillUpdate[]): string {
 
 // ---------------------------------------------------------------------------
 // Additive skill/agent config knobs + display formatters — pure core building
-// blocks mirroring Claude Code capabilities AMI's skills library was missing:
+// blocks mirroring the reference capabilities AMI's skills library was missing:
 // immediate-queue flag, per-file shell selection, a human tool-name joiner, a
 // progressive argument hint, an admin-trusted source gate, author template
 // variables, and the built-in-agent discriminator. The SkillManager (common/),
@@ -1643,7 +1643,7 @@ export function formatSkillUpdates(updates: SkillUpdate[]): string {
 
 /**
  * True when a skill/command declares {@link SkillDefinition.immediate} (parity
- * with Claude's command `immediate`): it should bypass the message queue and run
+ * with the reference's command `immediate`): it should bypass the message queue and run
  * at once rather than waiting for the next stop point. Only an explicit `true`
  * counts — a truthy-but-not-`true` value never silently jumps the queue.
  */
@@ -1653,17 +1653,17 @@ export function isSkillImmediate(skill: Pick<SkillDefinition, 'immediate'>): boo
 
 /**
  * The shells accepted in a skill/command's `shell:` frontmatter for `!`-block
- * execution (parity with Claude's `FrontmatterShell`).
+ * execution (parity with the reference's `FrontmatterShell`).
  */
 export const FRONTMATTER_SHELLS = ['bash', 'powershell'] as const;
 export type FrontmatterShell = (typeof FRONTMATTER_SHELLS)[number];
 
-/** The shell used when a skill/command declares none (parity with Claude, which
+/** The shell used when a skill/command declares none (parity with the reference, which
  *  defaults `!`-block execution to bash). */
 export const DEFAULT_SHELL: FrontmatterShell = 'bash';
 
 /**
- * Parse + validate a raw frontmatter `shell:` value (parity with Claude's
+ * Parse + validate a raw frontmatter `shell:` value (parity with the reference's
  * `parseShellFrontmatter`). Absent/null/empty ⇒ `undefined` (the caller defaults
  * to bash via {@link shellForExecution}); a recognized value (case-insensitive,
  * trimmed) ⇒ that shell; an unrecognized value ⇒ `undefined` so a garbled shell
@@ -1680,7 +1680,7 @@ export function parseShellFrontmatter(value: unknown): FrontmatterShell | undefi
 
 /**
  * Resolve the shell a skill/command's `!`-blocks execute under, applying the
- * {@link DEFAULT_SHELL} fallback when none was declared (parity with Claude's
+ * {@link DEFAULT_SHELL} fallback when none was declared (parity with the reference's
  * caller-side bash default).
  */
 export function shellForExecution(shell: FrontmatterShell | undefined): FrontmatterShell {
@@ -1688,7 +1688,7 @@ export function shellForExecution(shell: FrontmatterShell | undefined): Frontmat
 }
 
 /**
- * Format a tool-name list for human display (parity with Claude Code's
+ * Format a tool-name list for human display (parity with the reference's
  * `getToolsDisplay`, ConfirmStep): `undefined` ⇒ `'All tools'` (unset means no
  * restriction), `[]` ⇒ `'None'`, one name ⇒ that name (or `'None'` when blank), a
  * pair ⇒ `'a and b'`, and three+ ⇒ an Oxford-comma list `'a, b, and c'`.
@@ -1703,7 +1703,7 @@ export function formatToolNameList(toolNames: readonly string[] | undefined): st
 
 /**
  * Compute a progressive argument hint showing only the arg names NOT yet filled
- * (parity with Claude's `generateProgressiveArgumentHint`): for `argNames` and
+ * (parity with the reference's `generateProgressiveArgumentHint`): for `argNames` and
  * the args typed so far, returns e.g. `'[arg2] [arg3]'`, or `undefined` once
  * every positional arg is filled (or over-filled) so the hint disappears.
  */
@@ -1718,7 +1718,7 @@ export function progressiveArgumentHint(
 
 /**
  * Substitute author-defined `{{key}}` template variables into a skill body
- * (parity with Claude's bundled-skill `SKILL_MODEL_VARS` substitution). Every
+ * (parity with the reference's bundled-skill `SKILL_MODEL_VARS` substitution). Every
  * `{{key}}` whose `key` is present in `vars` is replaced with its value (an
  * empty-string mapping is honored); an unknown token is left intact. With no
  * `vars` the content is returned unchanged. This is DISTINCT from the invocation
@@ -1736,7 +1736,7 @@ export function applySkillTemplateVariables(
 }
 
 /**
- * True when an agent definition is a BUILT-IN agent (parity with Claude Code's
+ * True when an agent definition is a BUILT-IN agent (parity with the reference's
  * `isBuiltIn = source === 'built-in'`). The discriminator that gates built-in
  * vs. custom treatment — e.g. editability of the definition and the extra
  * custom-agent tool-denylist that applies only to non-built-in agents.
@@ -1747,7 +1747,7 @@ export function isBuiltInAgent(agent: Pick<AgentDefinition, 'source'>): boolean 
 
 /**
  * Detect a mismatch between an agent's on-disk {@link AgentDefinition.fileName} and
- * its resolved canonical {@link AgentDefinition.name} (parity with Claude's
+ * its resolved canonical {@link AgentDefinition.name} (parity with the reference's
  * agentFileUtils filename-vs-agentType handling). The extension is stripped from the
  * filename before comparison. Returns the filename-derived type (the base name) when
  * it differs from `name`, so the loader can surface an actionable "file X declares
@@ -1769,14 +1769,14 @@ export function agentFileNameMismatch(
 // ---------------------------------------------------------------------------
 // Agent-listing display affordances — surface a sub-agent's persistent-memory
 // scope and its scoped skill allowlist in the `/agents` listing (parity with
-// Claude Code's `formatAgent` memory dimension + AgentDetail `getMemoryScopeDisplay`
+// the reference's `formatAgent` memory dimension + AgentDetail `getMemoryScopeDisplay`
 // / skills-list collapse). Pure core formatters; the `/agents` slash-command data
 // already carries `memory` + `skills`, and the CLI listing renderer wires these in.
 // ---------------------------------------------------------------------------
 
 /**
  * Human-readable label for an agent's persistent-memory {@link AgentMemoryScope}
- * (parity with Claude Code's `getMemoryScopeDisplay`): `user` / `project` / `local`
+ * (parity with the reference's `getMemoryScopeDisplay`): `user` / `project` / `local`
  * each map to a descriptive, location-aware phrase. Returns `undefined` for an
  * unset/unknown scope so a memory-less agent surfaces no memory affordance.
  */
@@ -1791,7 +1791,7 @@ export function agentMemoryScopeDisplay(scope: AgentMemoryScope | undefined): st
 
 /**
  * The short memory dimension appended to an agent's listing line (parity with
- * Claude Code's `formatAgent`, which appends `${agent.memory} memory` only when the
+ * the reference's `formatAgent`, which appends `${agent.memory} memory` only when the
  * agent declares a memory scope). Returns e.g. `'project memory'`, or `''` when the
  * agent declares no (or an unrecognized) memory scope so no dangling affordance is
  * shown.
@@ -1802,10 +1802,10 @@ export function formatAgentMemoryDimension(agent: Pick<AgentDefinition, 'memory'
 }
 
 /**
- * Resolve the model string to DISPLAY for an agent row/detail (parity with Claude
+ * Resolve the model string to DISPLAY for an agent row/detail (parity with the reference
  * Code's `resolveAgentModelDisplay`, agentDisplay.ts): the agent's own declared
  * {@link AgentDefinition.model} when set, otherwise the `defaultModel` the caller
- * supplies as the effective subagent default (AMI's equivalent of Claude's
+ * supplies as the effective subagent default (AMI's equivalent of the reference's
  * `getDefaultSubagentModel()` — typically the session's current model a
  * no-model/inheriting subagent runs under). The literal `'inherit'` sentinel is
  * surfaced verbatim (so the listing can say an agent inherits the parent model
@@ -1825,7 +1825,7 @@ export function resolveAgentModelDisplay(
 }
 
 /**
- * Collapse an agent's scoped-skills allowlist for display (parity with Claude
+ * Collapse an agent's scoped-skills allowlist for display (parity with the reference
  * Code's AgentDetail skills list: `skills.length > 10 ? '${n} skills' :
  * skills.join(', ')`). An agent that declares many skills shows a `'N skills'`
  * count instead of an overwhelming comma list; `undefined`/empty yields `''`.
@@ -1840,14 +1840,14 @@ export function formatAgentSkillsList(skills: readonly string[] | undefined): st
 // Relevance-filtered bundled-doc inlining — select only the companion docs that
 // match a detected language (plus shared docs) and splice them into a skill's
 // context as deterministically-ordered `<doc path="…">…</doc>` blocks (parity
-// with Claude Code's bundled-skill `getFilesForLanguage` + `buildInlineReference`,
+// with the reference's bundled-skill `getFilesForLanguage` + `buildInlineReference`,
 // e.g. the claude-api skill). Pure core building blocks over {@link
 // SkillDefinition.files}; avoids injecting every bundled doc verbatim.
 // ---------------------------------------------------------------------------
 
 /**
  * Select the subset of a skill's bundled {@link SkillDefinition.files} keys that
- * are relevant to a detected language (parity with Claude Code's
+ * are relevant to a detected language (parity with the reference's
  * `getFilesForLanguage`): a file is relevant when its key is under `${lang}/` or
  * the always-shared `shared/` prefix. Returns `[]` for no files or a blank
  * language. Order follows the files map's own key order (callers sort when
@@ -1862,7 +1862,7 @@ export function getFilesForLanguage(
   return Object.keys(files).filter((p) => p.startsWith(prefix) || p.startsWith('shared/'));
 }
 
-/** Strip HTML comments from markdown, nesting-safe (parity with Claude Code's
+/** Strip HTML comments from markdown, nesting-safe (parity with the reference's
  *  `processContent` comment pass). Looped so a `<!-- a <!-- b --> c -->` resolves. */
 function stripHtmlComments(md: string): string {
   let out = md;
@@ -1876,7 +1876,7 @@ function stripHtmlComments(md: string): string {
 
 /**
  * Assemble the inline-reference block for a set of a skill's bundled-doc keys
- * (parity with Claude Code's `buildInlineReference`). Keys are sorted
+ * (parity with the reference's `buildInlineReference`). Keys are sorted
  * deterministically; each existing file's content is comment-stripped, has its
  * `{{key}}` author template variables applied (via
  * {@link applySkillTemplateVariables}), trimmed, and wrapped in a
@@ -1901,7 +1901,7 @@ export function buildInlineReference(
 
 // ---------------------------------------------------------------------------
 // Required-MCP-server readiness — the pure decision a subagent-spawn precondition
-// loop needs (parity with Claude Code's AgentTool requiredMcpServers gate, which
+// loop needs (parity with the reference's AgentTool requiredMcpServers gate, which
 // polls pending servers, early-exits on a failed required server, and errors when
 // a required server is missing). The polling/timeout loop lives in the task tool;
 // this classifies the CURRENT server-state snapshot so the loop can decide to
@@ -1925,7 +1925,7 @@ export interface McpServerReadiness {
 
 /**
  * Classify a required-MCP-server precondition against a snapshot of live server
- * states (parity with Claude Code's AgentTool requiredMcpServers gate). Each
+ * states (parity with the reference's AgentTool requiredMcpServers gate). Each
  * required entry is matched case-insensitively as a substring against the server
  * names (consistent with {@link hasRequiredMcpServers}); a requirement is
  * satisfied when ANY matching server is `'connected'`, `failed` when EVERY match
@@ -1959,7 +1959,7 @@ export function requiredMcpServerReadiness(
 // Per-agent MCP server specs — classify an agent's frontmatter `mcpServers` into
 // the REFERENCED (by name, shared with the parent, NOT torn down) vs INLINE
 // (agent-specific single-key object, connected fresh and torn down on finish)
-// halves (parity with Claude Code's AgentTool `initializeAgentMcpServers`, which
+// halves (parity with the reference's AgentTool `initializeAgentMcpServers`, which
 // per spec either looks up an existing config by name — a memoized/shared client —
 // or treats a single-key `{ [name]: config }` object as a newly-created client that
 // is the ONLY kind cleaned up when the agent completes). Agent MCP servers are
@@ -1969,7 +1969,7 @@ export function requiredMcpServerReadiness(
 // ---------------------------------------------------------------------------
 
 /**
- * One agent-frontmatter MCP server spec (parity with Claude Code's
+ * One agent-frontmatter MCP server spec (parity with the reference's
  * `AgentDefinition.mcpServers` element): either a STRING that REFERENCES an
  * already-configured server by name (shared with the parent context, memoized, and
  * NOT torn down when the agent finishes), or an INLINE single-key
@@ -1979,7 +1979,7 @@ export function requiredMcpServerReadiness(
 export type AgentMcpServerSpec = string | Record<string, McpServerConfig>;
 
 /** The raw frontmatter value an agent's `mcpServers`/`mcp-servers` may carry: the
- *  existing AMI inline map form (`{ name: config }`), OR Claude Code's array of
+ *  existing AMI inline map form (`{ name: config }`), OR the reference's array of
  *  referenced-by-name strings and/or inline single-key objects. */
 export type RawAgentMcpServers =
   | Record<string, McpServerConfig>
@@ -2005,10 +2005,10 @@ export interface ClassifiedAgentMcpServers {
 
 /**
  * Classify an agent's frontmatter MCP server specs into the referenced vs inline
- * halves (parity with Claude Code's `initializeAgentMcpServers` per-spec handling).
+ * halves (parity with the reference's `initializeAgentMcpServers` per-spec handling).
  *
  * Accepts both the existing AMI INLINE-MAP form (`{ name: config }` — every entry is
- * treated as an inline, agent-specific server) and Claude Code's ARRAY form (each
+ * treated as an inline, agent-specific server) and the reference's ARRAY form (each
  * element a referenced-by-name string or a single-key inline object), so a loader can
  * normalize either shape through one canonical classifier:
  *   - a non-empty STRING element → a {@link ClassifiedAgentMcpServers.referenced} name
@@ -2089,7 +2089,7 @@ export function classifyAgentMcpServerSpecs(raw: RawAgentMcpServers): Classified
 // ---------------------------------------------------------------------------
 // Named positional-argument substitution — bind a skill/command's declared
 // `arguments` names to their positional token values in the body (parity with
-// Claude Code's `substituteArguments`, which replaces BARE `$name` as well as
+// the reference's `substituteArguments`, which replaces BARE `$name` as well as
 // braced `${name}`). AMI previously bound only `${name}`; a bare `$foo` was left
 // literal. Single canonical substitution shared by the SkillManager content path.
 // ---------------------------------------------------------------------------
@@ -2098,7 +2098,7 @@ export function classifyAgentMcpServerSpecs(raw: RawAgentMcpServers): Classified
 // ---------------------------------------------------------------------------
 // Path/argument-scoped tool allowlist → permission ALLOW rules — the
 // least-privilege half AMI's name-only skill/agent tool filter was missing
-// (parity with Claude Code's path-scoped allowlists, e.g. a /statusline-spawned
+// (parity with the reference's path-scoped allowlists, e.g. a /statusline-spawned
 // subagent bound to `allowedTools: ['Read(~/**)', 'Edit(~/.claude/settings.json)']`
 // so it can only read the home tree and edit that single file). `filterToolsForSkill`
 // (core/core/src/tools/skill.ts) already enforces WHICH tools a forked skill gets by
@@ -2109,7 +2109,7 @@ export function classifyAgentMcpServerSpecs(raw: RawAgentMcpServers): Classified
 
 /**
  * Parse a skill/command `allowedTools` list into the ARGUMENT-scoped permission
- * ALLOW rules it implies (parity with Claude Code's path-scoped tool allowlists).
+ * ALLOW rules it implies (parity with the reference's path-scoped tool allowlists).
  *
  * For every entry of the form `Tool(scope)` whose scope is a REAL restriction, an
  * `{ tool, pattern, action: 'allow' }` rule is produced so the forked subagent can
@@ -2157,7 +2157,7 @@ export function scopedToolAllowRules(
 
 // ---------------------------------------------------------------------------
 // Bash-granting tool-allowlist detection — recognize when a skill/command's tool
-// allowlist pre-grants the bash tool (parity with Claude Code's TrustDialog
+// allowlist pre-grants the bash tool (parity with the reference's TrustDialog
 // `hasSkillsBash` / `hasSlashCommandBash`, which treat a project-shipped skill or
 // slash command whose `allowedTools` include Bash as a workspace-trust signal: such
 // a capability can auto-execute shell the moment the folder is trusted). The single
@@ -2168,7 +2168,7 @@ export function scopedToolAllowRules(
 
 /**
  * True when a single tool-allowlist / permission `allow` entry GRANTS the bash tool
- * (parity with Claude Code's bash-permission detectors). Matches the bare tool name
+ * (parity with the reference's bash-permission detectors). Matches the bare tool name
  * (`bash` / `Bash`), a scoped rule (`Bash(git:*)` / `bash(npm:*)`), and the
  * space-prefixed `bash <...>` form — all case-insensitively. A non-string entry, a
  * category token (`read-only`, `edit`, …), or any non-bash tool yields `false`.
@@ -2182,7 +2182,7 @@ export function isBashToolAllowRule(rule: unknown): boolean {
 
 /**
  * True when a skill/command's `allowedTools` list pre-grants the bash tool — i.e.
- * ANY entry satisfies {@link isBashToolAllowRule} (parity with Claude Code's
+ * ANY entry satisfies {@link isBashToolAllowRule} (parity with the reference's
  * `hasSkillsBash` / `hasSlashCommandBash` trust signals, which flag a project-shipped
  * capability whose allowlist includes Bash). An absent/empty allowlist declares no
  * explicit skill-scoped bash grant and yields `false` (bash availability is then
@@ -2196,7 +2196,7 @@ export function allowlistGrantsBash(allowedTools: readonly string[] | undefined)
 // ---------------------------------------------------------------------------
 // MCP-derived tool allowlists — compute a skill/command's allowed MCP tool names
 // from a connected server's ADVERTISED tool set instead of hand-listing them
-// (parity with Claude Code's bundled claude-in-chrome skill, whose allowlist is
+// (parity with the reference's bundled claude-in-chrome skill, whose allowlist is
 // `BROWSER_TOOLS.map(t => `mcp__<server>__${t.name}`)` — derived from the MCP
 // server's enumerated tools, so it never drifts when the server adds/removes a
 // tool). Pure core building blocks over AMI's `mcp__<server>__<tool>` naming
@@ -2230,7 +2230,7 @@ export function isMcpToolOfServer(toolName: string, serverName: string): boolean
 
 /**
  * Namespace a server's advertised BARE tool names into the model-facing
- * `mcp__<server>__<tool>` allowlist entries (parity with Claude Code's
+ * `mcp__<server>__<tool>` allowlist entries (parity with the reference's
  * claude-in-chrome skill: `allowedTools = BROWSER_TOOLS.map(t =>
  * `mcp__<server>__${t.name}`)`). Lets a skill derive its allowlist from whatever
  * tools an MCP server currently exposes instead of hard-coding them. A blank/
@@ -2278,7 +2278,7 @@ export function parseMcpServerWildcard(entry: string): string | null {
 /**
  * True when `content` references the argument placeholder `name` in EITHER the
  * braced `${name}` or the bare `$name` form (the same two forms
- * {@link substituteNamedArgPlaceholders} fills). The bare form uses Claude's
+ * {@link substituteNamedArgPlaceholders} fills). The bare form uses the reference's
  * word-boundary guard so `$name` inside `$namexyz` / `$name[0]` does not count.
  * Shared by the content path's "did the template already consume the args?" check
  * so the two placeholder forms never diverge from what substitution actually binds.
@@ -2296,10 +2296,10 @@ export function contentReferencesArgName(content: string, name: string): boolean
 
 /**
  * Substitute a skill/command's declared positional-argument NAMES into its body
- * (parity with Claude Code's `substituteArguments`). For each declared name at
+ * (parity with the reference's `substituteArguments`). For each declared name at
  * index `i`, both the braced `${name}` and the bare `$name` placeholder are
  * replaced with `tokens[i]` (or `''` when no token was supplied, so a placeholder
- * is never left literal). The bare form uses Claude's word-boundary guard
+ * is never left literal). The bare form uses the reference's word-boundary guard
  * `\$name(?![\[\w])` so `$name` inside `$namexyz` or `$name[0]` is NOT touched. A
  * name listed in `skipNames` (an argument the caller binds explicitly elsewhere)
  * is left untouched here. Names are escaped so a regex metacharacter is literal.
@@ -2330,7 +2330,7 @@ export function substituteNamedArgPlaceholders(
 // ---------------------------------------------------------------------------
 // Agent source-based editability + composite identity, and location-aware
 // agent-memory-scope recommendation — additive core building blocks mirroring
-// Claude Code capabilities the skills library still lacked:
+// the reference capabilities the skills library still lacked:
 //   - source-based editability special-casing (AgentsMenu `isEditable`: a built-in,
 //     plugin, or CLI-flag-injected agent is read-only; a user/project/local/managed
 //     agent is editable).
@@ -2345,7 +2345,7 @@ export function substituteNamedArgPlaceholders(
 
 /**
  * Agent provenance tokens whose definitions are READ-ONLY (not user-editable) in
- * the `/agents` editor (parity with Claude Code's AgentsMenu `isEditable`, which
+ * the `/agents` editor (parity with the reference's AgentsMenu `isEditable`, which
  * excludes `built-in`, `plugin`, the policy-managed source, and the CLI-flag-injected
  * source). Kept as a STRING set — not {@link AgentSource}-typed — so a forward-added
  * non-editable tier stays non-editable; a `user`/`project`/`local` agent is editable
@@ -2358,7 +2358,7 @@ export const AGENT_NONEDITABLE_SOURCES: ReadonlySet<string> = new Set([
 
 /**
  * True when an agent definition may be EDITED through the `/agents` editor (parity
- * with Claude Code's AgentsMenu `isEditable = source !== 'built-in' && source !==
+ * with the reference's AgentsMenu `isEditable = source !== 'built-in' && source !==
  * 'plugin' && source !== 'flagSettings'`). An agent with no (or an unknown-blank)
  * source is treated as non-editable so an unprovenanced definition is never offered
  * for in-place editing; every known source outside {@link AGENT_NONEDITABLE_SOURCES}
@@ -2372,7 +2372,7 @@ export function isAgentEditable(agent: Pick<AgentDefinition, 'source'>): boolean
 
 /**
  * The COMPOSITE identity of an agent — its canonical {@link AgentDefinition.name}
- * AND its {@link AgentDefinition.source} (parity with Claude Code's AgentsMenu,
+ * AND its {@link AgentDefinition.source} (parity with the reference's AgentsMenu,
  * which keys dedup + selection by `(agentType, source)` rather than name alone, so
  * two same-named agents from different sources stay distinct instead of one
  * silently shadowing the other in a selection/dedup set). An absent source
@@ -2390,7 +2390,7 @@ export function agentIdentityKey(
 
 /**
  * The recommended persistent-memory {@link AgentMemoryScope} for an agent given
- * WHERE it lives (parity with Claude Code's MemoryStep, which recommends the scope
+ * WHERE it lives (parity with the reference's MemoryStep, which recommends the scope
  * matching the agent's location). A `'user'`-sourced agent recommends `'user'`
  * memory; a `'local'`-sourced (project-local, non-shared) agent recommends `'local'`
  * memory so its persistence stays as unshared as the agent itself; every other source
@@ -2415,7 +2415,7 @@ export interface AgentMemoryScopeOption {
 
 /**
  * The ordered agent-memory-scope options for the creation wizard, given the agent's
- * source/location (parity with Claude Code's MemoryStep option list): the
+ * source/location (parity with the reference's MemoryStep option list): the
  * location-matched {@link recommendedAgentMemoryScope} FIRST — flagged recommended
  * and labelled `… (Recommended)` — then the `'none'` (no persistent memory)
  * opt-out, then every remaining {@link AGENT_MEMORY_SCOPES} entry in declaration
@@ -2439,7 +2439,7 @@ export function agentMemoryScopeOptions(
 }
 
 /**
- * Agent-creation methods (parity with Claude Code's new-agent wizard MethodStep):
+ * Agent-creation methods (parity with the reference's new-agent wizard MethodStep):
  * how a new agent definition is authored. `'generate'` has the model author the
  * agent from a natural-language description (the recommended default, listed
  * FIRST); `'manual'` hand-configures every field. Mirrors the
@@ -2463,9 +2463,9 @@ export function parseAgentCreationMethod(value: unknown): AgentCreationMethod | 
 
 /**
  * A single selectable creation-method option for the new-agent flow (parity with
- * Claude's MethodStep `methodOptions`). `recommended` marks the default; `next`
+ * the reference's MethodStep `methodOptions`). `recommended` marks the default; `next`
  * names the step the flow branches to after this method is chosen (generate → the
- * generation step; manual → the manual-configuration step — mirroring Claude's
+ * generation step; manual → the manual-configuration step — mirroring the reference's
  * `goNext()` vs `goToStep(3)` branch), and `wasGenerated` is the provenance flag
  * stamped onto the resulting {@link AgentDefinition.wasGenerated}.
  */
@@ -2480,7 +2480,7 @@ export interface AgentCreationMethodOption {
 
 /**
  * The ordered creation-method options for the new-agent flow — `generate`
- * (recommended, FIRST) then `manual` (parity with Claude's MethodStep ordering and
+ * (recommended, FIRST) then `manual` (parity with the reference's MethodStep ordering and
  * default). The caller (the `/agents create` slash command) renders these; the
  * `next`/`wasGenerated` metadata drives the post-selection branch.
  */

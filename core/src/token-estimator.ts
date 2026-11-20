@@ -6,11 +6,11 @@ export { estimateTokens, estimateTokensForFileType, charsPerTokenForFileType } f
 
 const OVERHEAD_PER_MESSAGE = 4; // role header, delimiters
 
-/** Default UTF-8 bytes-per-token ratio (mirrors Claude's `bytesPerToken = 4`). */
+/** Default UTF-8 bytes-per-token ratio (mirrors the reference's `bytesPerToken = 4`). */
 const BYTES_PER_TOKEN = 4;
 
 /**
- * Pixels-per-token divisor for Claude's image token heuristic: an image costs
+ * Pixels-per-token divisor for the reference's image token heuristic: an image costs
  * roughly `(width * height) / 750` tokens. Used by {@link estimateImageTokens}
  * when a block carries real pixel dimensions.
  */
@@ -21,7 +21,7 @@ const PIXELS_PER_IMAGE_TOKEN = 750;
  *
  * `String.prototype.length` counts UTF-16 code units, which badly UNDER-counts
  * multi-byte content: a CJK character is 1 code unit but 3 UTF-8 bytes, and an
- * astral emoji is 2 code units but 4 bytes. Claude's `roughTokenCountEstimation`
+ * astral emoji is 2 code units but 4 bytes. the reference's `roughTokenCountEstimation`
  * divides the BYTE length (its parameter is literally `bytesPerToken`), so a
  * byte-based count is both closer to the real tokeniser and the correct parity
  * target for non-ASCII text. For pure ASCII this equals `.length`.
@@ -36,7 +36,7 @@ export function utf8ByteLength(text: string): number {
  * Identical to {@link estimateTokens} for ASCII, but counts multi-byte unicode
  * by its UTF-8 byte length rather than UTF-16 code units — so CJK/emoji-heavy
  * text is no longer under-counted (which previously let such content slip past a
- * token budget). Mirrors Claude's byte-based `roughTokenCountEstimation`.
+ * token budget). Mirrors the reference's byte-based `roughTokenCountEstimation`.
  */
 export function estimateTextTokens(text: string, bytesPerToken: number = BYTES_PER_TOKEN): number {
   if (text.length === 0) return 0;
@@ -54,7 +54,7 @@ export function estimateTextTokens(text: string, bytesPerToken: number = BYTES_P
  * counted UTF-16 code units (`length`), so CJK/multibyte-dense content — where one
  * code unit is 3-4 UTF-8 bytes — was under-counted 3-4x, letting a file that is
  * really far over the token budget slip its whole payload into the prompt. Byte
- * counting matches the real tokeniser far better (it is literally Claude's
+ * counting matches the real tokeniser far better (it is literally the reference's
  * `bytesPerToken` basis) while staying IDENTICAL to the old estimate for pure
  * ASCII (byte length == code-unit length), so ASCII reads are unchanged.
  */
@@ -95,7 +95,7 @@ export function sliceToReadTokenBudget(text: string, maxTokens: number, fileExte
  * offset/limit range read, OR searching for the needed content instead of reading
  * the whole file. Returned verbatim by the Read tool when the error-on-budget
  * knob is on (see {@link module:file-read-limits.getFileReadErrorOnBudget}).
- * Mirrors Claude Code's MaxFileReadTokenExceededError message
+ * Mirrors the reference's MaxFileReadTokenExceededError message
  * (tools/FileReadTool/FileReadTool.ts:L175-L187).
  */
 export function fileReadTokenBudgetMessage(tokenCount: number, maxTokens: number): string {
@@ -107,11 +107,11 @@ export function fileReadTokenBudgetMessage(tokenCount: number, maxTokens: number
 /**
  * Conservative token estimate for an image block.
  *
- * When real pixel dimensions are known, Claude charges roughly
+ * When real pixel dimensions are known, the reference charges roughly
  * `(width * height) / 750` tokens — so a small icon is a handful of tokens, not
  * the flat {@link IMAGE_DOCUMENT_TOKEN_ESTIMATE}. The result is capped at that
  * flat estimate so a very large image never scores above the conservative
- * ceiling (Claude down-samples oversized images before counting). With no valid
+ * ceiling (the reference down-samples oversized images before counting). With no valid
  * dimensions it falls back to the flat estimate, preserving prior behavior.
  */
 export function estimateImageTokens(width?: number, height?: number): number {
@@ -157,7 +157,7 @@ function readImageDimensions(block: {
  * the naive chars/token path would score at ~330k tokens, vs the ~2000 the API
  * actually charges. Counting them as 0 (the old behavior) is the opposite error —
  * it lets large images/PDFs slip past token budgets and trigger auto-compact too
- * late. 2000 matches Claude's IMAGE_MAX_TOKEN_SIZE conservative estimate.
+ * late. 2000 matches the reference's IMAGE_MAX_TOKEN_SIZE conservative estimate.
  */
 export const IMAGE_DOCUMENT_TOKEN_ESTIMATE = 2000;
 
@@ -173,7 +173,7 @@ export function estimateToolCallTokens(
 
 /**
  * Rough token estimate for a single content block, dispatching on block type —
- * mirrors Claude's roughTokenCountEstimationForBlock. Every non-text block type
+ * mirrors the reference's roughTokenCountEstimationForBlock. Every non-text block type
  * is handled explicitly rather than counted as zero:
  *  - text            → the text
  *  - tool_use        → name + JSON(input) (bash commands / Edit diffs / file bodies are large)

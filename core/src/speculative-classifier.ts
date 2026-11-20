@@ -2,7 +2,7 @@
  * Speculative bash-command safety classifier — the interactive ASK-path
  * grace-race optimization.
  *
- * PARITY: Claude Code's speculative classifier
+ * PARITY: the reference's speculative classifier
  * (`tools/BashTool/bashPermissions.ts` → `peekSpeculativeClassifierCheck` /
  * `consumeSpeculativeClassifierCheck`, raced against a short grace window in
  * `hooks/useCanUseTool.tsx` L127-157).
@@ -28,7 +28,7 @@
  * decision). The engine (common layer) owns the orchestration: it calls
  * {@link SpeculativeClassifierCache.prime} when a bash command arrives and
  * {@link SpeculativeClassifierCache.resolveApproval} right before showing a prompt
- * — mirroring how Claude performs the race in the UI/engine layer rather than
+ * — mirroring how the reference performs the race in the UI/engine layer rather than
  * inside the pure permission check.
  */
 
@@ -66,7 +66,7 @@ export const DEFAULT_SPECULATIVE_GRACE_MS = 200;
 export const DEFAULT_SPECULATIVE_TTL_MS = 30_000;
 
 /** True only for a definitive high-confidence match — the sole shape allowed to
- *  auto-approve a would-be prompt. Mirrors Claude's
+ *  auto-approve a would-be prompt. Mirrors the reference's
  *  `result.matches && result.confidence === "high"` gate. */
 export function isHighConfidenceMatch(
   result: SpeculativeClassifierResult | undefined | null,
@@ -84,7 +84,7 @@ export type GraceRaceOutcome<T> =
  * if the promise settles first, or `{ type: 'timeout' }` if the grace window
  * elapses first. The timer is always cleared (never leaks) and a rejection of
  * `promise` propagates to the caller (the cache treats that as a miss). Mirrors
- * the `Promise.race([check, graceTimer])` in Claude's `useCanUseTool`.
+ * the `Promise.race([check, graceTimer])` in the reference's `useCanUseTool`.
  */
 export async function raceWithGracePeriod<T>(
   promise: Promise<T>,
@@ -125,7 +125,7 @@ export interface SpeculativeClassifierCacheOptions {
  * {@link prime}s a command the moment it needs a decision (dedup: re-priming a
  * live entry is a no-op), then {@link resolveApproval}s it right before prompting.
  * Entries expire after a TTL so a stale primed result can never auto-approve a
- * much-later re-run of the same command text. Mirrors Claude's module-level
+ * much-later re-run of the same command text. Mirrors the reference's module-level
  * speculative-check map (`bashPermissions.ts`).
  */
 export class SpeculativeClassifierCache {
@@ -219,7 +219,7 @@ export class SpeculativeClassifierCache {
    * can tear down the dialog and allow the call. Returns `null` — leaving the prompt
    * for the user — when there is no primed check, the classifier missed / was
    * low-confidence / rejected, the user latched the dialog open, or the prompt was
-   * already resolved. Mirrors Claude's `executeAsyncClassifierCheck` `onAllow`
+   * already resolved. Mirrors the reference's `executeAsyncClassifierCheck` `onAllow`
    * (`interactiveHandler.ts`): `shouldContinue: () => !isResolved() && !userInteracted`.
    */
   async resolveWhileOpen(
@@ -262,7 +262,7 @@ export class SpeculativeClassifierCache {
 
 /** Default grace window (ms) during which keypresses do NOT latch an open prompt,
  *  so an accidental keystroke the instant the dialog appears cannot cancel an
- *  in-flight auto-approval. Mirrors Claude's `GRACE_PERIOD_MS` (interactiveHandler). */
+ *  in-flight auto-approval. Mirrors the reference's `GRACE_PERIOD_MS` (interactiveHandler). */
 export const DEFAULT_PROMPT_INTERACTION_GRACE_MS = 200;
 
 /** Construction options for a {@link PendingPromptLatch}. */
@@ -279,7 +279,7 @@ export interface PendingPromptLatchOptions {
  * primed speculative check is still racing in the background WHILE the dialog is on
  * screen (see {@link SpeculativeClassifierCache.resolveWhileOpen}).
  *
- * PARITY: Claude Code's `interactiveHandler.ts` — the `createResolveOnce` guard plus
+ * PARITY: the reference's `interactiveHandler.ts` — the `createResolveOnce` guard plus
  * the `userInteracted` flag and `GRACE_PERIOD_MS` in `onUserInteraction`. Three
  * actors race to resolve one open dialog:
  *
@@ -292,7 +292,7 @@ export interface PendingPromptLatchOptions {
  *  3. a terminal teardown — abort / auto-dismiss (also via {@link claimManualResolve}).
  *
  * Exactly one claim wins (resolve-once). The three `classifier*` getters mirror the
- * fields Claude's `ToolUseConfirm` carries (`classifierCheckInProgress`,
+ * fields the reference's `ToolUseConfirm` carries (`classifierCheckInProgress`,
  * `classifierAutoApproved`, `classifierMatchedRule`) so a UI can dim the options and
  * show the auto-approved ✓ transition. This is a pure state machine with an
  * injectable clock — no timers, no I/O — so the race is fully unit-testable.
@@ -330,7 +330,7 @@ export class PendingPromptLatch {
   /**
    * Record a user interaction (arrow keys / tab / typing). Ignored within the grace
    * period so an accidental keypress the instant the dialog renders cannot cancel the
-   * in-flight auto-approval (Claude's `GRACE_PERIOD_MS`). Past the grace period it
+   * in-flight auto-approval (the reference's `GRACE_PERIOD_MS`). Past the grace period it
    * LATCHES the dialog open — a background auto-approval can no longer race-dismiss it
    * — and clears the "classifier running" indicator. A no-op once the dialog is
    * already resolved or already latched. Returns true iff this call latched.

@@ -18,7 +18,7 @@
  *
  * Precedence (highest first): env var > caller/context override > default.
  *
- * Mirrors Claude Code's getDefaultFileReadingLimits / getEnvMaxTokens
+ * Mirrors the reference's getDefaultFileReadingLimits / getEnvMaxTokens
  * (tools/FileReadTool/limits.ts) but AMI-named, synchronous, and
  * side-effect-free (no memoize, no experiment infra) so the resolved cap is
  * deterministic per call and fully testable. The env knobs are surfaced in
@@ -39,7 +39,7 @@ export const FILE_READ_MAX_SIZE_BYTES_ENV = 'AMI_FILE_READ_MAX_SIZE_BYTES';
  * Operator toggle for whether the Read tool's SELF-DESCRIPTION surfaces the
  * concrete size cap (the `256KB size limit` phrase in the `allow_large` schema
  * description). Set to a falsy token (0/false/no/off) to drop the specific cap
- * figure from the prompt. Mirrors Claude Code's `includeMaxSizeInPrompt` limit
+ * figure from the prompt. Mirrors the reference's `includeMaxSizeInPrompt` limit
  * (tools/FileReadTool/limits.ts).
  */
 export const FILE_READ_SHOW_SIZE_CAP_ENV = 'AMI_FILE_READ_SHOW_SIZE_CAP';
@@ -47,7 +47,7 @@ export const FILE_READ_SHOW_SIZE_CAP_ENV = 'AMI_FILE_READ_SHOW_SIZE_CAP';
  * Operator toggle for whether the Read tool's schema NUDGES the model toward
  * targeted (offset/limit) range reads. Set to a falsy token (0/false/no/off) to
  * drop the "prefer whole file / use offset+limit for large files" guidance from
- * the offset/limit parameter descriptions. Mirrors Claude Code's
+ * the offset/limit parameter descriptions. Mirrors the reference's
  * `targetedRangeNudge` limit (tools/FileReadTool/limits.ts).
  */
 export const FILE_READ_RANGE_NUDGE_ENV = 'AMI_FILE_READ_RANGE_NUDGE';
@@ -58,15 +58,15 @@ export const FILE_READ_RANGE_NUDGE_ENV = 'AMI_FILE_READ_RANGE_NUDGE';
  *
  *   - unset / falsy (default) — AMI's behavior: the content is silently TRUNCATED
  *     to the budget with a `[... truncated]` note (keeps partial content flowing);
- *   - truthy (1/true/yes/on) — Claude-parity behavior: the read ERRORS with an
+ *   - truthy (1/true/yes/on) — the reference-parity behavior: the read ERRORS with an
  *     actionable "use offset/limit, or search instead" message
  *     ({@link module:token-estimator.fileReadTokenBudgetMessage}) so the model
  *     never receives a file that was silently cut mid-structure and is nudged to
  *     a targeted re-read.
  *
  * Both behaviors are kept (AMI's truncation differentiator is the default; the
- * Claude hard-error is opt-in). Surfaced in `ami --introspect` (experimentalEnvFlags).
- * Mirrors Claude Code's MaxFileReadTokenExceededError throw (FileReadTool.ts).
+ * the reference hard-error is opt-in). Surfaced in `ami --introspect` (experimentalEnvFlags).
+ * Mirrors the reference's MaxFileReadTokenExceededError throw (FileReadTool.ts).
  */
 export const FILE_READ_ERROR_ON_BUDGET_ENV = 'AMI_FILE_READ_ERROR_ON_TOKEN_BUDGET';
 
@@ -105,7 +105,7 @@ function isOffByDefault(raw: string | undefined): boolean {
 /**
  * Resolve the {@link FILE_READ_ERROR_ON_BUDGET_ENV} toggle. Defaults OFF, so a
  * clean environment keeps AMI's silent-truncation behavior; only an explicitly
- * truthy value opts into the Claude-parity hard-error-with-nudge behavior.
+ * truthy value opts into the reference-parity hard-error-with-nudge behavior.
  */
 export function getFileReadErrorOnBudget(
   env: NodeJS.ProcessEnv = process.env,
@@ -137,13 +137,13 @@ export interface FileReadingLimits {
 /**
  * How the Read tool prefixes each returned line with its line number:
  * - `compact` — `N\t<content>` (a bare number + TAB). The default; it is the
- *   least-overhead format and the one AMI/Claude prefer.
+ *   least-overhead format and the one AMI/the reference prefer.
  * - `arrow` — `     N→<content>` (the number right-padded to width 6, then a `→`
  *   arrow). The legacy, more-verbose format some operators/tools expect.
  *
  * The round-trip inverse (stripping EITHER prefix back to the bare source line)
  * already lives in {@link module:file-cache-seed.stripLineNumberPrefix}. Mirrors
- * Claude Code's `isCompactLinePrefixEnabled()` line-prefix selector (utils/file.ts).
+ * the reference's `isCompactLinePrefixEnabled()` line-prefix selector (utils/file.ts).
  */
 export type LineNumberStyle = 'compact' | 'arrow';
 
@@ -156,7 +156,7 @@ export const DEFAULT_LINE_NUMBER_STYLE: LineNumberStyle = 'compact';
  * value keeps the default compact `N\t`. The active format is reflected in the
  * file_edit tool description so the model knows exactly which prefix to strip
  * from old_string/new_string. Surfaced in `ami --introspect` (experimentalEnvFlags).
- * Mirrors Claude Code's `tengu_compact_line_prefix_killswitch` (utils/file.ts).
+ * Mirrors the reference's `tengu_compact_line_prefix_killswitch` (utils/file.ts).
  */
 export const LINE_NUMBER_STYLE_ENV = 'AMI_LINE_NUMBER_STYLE';
 
@@ -186,7 +186,7 @@ function isValidCap(v: unknown): v is number {
  * Parse an operator env-var override into a positive integer cap, or `undefined`
  * when unset/malformed (empty, non-numeric, zero, negative, NaN) so the caller
  * falls through to the next precedence tier. parseInt + isNaN + >0, mirroring
- * Claude Code's getEnvMaxTokens validation.
+ * the reference's getEnvMaxTokens validation.
  */
 function parseEnvCap(raw: string | undefined): number | undefined {
   if (!raw) return undefined;

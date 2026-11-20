@@ -7,10 +7,10 @@
  * for anything it cannot prove is a read/search op (CONSERVATIVE default — an
  * unknown tool never collapses).
  *
- * Parity with Claude Code's `classifyMcpToolForCollapse`
+ * Parity with the reference's `classifyMcpToolForCollapse`
  * (tools/MCPTool/classifyForCollapse.ts). AMI UNIONS two signals:
  *
- *  1. A curated per-tool allowlist (ported verbatim from Claude) keyed on the
+ *  1. A curated per-tool allowlist (ported verbatim from the reference) keyed on the
  *     normalized tool name — catching the specific low-signal names a generic
  *     verb-prefix rule cannot infer (`search`, `find`, `esql`, `recommend`,
  *     `kubectl_get`, `namespaces_list`, `fetch_object`, `whoami`, …). Tool names
@@ -18,7 +18,7 @@
  *     keyed on the tool name alone after normalizing camelCase/kebab-case.
  *  2. A verb-prefix heuristic (`get_`/`list_`/`search_`/`find_`/…) so AMI
  *     generalizes to arbitrary MCP servers whose tools are NOT in the allowlist —
- *     a strict superset of Claude's allowlist-only behavior.
+ *     a strict superset of the reference's allowlist-only behavior.
  *
  * This is the ONE canonical classifier (core building block); the CLI transcript
  * renderer delegates to it rather than re-implementing the heuristic.
@@ -167,7 +167,7 @@ const READ_TOOLS = new Set([
 
 /** Normalize a raw tool name to snake_case lowercase so camelCase/kebab-case
  *  variants (`searchJiraIssues`, `brave-web-search`) match the allowlist keys.
- *  camelCase boundaries are split BEFORE lowercasing (Claude-parity order). */
+ *  camelCase boundaries are split BEFORE lowercasing (the reference-parity order). */
 export function normalizeCollapseToolName(name: string): string {
   return name
     .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
@@ -177,7 +177,7 @@ export function normalizeCollapseToolName(name: string): string {
 
 /**
  * Classify an MCP tool for transcript collapse. `serverName` is accepted for
- * Claude signature parity (matching is tool-name-keyed, as Claude documents).
+ * the reference signature parity (matching is tool-name-keyed, as the reference documents).
  */
 export function classifyMcpToolForCollapse(
   _serverName: string,

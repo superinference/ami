@@ -9,7 +9,7 @@
  * declared as a uuid, or a transcript `uuid`/`parentUuid` field (AMI mints those
  * via `crypto.randomUUID`, so they ARE canonical UUIDs).
  *
- * Parity: Claude Code's `validateUuid` (references/claude/claude-code-main/
+ * Parity: the reference's `validateUuid` (references/claude/claude-code-main/
  * src/utils/uuid.ts:L12-L17): accept `unknown`, type-guard to a string, match the
  * anchored canonical regex, and return the narrowed string or `null` — never
  * throw. Case-insensitive so an upper-case UUID is accepted too.
@@ -29,7 +29,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  *
  * This is a BOUNDARY guard: callers use it to narrow a caller/model-supplied id
  * argument up front instead of letting a malformed value fall through to a
- * guaranteed lookup-miss. Mirrors Claude's `validateUuid(maybeUuid): UUID | null`.
+ * guaranteed lookup-miss. Mirrors the reference's `validateUuid(maybeUuid): UUID | null`.
  */
 export function validateUuid(maybeUuid: unknown): string | null {
   if (typeof maybeUuid !== 'string') return null;
@@ -50,7 +50,7 @@ export function validateUuid(maybeUuid: unknown): string | null {
  *      you would not want sent to a user's phone; the generated code is checked
  *      against a substring blocklist and re-hashed with a salt until clean.
  *
- * Parity: Claude Code's `shortRequestId` / `ID_ALPHABET` / `ID_AVOID_SUBSTRINGS`
+ * Parity: the reference's `shortRequestId` / `ID_ALPHABET` / `ID_AVOID_SUBSTRINGS`
  * (references/claude/claude-code-main/src/services/mcp/channelPermissions.ts
  * :L77-L152). This is the ONE canonical confusable-safe, profanity-safe short-id
  * minter for any human-surfaced generated identifier (request/notification codes,
@@ -62,11 +62,11 @@ export function validateUuid(maybeUuid: unknown): string | null {
  * 25-letter alphabet: `a`-`z` minus `l` (looks like `1`/`I` in many fonts).
  * `25^5 ≈ 9.8M` space. Exported so a caller that needs the character set (e.g.
  * a reply-matching regex `[a-km-z]{5}`) reuses the exact alphabet rather than
- * re-deriving it. Parity: Claude's `ID_ALPHABET`.
+ * re-deriving it. Parity: the reference's `ID_ALPHABET`.
  */
 export const HUMAN_ID_ALPHABET = 'abcdefghijkmnopqrstuvwxyz';
 
-/** Number of letters in a generated short code. Parity: Claude's 5-letter code. */
+/** Number of letters in a generated short code. Parity: the reference's 5-letter code. */
 export const HUMAN_ID_LENGTH = 5;
 
 /**
@@ -74,7 +74,7 @@ export const HUMAN_ID_LENGTH = 5;
  * a message to someone's phone. Non-exhaustive; covers the
  * send-to-your-boss-by-accident tier. If a generated code contains any of these
  * it is re-hashed with a salt. Frozen so a consumer can read but not mutate the
- * shared list. Parity: Claude's `ID_AVOID_SUBSTRINGS`.
+ * shared list. Parity: the reference's `ID_AVOID_SUBSTRINGS`.
  */
 export const ID_AVOID_SUBSTRINGS: readonly string[] = Object.freeze([
   'fuck', 'shit', 'cunt', 'cock', 'dick', 'twat', 'piss', 'crap', 'bitch',
@@ -86,7 +86,7 @@ export const ID_AVOID_SUBSTRINGS: readonly string[] = Object.freeze([
  * Maximum re-hash attempts when a candidate spells a blocklisted substring.
  * ~13.9k blocked codes out of 9.8M ≈ 1-in-700 hit rate, so `(1/700)^10` is
  * negligible; after the cap we return the last candidate rather than loop
- * forever. Parity: Claude's `salt < 10` bound.
+ * forever. Parity: the reference's `salt < 10` bound.
  */
 const HUMAN_ID_MAX_SALT = 10;
 
@@ -116,7 +116,7 @@ function hashToHumanId(input: string): string {
  * request id, a session uuid). Deterministic for a given input; re-hashes with a
  * `:salt` suffix (up to {@link HUMAN_ID_MAX_SALT} times) if the candidate spells
  * a blocklisted substring, so a code surfaced to a human never accidentally reads
- * as a slur. Mirrors Claude's `shortRequestId(toolUseID)`.
+ * as a slur. Mirrors the reference's `shortRequestId(toolUseID)`.
  */
 export function shortRequestId(source: string): string {
   let candidate = hashToHumanId(source);

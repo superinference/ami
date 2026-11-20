@@ -3,16 +3,16 @@ import type { EngineEvent, TaskUsageSnapshot } from '../types';
 /**
  * AMI's synthetic final-output tool. Its calls are internal result-emission, not
  * work worth surfacing, so the live-roster activity preview omits them (parity:
- * Claude Code special-cases `SYNTHETIC_OUTPUT_TOOL_NAME` out of its
+ * the reference special-cases `SYNTHETIC_OUTPUT_TOOL_NAME` out of its
  * recentActivities preview while still counting the tool use).
  */
 const SYNTHETIC_OUTPUT_TOOL_NAME = 'structured_output';
 
 /**
  * Map an AMI tool name to a human-readable action verb for the live-roster activity
- * line. Parity: Claude Code's `TOOL_VERBS` table (bridge/sessionRunner.ts) keyed to
- * AMI's snake_case tool names (vs Claude's PascalCase). A tool with no mapped verb
- * falls back to its own name (parity: Claude's `TOOL_VERBS[name] ?? name`).
+ * line. Parity: the reference's `TOOL_VERBS` table (bridge/sessionRunner.ts) keyed to
+ * AMI's snake_case tool names (vs the reference's PascalCase). A tool with no mapped verb
+ * falls back to its own name (parity: the reference's `TOOL_VERBS[name] ?? name`).
  */
 const TOOL_VERBS: Record<string, string> = {
   file_read: 'Reading',
@@ -43,7 +43,7 @@ export function toolVerb(toolName: string): string {
 /**
  * Build a human-readable "verb + target" activity line for a sub-agent's tool call
  * so the live roster reads "Running npm test" / "Reading src/x.ts" / "Searching TODO"
- * instead of the bare tool name. Parity: Claude Code's `toolSummary(name, input)`
+ * instead of the bare tool name. Parity: the reference's `toolSummary(name, input)`
  * (bridge/sessionRunner.ts) — a verb from {@link TOOL_VERBS} plus the most salient
  * target pulled from the input via {@link summarizeToolInput}. Returns just the verb
  * when the input carries no salient target.
@@ -86,7 +86,7 @@ export function summarizeToolInput(toolName: string, input: unknown): string {
 /**
  * Max characters of relayed child output (streamed text / thinking, live tool
  * progress, error text) surfaced on the parent roster in a single progress tick.
- * Parity: Claude Code bounds relayed preview text (truncateForPreview) BEFORE it
+ * Parity: the reference bounds relayed preview text (truncateForPreview) BEFORE it
  * crosses the agent boundary so a chatty or run-away child can't flood the
  * parent's roster/stream with an unbounded blob.
  */
@@ -103,7 +103,7 @@ export function clampRelayPreview(text: string, max = MAX_RELAY_PREVIEW_CHARS): 
 
 /**
  * First non-empty line of a failed tool's output, bounded to a short slice for the
- * roster's error detail. Parity: Claude Code appends a bounded failure reason to a
+ * roster's error detail. Parity: the reference appends a bounded failure reason to a
  * sub-agent tool-error row (not just a ✗ glyph) so the roster conveys WHY it failed.
  * Returns '' when the output has no printable content.
  */
@@ -118,7 +118,7 @@ export function summarizeErrorOutput(output: string, max = 120): string {
  * events that should not be relayed (everything the live roster doesn't render).
  * Kept pure + separate from task.ts so the relay policy is fully unit-testable.
  *
- * PARITY (additive): Claude Code's Task tool surfaces a sub-agent's failures,
+ * PARITY (additive): the reference's Task tool surfaces a sub-agent's failures,
  * retries, and in-flight tool progress to the parent as they happen, not only in
  * the final summary. This mapper relays:
  *  - `error` live as an `error` activity (bounded) so a failing child isn't silent;
@@ -130,7 +130,7 @@ export function summarizeErrorOutput(output: string, max = 120): string {
  *  - `user_question` as a `waiting` activity (approval affordance) so a child
  *    BLOCKED on a permission `ask` / `AskUserQuestion` / plan-mode consent reads as
  *    "awaiting approval" on the roster instead of freezing on its last row — parity
- *    with Claude Code's swarmWorkerHandler `pendingWorkerRequest` "waiting for leader
+ *    with the reference's swarmWorkerHandler `pendingWorkerRequest` "waiting for leader
  *    approval" indicator;
  * and drops whitespace-only deltas / empty progress so the roster never flickers
  * blank lines, with ALL relayed free text clamped via {@link clampRelayPreview}.
@@ -163,11 +163,11 @@ export function mapChildToSubagentEvent(
         : null;
     case 'tool_use_start': {
       // Omit the internal synthetic-output tool from the activity preview — it is a
-      // result-emission call, not visible work (parity: Claude's recentActivities skip).
+      // result-emission call, not visible work (parity: the reference's recentActivities skip).
       if (child.toolName === SYNTHETIC_OUTPUT_TOOL_NAME) return null;
-      // Human-readable verb + target (parity: Claude's toolSummary), e.g.
+      // Human-readable verb + target (parity: the reference's toolSummary), e.g.
       // "Running npm test" / "Reading src/x.ts" instead of the bare tool name.
-      // Carry the structured tool name (parity: Claude's progress `last_tool_name`) so the
+      // Carry the structured tool name (parity: the reference's progress `last_tool_name`) so the
       // roster can collapse a read/search burst without re-parsing the free-text detail.
       return {
         type: 'subagent_progress', nodeId, depth, activity: 'tool',
@@ -177,10 +177,10 @@ export function mapChildToSubagentEvent(
     }
     case 'tool_use_result': {
       if (child.toolName === SYNTHETIC_OUTPUT_TOOL_NAME) return null;
-      // Same verb as the matching start (parity: Claude's toolSummary verb) plus the
+      // Same verb as the matching start (parity: the reference's toolSummary verb) plus the
       // outcome glyph, e.g. "Running ✓" / "Searching ✗"; lastToolName keeps identity.
       // On failure, append a bounded first-line slice of the output so the roster
-      // conveys WHY it failed (parity: Claude's tool-error detail), not just a ✗.
+      // conveys WHY it failed (parity: the reference's tool-error detail), not just a ✗.
       const reason = child.isError ? summarizeErrorOutput(child.output) : '';
       return {
         type: 'subagent_progress', nodeId, depth, activity: 'tool',
@@ -219,7 +219,7 @@ export function mapChildToSubagentEvent(
       // `AskUserQuestion`, or plan-mode enter/exit consent. Relay it as a dedicated
       // `waiting` activity with an "awaiting approval" affordance so the roster shows
       // the sub-agent is stalled on the user, not frozen on its last tool/text row
-      // (Claude Code's swarmWorkerHandler `pendingWorkerRequest`). The optional
+      // (the reference's swarmWorkerHandler `pendingWorkerRequest`). The optional
       // `toolInputSummary` (WHAT the ask is about) is woven in so the row conveys the
       // pending action, bounded via clampRelayPreview like every other relayed detail.
       const q = child.question && child.question.trim() ? child.question.trim() : 'a decision';
@@ -242,7 +242,7 @@ export function mapChildToSubagentEvent(
  * (sub)agent's spend AND wall-clock as it happens — not only in the final
  * `subagent_result`. Pure: a NEW event is returned (the input is never mutated);
  * non-progress events (and `null`) pass through untouched so the caller can pipe
- * `mapChildToSubagentEvent(...)` straight through this. Parity: Claude's
+ * `mapChildToSubagentEvent(...)` straight through this. Parity: the reference's
  * task_progress `usage { total_tokens, tool_uses, duration_ms }` carried live
  * (utils/task/sdkProgress.ts).
  */
@@ -257,9 +257,9 @@ export function attachSubagentUsage(
 }
 
 /* ------------------------------------------------------------------------- *
- * Sub-agent message relay (PARITY: Claude Code subagent messaging)
+ * Sub-agent message relay (PARITY: the reference subagent messaging)
  *
- * Claude Code routes messages between a parent and its spawned sub-agents with an
+ * the reference routes messages between a parent and its spawned sub-agents with an
  * addressed mailbox: messages are queued per recipient, delivered in order, and
  * a sub-agent that has finished (or was never spawned) can no longer receive mail
  * — such sends are rejected and parked as dead-letters rather than silently lost.
@@ -273,7 +273,7 @@ export function attachSubagentUsage(
  *
  * `'idle'` is a NON-terminal waiting state distinct from the terminal
  * `'completed'`/`'failed'` states: a sub-agent that finished its turn and is
- * awaiting more input is idle, NOT done and NOT errored. Parity: Claude Code's
+ * awaiting more input is idle, NOT done and NOT errored. Parity: the reference's
  * TeamCreateTool guidance that a teammate going idle after a turn is a
  * first-class waiting state — idle teammates can still receive messages and must
  * never be treated as an error or as unavailable.
@@ -433,7 +433,7 @@ export function createSubagentRelay(): SubagentRelay {
 
 /**
  * Build a `subagent_progress` notice announcing that a sub-agent has gone idle
- * (finished its turn and is awaiting more input). Parity: Claude Code emits an
+ * (finished its turn and is awaiting more input). Parity: the reference emits an
  * automatic idle notification when a teammate's turn ends — idle is a waiting
  * state, NOT an error and NOT done. The notice is surfaced through the existing
  * `text` activity so no renderer change is required; the wording makes the
@@ -455,9 +455,9 @@ export function buildSubagentIdleEvent(
 }
 
 /* ------------------------------------------------------------------------- *
- * Spawn-vs-resume invocation accounting (PARITY: Claude Code agentContext)
+ * Spawn-vs-resume invocation accounting (PARITY: the reference agentContext)
  *
- * Claude's agent context carries `invokingRequestId` + `invocationKind`
+ * the reference's agent context carries `invokingRequestId` + `invocationKind`
  * ('spawn'|'resume') plus a mutable `invocationEmitted` flag, and
  * `consumeInvokingRequestId()` returns the id EXACTLY ONCE per spawn/resume
  * boundary (flipping `invocationEmitted`, returning undefined thereafter). That
@@ -505,7 +505,7 @@ interface InvocationRecord {
 }
 
 /**
- * Create a pure agent invocation ledger modeling Claude Code's spawn/resume
+ * Create a pure agent invocation ledger modeling the reference's spawn/resume
  * accounting + once-per-invocation sparse-edge emission. No I/O, no timers.
  */
 export function createAgentInvocationLedger(): AgentInvocationLedger {
@@ -559,9 +559,9 @@ export function createAgentInvocationLedger(): AgentInvocationLedger {
 }
 
 /* ------------------------------------------------------------------------- *
- * Progress-summary gating (PARITY: Claude Code AgentTool resumeAgent.ts)
+ * Progress-summary gating (PARITY: the reference AgentTool resumeAgent.ts)
  *
- * Claude gates progress-summary generation for background/resumed async agents
+ * the reference gates progress-summary generation for background/resumed async agents
  * on `enableSummarization = isCoordinatorMode() || isForkSubagentEnabled() ||
  * getSdkAgentProgressSummariesEnabled()`. AMI keeps live progress summaries ON
  * by default (a superset perk — never regress) but exposes an explicit disable
@@ -579,10 +579,10 @@ const isFlagSet = (v: string | undefined): boolean =>
  * summaries. Defaults to enabled (AMI superset). An explicit
  * `AMI_SUBAGENT_SUMMARIES=off|0|false|no` disables it; any of the coordinator /
  * fork-subagent / SDK-progress mode flags force-enable it even over an explicit
- * off (parity: Claude's three-flag `enableSummarization` gate).
+ * off (parity: the reference's three-flag `enableSummarization` gate).
  */
 export function resolveEnableSummarization(env: NodeJS.ProcessEnv): boolean {
-  // Coordinator / fork / SDK-progress modes always get summaries (Claude parity).
+  // Coordinator / fork / SDK-progress modes always get summaries (the reference parity).
   if (
     isFlagSet(env.AMI_COORDINATOR_MODE) ||
     isFlagSet(env.AMI_FORK_SUBAGENT) ||

@@ -4,13 +4,13 @@ import { resolveCacheDir } from '../reference-journal';
 import { redactCredentials } from '../credential-guard';
 
 /**
- * Per-MCP-server structured log sink (Claude-parity `getMCPLogsPath` +
+ * Per-MCP-server structured log sink (the reference-parity `getMCPLogsPath` +
  * `logMCPError`/`logMCPDebug`, utils/errorLogSink.ts).
  *
  * AMI previously funnelled EVERY MCP server's activity through the single shared
  * `coreLog('mcp', …)` engine log, so one noisy/erroring server was indistinguishable
  * from another and there was no per-server audit trail to hand a user debugging a
- * specific flaky server. This sink mirrors Claude Code: each server gets its own
+ * specific flaky server. This sink mirrors the reference: each server gets its own
  * dated JSONL file under `<configDir>/mcp-logs-<server>/<YYYY-MM-DD>.jsonl`, with
  * distinct `{error,…}` and `{debug,…}` record shapes, so a `/mcp` diagnostics view
  * (or a human) can read exactly one server's errors in isolation.
@@ -26,7 +26,7 @@ const DIR_MODE = 0o700;
 const FILE_MODE = 0o600;
 
 /**
- * Sanitize a server name into a single filesystem-safe path segment (Claude-parity
+ * Sanitize a server name into a single filesystem-safe path segment (the reference-parity
  * `sanitizePath` on the `mcp-logs-<server>` dir): every character outside
  * `[A-Za-z0-9._-]` becomes `_` so a server name with slashes, colons (reserved as a
  * Windows drive separator), or `..` can never escape the log directory or collide
@@ -55,13 +55,13 @@ export interface McpLogSinkOptions {
 }
 
 /**
- * The per-server dated JSONL log path (Claude-parity `getMCPLogsPath(serverName)`):
+ * The per-server dated JSONL log path (the reference-parity `getMCPLogsPath(serverName)`):
  * `<cacheDir>/mcp-logs-<sanitized-server>/<YYYY-MM-DD>.jsonl`. The server name is
  * sanitized to one safe segment so it can never traverse outside the base dir.
  *
  * These are TRANSIENT, discardable diagnostics, so they default to the cache dir
  * ({@link resolveCacheDir}) — honoring `XDG_CACHE_HOME` as a knob distinct from the
- * durable data dir (parity: Claude's `cachePaths` cache base). With no XDG cache
+ * durable data dir (parity: the reference's `cachePaths` cache base). With no XDG cache
  * env set the cache dir IS the data dir, so the default location is unchanged; an
  * explicit `configDir` override always wins.
  */
@@ -76,11 +76,11 @@ interface McpLogRecordBase {
   cwd: string;
   sessionId?: string;
 }
-/** A per-server MCP error record (Claude-parity `logMCPError` shape). */
+/** A per-server MCP error record (the reference-parity `logMCPError` shape). */
 export interface McpErrorLogRecord extends McpLogRecordBase {
   error: string;
 }
-/** A per-server MCP debug record (Claude-parity `logMCPDebug` shape). */
+/** A per-server MCP debug record (the reference-parity `logMCPDebug` shape). */
 export interface McpDebugLogRecord extends McpLogRecordBase {
   debug: string;
 }
@@ -109,7 +109,7 @@ function appendRecord(serverName: string, record: object, opts?: McpLogSinkOptio
 }
 
 /**
- * Append a per-server MCP ERROR record (Claude-parity `logMCPError`). An `Error`
+ * Append a per-server MCP ERROR record (the reference-parity `logMCPError`). An `Error`
  * contributes its stack (falling back to its message); any other value is
  * stringified. The text is credential-redacted before it is written.
  */
@@ -120,7 +120,7 @@ export function logMcpError(serverName: string, error: unknown, opts?: McpLogSin
 }
 
 /**
- * Append a per-server MCP DEBUG record (Claude-parity `logMCPDebug`). The message is
+ * Append a per-server MCP DEBUG record (the reference-parity `logMCPDebug`). The message is
  * credential-redacted before it is written.
  */
 export function logMcpDebug(serverName: string, message: string, opts?: McpLogSinkOptions): void {

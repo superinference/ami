@@ -9,7 +9,7 @@ import { contentToTexts } from '../session';
  * On-demand ADVISOR tool: a model-initiated second opinion from a stronger
  * reviewer model, with the whole conversation auto-forwarded.
  *
- * Parity target: Claude Code's `advisor` server-tool (references/claude/
+ * Parity target: the reference's `advisor` server-tool (references/claude/
  * claude-code-main/src/utils/advisor.ts) — a tool the MAIN model calls at
  * junctures it chooses (before committing to an approach, when stuck, before
  * declaring done); the entire conversation (task, every tool call, every result)
@@ -24,7 +24,7 @@ import { contentToTexts } from '../session';
  * tool_use/tool_result blocks (which every provider validates differently) the
  * forwarded conversation is flattened into a provider-neutral text transcript
  * digest — the reviewer still sees the task, every tool call (name + arguments),
- * and every result, which is exactly what Claude's advisor forwards. A single
+ * and every result, which is exactly what the reference's advisor forwards. A single
  * reviewer completion is made via the canonical {@link runAuxQuery} side-query
  * primitive (shared with session-title / branch-name generation — no parallel
  * stream loop), and the reviewer's advice is returned as the tool result so the
@@ -32,11 +32,11 @@ import { contentToTexts } from '../session';
  */
 
 /** Operator override of the reviewer model (alias — e.g. `opus` — or a concrete
- *  id). Mirrors Claude Code's configurable `advisorModel` (getInitialAdvisorSetting
+ *  id). Mirrors the reference's configurable `advisorModel` (getInitialAdvisorSetting
  *  / getExperimentAdvisorModels). Unset → the default reviewer selection applies. */
 export const ADVISOR_MODEL_ENV = 'AMI_ADVISOR_MODEL';
 
-/** Off-switch for the advisor tool (parity: Claude Code's
+/** Off-switch for the advisor tool (parity: the reference's
  *  `CLAUDE_CODE_DISABLE_ADVISOR_TOOL`, which that alias is also honored for
  *  cross-framework compatibility). Truthy → the tool is dropped from the
  *  advertised set. Unset/falsey (default) → the tool is available. */

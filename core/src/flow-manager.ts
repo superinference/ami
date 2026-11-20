@@ -18,7 +18,7 @@ export interface FlowInfo {
   notified?: boolean;
   /** Wall-clock grace deadline: a terminal flow is retained (lingers in the inspector)
    *  until this time, then becomes eligible for time-based eviction (pruneExpired()).
-   *  Mirrors Claude's per-task `evictAfter` (completion + PANEL_GRACE_MS) so a just-
+   *  Mirrors the reference's per-task `evictAfter` (completion + PANEL_GRACE_MS) so a just-
    *  finished row stays readable briefly before vanishing. Set on terminalization and
    *  re-settable via scheduleEviction() (e.g. 0 = immediate dismiss). Undefined while
    *  active. */
@@ -50,7 +50,7 @@ export class FlowManager {
   /** Cap on retained terminal (non-active) flows so they don't accumulate across a long session. */
   private static readonly MAX_RETAINED_TERMINAL = 20;
   /** Grace window (ms) a terminal flow lingers before it is eligible for time-based
-   *  eviction. Mirrors Claude's framework `PANEL_GRACE_MS` so a freshly-finished row
+   *  eviction. Mirrors the reference's framework `PANEL_GRACE_MS` so a freshly-finished row
    *  stays readable briefly instead of disappearing the instant it completes. */
   static readonly TERMINAL_GRACE_MS = 30_000;
 
@@ -91,7 +91,7 @@ export class FlowManager {
   }
 
   /** Track an agent under a flow. The `agentId` is validated via {@link toAgentId}
-   *  (parity: Claude's AgentId discriminator) so a flow only ever holds genuine agent
+   *  (parity: the reference's AgentId discriminator) so a flow only ever holds genuine agent
    *  ids — a free-text teammate name, empty string, or otherwise malformed id is
    *  rejected (returns false, flow untouched) rather than silently polluting the
    *  inspector's agent list. Returns false for an unknown flow. */
@@ -107,12 +107,12 @@ export class FlowManager {
     return this.flows.get(flowId);
   }
 
-  /** Attention states that warrant a user call-to-action affordance (parity: Claude's
+  /** Attention states that warrant a user call-to-action affordance (parity: the reference's
    *  pillNeedsCta — ONLY the two attention states surface the CTA, never plain
    *  'working'). Mirrors the attention subset of TaskAttentionState. */
   private static readonly ATTENTION_STATES = new Set(['needs_input', 'plan_ready']);
 
-  /** FUNCTIONAL (parity: Claude's getPillLabel / RemoteSessionProgress): the SINGLE
+  /** FUNCTIONAL (parity: the reference's getPillLabel / RemoteSessionProgress): the SINGLE
    *  source of truth for a flow's count-aware, failure-aware summary wording, so every
    *  surface (inspector list row, flow-detail header, footer) agrees instead of each
    *  recomputing `completed/total` inline and drifting. Reports `completed/total` and,
@@ -129,7 +129,7 @@ export class FlowManager {
     return failed > 0 ? `${base} · ${failed} failed` : base;
   }
 
-  /** FUNCTIONAL (parity: Claude's pillNeedsCta): whether any agent in a flow is awaiting
+  /** FUNCTIONAL (parity: the reference's pillNeedsCta): whether any agent in a flow is awaiting
    *  the user's attention (attention state 'needs_input' or 'plan_ready'). Lets a surface
    *  render an affordance call-to-action (e.g. ' · ↵ to view') for EXACTLY the flows
    *  waiting on the user and nothing for a flow that is merely progressing ('working').
@@ -151,10 +151,10 @@ export class FlowManager {
     const flow = this.flows.get(flowId);
     if (!flow || flow.agentIds.length === 0) return;
     const statuses = flow.agentIds.map(id => getAgentStatus(id) || 'unknown');
-    // Terminal boundary (parity: Claude's isTerminalTaskStatus — only
+    // Terminal boundary (parity: the reference's isTerminalTaskStatus — only
     // completed|failed|killed are terminal; Task.ts:26-28). A flow resolves to a
     // terminal status ONLY when EVERY tracked agent is terminal. Both a still-queued
-    // 'pending' agent (spawned-but-not-started — Claude's isBackgroundTask counts it
+    // 'pending' agent (spawned-but-not-started — the reference's isBackgroundTask counts it
     // as active) and a temporarily unresolvable 'unknown' agent (evicted/orphaned
     // lookup) are NON-terminal, so the flow stays active and is reopened on a later
     // tick instead of being prematurely sealed to completed/partial/failed and
@@ -167,7 +167,7 @@ export class FlowManager {
     flow.status = allFailed ? 'failed' : anyFailed ? 'partial' : 'completed';
     flow.completedAt = Date.now();
     // Start the linger grace window: the row stays readable until this deadline,
-    // then pruneExpired()/listFlows() may sweep it (mirrors Claude's evictAfter).
+    // then pruneExpired()/listFlows() may sweep it (mirrors the reference's evictAfter).
     flow.evictAfter = flow.completedAt + FlowManager.TERMINAL_GRACE_MS;
     // A terminal flow stops being the active target for every key that points at it.
     for (const [key, active] of this.activeByKey) {
@@ -190,7 +190,7 @@ export class FlowManager {
 
   /** FUNCTIONAL: Declare which flow the TUI inspector is CURRENTLY drilled into (viewed),
    *  or `undefined` when no flow view is open. This is the single enter/exit entry point
-   *  the inspector calls on every drill change; it mirrors Claude's
+   *  the inspector calls on every drill change; it mirrors the reference's
    *  enterTeammateView/exitTeammateView retain+evictAfter special-casing:
    *   - Entering a flow PINS it (pruneTerminal/pruneExpired can never delete it out from
    *     under the view) and CLEARS any pending linger deadline (`evictAfter`) so a flow
@@ -244,7 +244,7 @@ export class FlowManager {
   }
 
   /** FUNCTIONAL: (Re)set a terminal flow's linger grace deadline. `graceMs` ms from
-   *  now (default TERMINAL_GRACE_MS); pass 0 to dismiss immediately (mirrors Claude's
+   *  now (default TERMINAL_GRACE_MS); pass 0 to dismiss immediately (mirrors the reference's
    *  stopOrDismissAgent evictAfter=0). Only terminal flows can be scheduled — active
    *  and unknown flows return false and are untouched. */
   scheduleEviction(flowId: string, graceMs: number = FlowManager.TERMINAL_GRACE_MS): boolean {

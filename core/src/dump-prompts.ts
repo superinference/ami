@@ -2,7 +2,7 @@
 // dump-prompts.ts
 //
 // Per-session, deduplicated prompt-dump entry schema for the AMI_DUMP_PROMPTS
-// transport capture (see provider.ts withPromptDump). Mirrors Claude Code's
+// transport capture (see provider.ts withPromptDump). Mirrors the reference's
 // createDumpPromptsFetch DumpState bookkeeping (services/api/dumpPrompts.ts):
 //
 //   - A per-agent/per-session keyed DumpState (initialized / messageCountSeen /

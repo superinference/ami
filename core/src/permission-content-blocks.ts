@@ -1,7 +1,7 @@
 /**
  * Permission-decision content blocks.
  *
- * Parity: Claude Code's permission allow/deny/abort decisions carry an optional
+ * Parity: the reference's permission allow/deny/abort decisions carry an optional
  * `contentBlocks: ContentBlockParam[]` (hooks/toolPermission/PermissionContext.ts
  * `buildAllow`, `cancelAndAbort`, `handleUserAllow`) so a hook or the prompt can
  * attach RICH content — a structured text block, an image, a document — that flows

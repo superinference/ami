@@ -10,7 +10,7 @@ const CHARS_PER_TOKEN = 4;
  *
  * The ratio is configurable so a caller that knows its content is denser than
  * average prose (e.g. JSON, where `{`/`}`/`:`/`,`/`"` are mostly single-char
- * tokens) can pass a tighter value and avoid under-counting. Mirrors Claude's
+ * tokens) can pass a tighter value and avoid under-counting. Mirrors the reference's
  * `roughTokenCountEstimation(content, bytesPerToken = 4)`.
  */
 export function estimateTokens(text: string, charsPerToken: number = CHARS_PER_TOKEN): number {
@@ -25,7 +25,7 @@ export function estimateTokens(text: string, charsPerToken: number = CHARS_PER_T
  * (JSON/JSONL/JSONC) is dominated by single-character tokens (`{`, `}`, `:`,
  * `,`, `"`), so its real ratio is closer to 2 than the default ~4 — using the
  * generic ratio badly UNDER-estimates JSON and can let an oversized tool
- * result slip past a token budget. Mirrors Claude's bytesPerTokenForFileType.
+ * result slip past a token budget. Mirrors the reference's bytesPerTokenForFileType.
  */
 export function charsPerTokenForFileType(fileExtension: string): number {
   switch (fileExtension.toLowerCase().replace(/^\./, '')) {
@@ -70,7 +70,7 @@ export function estimateToolSchemaTokens(
 
 /**
  * Builds an informative truncation marker that quantifies how much was dropped
- * and hints at how to recover the rest (parity with Claude's quantified
+ * and hints at how to recover the rest (parity with the reference's quantified
  * end-truncation markers — `... [output truncated - NKB removed]` /
  * `truncated ... Use FileReadTool to read more`). A bare `[truncated]` tells the
  * reader only that *something* was cut, with no sense of HOW MUCH is missing or

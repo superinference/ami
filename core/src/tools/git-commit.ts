@@ -70,7 +70,7 @@ export const _gitCommitFs = {
   unlinkSync: fs.unlinkSync as typeof fs.unlinkSync,
   readFileSync: fs.readFileSync as typeof fs.readFileSync,
   /**
-   * Async, cancellable staging seam. Parity with Claude Code, which routes every
+   * Async, cancellable staging seam. Parity with the reference, which routes every
    * git invocation through an async child that always forwards `signal` (and
    * `timeout`): the former blocking `execFileSync('git', ['add', …])` could not
    * honor `context.abortSignal` and pinned the event loop for the whole `git add`
@@ -98,7 +98,7 @@ export const _gitCommitFs = {
  * hooks / downstream tooling can see which frontend drove it. Reuses the single
  * entrypoint knob reader ({@link resolveEntrypoint}: `AMI_ENTRYPOINT` then
  * `CLAUDE_CODE_ENTRYPOINT`, blank-safe) shared with the HTTP/MCP User-Agent, and
- * defaults to `'cli'` when nothing is set — parity with Claude Code's
+ * defaults to `'cli'` when nothing is set — parity with the reference's
  * `getClientSurface()` (`CLAUDE_CODE_ENTRYPOINT ?? 'cli'`).
  */
 export function resolveClientSurface(env: NodeJS.ProcessEnv = process.env): string {
@@ -107,7 +107,7 @@ export function resolveClientSurface(env: NodeJS.ProcessEnv = process.env): stri
 
 /**
  * Collapse a raw model identifier to a stable, public short name for the commit
- * surface. Parity with Claude Code's `sanitizeModelName` (buildSurfaceKey +
+ * surface. Parity with the reference's `sanitizeModelName` (buildSurfaceKey +
  * sanitizeModelName): strip a provider/vendor prefix (`anthropic/claude-…`,
  * `openai/…`, a bedrock `….anthropic.*` ARN segment) and a trailing
  * `-YYYYMMDD` / `@date` snapshot suffix so `claude-opus-4-8-20260115` and
@@ -146,7 +146,7 @@ export function resolveCommitModel(env: NodeJS.ProcessEnv = process.env): string
  * Whether to PRESERVE the repo's own commit hooks / GPG signing even in detached
  * mode. AMI bypasses them by default in detached runs (anti-hang: a blocking
  * pre-commit hook or a passphrase prompt would wedge an unattended run), but
- * Claude's protocol is "NEVER skip hooks unless explicitly requested". Setting
+ * the reference's protocol is "NEVER skip hooks unless explicitly requested". Setting
  * `AMI_DETACHED_PRESERVE_HOOKS=1` is that explicit request — the repo's
  * pre-commit guards (secret scanners, linters, policy hooks) and signing stay
  * active in detached mode too. Default/interactive behavior is unchanged.
@@ -160,7 +160,7 @@ export const ATTRIBUTION_NOTES_REF = 'ami-attribution';
 
 /**
  * Opt-in gate for the per-commit AI-contribution introspection surface. Parity
- * with Claude Code's per-commit attribution record (`calculateCommitAttribution`
+ * with the reference's per-commit attribution record (`calculateCommitAttribution`
  * → structured git-notes JSON), but OFF by default so a commit never silently
  * mutates a repo's notes refs: set `AMI_COMMIT_ATTRIBUTION_NOTES=1`/`true`/`yes`/
  * `on` to have `git_commit` record a structured attribution note for each commit
@@ -173,7 +173,7 @@ export function attributionNotesEnabled(env: NodeJS.ProcessEnv = process.env): b
 /**
  * Per-file agent character-contribution figure for a committed file, derived from
  * the session-scoped attribution store (populated by the edit/write tools).
- * Parity: Claude Code's AttributionSnapshot `fileStates` → per-file
+ * Parity: the reference's AttributionSnapshot `fileStates` → per-file
  * `claudeContribution` / claudePercent.
  */
 export interface CommitFileContribution {
@@ -187,7 +187,7 @@ export interface CommitFileContribution {
   ratio: number;
   /** Present and `true` only when this path is staged for DELETION — its content no
    *  longer exists on disk, so `totalChars`/`ratio` are naturally 0. Parity:
-   *  Claude Code's `isFileDeleted` gate ({@link isFileStagedForDeletion}). */
+   *  the reference's `isFileDeleted` gate ({@link isFileStagedForDeletion}). */
   deleted?: boolean;
 }
 
@@ -209,7 +209,7 @@ export interface CommitAttributionNote {
    *  from `git diff --cached --stat` via the chars-per-line heuristic
    *  ({@link getStagedDiffSize}) — a cheap, MEASURED "how much changed" proxy that
    *  also counts human/untracked-staged edits the per-file agent store misses.
-   *  Omitted when zero. Parity: Claude Code's `getGitDiffSize`. */
+   *  Omitted when zero. Parity: the reference's `getGitDiffSize`. */
   stagedChangeChars?: number;
   /** Per-file agent character contribution for committed files that the agent
    *  authored this session (omitted when none was tracked). */
@@ -217,22 +217,22 @@ export interface CommitAttributionNote {
   /** Overall integer percent (0..100) of the committed, agent-tracked files'
    *  CURRENT size that the agent authored this session — the honest, MEASURED
    *  aggregate of {@link fileContributions} (omitted when nothing was tracked).
-   *  Parity: Claude Code's `claudePercent`, but computed from real char counts. */
+   *  Parity: the reference's `claudePercent`, but computed from real char counts. */
   contributionPercent?: number;
   /** User prompts ("shots") recorded for the session when the commit was made —
-   *  the "N-shotted" figure. Parity: Claude Code's transcript prompt count. */
+   *  the "N-shotted" figure. Parity: the reference's transcript prompt count. */
   promptCount?: number;
   /** Distinct memory files the agent recalled (read) this session — the
-   *  "M memories recalled" figure. Parity: Claude Code's `memoryAccessCount`. */
+   *  "M memories recalled" figure. Parity: the reference's `memoryAccessCount`. */
   memoriesRecalled?: number;
   /** The rendered one-line contribution byline (e.g. "93% 3-shotted by opus-4-8,
    *  2 memories recalled"), or omitted when no signal was present (all-zero).
-   *  Parity: Claude Code's enhanced PR-attribution suffix ({@link formatContributionByline}). */
+   *  Parity: the reference's enhanced PR-attribution suffix ({@link formatContributionByline}). */
   byline?: string;
   /** Versioned, structured authorship payload (per-file agent/human chars,
    *  surface breakdown, excluded generated files) — the durable schema a
    *  downstream tool can re-parse. Omitted when nothing was tracked this session.
-   *  Parity: Claude Code's `AttributionData` git-notes JSON. */
+   *  Parity: the reference's `AttributionData` git-notes JSON. */
   attributionData?: AttributionData;
   /** ISO timestamp the attribution record was produced. */
   committedAt: string;
@@ -240,7 +240,7 @@ export interface CommitAttributionNote {
 
 /**
  * The three computed attribution signals that compose the contribution byline
- * (parity: Claude Code's `getEnhancedPRAttribution` inputs): the overall
+ * (parity: the reference's `getEnhancedPRAttribution` inputs): the overall
  * agent-authored percent, the user-prompt ("shot") count, and the
  * memories-recalled count, plus the normalized model name.
  */
@@ -288,7 +288,7 @@ export function aggregateAgentContributionPercent(
  * write accesses, not just reads. The journal persists REFERENCE tool names
  * (`Read`/`Grep`/…), so {@link toAmiToolName} maps them back to the internal
  * vocabulary the predicate speaks. Returns `0` when there is no session id, no
- * journal yet, or no memory file was touched. Parity: Claude Code's
+ * journal yet, or no memory file was touched. Parity: the reference's
  * `countMemoryFileAccessFromEntries` / `memoryAccessCount`.
  */
 export function countMemoriesRecalled(
@@ -318,7 +318,7 @@ export function countMemoriesRecalled(
 /**
  * Render the agent-contribution introspection byline from its three computed
  * signals, e.g. `93% 3-shotted by opus-4-8, 2 memories recalled`. Parity with
- * Claude Code's enhanced PR-attribution suffix (attribution.ts L369-374): the
+ * the reference's enhanced PR-attribution suffix (attribution.ts L369-374): the
  * `N-shotted` prompt count, the short model name, and a `M memories recalled`
  * clause with correct singular/plural handling (`1 memory recalled` vs
  * `2 memories recalled`, omitted at zero). When every signal is zero/absent (no
@@ -342,7 +342,7 @@ export function formatContributionByline(stats: ContributionStats): string {
 /**
  * Build the structured attribution introspection record for a commit. This is
  * the data AMI can compute truthfully at commit time (surface / model / authored
- * files / trailer). It deliberately does NOT fabricate Claude Code's
+ * files / trailer). It deliberately does NOT fabricate the reference's
  * character-level `claudePercent` — accurate per-character authorship needs a
  * cross-cutting Edit/Write char tracker and is a separate concern; a made-up
  * percentage would be worse than none. When the edit/write tools tracked
@@ -419,7 +419,7 @@ export function collectCommitFileContributions(
   for (const rel of stagedPaths) {
     const abs = path.resolve(cwd, rel);
     // Look up by the SAME realpath-normalized repo-relative key the edit/write
-    // tools store under (parity: Claude Code's normalizeFilePath diff-key matching).
+    // tools store under (parity: the reference's normalizeFilePath diff-key matching).
     const state = attribution[normalizeAttributionPath(abs, cwd)];
     if (!state) continue;
     let totalChars = 0;
@@ -441,7 +441,7 @@ export function collectCommitFileContributions(
 /**
  * Build the normalized one-line commit affordance from `git log --oneline -1`
  * output ("<shortsha> <subject>") → "Committed <shortsha>: <subject>", so a
- * frontend can render a clean commit line. Parity with Claude's structured
+ * frontend can render a clean commit line. Parity with the reference's structured
  * commit-result summary (sha + kind). Returns '' for empty input; a sha with no
  * subject yields "Committed <shortsha>".
  */
@@ -497,14 +497,14 @@ export function buildCommitEnv(): NodeJS.ProcessEnv {
 
 /**
  * Resolve the commit trailer to append for a repo at `cwd`, honoring (in order):
- *  1. The merged config's `attribution.commit` (parity: Claude Code's
+ *  1. The merged config's `attribution.commit` (parity: the reference's
  *     `attribution.commit` setting): a non-empty string REPLACES the default AMI
  *     trailer; the empty string `""` suppresses it (→ `null`). When explicitly set
  *     it takes PRECEDENCE over the master toggle and the deprecated binary env
- *     opt-out below — matching Claude Code, whose `attribution` setting overrides
+ *     opt-out below — matching the reference, whose `attribution` setting overrides
  *     the legacy `includeCoAuthoredBy` toggle.
  *  2. The merged config's `attribution.enabled === false` — the settings-driven
- *     MASTER disable toggle (parity: Claude Code's deprecated
+ *     MASTER disable toggle (parity: the reference's deprecated
  *     `includeCoAuthoredBy: false`): suppress the trailer (→ `null`) via
  *     settings.json alone, with no env var, unless a per-surface `commit` override
  *     (step 1) already decided it.
@@ -535,14 +535,14 @@ export function resolveCommitAttribution(cwd: string): string | null {
     const trimmed = custom.trim();
     return trimmed.length === 0 ? null : trimmed;
   }
-  // Settings-driven MASTER disable toggle (parity: Claude Code's deprecated
+  // Settings-driven MASTER disable toggle (parity: the reference's deprecated
   // includeCoAuthoredBy=false). Suppresses the trailer via settings.json alone,
   // no env var — but a per-surface `commit` override (above) still wins.
   if (attribution?.enabled === false) return null;
   // FUNCTIONAL CHANGE (additive): tolerant parse so `=true`/`yes`/`on` (not only
   // the strict `'1'`) suppress the co-author trailer, matching the shared convention.
   if (parseEnvBool(process.env.SUPERINFERENCE_DISABLE_CO_AUTHOR)) return null;
-  // Opt-in repo-class gate (parity: Claude Code's undercover auto-default). When
+  // Opt-in repo-class gate (parity: the reference's undercover auto-default). When
   // `attribution.auto` is enabled, keep the trailer ONLY when the origin remote
   // is positively classified as owned; external / unknown / no-remote all
   // suppress it (fail-safe-ON — the strict side wins unless ownership is
@@ -699,7 +699,7 @@ export const gitCommitTool: ToolDefinition = {
     // Secret-bearing CONTENT guard: scan the ADDED lines of the staged diff (the
     // surface where credentials actually leak — an API key / token / private key
     // pasted into a committed file, not into the subject line). Parity with
-    // Claude's "do not commit files that likely contain secrets" protocol, which
+    // the reference's "do not commit files that likely contain secrets" protocol, which
     // AMI previously enforced only over file NAMES and the message text. Only `+`
     // (added) lines are scanned so removing a secret is never flagged, reusing the
     // same shared scanForSecrets ruleset as the message scan.
@@ -738,7 +738,7 @@ export const gitCommitTool: ToolDefinition = {
       : [];
     // Capture the session's starting HEAD (idempotent — only the first commit of a
     // session sets it) so later tooling can detect commits made OUTSIDE this
-    // session by comparing against it (parity: Claude Code's startingHeadSha). Best
+    // session by comparing against it (parity: the reference's startingHeadSha). Best
     // effort and gated on the opt-in note so a plain commit pays no extra git call;
     // a repo with no commits yet yields an empty SHA and is a no-op.
     if (notesEnabled) {
@@ -768,7 +768,7 @@ export const gitCommitTool: ToolDefinition = {
       // In detached/unattended mode, bypass user hooks and GPG signing so a
       // pre-commit hook or a passphrase prompt can't hang the run. In the
       // interactive TUI we deliberately keep the user's hooks/signing active.
-      // Parity with Claude's "NEVER skip hooks unless explicitly requested": the
+      // Parity with the reference's "NEVER skip hooks unless explicitly requested": the
       // bypass can be opted OUT of (preserving the repo's own pre-commit guards /
       // GPG signing even in detached runs) via AMI_DETACHED_PRESERVE_HOOKS=1.
       const unattendedFlags = context.detachedMode && !shouldPreserveCommitHooks(env)
@@ -797,7 +797,7 @@ export const gitCommitTool: ToolDefinition = {
           const clientSurface = resolveClientSurface(env);
           // Versioned, structured authorship payload (per-file agent/human chars,
           // surface breakdown, excluded generated files) — attached only when
-          // something was tracked this session. Parity: Claude Code's AttributionData.
+          // something was tracked this session. Parity: the reference's AttributionData.
           // Uses the PRE-COMMIT fileContributions captured above (post-commit the
           // index matches HEAD, so staged-state signals would read empty).
           const attributionData =
@@ -823,7 +823,7 @@ export const gitCommitTool: ToolDefinition = {
             // a `byline` and omits any zero signal.
             contributionPercent: aggregateAgentContributionPercent(fileContributions),
             // PER-COMMIT steer count (prompts since the previous commit), not a
-            // cumulative session total — parity with Claude Code's per-commit
+            // cumulative session total — parity with the reference's per-commit
             // "N-shotted" via the promptCountAtLastCommit baseline.
             promptCount: computeCommitEffort(context.sessionId).steers,
             memoriesRecalled: countMemoriesRecalled(context.cwd, context.sessionId),
@@ -838,7 +838,7 @@ export const gitCommitTool: ToolDefinition = {
 
       // A commit landed: snapshot the running effort counters into their per-commit
       // baselines so the NEXT commit's steer/permission/escape figures measure only
-      // the effort AFTER this commit (parity: Claude Code advancing the effort
+      // the effort AFTER this commit (parity: the reference advancing the effort
       // baselines on commit). Done AFTER the note read above (which consumes the
       // current deltas) and unconditionally so the baselines stay correct even if
       // attribution notes are toggled between commits.
@@ -846,7 +846,7 @@ export const gitCommitTool: ToolDefinition = {
 
       const parts: string[] = [];
       // Normalized affordance line the frontend can render cleanly ("Committed
-      // <shortsha>: <subject>"), parity with Claude's structured commit summary.
+      // <shortsha>: <subject>"), parity with the reference's structured commit summary.
       const summary = formatCommitSummary(commitLine);
       if (summary) {
         parts.push(summary);

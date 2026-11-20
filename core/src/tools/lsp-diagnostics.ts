@@ -58,7 +58,7 @@ export const SEARCH_SYMBOL_CAP = 30;
  * PARITY (additive): default wall-clock budget for a single async diagnostics
  * fetch. A language server that is still indexing (or wedged) can leave
  * `getDiagnostics` / `getNewDiagnostics` pending indefinitely; without a bound
- * the `diagnostics` tool would hang the whole agent turn. Claude Code's LSP
+ * the `diagnostics` tool would hang the whole agent turn. the reference's LSP
  * surfacing settles diagnostics under a bounded wait, so we race every async
  * client call against this timeout and report a graceful "still indexing"
  * message instead of blocking. Stored on `_lspDiagHooks` (mutable) so tests can
@@ -94,7 +94,7 @@ function lspTimeoutMessage(filePath: string, ms: number): string {
 /**
  * PARITY (additive): accepted `severity` filter aliases → canonical severity.
  * Lets a caller scope the tool to a minimum severity (e.g. errors-only after a
- * refactor) the way Claude Code lets you filter the Problems surface. The filter
+ * refactor) the way the reference lets you filter the Problems surface. The filter
  * is a FLOOR: the requested level and everything MORE severe is kept.
  */
 export const LSP_SEVERITY_ALIASES: Readonly<Record<string, DiagnosticSeverityName>> = {
@@ -138,7 +138,7 @@ const SEVERITY_LABELS: Record<DiagnosticSeverityName, [string, string]> = {
 /**
  * PARITY (additive): per-severity breakdown string (e.g. "2 errors, 1 warning"),
  * in severity order, omitting zero counts. Empty string when there is nothing to
- * report. Mirrors Claude Code's Problems-panel count summary so the model sees
+ * report. Mirrors the reference's Problems-panel count summary so the model sees
  * the error/warning mix at a glance, not just a flat total.
  */
 export function summarizeDiagnosticSeverities(files: DiagnosticFile[]): string {
@@ -154,19 +154,19 @@ export function summarizeDiagnosticSeverities(files: DiagnosticFile[]): string {
 
 /**
  * PARITY (additive): health gate backing the LSP tools' `isEnabled`, mirroring
- * Claude Code's `isLspConnected()` → `LSPTool.isEnabled()` (manager.ts L96-110).
+ * the reference's `isLspConnected()` → `LSPTool.isEnabled()` (manager.ts L96-110).
  *
  * Resolution: the env subsystem toggle ({@link isLspEnabled}) is the floor. On
- * top of it we detect the one connectivity edge case Claude also guards — every
+ * top of it we detect the one connectivity edge case the reference also guards — every
  * language server that has been started is in the `'error'` state — and drop the
  * tools so the model is not advertised a capability that is wholly non-functional.
  *
  * Superset divergence (intentional, labelled): when NO server has been started
  * yet (`serverStates()` is undefined/empty) AMI keeps the tools advertised rather
- * than hiding them like Claude's zero-server case. AMI starts language servers
+ * than hiding them like the reference's zero-server case. AMI starts language servers
  * lazily on the first edit, so the tools must stay visible to bootstrap the
  * subsystem; hiding them pre-start would make LSP undiscoverable. We only gate on
- * the genuine all-servers-errored failure, which Claude says is "never detected"
+ * the genuine all-servers-errored failure, which the reference says is "never detected"
  * in AMI today.
  */
 export function lspDiagToolsEnabled(): boolean {
@@ -179,7 +179,7 @@ export function lspDiagToolsEnabled(): boolean {
 }
 
 /**
- * PARITY (additive): Claude Code's explicit volume-limit affordance
+ * PARITY (additive): the reference's explicit volume-limit affordance
  * (LSPDiagnosticRegistry L256-288). Returns the "Volume limiting removed N …"
  * notice when capping dropped diagnostics, else the empty string, so the model
  * knows its diagnostics view was truncated and why rather than silently losing
@@ -202,7 +202,7 @@ function totalDiagnostics(files: DiagnosticFile[]): number {
 }
 
 /**
- * PARITY (additive): structured result metadata mirroring Claude's LSPTool
+ * PARITY (additive): structured result metadata mirroring the reference's LSPTool
  * `outputSchema` (operation / resultCount / fileCount), carried on
  * {@link ToolResult.metadata} so a programmatic caller can read counts without
  * re-parsing the text output.
@@ -280,9 +280,9 @@ export const lspDiagnosticsTool: ToolDefinition = {
   // (dropped only when every started language server has errored).
   isEnabled: () => lspDiagToolsEnabled(),
   // PARITY (additive): synonyms for tool_search / introspection discovery of the
-  // code-intelligence surface (Claude's LSPTool searchHint).
+  // code-intelligence surface (the reference's LSPTool searchHint).
   searchHint: 'code intelligence errors warnings problems type-check lint',
-  // PARITY (additive): richer description with caveats (Claude's LSPTool prompt.ts).
+  // PARITY (additive): richer description with caveats (the reference's LSPTool prompt.ts).
   // Notes that diagnostics come from language servers started lazily on first edit,
   // so an empty result can mean "not yet indexed" rather than "clean", and that the
   // model should fall back to the project linter/compiler when none is available.
@@ -310,7 +310,7 @@ export const lspDiagnosticsTool: ToolDefinition = {
         description: 'Workspace scope only (no file_path). When true, return ONLY diagnostics not already surfaced this session (cross-turn deduplicated), so repeated calls do not re-report unchanged problems. Editing a file re-arms its diagnostics.',
       },
     },
-    // PARITY (additive): strict-object gating (Claude's LSP `z.strictObject`) —
+    // PARITY (additive): strict-object gating (the reference's LSP `z.strictObject`) —
     // a hallucinated/typo'd parameter (e.g. `path`, `file`, `severty`) is a hard
     // InputValidationError via the shared tool-input validator, not silently
     // dropped. Keeps the three LSP tools' input contracts strict and consistent.
@@ -328,14 +328,14 @@ export const lspDiagnosticsTool: ToolDefinition = {
     }
 
     // PARITY (additive): runtime input validation before any work, mirroring
-    // Claude's LSPTool.validateInput — reject a non-string file_path instead of
+    // the reference's LSPTool.validateInput — reject a non-string file_path instead of
     // coercing garbage into a bogus URI.
     if (input.file_path !== undefined && typeof input.file_path !== 'string') {
       return { output: 'Invalid file_path: expected a string path.', isError: true };
     }
     const filePath = input.file_path as string | undefined;
     // PARITY (additive): `only_new` cross-turn-dedup drain is a WORKSPACE scope
-    // concept (it mirrors Claude's registry, which delivers un-shown diagnostics
+    // concept (it mirrors the reference's registry, which delivers un-shown diagnostics
     // across the whole session). It is meaningless combined with a single
     // `file_path` (that path already has its own pre-edit baseline delta), so reject
     // the combination loudly instead of silently ignoring the flag.
@@ -347,7 +347,7 @@ export const lspDiagnosticsTool: ToolDefinition = {
       return { output: 'only_new applies to workspace scope; do not combine it with file_path.', isError: true };
     }
     // PARITY (additive): `verbose` toggle — full per-diagnostic listing (default)
-    // vs a one-line count summary. Mirrors Claude's DiagnosticsDisplay verbose prop.
+    // vs a one-line count summary. Mirrors the reference's DiagnosticsDisplay verbose prop.
     const verbose = input.verbose !== false;
     // PARITY (additive): optional severity floor. Validate up front and, on an
     // unrecognized value, echo the valid set so the caller can self-correct.
@@ -364,7 +364,7 @@ export const lspDiagnosticsTool: ToolDefinition = {
       return { output: `Skipping diagnostics for UNC path "${filePath}" (security: avoids NTLM credential leaks).` };
     }
     // PARITY (additive): pre-flight existence / regular-file validation with
-    // distinct error codes (Claude's LSPTool.validateInput). A single stat()
+    // distinct error codes (the reference's LSPTool.validateInput). A single stat()
     // classifies the failure (missing / not-a-file / unreadable) AND yields the
     // size for the MAX_LSP_FILE_SIZE_BYTES boundary below.
     if (filePath) {
@@ -412,7 +412,7 @@ export const lspDiagnosticsTool: ToolDefinition = {
         }
         if (!current) {
           // PARITY (additive): name the exact file type so the caller knows which
-          // language has no server (Claude's "No LSP server available for file
+          // language has no server (the reference's "No LSP server available for file
           // type: .rb"), while keeping the "No LSP server available" affordance.
           const ext = path.extname(filePath);
           const forType = ext ? ` for file type: ${ext}` : '';
@@ -470,7 +470,7 @@ export const lspDiagnosticsTool: ToolDefinition = {
         }
         // PARITY (additive): a connected server may still be indexing — surface how
         // many files are awaiting a publishDiagnostics so "no diagnostics" is not
-        // mistaken for "clean" when results are merely not-yet-arrived (Claude's
+        // mistaken for "clean" when results are merely not-yet-arrived (the reference's
         // getPendingLSPDiagnosticCount monitoring signal).
         const pending = client.getPendingDiagnosticCount?.() ?? 0;
         const pendingNote = pending > 0
@@ -493,7 +493,7 @@ export const lspDiagnosticsTool: ToolDefinition = {
         : withNote(`${header} (set verbose: true for the full per-diagnostic listing)`, volumeLimitNote(removed));
       return { output: body, metadata: diagMetadata('diagnostics', all) };
     } catch (e) {
-      // PARITY (additive): error observability (Claude's LSPTool catch(e) → logError).
+      // PARITY (additive): error observability (the reference's LSPTool catch(e) → logError).
       // A failure DURING LSP work (a wedged client, a throwing getDiagnostics) is a
       // real fault, not the benign "no client" case — route it to the debug/error
       // logger (bounded, no untrusted diagnostic text) so it is distinguishable from
@@ -512,7 +512,7 @@ export const lspReferencesTool: ToolDefinition = {
   // PARITY (additive): code-intelligence synonyms for tool_search discovery.
   searchHint: 'code intelligence symbol usages callers definitions navigate',
   // PARITY (additive): richer description with the workspace-indexer caveat
-  // (Claude's LSPTool prompt.ts) — results rely on the background indexer and may
+  // (the reference's LSPTool prompt.ts) — results rely on the background indexer and may
   // be empty until it has scanned the relevant files; grep is the fallback.
   description:
     'Find all references to a symbol in the codebase using the workspace indexer. '
@@ -527,7 +527,7 @@ export const lspReferencesTool: ToolDefinition = {
       file_path: { type: 'string', description: 'Optional file path to narrow the search.' },
     },
     required: ['symbol'],
-    // PARITY (additive): strict-object gating (Claude's LSP `z.strictObject`) —
+    // PARITY (additive): strict-object gating (the reference's LSP `z.strictObject`) —
     // reject unknown keys (e.g. `line`, `character`, `symbolName`) so a caller
     // that meant the position-based `lsp` tool is told loudly instead of having
     // the stray argument silently ignored by the text-indexed search.
@@ -539,7 +539,7 @@ export const lspReferencesTool: ToolDefinition = {
   async execute(input: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
     // PARITY (additive): runtime input validation before touching the indexer —
     // reject a missing / non-string / empty-after-trim symbol instead of
-    // searching with garbage (Claude's LSPTool.validateInput contract).
+    // searching with garbage (the reference's LSPTool.validateInput contract).
     if (typeof input.symbol !== 'string' || input.symbol.trim() === '') {
       return { output: 'Invalid symbol: expected a non-empty string.', isError: true };
     }
@@ -547,7 +547,7 @@ export const lspReferencesTool: ToolDefinition = {
       return { output: 'Invalid file_path: expected a string path.', isError: true };
     }
     const symbol = input.symbol.trim();
-    // PARITY (additive): abort boundary (Claude's LSPTool honors context's abort
+    // PARITY (additive): abort boundary (the reference's LSPTool honors context's abort
     // signal before the lookup). A caller that already cancelled the turn must not
     // pay for a full workspace-index scan; short-circuit to the grep fallback.
     if (context.abortSignal?.aborted) {
@@ -561,7 +561,7 @@ export const lspReferencesTool: ToolDefinition = {
           metadata: { operation: 'find_references', resultCount: 0, fileCount: 0 },
         };
       }
-      // Group by file (cwd-relative, shortened display path — Claude's formatUri
+      // Group by file (cwd-relative, shortened display path — the reference's formatUri
       // contract) with a count/file summary header, so a result spanning many
       // files is scannable and the model sees its magnitude.
       const byFile = new Map<string, typeof results>();
@@ -583,7 +583,7 @@ export const lspReferencesTool: ToolDefinition = {
       if (results.length >= SEARCH_SYMBOL_CAP) {
         lines.push(`\n(showing first ${SEARCH_SYMBOL_CAP} matches — refine your query to narrow)`);
       }
-      // PARITY (additive): output-size boundary (Claude caps rendered references).
+      // PARITY (additive): output-size boundary (the reference caps rendered references).
       // The row cap bounds entry COUNT, but very long symbol/type/path strings can
       // still overflow the context budget, so cap total chars with the same shared
       // truncation marker used for the diagnostics block.
@@ -595,7 +595,7 @@ export const lspReferencesTool: ToolDefinition = {
     } catch (e) {
       // PARITY (additive): error observability — a real indexer failure is logged
       // (bounded message, no untrusted content) so it is distinguishable from the
-      // benign empty-result case, matching Claude's LSPTool catch(e) → logError.
+      // benign empty-result case, matching the reference's LSPTool catch(e) → logError.
       logError('find_references', toLoggableError(e));
       return { output: `Error searching for "${symbol}". Use grep as fallback.`, isError: true };
     }

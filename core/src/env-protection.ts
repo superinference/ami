@@ -26,7 +26,7 @@ export const POLICY_VARIABLES = new Set([
 
 // Code-loading variables — can inject arbitrary code into child processes.
 // Besides the explicit members, the whole LD_*/DYLD_* families are caught by
-// CODE_LOADING_PREFIXES below (matching Claude's BINARY_HIJACK_VARS
+// CODE_LOADING_PREFIXES below (matching the reference's BINARY_HIJACK_VARS
 // /^(LD_|DYLD_|PATH$)/), so a novel loader var (e.g. LD_AUDIT variants,
 // DYLD_VERSIONED_LIBRARY_PATH) can't slip through by not being enumerated.
 export const CODE_LOADING_VARIABLES = new Set([
@@ -82,7 +82,7 @@ export type PinCategory = (typeof PIN_CATEGORIES)[number];
  * internal category slug — the rationales already exist as code comments above
  * (policy/code-loading/telemetry) but were previously discarded in the message.
  *
- * Parity: Claude's ManagedSettingsSecurityDialog / managedEnvConstants.ts, which
+ * Parity: the reference's ManagedSettingsSecurityDialog / managedEnvConstants.ts, which
  * explain the concrete threat ("can inject arbitrary code into child processes",
  * "could allow … interception of your prompts and responses") instead of an
  * opaque "cannot be modified".
@@ -119,7 +119,7 @@ export function isPinnedVariable(name: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Settings-sourced env-var trust (parity: Claude's managedEnvConstants.ts /
+// Settings-sourced env-var trust (parity: the reference's managedEnvConstants.ts /
 // managedEnv.ts). A settings file can carry an `env` block. Applying it blindly
 // lets a committed, project-local file redirect inference traffic
 // (ANTHROPIC_BASE_URL), disable TLS verification (NODE_TLS_REJECT_UNAUTHORIZED)
@@ -184,7 +184,7 @@ export function isSafeEnvVar(name: string): boolean {
  * inverse of {@link isSafeEnvVar}. Every settings-danger site (the
  * managed-settings review gate in settings-guard.ts, project-tier `.env`
  * filtering) composes it rather than re-deriving `!SAFE_ENV_VARS.has(upper)`
- * inline, so the allowlist stays the single source of truth. Parity: Claude's
+ * inline, so the allowlist stays the single source of truth. Parity: the reference's
  * ManagedSettingsSecurityDialog/utils.ts, which flags any env var not in
  * SAFE_ENV_VARS as dangerous.
  */
@@ -228,7 +228,7 @@ const PROVIDER_MANAGED_ENV_SUFFIXES = ['_API_KEY', '_AUTH_TOKEN', '_BASE_URL'];
  * family is prefix-matched rather than enumerated — a new model's region knob
  * can't slip past the host-routing guard by not being listed.
  *
- * Parity: Claude's managedEnvConstants.ts PROVIDER_MANAGED_ENV_PREFIXES
+ * Parity: the reference's managedEnvConstants.ts PROVIDER_MANAGED_ENV_PREFIXES
  * (`['VERTEX_REGION_CLAUDE_']`).
  */
 export const PROVIDER_MANAGED_ENV_PREFIXES = ['VERTEX_REGION_CLAUDE_'] as const;

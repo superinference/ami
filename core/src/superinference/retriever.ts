@@ -78,7 +78,7 @@ export class Retriever {
     try {
       const memories = memory.loadMemories();
       // Cross-turn dedup: drop memories already surfaced in a prior preview so
-      // the top-K budget is spent on fresh candidates (mirrors Claude's
+      // the top-K budget is spent on fresh candidates (mirrors the reference's
       // alreadySurfaced filter in findRelevantMemories).
       const candidates = surfaced
         ? memories.filter(m => !surfaced.has(m.content))

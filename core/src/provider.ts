@@ -83,11 +83,11 @@ interface OpenAIToolFunction {
     description: string;
     parameters: ToolInputSchema;
     /** Structured-result schema, emitted only for tools whose outputSchema has an
-     *  object root (parity: Claude's MCP tool outputSchema exposure guard). */
+     *  object root (parity: the reference's MCP tool outputSchema exposure guard). */
     outputSchema?: ToolInputSchema;
     /** API-enforced structured outputs: when true the provider constrains generated
      *  arguments to exactly match `parameters`. Emitted only for a tool that opts in
-     *  (`ToolDefinition.strict`) on a model that supports it. Parity: Claude's
+     *  (`ToolDefinition.strict`) on a model that supports it. Parity: the reference's
      *  per-tool `strict` field (utils/api.ts). */
     strict?: boolean;
   };
@@ -96,12 +96,12 @@ interface OpenAIToolFunction {
 /**
  * Convert AMI tool definitions to the OpenAI function-tool wire shape, applying
  * the per-tool structured-output `strict` flag and the experimental-betas kill
- * switch exactly as Claude Code does at its tool-schema choke point (utils/api.ts).
+ * switch exactly as the reference does at its tool-schema choke point (utils/api.ts).
  *
  * - `strict: true` is emitted ONLY when the tool opts in (`ToolDefinition.strict`),
  *   a `model` is supplied, AND {@link modelSupportsStructuredOutputs} accepts it —
  *   no model, or an unsupported model, means strict is dropped (a wrong `strict`
- *   makes the API reject the request). Mirrors Claude's three-part gate.
+ *   makes the API reject the request). Mirrors the reference's three-part gate.
  * - When {@link experimentalBetasDisabled} is set, every field not in the base
  *   allowlist (`name`/`description`/`parameters`/`outputSchema`) is stripped at this
  *   single choke point, so a proxy/gateway that 400s on experimental tool-schema
@@ -113,7 +113,7 @@ export function toolDefinitionsToOpenAI(tools: ToolDefinition[], model?: string)
   // Deterministic partition-sort for prompt-cache stability: built-ins form a
   // contiguous alphabetically-sorted prefix, MCP tools follow in a stable order,
   // so the advertised tool-schema cache prefix does not shift between turns as
-  // MCP servers connect on demand (parity: Claude Code's mergeAndFilterTools).
+  // MCP servers connect on demand (parity: the reference's mergeAndFilterTools).
   return partitionAndSortTools(tools).map((tool) => {
     const fn: OpenAIToolFunction['function'] = {
       name: tool.name,
@@ -122,7 +122,7 @@ export function toolDefinitionsToOpenAI(tools: ToolDefinition[], model?: string)
     };
     // Object-root-only guard: only advertise outputSchema when its root type is
     // exactly `object`. A non-object root is dropped (not exposed) rather than
-    // emitted as an invalid structured-output declaration. Parity: Claude Code's
+    // emitted as an invalid structured-output declaration. Parity: the reference's
     // mcp.ts, which exposes outputSchema only for object-rooted schemas.
     if (tool.outputSchema && tool.outputSchema.type === 'object') {
       fn.outputSchema = tool.outputSchema;
@@ -142,7 +142,7 @@ export function toolDefinitionsToOpenAI(tools: ToolDefinition[], model?: string)
  * unrecognized value so the caller falls back to the model default. Accepts the
  * string modes `'auto' | 'required' | 'none'` and the pinned-tool object
  * `{ type: 'tool', toolName: <string> }` (with the OpenAI-wire `function.name`
- * form also normalized). Parity: Claude Code's `tool_choice` request parameter.
+ * form also normalized). Parity: the reference's `tool_choice` request parameter.
  */
 export function normalizeToolChoice(value: unknown): ProviderConfig['toolChoice'] | undefined {
   if (value === 'auto' || value === 'required' || value === 'none') return value;
@@ -212,7 +212,7 @@ const MODEL_PREFERENCE: Record<string, string[]> = {
   'amazon-bedrock': ['anthropic.claude-sonnet-4-6-20250514', 'anthropic.claude-haiku-4-5-20251001'],
   // Azure AI Foundry serves Claude models over an OpenAI-compatible endpoint
   // (`https://<resource>.services.ai.azure.com/models`). The ids are Foundry's
-  // own Claude wire strings (Claude Code's per-ModelConfig `foundry` field).
+  // own the reference wire strings (the reference's per-ModelConfig `foundry` field).
   'azure-foundry': ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
   // Fast + cheap first: a tool-capable default that stays affordable per request
   // (claude-sonnet-4.6 kept only as a last-resort quality fallback).
@@ -486,7 +486,7 @@ export function describeProviders(): ProviderDescriptor[] {
 }
 
 // ---------------------------------------------------------------------------
-// Interactive cloud-auth lifecycle status (parity: Claude Code's AwsAuthStatus /
+// Interactive cloud-auth lifecycle status (parity: the reference's AwsAuthStatus /
 // AwsAuthStatusManager — components/AwsAuthStatusBox.tsx L4-L36,
 // utils/awsAuthStatusManager.ts). AMI already surfaces the ACTIONABLE half of that
 // manager (the "here is how to re-auth" affordance, common/event-processor.ts
@@ -502,7 +502,7 @@ export function describeProviders(): ProviderDescriptor[] {
 
 /**
  * A snapshot of an in-flight (or just-completed) interactive provider
- * authentication. Mirrors Claude Code's `AwsAuthStatus` three-field shape, but kept
+ * authentication. Mirrors the reference's `AwsAuthStatus` three-field shape, but kept
  * provider-agnostic so any provider's login flow can report through it.
  */
 export interface InteractiveAuthStatus {
@@ -524,7 +524,7 @@ export { resolveAvailableModel, MODEL_PREFERENCE, PROVIDER_BASE_URLS, NATIVE_SDK
 // ---------------------------------------------------------------------------
 // Cross-provider canonical model-ID equivalence / translation table.
 //
-// Claude Code's configs.ts binds ONE logical model to its provider-specific id
+// the reference's configs.ts binds ONE logical model to its provider-specific id
 // across every provider (firstParty / bedrock / vertex / foundry), with a
 // `satisfies ModelConfig` compile-time guarantee that EVERY model resolves under
 // EVERY provider, plus a CANONICAL_ID_TO_KEY reverse map. AMI's per-provider
@@ -538,7 +538,7 @@ export { resolveAvailableModel, MODEL_PREFERENCE, PROVIDER_BASE_URLS, NATIVE_SDK
 /**
  * The providers a canonical Claude model is addressable under. Every field is
  * REQUIRED (the comprehensiveness invariant — see the `provider-u020-w87` test),
- * mirroring Claude Code's `satisfies ModelConfig`.
+ * mirroring the reference's `satisfies ModelConfig`.
  */
 export interface CanonicalModelConfig {
   anthropic: string;
@@ -572,7 +572,7 @@ export const CANONICAL_MODEL_EQUIVALENTS: Record<string, CanonicalModelConfig> =
 /**
  * Reverse index: any provider-specific model id → its canonical logical key. Built
  * once from {@link CANONICAL_MODEL_EQUIVALENTS} so a configured/overridden id (in
- * ANY provider's naming) resolves back to the logical model. Mirrors Claude Code's
+ * ANY provider's naming) resolves back to the logical model. Mirrors the reference's
  * `CANONICAL_ID_TO_KEY`.
  */
 export const CANONICAL_ID_TO_KEY: Record<string, string> = (() => {
@@ -588,7 +588,7 @@ export const CANONICAL_ID_TO_KEY: Record<string, string> = (() => {
  * Translate `modelId` (expressed in ANY provider's naming) to the wire string the
  * ACTIVE `provider` requires. Returns `modelId` unchanged when it is not a known
  * canonical id, when `provider` is undefined, or when the provider has no mapping
- * in {@link CanonicalModelConfig} (e.g. a non-Claude provider) — so non-Claude and
+ * in {@link CanonicalModelConfig} (e.g. a non-the reference provider) — so non-the reference and
  * unknown models always pass through untouched. Idempotent: a model already in the
  * target provider's naming maps to itself.
  */
@@ -633,7 +633,7 @@ const loadModelRecordsCached = memoizeWithTTLAsync(
  * tests, which falsely matched lookalikes like `api.anthropic.com.evil.example`,
  * `not-anthropic.com`, and `https://evil.example/?x=anthropic.com` — so AMI would
  * attach official credentials/headers (x-api-key, anthropic-version) and route to
- * the first-party SDK path for an attacker-controlled host. Mirrors Claude Code's
+ * the first-party SDK path for an attacker-controlled host. Mirrors the reference's
  * `isFirstPartyAnthropicBaseUrl()` (utils/model/providers.ts) parse-then-exact-host
  * pattern, generalized over an allowlist and permitting genuine subdomains (AMI's
  * established convention — see ProviderCoordinator).
@@ -817,7 +817,7 @@ export { AWS_BEARER_TOKEN_BEDROCK_ENV };
 
 /**
  * AWS region-resolution waterfall: `AWS_REGION` → `AWS_DEFAULT_REGION` →
- * `'us-east-1'`. Mirrors Claude Code's `getAWSRegion()` (utils/envUtils.ts) and
+ * `'us-east-1'`. Mirrors the reference's `getAWSRegion()` (utils/envUtils.ts) and
  * the Anthropic Bedrock SDK's region behavior, so a Bedrock user relying on the
  * standard `AWS_DEFAULT_REGION` env (and the `us-east-1` default) resolves to the
  * right region instead of getting no region at all.
@@ -841,7 +841,7 @@ export function getAWSRegion(env: NodeJS.ProcessEnv = process.env): string {
  *     explicit/env `apiKey` is present, fall back to the access key id from the
  *     AWS shared-credentials file ({@link readAwsIniCredentials}), so an ini-only
  *     setup authenticates and a mid-session credential rotation is picked up once
- *     the cache is invalidated ({@link clearAwsIniCache}). Mirrors Claude Code's
+ *     the cache is invalidated ({@link clearAwsIniCache}). Mirrors the reference's
  *     `fromIni` credential source.
  *
  * An explicit `config.baseUrl` (trailing slashes trimmed) always wins over the
@@ -908,7 +908,7 @@ export const requestIdHooks: { generate: () => string } = { generate: randomUUID
 
 /**
  * Managed cloud gateways that log NO client request-id and whose strict proxies
- * risk 4xx-rejecting an unknown header (inc-4029 class). Mirrors Claude Code's
+ * risk 4xx-rejecting an unknown header (inc-4029 class). Mirrors the reference's
  * `getAPIProvider() === 'firstParty'` gate in buildFetch (client.ts:L364-367),
  * which injects the correlation header ONLY on the first-party Anthropic path and
  * never on Bedrock/Vertex/Foundry.
@@ -975,7 +975,7 @@ export function resolveClientRequestId(
  * can hand it to their provider/gateway and find the exact failed call in server
  * logs. The id is the ONLY correlation handle on a timeout/connection failure (the
  * server returned no response id). Idempotent (never appends twice) and a no-op
- * when there is no id. Mirrors Claude Code's `API error x-client-request-id=…` log.
+ * when there is no id. Mirrors the reference's `API error x-client-request-id=…` log.
  */
 export function appendRequestIdToError(errorText: string | undefined, requestId: string | undefined): string {
   const base = errorText ?? '';
@@ -992,7 +992,7 @@ export function appendRequestIdToError(errorText: string | undefined, requestId:
  * the latter is in the list so a gateway that echoes it back is still matched.
  * Single source for every caller that needs the generation request-id (title /
  * branch-name aux queries, the cache-preserving prompt-suggestion fork): parity
- * with Claude Code recording `response.message.id` / the first assistant message's
+ * with the reference recording `response.message.id` / the first assistant message's
  * `requestId` for RL-dataset joins. Lower-cased lookup.
  */
 export const PROVIDER_RESPONSE_REQUEST_ID_HEADERS = [
@@ -1008,7 +1008,7 @@ export const PROVIDER_RESPONSE_REQUEST_ID_HEADERS = [
  * (case-insensitive, first {@link PROVIDER_RESPONSE_REQUEST_ID_HEADERS} match).
  * Returns `undefined` when no header is present or `headers` is omitted. Used to
  * capture the generation request-id of a forked/background LLM run so it can be
- * joined back to telemetry / RL datasets (parity: Claude's `generationRequestId`).
+ * joined back to telemetry / RL datasets (parity: the reference's `generationRequestId`).
  */
 export function extractProviderRequestId(headers?: Record<string, string>): string | undefined {
   if (!headers) return undefined;
@@ -1026,7 +1026,7 @@ export function extractProviderRequestId(headers?: Record<string, string>): stri
  * and client request-id to the shared logger (gated by `AMI_DEBUG_LOG_LEVEL` /
  * component filter, like every other `log()` call — no new env knob). The id is
  * generated specifically so TIMEOUTS, which return no server request-id, can
- * still be correlated with server logs. Mirrors Claude Code's `[API REQUEST]`
+ * still be correlated with server logs. Mirrors the reference's `[API REQUEST]`
  * buildFetch trace (client.ts:L380-383). Never throws — tracing can't perturb the
  * live request. No-op passthrough when `baseFetch` is undefined and no wrapper is
  * otherwise needed is handled by the caller.
@@ -1049,7 +1049,7 @@ export function withRequestIdDebugTrace(
     }
     // Complete the request→response→error trace triad: forward the provider-SDK
     // transport RESPONSE status and any transport ERROR to the same debug sink the
-    // request line uses (routed to stderr when isDebugToStderr()). Mirrors Claude
+    // request line uses (routed to stderr when isDebugToStderr()). Mirrors the reference
     // Code's createStderrLogger INFO/ERROR legs (services/api/client.ts:L73-86),
     // adapted to AMI's fetch-wrapper layer so a timeout/5xx/dropped connection is
     // visible in the same trace as its request. A non-ok status is logged at WARN
@@ -1077,7 +1077,7 @@ export function withRequestIdDebugTrace(
 // ---------------------------------------------------------------------------
 // Transport-boundary prompt/response debug capture (AMI_DUMP_PROMPTS).
 //
-// Parity with Claude Code's `createDumpPromptsFetch` (services/api/dumpPrompts.ts):
+// Parity with the reference's `createDumpPromptsFetch` (services/api/dumpPrompts.ts):
 // a fetch wrapper that records the EXACT outgoing request (system prompt + full
 // tool schemas + model params — everything in the JSON body) and the raw/streaming
 // response to a JSONL file, for `/issue`-style debugging. Two invariants make it
@@ -1310,7 +1310,7 @@ export function withGzipCompression(
  *
  * Gated (by the caller) to the first-party `api.anthropic.com` path only: proxies
  * (LiteLLM etc.) and Bedrock/Vertex reject this field with a 400, exactly as
- * documented in Claude Code's `buildToolSchema` (utils/api.ts) — which is why the
+ * documented in the reference's `buildToolSchema` (utils/api.ts) — which is why the
  * field is applied here, after provider routing has confirmed the native path.
  */
 export function withEagerToolStreaming(
@@ -1364,8 +1364,8 @@ export function openAIPromptCacheBody(
 
 /**
  * Env vars carrying a JSON object that is deep-merged into every OpenAI-compatible
- * request body (parity: Claude Code's `CLAUDE_CODE_EXTRA_BODY` / `getExtraBodyParams`).
- * `AMI_EXTRA_BODY` is AMI's native spelling; the Claude name is honored for drop-in
+ * request body (parity: the reference's `CLAUDE_CODE_EXTRA_BODY` / `getExtraBodyParams`).
+ * `AMI_EXTRA_BODY` is AMI's native spelling; the reference name is honored for drop-in
  * compatibility. A zero-code, deploy-time override for gateways/proxies that must
  * inject an extra body field fleet-wide without a CLI flag or config file.
  */
@@ -1374,7 +1374,7 @@ export const EXTRA_BODY_ENV_VARS = ['AMI_EXTRA_BODY', 'CLAUDE_CODE_EXTRA_BODY'] 
 /**
  * Parse the extra-body env var into a plain object, or `undefined` when unset,
  * malformed, or not a JSON object. The first env var that parses to an object wins;
- * malformed / non-object values are logged (mirroring Claude's `getExtraBodyParams`
+ * malformed / non-object values are logged (mirroring the reference's `getExtraBodyParams`
  * error log) and skipped rather than thrown, so a bad env never aborts a request.
  */
 export function resolveExtraBodyFromEnv(
@@ -1397,8 +1397,8 @@ export function resolveExtraBodyFromEnv(
 /**
  * Env vars carrying a stable user/session identifier forwarded to the provider as
  * the request metadata user id (Anthropic `metadata.user_id` / OpenAI `user`).
- * Parity: Claude Code's `getAPIMetadata().user_id` (services/api/claude.ts). The
- * AMI-native spelling takes precedence; the Claude name is accepted for parity.
+ * Parity: the reference's `getAPIMetadata().user_id` (services/api/claude.ts). The
+ * AMI-native spelling takes precedence; the reference name is accepted for parity.
  */
 export const METADATA_USER_ID_ENV_VARS = ['AMI_METADATA_USER_ID', 'CLAUDE_CODE_METADATA_USER_ID'] as const;
 
@@ -1422,8 +1422,8 @@ export function resolveMetadataUserId(
 /**
  * Env vars carrying arbitrary extra request metadata as a JSON object, merged into
  * the forwarded metadata value for provider/gateway-side correlation. Parity:
- * Claude Code's `CLAUDE_CODE_EXTRA_METADATA` (getAPIMetadata, services/api/claude.ts).
- * AMI-native spelling first, the Claude name accepted as a drop-in alias.
+ * the reference's `CLAUDE_CODE_EXTRA_METADATA` (getAPIMetadata, services/api/claude.ts).
+ * AMI-native spelling first, the reference name accepted as a drop-in alias.
  */
 export const EXTRA_METADATA_ENV_VARS = ['AMI_EXTRA_METADATA', 'CLAUDE_CODE_EXTRA_METADATA'] as const;
 
@@ -1457,7 +1457,7 @@ export function resolveExtraMetadata(
 /**
  * Compute the final request-metadata user-id VALUE forwarded to the provider. When
  * extra metadata is present the value becomes a JSON object string
- * `{ ...extra, user_id? }` (parity: Claude Code folds extra fields + the id into one
+ * `{ ...extra, user_id? }` (parity: the reference folds extra fields + the id into one
  * JSON `user_id` blob); with no extra metadata it is the plain user id (unchanged
  * behavior). `undefined` ⇒ nothing is attached.
  */
@@ -1638,7 +1638,7 @@ const SAFE_BETA_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 /**
  * True when `token` is a structurally valid, header-injection-safe
- * `anthropic-beta` value. Mirrors the defensive input-validation Claude Code
+ * `anthropic-beta` value. Mirrors the defensive input-validation the reference
  * applies to externally-supplied betas (utils/betas.ts `filterAllowedSdkBetas`),
  * adapted to AMI's model: AMI treats `ANTHROPIC_BETAS` as a trusted *operator*
  * escape hatch (not a semi-trusted SDK-consumer boundary), so instead of a hard
@@ -1655,7 +1655,7 @@ export function isSafeBetaToken(token: string): boolean {
  * User escape-hatch beta tokens from the `ANTHROPIC_BETAS` env var: a
  * comma-separated list appended to the `anthropic-beta` header regardless of
  * model, so a user can opt into any API beta without a code change. Mirrors
- * Claude Code's provider-neutral ANTHROPIC_BETAS knob (comma-split, trimmed,
+ * the reference's provider-neutral ANTHROPIC_BETAS knob (comma-split, trimmed,
  * empties dropped).
  *
  * Each token is additionally validated for header-safety via
@@ -1678,7 +1678,7 @@ export const EXTENDED_CACHE_TTL_BETA = 'extended-cache-ttl-2025-04-11';
 
 /**
  * Anthropic beta token that unlocks a cross-session prompt-cache `scope`
- * (`global` / `org`) on `cache_control`. Mirrors Claude Code's
+ * (`global` / `org`) on `cache_control`. Mirrors the reference's
  * `PROMPT_CACHING_SCOPE_BETA_HEADER` (constants/betas.ts). The scope widens cache
  * reuse beyond the single API key: an `org`-scoped block can be served from a
  * cache written by another key in the same organization, and `global` is broader
@@ -1689,22 +1689,22 @@ export const PROMPT_CACHING_SCOPE_BETA = 'prompt-caching-scope-2026-01-05';
 
 /**
  * Anthropic beta token that lets the model interleave `thinking` blocks between
- * tool calls within a single turn (Claude 4+ families). Mirrors Claude Code's
+ * tool calls within a single turn (Claude 4+ families). Mirrors the reference's
  * `INTERLEAVED_THINKING_BETA_HEADER`.
  */
 export const INTERLEAVED_THINKING_BETA = 'interleaved-thinking-2025-05-14';
 
 /**
- * Anthropic beta token identifying the Claude Code client surface
- * (Claude Code's `CLAUDE_CODE_20250219_BETA_HEADER`). Retained as a named
+ * Anthropic beta token identifying the reference client surface
+ * (the reference's `CLAUDE_CODE_20250219_BETA_HEADER`). Retained as a named
  * constant so the Vertex countTokens allowlist can reference the exact token
- * Claude's own allowlist permits.
+ * the reference's own allowlist permits.
  */
 export const CLAUDE_CODE_BETA = 'claude-code-20250219';
 
 /**
  * Anthropic beta token enabling provider-native (server-side) context editing
- * (`context_management.edits`). Mirrors Claude Code's
+ * (`context_management.edits`). Mirrors the reference's
  * `CONTEXT_MANAGEMENT_BETA_HEADER` and must accompany a request that carries a
  * `context_management` body (see {@link buildAnthropicContextManagement}).
  */
@@ -1712,7 +1712,7 @@ export const CONTEXT_MANAGEMENT_BETA = 'context-management-2025-06-27';
 
 /**
  * The ONLY `anthropic-beta` tokens the Vertex `countTokens` endpoint accepts —
- * any other beta 400s there. Faithful port of Claude Code's
+ * any other beta 400s there. Faithful port of the reference's
  * `VERTEX_COUNT_TOKENS_ALLOWED_BETAS` (constants/betas.ts). Used by
  * {@link filterCountTokensBetas} to PROACTIVELY strip incompatible betas before a
  * Vertex count request, rather than relying on a reactive 400-and-retry.
@@ -1728,7 +1728,7 @@ export const VERTEX_COUNT_TOKENS_ALLOWED_BETAS: ReadonlySet<string> = new Set([
  * On a Vertex path (`anthropic-vertex` / `google-vertex`) only
  * {@link VERTEX_COUNT_TOKENS_ALLOWED_BETAS} survive (every other beta 400s on
  * Vertex `countTokens`); every other provider passes the full set through. This is
- * the proactive endpoint-scoped allowlist Claude Code applies before dispatch.
+ * the proactive endpoint-scoped allowlist the reference applies before dispatch.
  */
 export function filterCountTokensBetas(
   betas: string[],
@@ -1742,7 +1742,7 @@ export function filterCountTokensBetas(
 
 /**
  * Anthropic beta token for token-efficient tool-call encoding — a cost knob that
- * reduces input/output tokens spent on tool calls. Mirrors Claude Code's
+ * reduces input/output tokens spent on tool calls. Mirrors the reference's
  * `TOKEN_EFFICIENT_TOOLS_BETA_HEADER`. Opt-in (experimental).
  */
 export const TOKEN_EFFICIENT_TOOLS_BETA = 'token-efficient-tools-2026-03-28';
@@ -1750,15 +1750,15 @@ export const TOKEN_EFFICIENT_TOOLS_BETA = 'token-efficient-tools-2026-03-28';
 /**
  * Anthropic beta token that turns on API-enforced structured outputs — the model
  * is constrained to produce arguments that exactly match a tool's `strict` JSON
- * schema (and enables the native response-format path). Mirrors Claude Code's
+ * schema (and enables the native response-format path). Mirrors the reference's
  * `STRUCTURED_OUTPUTS_BETA_HEADER` (constants/betas.ts). Experimental: gated by
  * {@link structuredOutputsEnabled} and model capability, stripped by the kill switch.
  */
 export const STRUCTURED_OUTPUTS_BETA = 'structured-outputs-2025-12-15';
 
 /**
- * Interleaved thinking is served on the Claude 4+ Opus/Sonnet families. Mirrors
- * Claude Code's `modelSupportsISP` (which gates on the opus-4/sonnet-4 canonical
+ * Interleaved thinking is served on Claude 4+ Opus/Sonnet families. Mirrors
+ * the reference's `modelSupportsISP` (which gates on the opus-4/sonnet-4 canonical
  * families); AMI applies the same family match, open-ended for future 4x/5x+ ids.
  */
 export function supportsInterleavedThinking(modelId: string): boolean {
@@ -1768,8 +1768,8 @@ export function supportsInterleavedThinking(modelId: string): boolean {
 
 /**
  * Whether a model supports API-enforced structured outputs (the `strict` tool
- * flag + {@link STRUCTURED_OUTPUTS_BETA}). Mirrors Claude Code's
- * `modelSupportsStructuredOutputs` (utils/betas.ts): only the Claude 4.1+ Opus and
+ * flag + {@link STRUCTURED_OUTPUTS_BETA}). Mirrors the reference's
+ * `modelSupportsStructuredOutputs` (utils/betas.ts): only Claude 4.1+ Opus and
  * 4.5+ Sonnet/Haiku generations support it — Claude 4.0 Sonnet and all 3.x models
  * do NOT. The match is version-aware so a bare `claude-sonnet-4` (4.0) is excluded
  * while `claude-sonnet-4-5`/`-4-6` and `claude-opus-4-1`/`-4-5`/`-4-6` qualify.
@@ -1801,7 +1801,7 @@ export function structuredOutputsEnabled(): boolean {
  * Proactive user kill switch for experimental/first-party-only Anthropic betas.
  * A user hitting a proxy/gateway that 400s on unknown `anthropic-beta` tokens can
  * strip them all at once instead of relying on reactive error-retry. Mirrors
- * Claude Code's `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS`; the AMI-native
+ * the reference's `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS`; the AMI-native
  * `SUPERINFERENCE_DISABLE_EXPERIMENTAL_BETAS` is honored too.
  */
 export function experimentalBetasDisabled(): boolean {
@@ -1811,7 +1811,7 @@ export function experimentalBetasDisabled(): boolean {
   );
 }
 
-/** Interleaved-thinking opt-out (Claude parity `DISABLE_INTERLEAVED_THINKING`). */
+/** Interleaved-thinking opt-out (the reference parity `DISABLE_INTERLEAVED_THINKING`). */
 function interleavedThinkingDisabled(): boolean {
   return (
     isEnvTruthy(process.env.DISABLE_INTERLEAVED_THINKING) ||
@@ -1829,7 +1829,7 @@ function tokenEfficientToolsEnabled(): boolean {
 
 /**
  * Opt-in: after each completed tool batch, generate an LLM-written, PAST-TENSE
- * "what this batch accomplished" summary label (parity: Claude Code's
+ * "what this batch accomplished" summary label (parity: the reference's
  * toolUseSummaryGenerator, gated by `CLAUDE_CODE_EMIT_TOOL_USE_SUMMARIES`). Off by
  * default — it costs one extra cheap-model call per tool turn, so an operator opts
  * in explicitly. The AMI-native `SUPERINFERENCE_EMIT_TOOL_USE_SUMMARIES` is honored
@@ -1851,7 +1851,7 @@ export function toolUseSummaryLabelEnabled(): boolean {
  * streams the input eagerly as it is generated. Off by default (experimental +
  * first-party-only); opt in via `SUPERINFERENCE_FINE_GRAINED_TOOL_STREAMING`
  * (or the Claude-compatible `CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING`).
- * Mirrors Claude Code's `tengu_fgts` / env gate (utils/api.ts).
+ * Mirrors the reference's `tengu_fgts` / env gate (utils/api.ts).
  */
 export function fineGrainedToolStreamingEnabled(): boolean {
   return (
@@ -1872,7 +1872,7 @@ export function fineGrainedToolStreamingEnabled(): boolean {
  *   interleaved-thinking (model-gated, opt-out via env) and token-efficient-tools
  *   (explicit opt-in).
  * - **User escape hatch**: `ANTHROPIC_BETAS` tokens, appended unconditionally
- *   (bypasses the kill switch, mirroring Claude Code).
+ *   (bypasses the kill switch, mirroring the reference).
  *
  * When `opts.disableBetas` is set — the gateway-rejection recovery path — the
  * ENTIRE set is dropped (returns `[]`), since a strict proxy that 400s on one
@@ -1910,7 +1910,7 @@ export interface AnthropicBetaDescriptor {
  * layer can attach to an outgoing Anthropic request, each paired with its
  * activation condition, PLUS the operator escape-hatch tokens currently forced on
  * via `ANTHROPIC_BETAS`. This is the introspection/diagnostic surface the request
- * path lacked (parity: Claude's `getSdkBetas()` session-metadata field): a consumer
+ * path lacked (parity: the reference's `getSdkBetas()` session-metadata field): a consumer
  * can discover WHICH betas are in effect / available without decoding a live
  * request. Unlike {@link computeAnthropicBetas} it needs no model or API key, so it
  * is safe to emit from `ami --introspect`. Reads `ANTHROPIC_BETAS` live through the
@@ -1940,7 +1940,7 @@ export function describeAnthropicBetas(): {
  * Assembling this set touches model-capability checks AND six env predicates
  * (experimental kill switch, interleaved opt-out, token-efficient / structured-output
  * opt-ins, prompt-cache scope, `ANTHROPIC_BETAS`), so it is computed once per
- * (model, settings) and reused on every subsequent request — mirroring Claude Code's
+ * (model, settings) and reused on every subsequent request — mirroring the reference's
  * memoized `getAllModelBetas`/`getModelBetas` (utils/betas.ts).
  */
 const modelBaseBetasCache = new Map<string, string[]>();
@@ -1948,7 +1948,7 @@ const modelBaseBetasCache = new Map<string, string[]>();
 /**
  * Fingerprint of every env/settings input {@link getModelBaseBetas} reads, folded
  * into the cache key so the memo never hides a stale env read behind an old entry.
- * AMI reads these knobs LIVE from process.env (unlike Claude Code, which memoizes
+ * AMI reads these knobs LIVE from process.env (unlike the reference, which memoizes
  * on the model alone and relies solely on explicit cache clears), so a mid-session
  * settings change yields a new key — freshness is preserved automatically, and
  * {@link clearBetasCaches} drops the whole map so it can never grow unboundedly
@@ -2005,7 +2005,7 @@ function getModelBaseBetas(modelId: string): string[] {
  * proxy/mTLS and model-capability cache clears, because a re-applied settings `env`
  * block can change the very knobs {@link betaSettingsFingerprint} folds in
  * (`ANTHROPIC_BETAS`, the experimental-betas kill switch, interleaved opt-out, the
- * prompt-cache scope). Mirrors Claude Code's `clearBetasCaches()` invoked on
+ * prompt-cache scope). Mirrors the reference's `clearBetasCaches()` invoked on
  * settings/auth change (utils/betas.ts, auth.ts).
  */
 export function clearBetasCaches(): void {
@@ -2025,7 +2025,7 @@ export function cachedModelBetaSetCount(): number {
 
 /**
  * Betas that Bedrock accepts ONLY through `extraBodyParams` (the request body),
- * NEVER as `anthropic-beta` headers. Mirrors Claude Code's
+ * NEVER as `anthropic-beta` headers. Mirrors the reference's
  * `BEDROCK_EXTRA_PARAMS_HEADERS` (constants/betas.ts:L38-42): Bedrock's gateway
  * rejects these as headers, so routing a Claude model via Bedrock must carry them
  * in the body instead. Only the subset AMI computes for a model is sent.
@@ -2036,11 +2036,11 @@ export const BEDROCK_EXTRA_PARAMS_BETAS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Compute the `extraBody` fragment carrying Bedrock's allowed betas for a Claude
+ * Compute the `extraBody` fragment carrying Bedrock's allowed betas for a reference
  * model, or `undefined` when none apply. The betas come from the SAME canonical
  * {@link computeAnthropicBetas} source as the header paths, then are filtered to
  * the Bedrock-extra-params subset and emitted under `anthropic_beta` (Bedrock's
- * body field) rather than a header. Non-Claude Bedrock models get `undefined`.
+ * body field) rather than a header. Non-the reference Bedrock models get `undefined`.
  */
 export function computeBedrockBetaExtraBody(modelId: string): Record<string, unknown> | undefined {
   if (!modelId.toLowerCase().includes('claude')) return undefined;
@@ -2068,11 +2068,11 @@ export function withAnthropicBetaHeader(
 }
 
 // ---------------------------------------------------------------------------
-// Accurate provider token-count path (Claude parity: countMessagesTokensWithAPI).
+// Accurate provider token-count path (the reference parity: countMessagesTokensWithAPI).
 //
 // AMI's context accounting is otherwise a char-based heuristic (estimateTokens).
 // This adds an OPTIONAL authoritative count via Anthropic's
-// `/v1/messages/count_tokens` endpoint, governed by the same tunable knobs Claude
+// `/v1/messages/count_tokens` endpoint, governed by the same tunable knobs the reference
 // uses, and the proactive Vertex beta allowlist. It is consumed as the injectable
 // `TokenCounter` (common `ContextManager.setTokenCounter`) so the compaction
 // waterfall prefers a real count and only falls back to the heuristic when this
@@ -2081,13 +2081,13 @@ export function withAnthropicBetaHeader(
 
 /**
  * Minimal `thinking.budget_tokens` used for a count request when the transcript
- * contains thinking blocks. Claude parity: `TOKEN_COUNT_THINKING_BUDGET` — the API
+ * contains thinking blocks. the reference parity: `TOKEN_COUNT_THINKING_BUDGET` — the API
  * requires `max_tokens > thinking.budget_tokens`, so this is kept small.
  */
 export const TOKEN_COUNT_THINKING_BUDGET = 1024;
 
 /**
- * Companion ceiling to {@link TOKEN_COUNT_THINKING_BUDGET} (Claude parity:
+ * Companion ceiling to {@link TOKEN_COUNT_THINKING_BUDGET} (the reference parity:
  * `TOKEN_COUNT_MAX_TOKENS`). The `count_tokens` endpoint does not consume
  * `max_tokens`, but the constant documents the API constraint
  * (`max_tokens > thinking.budget_tokens`) the budget is sized against.
@@ -2108,7 +2108,7 @@ export interface CountTokensRequest {
   fetchImpl?: typeof globalThis.fetch;
   /**
    * Bounded additional attempts on a *transient* failure before giving up and
-   * returning `null`. Claude parity: `countMessagesTokensWithAPI` builds its
+   * returning `null`. the reference parity: `countMessagesTokensWithAPI` builds its
    * Anthropic client with `maxRetries: 1`, so a single flaky 5xx / network blip
    * on the best-effort count path self-heals instead of immediately degrading to
    * the heuristic. A non-transient failure (a 4xx other than 408/409/429, a 200
@@ -2125,7 +2125,7 @@ export interface CountTokensRequest {
  * heuristic. The outgoing `anthropic-beta` set comes from the single canonical
  * {@link computeAnthropicBetas} source, then is narrowed by
  * {@link filterCountTokensBetas} so a Vertex count never carries a beta that would
- * 400. Mirrors Claude Code's `countMessagesTokensWithAPI` (thinking budget,
+ * 400. Mirrors the reference's `countMessagesTokensWithAPI` (thinking budget,
  * dummy-message-when-empty, `input_tokens` extraction, and a bounded single
  * retry on a transient failure — see {@link CountTokensRequest.maxRetries}).
  */
@@ -2148,7 +2148,7 @@ export async function countTokensWithAPI(
   };
   if (betas.length > 0) headers['anthropic-beta'] = betas.join(',');
   // An empty message list with tools still needs a dummy user message for an
-  // accurate tool token count (Claude parity).
+  // accurate tool token count (the reference parity).
   const messages = req.messages.length > 0 ? req.messages : [{ role: 'user', content: 'foo' }];
   const body: Record<string, unknown> = { model, messages };
   if (req.tools && req.tools.length > 0) body.tools = req.tools;
@@ -2194,13 +2194,13 @@ export async function countTokensWithAPI(
 // server-side while the cached prefix stays intact. This builds that edit (gated
 // by an opt-in env knob) computing `clear_at_least = trigger - keepTarget`, and it
 // rides every request via {@link withExtraBody}; {@link CONTEXT_MANAGEMENT_BETA}
-// is added to the header by {@link resolveModel}. Mirrors Claude Code's
+// is added to the header by {@link resolveModel}. Mirrors the reference's
 // `getAPIContextManagement` (services/compact/apiMicrocompact.ts).
 // ---------------------------------------------------------------------------
 
-/** Default server-side context-edit trigger (Claude parity: `DEFAULT_MAX_INPUT_TOKENS`). */
+/** Default server-side context-edit trigger (the reference parity: `DEFAULT_MAX_INPUT_TOKENS`). */
 export const DEFAULT_CONTEXT_EDIT_MAX_INPUT_TOKENS = 180_000;
-/** Default tokens to keep after a server-side edit (Claude parity: `DEFAULT_TARGET_INPUT_TOKENS`). */
+/** Default tokens to keep after a server-side edit (the reference parity: `DEFAULT_TARGET_INPUT_TOKENS`). */
 export const DEFAULT_CONTEXT_EDIT_TARGET_INPUT_TOKENS = 40_000;
 /** Opt-in knob enabling provider-native `context_management` server-side edits. */
 export const API_CONTEXT_EDIT_ENV = 'AMI_API_CONTEXT_EDIT';
@@ -2219,7 +2219,7 @@ function positiveIntEnv(raw: string | undefined, fallback: number): number {
  * Build the Anthropic `context_management` config (a `clear_tool_uses_20250919`
  * edit) when {@link API_CONTEXT_EDIT_ENV} is truthy, else `undefined` (feature
  * OFF — client-side compaction unchanged). `clear_at_least` is computed as
- * `trigger - keepTarget` (clamped at 0), exactly as Claude Code computes it, so
+ * `trigger - keepTarget` (clamped at 0), exactly as the reference computes it, so
  * the server clears down to roughly `keepTarget` input tokens. `env` is injectable
  * for testing.
  */
@@ -2352,7 +2352,7 @@ function hostMatchesNoProxy(
  * back to `HTTP_PROXY`); an http target uses `HTTP_PROXY`. Within each pair the
  * lowercase variant is preferred over the uppercase one (`https_proxy` >
  * `HTTPS_PROXY` > `http_proxy` > `HTTP_PROXY`; `no_proxy` > `NO_PROXY`), matching
- * curl/standard-tooling precedence (Claude Code's `getProxyUrl`/`getNoProxy`). A
+ * curl/standard-tooling precedence (the reference's `getProxyUrl`/`getNoProxy`). A
  * `NO_PROXY` match (exact host, domain suffix, `*`, `*.domain` glob, a
  * `host:port` entry, or a CIDR / IP range) always wins and returns `undefined`.
  * Pure + exported so it is unit-testable without touching the network.
@@ -2414,9 +2414,9 @@ function loadUndiciAgentCtor(): Promise<(new (opts: unknown) => unknown) | null>
 /**
  * Env knob (AMI_PROXY_RESOLVES_HOSTS) enabling proxy-side DNS: when truthy the
  * dispatcher hands the raw hostname to the proxy instead of resolving it locally,
- * for sandboxes where DNS is only reachable THROUGH the proxy. Mirrors Claude
+ * for sandboxes where DNS is only reachable THROUGH the proxy. Mirrors the reference
  * Code's CLAUDE_CODE_PROXY_RESOLVES_HOSTS (utils/proxy.ts). Also accepts the
- * Claude Code name for drop-in parity.
+ * the reference name for drop-in parity.
  */
 export function proxyResolvesHosts(env: NodeJS.ProcessEnv = process.env): boolean {
   return isEnvTruthy(env.AMI_PROXY_RESOLVES_HOSTS) || isEnvTruthy(env.CLAUDE_CODE_PROXY_RESOLVES_HOSTS);
@@ -2424,7 +2424,7 @@ export function proxyResolvesHosts(env: NodeJS.ProcessEnv = process.env): boolea
 
 /**
  * Normalize a DNS address-family hint (0 | 4 | 6 | 'IPv4' | 'IPv6' | undefined)
- * to the numeric family undici's `lookup` callback expects. Mirrors Claude Code's
+ * to the numeric family undici's `lookup` callback expects. Mirrors the reference's
  * getAddressFamily (utils/proxy.ts). `0` means "unspecified / either family".
  */
 export function getAddressFamily(family: number | string | undefined): 0 | 4 | 6 {
@@ -2544,7 +2544,7 @@ async function getMTLSAgent(
  * proxy routing, client-cert, and CA-trust material captured at construction, so
  * after a mid-session env mutation (rotated proxy, re-pointed CA, flipped
  * proxy-side-DNS) the stale agents must be dropped and rebuilt against the new
- * env — mirroring Claude Code's configureGlobalAgents() + cache clears on
+ * env — mirroring the reference's configureGlobalAgents() + cache clears on
  * managed-env reconfiguration. Invoked from the settings-env re-apply path.
  */
 export function clearProxyAgentCache(): void {
@@ -2582,7 +2582,7 @@ export const NETWORK_TRUST_DIAGNOSTIC_EVENT = 'network_trust_resolved';
  * hostname, file path, or any key material (the diagnostics channel's no-PII
  * contract). The pre-computed `trustStoreDesc` is passed in rather than
  * re-assembled so the (file-reading) trust store is built at most once per
- * dispatcher. Mirrors Claude Code's `caCertsConfig.ts` `logForDebugging`
+ * dispatcher. Mirrors the reference's `caCertsConfig.ts` `logForDebugging`
  * CA-resolution trail, routed into AMI's structured diagnostics channel.
  */
 export function recordNetworkTrustDiagnostics(
@@ -2733,7 +2733,7 @@ function getDefaultVertexRegion(): string {
 // Model prefix → Vertex region override env var. Order matters: more specific
 // prefixes must precede less specific ones (e.g. 'claude-opus-4-1' before
 // 'claude-opus-4') so startsWith resolves the right override first. Mirrors
-// Claude Code's VERTEX_REGION_OVERRIDES (utils/envUtils.ts) — a given Claude
+// the reference's VERTEX_REGION_OVERRIDES (utils/envUtils.ts) — a given the reference
 // model may only be GA in a subset of Vertex regions.
 const VERTEX_REGION_OVERRIDES: ReadonlyArray<readonly [string, string]> = [
   ['claude-haiku-4-5', 'VERTEX_REGION_CLAUDE_HAIKU_4_5'],
@@ -2790,7 +2790,7 @@ export function resolveModel(config: ProviderConfig, tools?: ToolDefinition[]) {
   // Strip the synthetic [1m]/[2m] context marker before the id reaches any SDK:
   // the marker is a LOCAL knob (context sizing via getContextWindow(config.model),
   // beta selection via supportsOneMillionContextBeta which is family-based, not
-  // marker-based) and the endpoint rejects a model id carrying it. Mirrors Claude
+  // marker-based) and the endpoint rejects a model id carrying it. Mirrors the reference
   // Code's normalizeModelStringForAPI applied right before the request.
   // Cross-provider model-ID translation: a model selected/overridden under one
   // provider (e.g. the native `claude-opus-4-6`) is translated to the ACTIVE
@@ -2807,7 +2807,7 @@ export function resolveModel(config: ProviderConfig, tools?: ToolDefinition[]) {
   let proxyActive = proxyFetch !== globalThis.fetch;
   // Stale keep-alive socket recovery: when a prior attempt failed with
   // ECONNRESET/EPIPE, open a FRESH connection with keep-alive disabled so the
-  // retry does not reuse the poisoned pooled socket (mirrors Claude Code's
+  // retry does not reuse the poisoned pooled socket (mirrors the reference's
   // disableKeepAlive()). Only when no proxy/mTLS agent is already managing the
   // dispatcher; `proxyActive` then marks the fresh transport as a custom base so
   // the composedFetch fallback preserves it.
@@ -2827,7 +2827,7 @@ export function resolveModel(config: ProviderConfig, tools?: ToolDefinition[]) {
   // same extra-header fetch wrapper so it rides every outgoing API request. Gated
   // to direct first-party-style endpoints: managed cloud gateways (Bedrock/Vertex/
   // Foundry) drop it and their strict proxies may reject unknown headers, so the
-  // header is omitted there (mirrors Claude Code's firstParty-only injection).
+  // header is omitted there (mirrors the reference's firstParty-only injection).
   const injectRequestId = endpointAcceptsClientRequestId(provider);
   const headersWithRequestId = { ...(config.extraHeaders ?? {}), ...buildRequestIdHeader(config.extraHeaders, injectRequestId) };
   const headerFetch = withExtraHeaders(headersWithRequestId, proxyFetch);
@@ -2842,7 +2842,7 @@ export function resolveModel(config: ProviderConfig, tools?: ToolDefinition[]) {
   // logger's level/component filter — a no-op on disk when debug logging is off.
   const fetch = withRequestIdDebugTrace(strippedFetch, provider ?? 'inferred');
 
-  // Azure AI Foundry — Claude (and other) models over Azure's OpenAI-compatible
+  // Azure AI Foundry — the reference (and other) models over Azure's OpenAI-compatible
   // Foundry endpoint. The explicit provider check is placed BEFORE the
   // claude/anthropic auto-route so a Foundry-hosted `claude-*` model is routed to
   // the Foundry resource rather than api.anthropic.com. The Foundry base URL is
@@ -2940,14 +2940,14 @@ export function resolveModel(config: ProviderConfig, tools?: ToolDefinition[]) {
     // fail fast here with an actionable message rather than letting a broken
     // credential blob surface as an opaque 403 deep in the request. Skipped for
     // bearer-token auth (AWS_BEARER_TOKEN_BEDROCK), which does not consume the
-    // STS env triple. Mirrors Claude Code's isValidAwsStsOutput boundary check.
+    // STS env triple. Mirrors the reference's isValidAwsStsOutput boundary check.
     if (!(process.env[AWS_BEARER_TOKEN_BEDROCK_ENV] ?? '').trim()) {
       assertValidStsEnvCredentials(process.env);
     }
     const bedrockModel = resolveBedrockModelId(model, getBedrockInferenceProfiles());
     // Bedrock rejects `anthropic-beta` HEADERS, so route the model's allowed betas
     // (interleaved-thinking / 1M-context) through the request BODY instead, mirroring
-    // Claude Code's BEDROCK_EXTRA_PARAMS_HEADERS set. No-op for non-Claude models.
+    // the reference's BEDROCK_EXTRA_PARAMS_HEADERS set. No-op for non-Claude models.
     const bedrockBetaBody = computeBedrockBetaExtraBody(bedrockModel);
     const bedrockFetch = withExtraBody(bedrockBetaBody, fetch) ?? fetch;
     // Prefer an AWS_BEARER_TOKEN_BEDROCK API key when present and derive the
@@ -3123,7 +3123,7 @@ export function convertMessages(messages: Message[]): ModelMessage[] {
         // DocumentContent -> AI SDK file part. A PDF (or other document) rides as a
         // `file` part (base64 data + mediaType), which the Anthropic/Gemini providers
         // translate into a native `document` block — so the model reads the file
-        // directly instead of a base64 text blob. Parity: Claude's `document` block.
+        // directly instead of a base64 text blob. Parity: the reference's `document` block.
         if (block.type === 'document') {
           return {
             type: 'file' as const,
@@ -3156,7 +3156,7 @@ export function convertMessages(messages: Message[]): ModelMessage[] {
  * …); hoisting it would change the cached prefix every turn and bust the prompt cache.
  * Such messages are kept IN the stream as user-role `<system-reminder>` blocks so the
  * model still sees them, but the cached prefix stays byte-stable turn to turn. This is
- * Claude Code's behavior (reminders ride as role:'user'). Introspection: the count of
+ * the reference's behavior (reminders ride as role:'user'). Introspection: the count of
  * demoted nudges is returned as `demoted` for callers/telemetry.
  */
 export function hoistSystemPrompt(
@@ -3241,7 +3241,7 @@ export function extractCacheCreationTokens(part: unknown): number {
 }
 
 /**
- * Per-TTL split of cache-WRITE tokens (parity: Claude's emptyUsage
+ * Per-TTL split of cache-WRITE tokens (parity: the reference's emptyUsage
  * `cache_creation.{ephemeral_1h_input_tokens, ephemeral_5m_input_tokens}`).
  * Anthropic prices 1-hour and 5-minute prompt-cache writes differently, so the
  * two TTL buckets must be surfaced independently rather than lumped together. The
@@ -3302,7 +3302,7 @@ export function extractReasoningTokens(usage: unknown): number {
  * User-visible placeholder surfaced when the provider returns a REDACTED (encrypted)
  * thinking block — reasoning the safety systems encrypted so it cannot be displayed.
  * Without a placeholder the user sees a silent gap (the block carries no readable
- * text). Parity: Claude Code's `AssistantRedactedThinkingMessage` ("✻ Thinking…").
+ * text). Parity: the reference's `AssistantRedactedThinkingMessage` ("✻ Thinking…").
  * AMI appends "(redacted)" so the encrypted nature is explicit.
  */
 export const REDACTED_THINKING_PLACEHOLDER = '✻ Thinking… (redacted)';
@@ -3344,7 +3344,7 @@ const ADAPTIVE_EFFORT_BY_LEVEL: Record<string, 'low' | 'medium' | 'high' | 'xhig
  * capability detection did not recognize as a reasoning model (e.g. a brand-new
  * third-party OpenAI-compatible reasoning model). Without this, an unrecognized
  * model falls through to no-thinking even with `--thinking` set. AMI-native name
- * first, Claude Code's name as a drop-in alias. Mirrors Claude Code's
+ * first, the reference's name as a drop-in alias. Mirrors the reference's
  * `modelSupportsEffort()` CLAUDE_CODE_ALWAYS_ENABLE_EFFORT gate (utils/effort.ts).
  */
 export const ALWAYS_ENABLE_EFFORT_ENV_VARS = ['SUPERINFERENCE_ALWAYS_ENABLE_EFFORT', 'CLAUDE_CODE_ALWAYS_ENABLE_EFFORT'] as const;
@@ -3359,8 +3359,8 @@ const OPENAI_EFFORT_BY_LEVEL: Record<string, string> = { low: 'low', medium: 'me
 
 /**
  * Env knobs that FORCE reasoning off for every request, regardless of the
- * per-session `--thinking` / `/thinking` config. AMI-native name first, Claude
- * Code's name as a drop-in alias. Mirrors Claude Code's `CLAUDE_CODE_DISABLE_THINKING`
+ * per-session `--thinking` / `/thinking` config. AMI-native name first, the reference
+ * Code's name as a drop-in alias. Mirrors the reference's `CLAUDE_CODE_DISABLE_THINKING`
  * gate (`hasThinking = … && !isEnvTruthy(CLAUDE_CODE_DISABLE_THINKING)`,
  * services/api/claude.ts). Routed through the standard not-enabled path so an
  * always-on-thinking model still receives the minimal config it requires (sending
@@ -3376,8 +3376,8 @@ export function thinkingDisabledByEnv(env: NodeJS.ProcessEnv = process.env): boo
 /**
  * Env knobs that FORCE the legacy fixed-budget thinking shape
  * (`{ type:'enabled', budget_tokens }`) even on models AMI would otherwise drive
- * with adaptive thinking. AMI-native name first, Claude Code's name as a drop-in
- * alias. Mirrors Claude Code's `CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING` gate
+ * with adaptive thinking. AMI-native name first, the reference's name as a drop-in
+ * alias. Mirrors the reference's `CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING` gate
  * (`!isEnvTruthy(CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING) && modelSupportsAdaptiveThinking(...)`,
  * services/api/claude.ts) — for gateways/proxies that reject the adaptive shape.
  */
@@ -3398,10 +3398,10 @@ export function buildThinkingOptions(
   // minimal config an always-on model requires).
   const thinking = thinkingDisabledByEnv() ? undefined : thinkingConfig;
   if (!thinking?.enabled) {
-    // An always-on-thinking model (the 5.x Claude line) REJECTS a disabled-thinking
+    // An always-on-thinking model (the 5.x the reference line) REJECTS a disabled-thinking
     // request and reasons regardless — so even when the user turned thinking off we
     // must still send a thinking config, at the minimal 'low' effort floor, rather
-    // than omit it. Mirrors Claude's AntModel.alwaysOnThinking handling. Every other
+    // than omit it. Mirrors the reference's AntModel.alwaysOnThinking handling. Every other
     // model honors "off" by sending no thinking options.
     if (modelAlwaysOnThinking(modelId)) {
       return { providerOptions: { anthropic: { thinking: { type: 'adaptive' as const }, effort: 'low' } } };
@@ -3410,7 +3410,7 @@ export function buildThinkingOptions(
   }
   const caps = getModelCapabilities(modelId);
 
-  // Anthropic Claude (adaptive family: Opus 4.x / Sonnet 4.x) — adaptive thinking
+  // Anthropic the reference (adaptive family: Opus 4.x / Sonnet 4.x) — adaptive thinking
   // + output-config effort. The legacy { type: 'enabled', budget_tokens } shape is
   // DEPRECATED on Opus/Sonnet 4.6 and REJECTED with a 400 on Opus 4.7/4.8 (and removed
   // on the 5.x family), which made thinking requests fail outright — ui#17. Adaptive
@@ -3420,7 +3420,7 @@ export function buildThinkingOptions(
     // The top 'max' effort tier is Opus-4.6+-class only; the API rejects
     // effort:'max' on every other adaptive model (e.g. sonnet-4-6). Downgrade
     // max→high per model before mapping so the request never 400s — mirrors
-    // Claude's resolveAppliedEffort (utils/effort.ts). Other levels pass through.
+    // the reference's resolveAppliedEffort (utils/effort.ts). Other levels pass through.
     const appliedLevel = resolveMaxEffortLevel(thinking.level, modelId);
     const effort = ADAPTIVE_EFFORT_BY_LEVEL[appliedLevel] ?? 'high';
     return {
@@ -3433,7 +3433,7 @@ export function buildThinkingOptions(
     };
   }
 
-  // Anthropic Claude PRE-4.6 (opus 4/4.1/4.5, sonnet 4/4.5): adaptive thinking is REJECTED
+  // Anthropic the reference PRE-4.6 (opus 4/4.1/4.5, sonnet 4/4.5): adaptive thinking is REJECTED
   // with an HTTP 400 ("adaptive thinking is not supported on this model"), so these reasoning
   // models must use the legacy { type:'enabled', budget_tokens } shape instead — ui#24. The
   // budget is clamped below a conservative output ceiling so budget_tokens stays < max_tokens
@@ -3499,7 +3499,7 @@ function promptTokensForFit(
 /**
  * Cross-session prompt-cache scope. `'org'` lets any API key in the same
  * organization reuse a cache block this run wrote; `'global'` is broader still.
- * Mirrors Claude Code's `CacheScope` (utils/api.ts). Unset = the default,
+ * Mirrors the reference's `CacheScope` (utils/api.ts). Unset = the default,
  * key-private ephemeral cache.
  */
 export type PromptCacheScope = 'global' | 'org';
@@ -3566,7 +3566,7 @@ export function resolveCacheTtl(
 export const PROMPT_CACHE_STRATEGY_ENV = 'AMI_PROMPT_CACHE_STRATEGY';
 
 /**
- * Selectable global prompt-cache strategy — mirrors Claude Code's `tool_based` /
+ * Selectable global prompt-cache strategy — mirrors the reference's `tool_based` /
  * `system_prompt` / `none` cache-strategy knob (services/api/logging.ts). It
  * decides WHICH prefix blocks get an Anthropic `cache_control` marker:
  *
@@ -3589,7 +3589,7 @@ export function resolvePromptCacheStrategy(env: NodeJS.ProcessEnv = process.env)
 /**
  * Cache-preserving tool denial for a forked / derived request.
  *
- * Parity: Claude Code's AgentSummary fork (`services/AgentSummary/agentSummary.ts`)
+ * Parity: the reference's AgentSummary fork (`services/AgentSummary/agentSummary.ts`)
  * shares the parent agent's prompt cache by sending the IDENTICAL cache-key params —
  * system prompt, messages prefix, model, thinking config AND the full `tools` array —
  * then forbids every call via a `canUseTool` callback that returns `behavior:'deny'`.
@@ -3658,7 +3658,7 @@ export function buildRepairToolCall(tools: ToolDefinition[]): ToolCallRepairFunc
 
 /**
  * Sentinel error text for an empty / degenerate response stream — the stream
- * ended without producing ANY content, tool call, or finish-step. Mirrors Claude
+ * ended without producing ANY content, tool call, or finish-step. Mirrors the reference
  * Code's "Stream ended without receiving any events" (claude.ts), which treats
  * two proxy failure modes as a retryable failure rather than a silent empty turn:
  * (1) no events at all — a proxy returned HTTP 200 with a non-SSE body; and
@@ -3721,14 +3721,14 @@ export async function* streamChatCompletion(
   // SUPERINFERENCE_STRICT_TOOL_PAIRING) fails the turn loudly on corruption instead of
   // injecting synthetic placeholders; otherwise the repair is applied and, when it
   // actually mutated the transcript, a diagnostic event is recorded so the root cause of
-  // a corrupted transcript is traceable (parity: Claude's tengu_tool_result_pairing_repaired).
+  // a corrupted transcript is traceable (parity: the reference's tengu_tool_result_pairing_repaired).
   // Defend against stale/removed-tool references before pairing repair: an MCP server
   // may have disconnected, a plugin tool removed, or the tier changed since the turn
   // that issued a tool_call, leaving a transcript that points at a tool name no longer
   // in THIS request's tool set. Anthropic rejects such references, so strip the
   // orphaned tool_call (and its paired tool_result) and emit a diagnostic. Only runs
   // when the request actually carries tools — a deliberately tool-less request keeps
-  // its historical tool turns untouched. Parity: Claude's
+  // its historical tool turns untouched. Parity: the reference's
   // stripUnavailableToolReferencesFromUserMessage.
   const prunedForTools =
     tools.length > 0
@@ -3774,7 +3774,7 @@ export async function* streamChatCompletion(
   // ceiling BEFORE sending, so an oversized image fails fast with a message naming
   // exactly which image is too big — instead of a confusing mid-request 400 that
   // identifies none. Surfaced as a terminal (non-retryable) error chunk, matching
-  // AMI's error convention and Claude Code's validateImagesForAPI boundary check.
+  // AMI's error convention and the reference's validateImagesForAPI boundary check.
   try {
     validateImagesForAPI(capped);
   } catch (err) {
@@ -3837,7 +3837,7 @@ export async function* streamChatCompletion(
   }
 
   try {
-    // Runtime fault-injection seam (parity: Claude's bridgeDebug.wrapApiForFaultInjection).
+    // Runtime fault-injection seam (parity: the reference's bridgeDebug.wrapApiForFaultInjection).
     // When AMI_FAULT_INJECTION has queued a fault for the 'provider' target, throw the
     // classified error HERE — before the real request — so the LIVE retry/backoff/teardown
     // machinery (streamChatCompletionWithRetry → classifyError) actually fires: a transient
@@ -3866,7 +3866,7 @@ export async function* streamChatCompletion(
       },
     } : {};
 
-    // Forced/constrained tool selection (parity: Claude Code's `tool_choice`
+    // Forced/constrained tool selection (parity: the reference's `tool_choice`
     // request parameter). Only meaningful when tools are advertised; the AI SDK
     // rejects a toolChoice with no tools, so it is omitted otherwise. The shape
     // ('auto'|'required'|'none'|{type:'tool',toolName}) maps 1:1 to the SDK option.
@@ -3874,14 +3874,14 @@ export async function* streamChatCompletion(
       ? { toolChoice: config.toolChoice }
       : {};
 
-    // Generation stop strings (parity: Claude Code's `stop_sequences`). Forwarded
+    // Generation stop strings (parity: the reference's `stop_sequences`). Forwarded
     // verbatim to the AI SDK so the model halts when any sentinel is emitted;
     // omitted when unset/empty so the request is byte-identical for the common case.
     const stopSequencesOpt = (config.stopSequences && config.stopSequences.length > 0)
       ? { stopSequences: config.stopSequences }
       : {};
 
-    // Provider-native structured output (parity: Claude Code's `outputFormat:
+    // Provider-native structured output (parity: the reference's `outputFormat:
     // { type: 'json_schema', schema }` on auxiliary queries). When a caller sets
     // config.responseFormat, forward the JSON Schema as the AI SDK `output`
     // specification so the SDK constrains the model to emit schema-valid JSON
@@ -3919,7 +3919,7 @@ export async function* streamChatCompletion(
       ...responseFormatOpt,
       maxOutputTokens: fitOutputTokens(
         // When the caller omits maxTokens, use the model's conservative DEFAULT
-        // budget (Claude's getModelMaxOutputTokens().default) rather than a flat
+        // budget (the reference's getModelMaxOutputTokens().default) rather than a flat
         // global constant, so each model sends its own sensible default.
         config.maxTokens ?? getModelMaxOutputTokens(modelId).default,
         config.contextWindow ?? getContextWindow(modelId),
@@ -4003,7 +4003,7 @@ export async function* streamChatCompletion(
           // the server's own message body (AI SDK APICallError carries `url`/
           // `responseBody`). API failures surface here as a stream `error` PART (not
           // a thrown error), so without this the primary provider-error source was
-          // never logged with its url/body context. Mirrors Claude Code's errorLogSink.
+          // never logged with its url/body context. Mirrors the reference's errorLogSink.
           logError('provider', errMsg, { httpError: part.error });
 
           // Extract Retry-After (seconds) — handles numeric and HTTP-date forms.
@@ -4025,7 +4025,7 @@ export async function* streamChatCompletion(
           // however, arrives as a reasoning-start carrying providerMetadata.anthropic.
           // redactedData and NEVER emits a reasoning-delta — so without this branch the
           // user would see a silent gap where the model actually reasoned. Surface a
-          // placeholder once per redacted block (parity: Claude's redacted-thinking
+          // placeholder once per redacted block (parity: the reference's redacted-thinking
           // message), reusing the already-wired thinking_delta render path.
           if (extractRedactedThinkingData(part) !== undefined) {
             producedOutput = true;
@@ -4079,7 +4079,7 @@ export async function* streamChatCompletion(
       // so a logged provider error is self-explanatory — which endpoint, what the
       // server actually said — instead of a bare `HTTP <status>`. `logError` extracts
       // the `[url=…,status=…,body=…]` prefix via `httpErrorContext`; it never writes
-      // the raw error object. Mirrors Claude Code's errorLogSink enrichment.
+      // the raw error object. Mirrors the reference's errorLogSink enrichment.
       logError('provider', errorMsg, { httpError: err });
 
       // Extract Retry-After (seconds) — handles numeric and HTTP-date forms.
@@ -4114,7 +4114,7 @@ function jitteredDelay(delayMs: number): number {
 // ---------------------------------------------------------------------------
 
 // 408 (request timeout) and 409 (lock timeout/conflict) are transient and worth
-// a retry, matching Claude's shouldRetry (parity gap). Claude retries all 5xx
+// a retry, matching the reference's shouldRetry (parity gap). the reference retries all 5xx
 // generically; AMI enumerates the transient server/gateway codes it actually
 // sees — 500/502/503 plus 504 (gateway timeout) and 507 (insufficient storage) —
 // and the Anthropic-overload 529, while deliberately NOT retrying genuinely
@@ -4124,14 +4124,14 @@ const MAX_RETRIES = 5;
 const BASE_DELAY_MS = 1000;
 
 // Abort-responsive `sleep` + its `SleepOptions` now live in the canonical
-// `./utils/sleep` module (parity with Claude Code's utils/sleep.ts) so provider
+// `./utils/sleep` module (parity with the reference's utils/sleep.ts) so provider
 // backoff, the engine, and the control plane share ONE implementation instead of
 // divergent private copies. Re-exported here for existing importers / callers.
 export { sleep } from './utils/sleep';
 export type { SleepOptions } from './utils/sleep';
 
 /**
- * Default heartbeat slice for a long retry backoff. Mirrors Claude Code's
+ * Default heartbeat slice for a long retry backoff. Mirrors the reference's
  * `HEARTBEAT_INTERVAL_MS` (services/api/withRetry.ts): a multi-minute wait is
  * sliced so the host/terminal keeps seeing activity and the UI shows a live
  * countdown instead of a single static "retrying in Xs".
@@ -4193,7 +4193,7 @@ function isOverloadedError(errorText: string): boolean {
  * `extractStatusCode` classifies it as rate-limited, and the Retry-After / reset
  * headers drive the real Retry-After backoff + rate-limit-header display path
  * exactly as a live provider 429 would. Lets the whole rate-limit UX be exercised
- * deterministically without a real throttle (parity: Claude's mock-limits facility).
+ * deterministically without a real throttle (parity: the reference's mock-limits facility).
  */
 function buildMockRateLimitChunk(cfg: MockRateLimitConfig): StreamChunk {
   const retryAfterSeconds = Math.ceil(cfg.retryAfterMs / 1000);
@@ -4215,7 +4215,7 @@ function buildMockRateLimitChunk(cfg: MockRateLimitConfig): StreamChunk {
 // ---------------------------------------------------------------------------
 
 /**
- * Origin tag for a model request, mirroring Claude Code's `QuerySource`
+ * Origin tag for a model request, mirroring the reference's `QuerySource`
  * (constants/querySource.ts). It classifies WHO is blocking on the result so the
  * retry layer can treat a capacity cascade (HTTP 529 overload) differently for a
  * foreground turn — the user (or an in-flight turn) is waiting on it — versus a
@@ -4248,7 +4248,7 @@ export type QuerySource =
  * Foreground query sources that retry on an overload (HTTP 529). Everything NOT in
  * this set — and only a KNOWN source, never `undefined` — suppresses the 529 retry.
  * New sources default to no-retry: add one here only when a human/turn is blocking
- * on its result (parity: Claude Code's `FOREGROUND_529_RETRY_SOURCES`).
+ * on its result (parity: the reference's `FOREGROUND_529_RETRY_SOURCES`).
  */
 export const FOREGROUND_529_RETRY_SOURCES: ReadonlySet<QuerySource> = new Set<QuerySource>([
   'repl_main_thread',
@@ -4262,7 +4262,7 @@ export const FOREGROUND_529_RETRY_SOURCES: ReadonlySet<QuerySource> = new Set<Qu
 
 /**
  * Whether a 529 overload should be retried for the given query source. `undefined`
- * (untagged call paths) → retry, matching Claude Code's `shouldRetry529`: only a
+ * (untagged call paths) → retry, matching the reference's `shouldRetry529`: only a
  * known background source suppresses the overload retry. Does NOT affect 429 or any
  * other status — those always retry per {@link RETRYABLE_STATUS_CODES}.
  */
@@ -4275,7 +4275,7 @@ export function shouldRetry529(querySource: QuerySource | undefined): boolean {
  * response's headers, so a retry/terminal diagnostic can name WHICH intermediary is
  * failing — a Cloudflare 529 vs an Envoy 503 vs a bare origin error point at very
  * different fixes. Returns a short label, or `undefined` when no known fingerprint
- * matches. Header lookup is case-insensitive. Mirrors Claude Code's
+ * matches. Header lookup is case-insensitive. Mirrors the reference's
  * gateway-identification debug logging (services/api/logging.ts).
  */
 export function identifyGateway(headers: Record<string, string> | undefined): string | undefined {
@@ -4296,7 +4296,7 @@ export function identifyGateway(headers: Record<string, string> | undefined): st
   return undefined;
 }
 
-// Context-overflow 400 auto-recovery (parity: Claude Code's withRetry.ts
+// Context-overflow 400 auto-recovery (parity: the reference's withRetry.ts
 // parseMaxTokensContextOverflowError + maxTokensOverride). When the server reports
 // `input length and max_tokens exceed context limit: A + B > C`, recompute a smaller
 // max_tokens from its numbers and retry the SAME request instead of failing the turn
@@ -4330,7 +4330,7 @@ export function parseMaxTokensContextOverflowError(
  * Recompute a reduced max_tokens after a context-overflow 400, or `null` when even
  * the FLOOR won't fit (unrecoverable ⇒ surface the error). availableContext =
  * contextLimit − inputTokens − safetyBuffer, clamped up to {@link FLOOR_OUTPUT_TOKENS}
- * and the thinking-budget floor (+1 output token). Mirrors Claude's maxTokensOverride.
+ * and the thinking-budget floor (+1 output token). Mirrors the reference's maxTokensOverride.
  */
 export function recoverMaxTokensFromContextOverflow(
   overflow: { inputTokens: number; contextLimit: number },
@@ -4379,7 +4379,7 @@ export function isSslError(err: unknown): boolean {
 /**
  * True when the error is a STALE pooled keep-alive socket (ECONNRESET/EPIPE) —
  * the connection was reused after the far end had already dropped it. Mirrors
- * Claude Code's `isStaleConnectionError` (services/api/withRetry.ts:L112-118).
+ * the reference's `isStaleConnectionError` (services/api/withRetry.ts:L112-118).
  * Distinguished from a generic network error because the recovery is different:
  * the dead socket must be dropped (keep-alive disabled, fresh client) before the
  * next attempt, or the retry grabs the same poisoned socket and fails again.
@@ -4395,7 +4395,7 @@ export const DEFAULT_REQUEST_TIMEOUT_MS = 300_000; // 5 minutes
 
 /**
  * Inter-stream-event gap (ms) above which a stream is counted as having STALLED —
- * slow but still alive — distinct from the hard idle-abort. Mirrors Claude Code's
+ * slow but still alive — distinct from the hard idle-abort. Mirrors the reference's
  * `STALL_THRESHOLD_MS` (30s, services/api/claude.ts streaming-stall telemetry).
  * A gap past this is logged as a diagnostic breadcrumb and summarized at stream
  * end; it never aborts the stream (only the idle watchdog does that).
@@ -4404,7 +4404,7 @@ export const STREAM_STALL_THRESHOLD_MS = 30_000;
 
 /**
  * Resolve the per-request timeout (ms) from the environment. Prefers AMI's own
- * SUPERINFERENCE_API_TIMEOUT_MS and falls back to Claude Code's API_TIMEOUT_MS
+ * SUPERINFERENCE_API_TIMEOUT_MS and falls back to the reference's API_TIMEOUT_MS
  * name for parity. Returns a non-positive value (0 / NaN-coerced) when neither
  * is a usable number so the caller applies DEFAULT_REQUEST_TIMEOUT_MS.
  */
@@ -4415,7 +4415,7 @@ export function envApiTimeoutMs(env: NodeJS.ProcessEnv): number {
 
 /**
  * Build the user-facing request-timeout error, naming the configurable env var
- * and the current limit so the message is actionable (mirrors Claude Code's
+ * and the current limit so the message is actionable (mirrors the reference's
  * "try increasing it" affordance) instead of a bare duration.
  */
 export function formatTimeoutError(timeoutMs: number, partial: boolean): string {
@@ -4430,7 +4430,7 @@ export function formatTimeoutError(timeoutMs: number, partial: boolean): string 
  * self-service: a custom CA bundle ({@link MTLS_ENV.ca}) for a corporate CA already
  * trusted by the OS but not exported as a PEM file, and client-certificate / mutual
  * TLS ({@link MTLS_ENV.cert}/{@link MTLS_ENV.key}) for a gateway that rejects the
- * handshake for lack of a client cert. Mirrors Claude Code's caCerts.ts / mtls.ts
+ * handshake for lack of a client cert. Mirrors the reference's caCerts.ts / mtls.ts
  * remedy enumeration.
  */
 export function formatSslError(original: string): string {
@@ -4444,7 +4444,7 @@ export function formatSslError(original: string): string {
   );
 }
 // ---------------------------------------------------------------------------
-// Non-streaming request fallback (Claude parity: executeNonStreamingRequest).
+// Non-streaming request fallback (the reference parity: executeNonStreamingRequest).
 //
 // Some gateways/proxies break SSE streaming — they answer a stream request with a
 // 200 + non-SSE body (surfaced as EMPTY_STREAM_ERROR) or a 404 on the streaming
@@ -4456,7 +4456,7 @@ export function formatSslError(original: string): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Hard cap on `max_tokens` for a non-streaming fallback request (Claude parity:
+ * Hard cap on `max_tokens` for a non-streaming fallback request (the reference parity:
  * `MAX_NON_STREAMING_TOKENS`). A single non-streaming response has no incremental
  * delivery, so a huge budget risks a long opaque wait or a server-side cap; the
  * fallback is a recovery path, not the primary long-generation path, so its output
@@ -4465,7 +4465,7 @@ export function formatSslError(original: string): string {
 export const MAX_NON_STREAMING_TOKENS = 21_333;
 
 /**
- * Per-attempt timeout (ms) for the non-streaming fallback request (Claude parity:
+ * Per-attempt timeout (ms) for the non-streaming fallback request (the reference parity:
  * `getNonstreamingFallbackTimeoutMs`): 120s against a remote endpoint, 300s for a
  * local one (a local model has no network RTT but is slower per token). A local
  * endpoint is a loopback/private-host base URL. Overridable via
@@ -4505,7 +4505,7 @@ export function nonStreamingFallbackEnabled(
 
 /**
  * Clamp a request's `maxTokens` to {@link MAX_NON_STREAMING_TOKENS} for the
- * non-streaming fallback (Claude parity: `adjustParamsForNonStreaming`). Returns a
+ * non-streaming fallback (the reference parity: `adjustParamsForNonStreaming`). Returns a
  * NEW config (never mutates the caller's). An absent/larger budget is capped; a
  * smaller one is left as-is so a deliberately tiny request is respected.
  */
@@ -4616,7 +4616,7 @@ export async function* streamChatCompletionWithRetry(
   // Dev/test knob (AMI_MOCK_RATE_LIMIT): inject synthetic 429 rate-limit responses
   // ahead of the real request so the whole rate-limit path (classification, the
   // approaching/at-limit warning, Retry-After backoff, the retry loop) can be
-  // exercised deterministically without a live provider 429 — parity with Claude
+  // exercised deterministically without a live provider 429 — parity with the reference
   // Code's shouldProcessMockLimits()/`/mock-limits`. Byte-identical when unset: the
   // real stream impl is used directly. The one-shot counter persists across the
   // retry-loop attempts of THIS call, so the injected 429s drain and the real
@@ -4677,7 +4677,7 @@ export async function* streamChatCompletionWithRetry(
   // A short delay sleeps once and fires nothing extra (unchanged). `attempt+1` and
   // `status` mirror the single pre-sleep onRetry call so every event is consistent.
   // `status` is `null` for a connection-level failure that produced NO HTTP response
-  // (timeout / network drop), distinct from `0`/a real HTTP status (parity: Claude's
+  // (timeout / network drop), distinct from `0`/a real HTTP status (parity: the reference's
   // SDKAPIRetryMessage `error_status: number | null`).
   const waitBeforeRetry = (delayMs: number, attempt: number, status: number | null, kind: RetryErrorKind): Promise<void> =>
     sleepWithRetryHeartbeat(
@@ -4716,7 +4716,7 @@ export async function* streamChatCompletionWithRetry(
     // stream has gone quiet — BEFORE the hard idle-abort kills it. (2) Inter-chunk
     // gaps past STREAM_STALL_THRESHOLD_MS are counted/summed and logged, so a stream
     // that is slow yet still delivering chunks is diagnosable, separate from the
-    // abort. Neither aborts the stream (parity: Claude Code's streaming idle warning
+    // abort. Neither aborts the stream (parity: the reference's streaming idle warning
     // + tengu_streaming_stall / tengu_streaming_stall_summary telemetry).
     let idleWarnTimer: ReturnType<typeof setTimeout> | undefined;
     // Clock seam: defaults to Date.now so production timing is unchanged; tests
@@ -4772,7 +4772,7 @@ export async function* streamChatCompletionWithRetry(
         // Context-overflow 400 auto-recovery: the server reports input + max_tokens
         // exceed the context limit (its accounting disagreed with our preemptive
         // fitOutputTokens). Recompute a SMALLER max_tokens from the server's numbers
-        // and retry the SAME request instead of failing the turn, mirroring Claude
+        // and retry the SAME request instead of failing the turn, mirroring the reference
         // Code's parseMaxTokensContextOverflowError + maxTokensOverride recovery.
         if (statusCode === 400 && attempt < maxRetries) {
           const overflow = parseMaxTokensContextOverflowError(chunk.error);
@@ -4794,7 +4794,7 @@ export async function* streamChatCompletionWithRetry(
         // max_tokens-exceed 400 handled just above. Stop immediately with a distinct
         // non-retry diagnostic naming the token counts, even when a gateway sends
         // x-should-retry:true (which would otherwise hammer a deterministic failure).
-        // Mirrors Claude Code's detectPromptTooLong special-casing.
+        // Mirrors the reference's detectPromptTooLong special-casing.
         if (statusCode === 400) {
           const tooLong = detectPromptTooLong(chunk.error ?? '');
           if (tooLong) {
@@ -4819,7 +4819,7 @@ export async function* streamChatCompletionWithRetry(
         const bodyOverloaded = statusCode === null && isOverloadedError(chunk.error ?? '');
         // An empty/degenerate stream (streamChatCompletion's EMPTY_STREAM_ERROR
         // sentinel) is a transient proxy failure — retry it with backoff, matching
-        // Claude's non-streaming-fallback-on-empty-stream behavior.
+        // the reference's non-streaming-fallback-on-empty-stream behavior.
         const emptyStream = statusCode === null && isEmptyStreamError(chunk.error);
         // Overload (529) foreground/background gating: a 529 (parsed status OR a
         // body-detected overloaded_error) is retried only for foreground sources.
@@ -4843,7 +4843,7 @@ export async function* streamChatCompletionWithRetry(
             return;
           }
 
-          // Per-attempt diagnostic (parity: Claude Code's `API error (attempt X/Y)`
+          // Per-attempt diagnostic (parity: the reference's `API error (attempt X/Y)`
           // logForDebugging): record the status + sanitized reason tied to the attempt
           // number so a human reading the debug log can tell WHY it is retrying
           // (overloaded_error vs 429 vs ECONNRESET vs timeout), not just a number.
@@ -4874,7 +4874,7 @@ export async function* streamChatCompletionWithRetry(
           // statusCode is null when the retry was forced by x-should-retry:true on an
           // error with no parsed HTTP status (a connection-level failure that produced
           // no HTTP response); the callback receives `null` for that case so a consumer
-          // can distinguish it from a real HTTP status (parity: Claude's
+          // can distinguish it from a real HTTP status (parity: the reference's
           // SDKAPIRetryMessage `error_status: number | null`). A body-detected overload
           // reports as 529 so the callback sees the overload it is actually retrying.
           const retryStatus = statusCode ?? (bodyOverloaded ? OVERLOADED_ERROR_STATUS : null);
@@ -4978,7 +4978,7 @@ export async function* streamChatCompletionWithRetry(
       if (idleTimer) clearTimeout(idleTimer);
       if (idleWarnTimer) clearTimeout(idleWarnTimer);
       // Completion summary when the stream stalled at least once while still alive
-      // (parity: Claude Code's tengu_streaming_stall_summary) — explains why a turn
+      // (parity: the reference's tengu_streaming_stall_summary) — explains why a turn
       // felt slow without conflating it with the hard idle-abort.
       if (stallCount > 0) {
         log('api', `Streaming stall summary: ${stallCount} stall(s), ${Math.round(totalStallMs / 1000)}s total stalled`, undefined, 'warn');

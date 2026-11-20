@@ -16,13 +16,13 @@ export class SuperInferenceEngine {
     this.config = { ...DEFAULT_CONFIG, ...config };
     // Env kill switch: force the proxy critic when the LLM critic is disabled via
     // CLAUDE_CODE_DISABLE_CRITIC / SUPERINFERENCE_DISABLE_CRITIC, so the engine's
-    // existing `useLLMCritic` gate skips the auxiliary model call. Parity: Claude's
+    // existing `useLLMCritic` gate skips the auxiliary model call. Parity: the reference's
     // advisor CLAUDE_CODE_DISABLE_ADVISOR_TOOL override.
     if (isCriticDisabledByEnv()) {
       this.config = { ...this.config, useLLMCritic: false };
     }
     this.belief = new BeliefTracker(this.config);
-    // Thread the dedicated reviewer model (parity: Claude's advisor `advisorModel`) into
+    // Thread the dedicated reviewer model (parity: the reference's advisor `advisorModel`) into
     // the critic so Critic.evaluate() runs on it instead of always inheriting the main
     // loop model. '' (default) keeps inheriting the caller's model.
     this.critic = new Critic(this.config.criticAlpha, this.config.criticBeta, undefined, this.config.criticModel);

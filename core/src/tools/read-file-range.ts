@@ -23,7 +23,7 @@
  *   true: caps SELECTED OUTPUT at maxBytes, stopping at the last complete line
  *     that fits and setting `truncatedByBytes` in the result. Never throws.
  *
- * Mirrors Claude Code's utils/readFileInRange.ts (fast/streaming dichotomy,
+ * Mirrors the reference's utils/readFileInRange.ts (fast/streaming dichotomy,
  * FAST_PATH_MAX_SIZE, maxBytes + truncateOnByteLimit + truncatedByBytes,
  * bounded-memory single-line discard, accurate totalLines/totalBytes/readBytes).
  */
@@ -55,7 +55,7 @@ export interface ReadFileRangeResult {
  * Thrown (in the default, non-truncate mode) when a file's size or total
  * streamed bytes exceed the `maxBytes` budget, so a caller can surface an
  * actionable "use offset/limit" error instead of loading an unbounded file into
- * memory. Mirrors Claude Code's FileTooLargeError.
+ * memory. Mirrors the reference's FileTooLargeError.
  */
 export class FileTooLargeError extends Error {
   constructor(
@@ -310,7 +310,7 @@ function readFileInRangeStreaming(
  * `content` is a flat UTF-8 string decoded from an owned buffer (no sliced-parent
  * retention), `bytesRead` is how many bytes were actually decoded, and `bytesTotal`
  * is the file's full size at read time. Distinct from {@link ReadFileRangeResult},
- * which is line-oriented. Mirrors Claude Code's ByteRange read result
+ * which is line-oriented. Mirrors the reference's ByteRange read result
  * (utils/fsOperations.ts readFileRange/tailFile).
  */
 export interface ByteRangeResult {
@@ -327,7 +327,7 @@ export interface ByteRangeResult {
  * looping across short reads (a single `read()` may return fewer bytes than asked)
  * and stopping early on EOF (`bytesRead === 0`). Returns the number of bytes landed
  * in `buffer`. Shared by {@link readFileRange} and {@link tailFile} so the
- * short-read loop exists in ONE place. Mirrors Claude Code's read-loop in
+ * short-read loop exists in ONE place. Mirrors the reference's read-loop in
  * fsOperations.ts.
  */
 async function drainExact(
@@ -351,7 +351,7 @@ async function drainExact(
  * flat UTF-8 string copied out of an owned buffer (so no reference to a larger
  * parent is retained), or `null` when the file is smaller than or equal to the
  * requested `offset` (nothing to read there). Uses a short-read loop so a partial
- * `read()` still fills the buffer. Mirrors Claude Code's readFileRange
+ * `read()` still fills the buffer. Mirrors the reference's readFileRange
  * (utils/fsOperations.ts).
  */
 export async function readFileRange(
@@ -376,7 +376,7 @@ export async function readFileRange(
  * Read only the LAST `maxBytes` bytes of `filePath` (offset = max(0, size-maxBytes)),
  * so viewing the end of a huge log/journal never loads the whole file. Returns the
  * entire file when it is smaller than `maxBytes`, and an empty result for a 0-byte
- * file. Uses the same short-read loop as {@link readFileRange}. Mirrors Claude
+ * file. Uses the same short-read loop as {@link readFileRange}. Mirrors the reference
  * Code's tailFile (utils/fsOperations.ts).
  */
 export async function tailFile(filePath: string, maxBytes: number): Promise<ByteRangeResult> {

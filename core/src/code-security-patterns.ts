@@ -13,7 +13,7 @@ export interface SecurityPattern {
   excludeExtensions?: string[];
   severity: SecuritySeverity;
   message: string;
-  // PARITY (security-review.ts:112-123): Claude's finding format is structured —
+  // PARITY (security-review.ts:112-123): the reference's finding format is structured —
   // file, line, severity, CATEGORY, description, exploit scenario, and a separate
   // fix RECOMMENDATION. AMI previously collapsed description+fix into `message`
   // only. `category` is a stable machine-readable class slug (e.g. 'xss',
@@ -129,7 +129,7 @@ export const SECURITY_PATTERNS: SecurityPattern[] = [
   },
   // PARITY (security-review.ts PRECEDENTS #6): a `javascript:` URI in an href/src/
   // action attribute is an XSS vector, but it is NOT an unsafe-method form, so it
-  // is suppressed in React (.jsx/.tsx) per Claude's precedent while still firing
+  // is suppressed in React (.jsx/.tsx) per the reference's precedent while still firing
   // in plain HTML/JS/TS.
   {
     id: 'javascript_uri_xss',
@@ -313,7 +313,7 @@ export const SECURITY_PATTERNS: SecurityPattern[] = [
     message: 'cleartext http:// URL is subject to interception/tampering — use https://',
     remediation: 'Use an https:// URL so the traffic is encrypted and tamper-evident.',
   },
-  // PARITY (security-review.ts:69-74): Claude's security review treats "Hardcoded
+  // PARITY (security-review.ts:69-74): the reference's security review treats "Hardcoded
   // API keys, passwords, or tokens" as a first-class HIGH-severity category.
   // These two detectors cover (a) well-known provider key *formats* and (b)
   // credential-shaped *assignments* to inline string literals.

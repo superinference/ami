@@ -3,7 +3,7 @@
  *
  * Resolves an LSP `(line, character)` coordinate into the identifier/word at that
  * spot so a message can show a meaningful `symbol: foo` label instead of a bare
- * `line:char` position. Mirrors Claude Code's `getSymbolAtPosition`
+ * `line:char` position. Mirrors the reference's `getSymbolAtPosition`
  * (tools/LSPTool/symbolContext.ts) and is defensive through the same lens:
  *   1. BOUNDARY — reads only the first {@link MAX_READ_BYTES} of the file (never
  *      the whole thing) so a huge file can't blow up a synchronous render path.
@@ -28,7 +28,7 @@ import { log } from '../logger';
  * Bounded read window (64KB). Most diagnostics/hover targets sit near recent
  * edits, so 64KB (~1000 lines of typical code) covers the common case without
  * ever streaming a multi-hundred-MB file into a synchronous render. Matches
- * Claude Code's `MAX_READ_BYTES`.
+ * the reference's `MAX_READ_BYTES`.
  */
 export const MAX_READ_BYTES = 64 * 1024;
 
@@ -40,7 +40,7 @@ export const MAX_SYMBOL_LENGTH = 30;
  *   - identifiers: alphanumeric + `_` + `$`
  *   - Rust lifetimes / macros: `'a`, `'static`, `name!`
  *   - operator runs: `+`, `-`, `*`, `==`, `<=`, …
- * Mirrors Claude Code's inclusive `symbolPattern` so the same coordinate yields
+ * Mirrors the reference's inclusive `symbolPattern` so the same coordinate yields
  * the same label AMI-side.
  */
 const SYMBOL_PATTERN = /[\w$'!]+|[+\-*/%&|^~<>=]+/g;
@@ -124,7 +124,7 @@ export function getSymbolAtPosition(
  * Resolve the symbol at a USER-FACING 1-based `(line, character)` — the coordinate
  * form editors and the LSP tool's `line`/`character` inputs use — by converting to
  * the 0-based protocol indices {@link getSymbolAtPosition} expects (`line-1`,
- * `character-1`) and delegating. Mirrors Claude Code's `getSymbolAtPosition`
+ * `character-1`) and delegating. Mirrors the reference's `getSymbolAtPosition`
  * call-site conversion (tools/LSPTool/UI.tsx: `getSymbolAtPosition(filePath,
  * line-1, character-1)`), consolidating the off-by-one into ONE place so every
  * 1-based caller resolves the same symbol instead of re-deriving the conversion.

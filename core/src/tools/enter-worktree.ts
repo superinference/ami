@@ -8,7 +8,7 @@ import { computeDefaultBranch, findRemoteBase, isShallowClone, readWorktreeHeadS
 const SLUG_SEGMENT_RE = /^[a-zA-Z0-9._-]+$/;
 
 /**
- * Non-interactive git environment (parity with Claude's centralized
+ * Non-interactive git environment (parity with the reference's centralized
  * GIT_NO_PROMPT_ENV): applied to EVERY git subprocess so a repo whose remote
  * needs auth can never block the synchronous call on an interactive credential /
  * terminal prompt and hang the engine. Merged OVER the caller's env so a provided
@@ -18,7 +18,7 @@ const GIT_NO_PROMPT_ENV = { GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: '' } as const
 
 /**
  * Hard upper bound applied to EVERY git subprocess that does not pass a shorter,
- * explicit timeout (parity with Claude's execFileNoThrow 10-minute default). A
+ * explicit timeout (parity with the reference's execFileNoThrow 10-minute default). A
  * wedged git process (e.g. a hung network fetch) therefore always terminates
  * instead of hanging the tool — and the engine — indefinitely.
  */
@@ -26,7 +26,7 @@ const DEFAULT_GIT_TIMEOUT_MS = 10 * 60 * 1000;
 
 /**
  * Generous default stdout cap applied to EVERY captured git subprocess (parity
- * with Claude's centralized execFileNoThrow `maxBuffer` default). Node's bare
+ * with the reference's centralized execFileNoThrow `maxBuffer` default). Node's bare
  * `execFileSync` cap is 1 MiB; a repo with very many registered worktrees makes
  * `git worktree list --porcelain` exceed it and throw an opaque ENOBUFS that
  * truncates the capture. Bounding it here (and still handling overflow in the
@@ -48,7 +48,7 @@ export interface GitExecOpts {
 }
 
 /**
- * Human-readable default worktree name (parity with Claude's EnterWorktreeTool
+ * Human-readable default worktree name (parity with the reference's EnterWorktreeTool
  * `input.name ?? getPlanSlug()` default — when the model omits `name`, derive a
  * memorable word slug like "graceful-unicorn" instead of an opaque random-hex
  * name, so auto-created worktrees are easy to recognise in `git worktree list`).
@@ -97,7 +97,7 @@ export function buildGitExecOptions(
 /**
  * Run git with NO SHELL (execFile with an argv array) so a branch name, path, or
  * ref can never be interpreted as a shell metacharacter (command-injection
- * immune — parity with worktree-manager's gitExec and Claude's
+ * immune — parity with worktree-manager's gitExec and the reference's
  * execFileNoThrowWithCwd). Every call is time-bounded, non-interactive, and
  * cancellable via {@link buildGitExecOptions}. Returns trimmed stdout.
  */
@@ -116,7 +116,7 @@ function runGit(args: string[], opts: GitExecOpts = { cwd: process.cwd() }): str
  */
 export const _enterWorktreeHooks = {
   exec: runGit,
-  /** Human-readable default-name generator (parity with Claude's getPlanSlug
+  /** Human-readable default-name generator (parity with the reference's getPlanSlug
    *  default). Delegates to the shared words corpus; a mockable seam property so
    *  tests can force a deterministic / colliding slug without monkeypatching the
    *  frozen `../words` ESM namespace. */
@@ -130,7 +130,7 @@ export const _enterWorktreeHooks = {
   symlinkLargeDirs: (sourceCwd: string, worktreePath: string, dirs?: string[]): string[] =>
     require('../worktree-manager').symlinkLargeDirectories(sourceCwd, worktreePath, dirs),
   /** Derive a readable kebab-case worktree/branch slug from a free-form task
-   *  description via a deterministic auxiliary model call (parity with Claude's
+   *  description via a deterministic auxiliary model call (parity with the reference's
    *  teleport generateTitleAndBranch). Routed through the seam so tests can inject
    *  a deterministic slug (or a failure) without a live provider. Delegates to the
    *  canonical generateBranchName in title-generator (one branch-naming impl). */
@@ -141,7 +141,7 @@ export const _enterWorktreeHooks = {
   ): Promise<string> =>
     require('../title-generator').generateBranchName(
       description, provider, undefined, undefined, signal,
-      // Introspection sink (parity: Claude's logResult): record the structured
+      // Introspection sink (parity: the reference's logResult): record the structured
       // outcome of the branch-name background query so a failed/aborted/unparseable
       // slug generation is observable instead of silently collapsing to the fallback.
       (r: import('../title-generator').AuxQueryResult) => {
@@ -154,7 +154,7 @@ export const _enterWorktreeHooks = {
 
 /**
  * Resolve the opt-in `settings.worktree.symlinkDirectories` list (parity with
- * Claude's `getInitialSettings().worktree?.symlinkDirectories`). Project config
+ * the reference's `getInitialSettings().worktree?.symlinkDirectories`). Project config
  * (`<cwd>/.ami/config.json`) takes precedence over the global config
  * (`~/.ami/config.json`); either may configure the list. Returns `undefined` when
  * NEITHER tier configures the key, so the caller keeps AMI's default of symlinking
@@ -174,7 +174,7 @@ function resolveSymlinkDirs(cwd: string): string[] | undefined {
 
 /**
  * Resolve the opt-in `settings.worktree.sparsePaths` cone-mode allow-list (parity
- * with Claude's `getInitialSettings().worktree?.sparsePaths`). Project config
+ * with the reference's `getInitialSettings().worktree?.sparsePaths`). Project config
  * (`<cwd>/.ami/config.json`) takes precedence over the global config
  * (`~/.ami/config.json`). Returns `undefined` when NEITHER tier configures a
  * non-empty list, so the caller does a normal full checkout. A configured
@@ -196,7 +196,7 @@ function resolveSparsePaths(cwd: string): string[] | undefined {
 }
 
 /**
- * Resolve the opt-in `settings.worktree.tmux` toggle (parity with Claude's
+ * Resolve the opt-in `settings.worktree.tmux` toggle (parity with the reference's
  * `--tmux` worktree mode). Project config (`<cwd>/.ami/config.json`) takes
  * precedence over the global config (`~/.ami/config.json`); either may enable it.
  * Returns true only when a tier sets it to exactly `true`; ABSENT / false / an
@@ -235,7 +235,7 @@ function getDefaultBranch(cwd: string, signal?: AbortSignal): string {
 }
 
 /**
- * Resolve the canonical MAIN-repo root for `cwd` (parity with Claude's
+ * Resolve the canonical MAIN-repo root for `cwd` (parity with the reference's
  * findCanonicalGitRoot): the working-tree directory that owns the shared git
  * common dir. `git rev-parse --path-format=absolute --git-common-dir` resolves to
  * the MAIN repo's `.git` (shared by every linked worktree), so its parent is the
@@ -259,7 +259,7 @@ function resolveMainRepoRoot(cwd: string, signal?: AbortSignal): string {
 /**
  * Non-git fallback: create (or enter) a worktree by delegating to a configured
  * WorktreeCreate hook so worktree isolation works with VCS systems other than
- * git (parity with Claude's hook-based createWorktreeForSession / setup.ts
+ * git (parity with the reference's hook-based createWorktreeForSession / setup.ts
  * non-git branch). The hook is responsible for the actual on-disk isolation; we
  * only await it, verify the target materialised, then switch the session into it
  * (recording a `hookBased` worktree session). With no WorktreeCreate hook
@@ -287,7 +287,7 @@ async function createViaWorktreeHook(
     return { output: 'Error: base_ref requires a git repository (a hook-based worktree cannot resolve a git ref).', isError: true };
   }
   // A pull request is fetched from a git remote, so it cannot seed a non-git,
-  // hook-based worktree (parity: Claude's PR path is git-only via `git fetch origin pull/N/head`).
+  // hook-based worktree (parity: the reference's PR path is git-only via `git fetch origin pull/N/head`).
   if (prProvided) {
     return { output: 'Error: pr requires a git repository (a hook-based worktree cannot fetch a pull request).', isError: true };
   }
@@ -322,7 +322,7 @@ async function createViaWorktreeHook(
   }
   // A provider hook may report the worktree path it actually created (stdout or
   // hookSpecificOutput.worktreePath); use it as the created worktree instead of
-  // the default `.ami/worktrees/<slug>` location (Claude Code parity).
+  // the default `.ami/worktrees/<slug>` location (the reference parity).
   const effectiveDir = hookResult?.worktreePath ? path.resolve(hookResult.worktreePath) : worktreeDir;
   const effectiveName = hookResult?.worktreePath ? path.basename(effectiveDir) : flatSlug;
   // The hook owns creation; if it did not materialise the directory, fail loud
@@ -362,7 +362,7 @@ function switchHookSession(
 }
 
 /**
- * Fast-resume an already-existing, registered worktree (parity with Claude's
+ * Fast-resume an already-existing, registered worktree (parity with the reference's
  * getOrCreateWorktree `existed: true` path): re-establish the worktree session and
  * switch the context cwd into it WITHOUT any fetch or `git worktree add`. The caller
  * has already confirmed the dir is a valid worktree (its HEAD SHA was read directly
@@ -416,7 +416,7 @@ function resumeExistingWorktree(
     warnLines;
   return {
     output: resumedMessage,
-    // `existed: true` mirrors Claude's getOrCreateWorktree result so a programmatic
+    // `existed: true` mirrors the reference's getOrCreateWorktree result so a programmatic
     // consumer can tell a resume from a fresh creation.
     metadata: { worktreePath: worktreeDir, worktreeBranch: branchName, message: resumedMessage, existed: true },
   };
@@ -458,7 +458,7 @@ export const enterWorktreeTool: ToolDefinition = {
       },
     },
   },
-  // Structured result shape (parity: Claude's EnterWorktreeTool `outputSchema`
+  // Structured result shape (parity: the reference's EnterWorktreeTool `outputSchema`
   // returning `{worktreePath, worktreeBranch?, message}`). A frontend / resume
   // path can consume the machine-readable fields carried on `metadata` alongside
   // the human text. Object-root (ToolInputSchema) so it passes the provider's
@@ -475,7 +475,7 @@ export const enterWorktreeTool: ToolDefinition = {
   },
   isReadOnly: false,
 
-  // Compact projection fed to the auto-mode security classifier (parity: Claude's
+  // Compact projection fed to the auto-mode security classifier (parity: the reference's
   // EnterWorktreeTool `toAutoClassifierInput(input) => input.name ?? ''`). The
   // auto-approval decision keys on the actual worktree name the model requested
   // rather than the full argument blob; a non-string/omitted name projects to ''
@@ -490,7 +490,7 @@ export const enterWorktreeTool: ToolDefinition = {
       return { output: `Error: unknown parameter(s): ${unknown.join(', ')}.`, isError: true };
     }
 
-    // Honor cancellation (parity with Claude threading abortSignal into every git
+    // Honor cancellation (parity with the reference threading abortSignal into every git
     // exec): short-circuit before doing any git work if the turn is already
     // aborted, and thread `signal` into every git subprocess below so a
     // cancellation kills the in-flight process rather than letting it run on.
@@ -547,7 +547,7 @@ export const enterWorktreeTool: ToolDefinition = {
     }
 
     // Parse the PR reference up front so an unrecognized value fails before any git
-    // work (parity: Claude's parsePRReference accepts a PR URL or "#N").
+    // work (parity: the reference's parsePRReference accepts a PR URL or "#N").
     let prNumber: number | null = null;
     if (prProvided) {
       const { parsePRReference } = require('../worktree-manager');
@@ -566,7 +566,7 @@ export const enterWorktreeTool: ToolDefinition = {
 
     if (!insideGit) {
       // Outside a git repository, VCS-agnostic isolation is still possible when
-      // the operator has configured a WorktreeCreate hook (parity with Claude's
+      // the operator has configured a WorktreeCreate hook (parity with the reference's
       // createWorktreeForSession hook delegation and setup.ts's non-git
       // fallback): the hook performs the actual VCS-specific worktree creation.
       // With no such hook we fail loud and NAME the cwd so the user knows which
@@ -587,7 +587,7 @@ export const enterWorktreeTool: ToolDefinition = {
         return { output: `Error: path "${existingPath}" does not exist.`, isError: true };
       }
       try {
-        // Bound the captured output with a generous maxBuffer (parity with Claude's
+        // Bound the captured output with a generous maxBuffer (parity with the reference's
         // execFileNoThrow maxBuffer): a repo with very many registered worktrees would
         // otherwise exceed Node's 1 MiB default and throw an opaque ENOBUFS mid-capture.
         const list = _enterWorktreeHooks.exec(['worktree', 'list', '--porcelain'], { cwd: context.cwd, timeout: 5000, signal, maxBuffer: DEFAULT_GIT_MAX_BUFFER });
@@ -620,7 +620,7 @@ export const enterWorktreeTool: ToolDefinition = {
         }
         return { output: `Error listing worktrees: ${e instanceof Error ? e.message : String(e)}`, isError: true };
       }
-      // Name the branch the entered worktree is on (parity with Claude's
+      // Name the branch the entered worktree is on (parity with the reference's
       // "on branch <branch>" worktree messages). The worktree's live HEAD is the
       // ground truth; best-effort — a detached HEAD or a rev-parse failure simply
       // omits the branch label rather than failing the entry.
@@ -644,13 +644,13 @@ export const enterWorktreeTool: ToolDefinition = {
     // Resolve the canonical MAIN-repo root once, up front: all worktree creation
     // (the worktrees base, the new worktree dir, and every git invocation below)
     // operates against this root so a worktree created from a SUBDIRECTORY of the
-    // repo still lands in the repo root's .ami/worktrees/ (parity with Claude's
+    // repo still lands in the repo root's .ami/worktrees/ (parity with the reference's
     // findCanonicalGitRoot). A nested-worktree cwd was already rejected by the
     // guard above, so this only redirects the subdirectory case; when cwd is
     // already the repo root, repoRoot === context.cwd (no behavioral change).
     const repoRoot = resolveMainRepoRoot(context.cwd, signal);
 
-    // Descriptive auto-name (parity with Claude's teleport generateTitleAndBranch):
+    // Descriptive auto-name (parity with the reference's teleport generateTitleAndBranch):
     // when the model supplies a task `description` (and no explicit name/pr) and a
     // provider is available, derive a readable kebab-case slug from it instead of a
     // random word slug. Any failure (no provider, LLM/parse error) is swallowed so
@@ -668,7 +668,7 @@ export const enterWorktreeTool: ToolDefinition = {
     }
 
     // Default name: an explicit name wins; otherwise a description-derived slug, then
-    // a PR reference names the worktree `pr-<N>` (parity with Claude), falling back to
+    // a PR reference names the worktree `pr-<N>` (parity with the reference), falling back to
     // a memorable word slug.
     const slug = name || derivedName || (prNumber != null ? `pr-${prNumber}` : defaultWorktreeName(path.join(repoRoot, '.ami', 'worktrees')));
     if (!validateSlug(slug)) {
@@ -687,14 +687,14 @@ export const enterWorktreeTool: ToolDefinition = {
     // directory-form ref `worktree/user/feature` that collides (D/F conflict)
     // with the file-form ref `worktree/user` git refuses to hold simultaneously.
     // Flattening both path and branch to a single `user+feature` segment removes
-    // both hazards (parity with Claude's worktreePathFor/flattenSlug). The shared
+    // both hazards (parity with the reference's worktreePathFor/flattenSlug). The shared
     // flattenSlug helper is reused so there is one canonical flattening.
     const flatSlug: string = flattenSlug(slug);
 
     const worktreesBase = path.join(repoRoot, '.ami', 'worktrees');
     const worktreeDir = path.join(worktreesBase, flatSlug);
 
-    // Fast-resume (parity with Claude's getOrCreateWorktree existed-path): a named
+    // Fast-resume (parity with the reference's getOrCreateWorktree existed-path): a named
     // worktree reuses the same on-disk path across invocations, so when the computed
     // dir ALREADY exists and is a valid registered worktree, re-establish its session
     // and switch into it instead of hard-erroring — enter_worktree is idempotent by
@@ -756,10 +756,10 @@ export const enterWorktreeTool: ToolDefinition = {
         return { output: `Error: base_ref "${requestedBaseRef}" is not a valid git ref (branch/tag/commit).${shallowHint}`, isError: true };
       }
     }
-    // PR base (parity with Claude's getOrCreateWorktree({prNumber})): fetch the PR
+    // PR base (parity with the reference's getOrCreateWorktree({prNumber})): fetch the PR
     // head from origin and base the new worktree on FETCH_HEAD. The fetch is the
     // only network step; its failure is surfaced with the same actionable wording
-    // Claude uses (the PR may not exist, or there may be no "origin" remote).
+    // the reference uses (the PR may not exist, or there may be no "origin" remote).
     let prBaseRef: string | undefined;
     if (prNumber != null) {
       try {
@@ -800,7 +800,7 @@ export const enterWorktreeTool: ToolDefinition = {
         baseRef = `origin/${defaultBranch}`;
       }
     }
-    // Opt-in sparse-checkout (parity: Claude's getOrCreateWorktree sparsePaths path,
+    // Opt-in sparse-checkout (parity: the reference's getOrCreateWorktree sparsePaths path,
     // worktree.ts L321-366). When configured, the worktree is added with
     // `--no-checkout` so NO files land yet; the cone is then narrowed and HEAD
     // checked out below, so only the listed subtrees materialise.
@@ -873,7 +873,7 @@ export const enterWorktreeTool: ToolDefinition = {
     } catch (e) {
       // Post-add setup failed: `git worktree add` already registered the worktree
       // on disk and reset the branch, but the session/symlink wiring is broken.
-      // Tear the half-created worktree down (parity with Claude's tearDown in
+      // Tear the half-created worktree down (parity with the reference's tearDown in
       // createWorktree — remove --force then drop the branch) so a broken
       // worktree is never left behind to be mistaken for a healthy one on the
       // next fast-resume. Both teardown steps are best-effort; the clearing of
@@ -898,7 +898,7 @@ export const enterWorktreeTool: ToolDefinition = {
       context._hookManager.executeCwdChanged?.({ oldCwd: originalCwd, newCwd: worktreeDir }).catch(() => {});
     }
 
-    // Opt-in tmux session (parity: Claude's `--tmux` worktree mode, setup.ts
+    // Opt-in tmux session (parity: the reference's `--tmux` worktree mode, setup.ts
     // L220-269). When settings.worktree.tmux is enabled, spawn a DETACHED tmux
     // session rooted at the worktree and surface the copy-paste reattach command.
     // A failure (tmux not installed, spawn error) is NON-fatal: the worktree is
@@ -921,7 +921,7 @@ export const enterWorktreeTool: ToolDefinition = {
     const baseLabel = prNumber != null ? `PR #${prNumber}` : baseRef;
     // Stale-clone diagnostic: when the worktree was based on the default remote
     // ref (no explicit base_ref / PR) and the clone has not fetched recently, warn
-    // that the base may be out of date (parity: Claude's FETCH_HEAD staleness
+    // that the base may be out of date (parity: the reference's FETCH_HEAD staleness
     // signal). Best-effort — a git failure simply omits the hint.
     let staleHint = '';
     try {
@@ -942,7 +942,7 @@ export const enterWorktreeTool: ToolDefinition = {
       staleHint + warnLines + tmuxLine;
     return {
       output: createdMessage,
-      // Structured fields (parity: Claude's outputSchema result) for programmatic
+      // Structured fields (parity: the reference's outputSchema result) for programmatic
       // consumers; mirrors the text above.
       metadata: {
         worktreePath: worktreeDir,

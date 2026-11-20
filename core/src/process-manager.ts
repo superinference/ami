@@ -25,9 +25,9 @@ export function formatByteCap(bytes: number): string {
 }
 
 /**
- * SECURITY (parity with Claude Code's generateTaskId): build a task id with enough
+ * SECURITY (parity with the reference's generateTaskId): build a task id with enough
  * entropy to resist a brute-force symlink attack on the derived output-file path.
- * Claude draws randomBytes(8); AMI previously used randomBytes(4) (2^32 ≈ 4.3B —
+ * the reference draws randomBytes(8); AMI previously used randomBytes(4) (2^32 ≈ 4.3B —
  * ~1/650th the entropy). We draw 8 random bytes (2^64) rendered as hex behind a
  * short, self-describing type prefix (e.g. `bg`, `monitor-<server>`). Shared so
  * every call site produces ids with the same collision/attack resistance.
@@ -43,12 +43,12 @@ export const GRACEFUL_SHUTDOWN_MS = 1500;
 export const MAX_BACKGROUND_PROCESSES = 20;
 
 /**
- * Bounded cap on the durable completed-task buffer (parity with Claude Code's
+ * Bounded cap on the durable completed-task buffer (parity with the reference's
  * sdkEventQueue `MAX_QUEUE_SIZE`). The engine drains the buffer every turn, so in
  * normal operation it stays tiny; but a very long silent turn (one in-flight API
  * call with no drain between pushes) while many background producers finish could
  * otherwise grow it without bound. At the cap we evict the OLDEST entry (FIFO
- * drop-oldest) before pushing the newest, bounding memory the same way Claude's
+ * drop-oldest) before pushing the newest, bounding memory the same way the reference's
  * queue does. NOTE (intentional divergence): unlike sdkEventQueue we do NOT gate
  * enqueue on non-interactive mode — AMI's buffer is a DURABLE delivery mechanism
  * the engine drains in BOTH interactive and detached modes, so dropping in TUI
@@ -106,7 +106,7 @@ export const pmLogHooks: { onWriteError: (err: NodeJS.ErrnoException, willRetry:
 
 /**
  * The lifecycle transition a background task/agent can emit a diagnostic trace for
- * (parity with Claude Code's InProcessBackend gated per-transition trace — it logs
+ * (parity with the reference's InProcessBackend gated per-transition trace — it logs
  * `spawn`/`send`/`terminate`/`kill`/`isActive` under a debug gate). AMI surfaces the
  * same transition set through {@link pmTraceHooks} so a frontend can wire a single
  * lifecycle-debug sink instead of listening on the individual `killed`/`stalled`/
@@ -122,7 +122,7 @@ export const pmLogHooks: { onWriteError: (err: NodeJS.ErrnoException, willRetry:
 export type PmLifecyclePhase = 'spawn' | 'register' | 'start' | 'kill' | 'interrupt' | 'shutdown' | 'idle';
 
 /**
- * GATED diagnostic trace seam for task lifecycle transitions (parity with Claude
+ * GATED diagnostic trace seam for task lifecycle transitions (parity with the reference
  * Code's InProcessBackend per-transition debug trace). Default no-op — like
  * {@link pmLogHooks}, a run produces NO trace output until a frontend/test attaches
  * a real sink, so this is the "gate": wire a non-no-op `onLifecycle` to turn tracing
@@ -140,7 +140,7 @@ export const pmTraceHooks: {
 /**
  * DI seam for the child-process spawn syscall. The synchronous spawn-failure path
  * (an EMFILE/EAGAIN-class fork failure, or bad spawn options, that makes
- * child_process.spawn THROW before any child exists — parity with Claude Code's
+ * child_process.spawn THROW before any child exists — parity with the reference's
  * Shell.ts try/catch around spawn) routes through here so a test can make the fork
  * throw deterministically and assert the fd is closed and a terminal 'failed' task
  * is recorded, without racing a real resource-exhaustion failure. Defaults to the
@@ -154,7 +154,7 @@ export const spawnHooks: {
 
 /**
  * POSIX exit code a shell reports when a command was found but could NOT be
- * executed (permission/exec error). Parity with Claude Code's createFailedCommand,
+ * executed (permission/exec error). Parity with the reference's createFailedCommand,
  * which returns code 126 when the spawn itself fails. AMI records a synthetic
  * terminal task with this code when {@link spawnHooks.spawn} throws synchronously,
  * so the caller always gets a trackable taskId (and a model-facing completion)
@@ -199,7 +199,7 @@ export function validateBackgroundCommand(command: string): { allowed: boolean; 
 }
 
 /**
- * The lifecycle states of a background task/agent (parity with Claude Code's
+ * The lifecycle states of a background task/agent (parity with the reference's
  * TaskStatus: pending|running|completed|failed|killed).
  *   - `pending`   → accepted/registered but NOT yet started (e.g. an agent queued
  *                   behind the concurrency cap). Distinct from `running` so a
@@ -211,7 +211,7 @@ export const TASK_STATUS = ['pending', 'running', 'completed', 'failed', 'killed
 export type TaskStatus = (typeof TASK_STATUS)[number];
 
 /**
- * Task-KIND discriminator (parity with Claude Code's BackgroundTaskState `type`
+ * Task-KIND discriminator (parity with the reference's BackgroundTaskState `type`
  * union + LocalShellTask `kind`): what sort of background work a tracked task is.
  *   - `bash`    → a spawned background shell (real child process)
  *   - `monitor` → an internal poller (MCP health check) with no user-facing output
@@ -220,20 +220,20 @@ export type TaskStatus = (typeof TASK_STATUS)[number];
  * callers (task_list pill labels, task_kill metadata, orphan reaping) can branch
  * on the kind of task WITHOUT brittle command-string heuristics (`startsWith
  * '[agent]'` / `'monitor:'`), which miscounted a shell whose command merely began
- * with those words. Mirrors Claude's getPillLabel splitting "1 shell, 1 monitor".
+ * with those words. Mirrors the reference's getPillLabel splitting "1 shell, 1 monitor".
  */
 export const TASK_KINDS = ['bash', 'monitor', 'agent'] as const;
 export type TaskKind = (typeof TASK_KINDS)[number];
 
 /**
- * Per-task ATTENTION state (parity with Claude Code's pillLabel ultraplanPhase /
+ * Per-task ATTENTION state (parity with the reference's pillLabel ultraplanPhase /
  * RemoteAgentTask progress stages): an optional sub-state ORTHOGONAL to the
  * lifecycle {@link TaskStatus}, describing whether a still-running task needs the
  * user's attention.
  *   - `working`     → actively progressing, no attention needed (the default).
- *   - `plan_ready`  → produced a plan/result awaiting review (Claude's filled ◆
+ *   - `plan_ready`  → produced a plan/result awaiting review (the reference's filled ◆
  *                     "ultraplan ready").
- *   - `needs_input` → blocked waiting for the user to answer (Claude's open ◇
+ *   - `needs_input` → blocked waiting for the user to answer (the reference's open ◇
  *                     "ultraplan needs your input" / a stalled interactive prompt).
  * Surfaced by task_list so a long-running agent can signal "come look at me" without
  * leaving the `running` lifecycle state.
@@ -243,7 +243,7 @@ export type TaskAttentionState = (typeof TASK_ATTENTION_STATES)[number];
 
 /**
  * DI seam + pure helper for pre-spawn working-directory validation (parity with
- * Claude Code's Shell.ts realpath(cwd) recovery, L220-238). A command can delete
+ * the reference's Shell.ts realpath(cwd) recovery, L220-238). A command can delete
  * its own cwd (temp-dir cleanup) before a follow-up background spawn; passing the
  * now-missing path straight to child_process.spawn surfaces only an async ENOENT
  * 'error' event. This resolves the spawn cwd UP FRONT: the requested dir if it
@@ -279,7 +279,7 @@ const TERMINAL_TASK_STATUSES = new Set<TaskStatus>(['completed', 'failed', 'kill
 
 /**
  * ACTIVE states — a task in one of these is in-flight and belongs in the
- * background-tasks indicator (parity with Claude Code's `isBackgroundTask`, which
+ * background-tasks indicator (parity with the reference's `isBackgroundTask`, which
  * admits BOTH `running` and `pending`). `pending` (accepted-but-not-started) is
  * active because the work is queued, not finished.
  */
@@ -288,7 +288,7 @@ const ACTIVE_TASK_STATUSES = new Set<TaskStatus>(['pending', 'running']);
 /**
  * Whether a task status is terminal (completed/failed/killed). Guards against
  * injecting messages into dead teammates, evicting finished tasks, and orphan
- * cleanup (mirrors Claude Code's isTerminalTaskStatus).
+ * cleanup (mirrors the reference's isTerminalTaskStatus).
  */
 export function isTerminalTaskStatus(status: string | undefined): boolean {
   return !!status && TERMINAL_TASK_STATUSES.has(status as TaskStatus);
@@ -296,7 +296,7 @@ export function isTerminalTaskStatus(status: string | undefined): boolean {
 
 /**
  * Whether a task status is ACTIVE (running or pending) — the two-state "in-flight"
- * predicate Claude Code uses to decide background-indicator membership (its
+ * predicate the reference uses to decide background-indicator membership (its
  * `isBackgroundTask` gate: `status !== 'running' && status !== 'pending'` ⇒ not a
  * background task). A queued/not-yet-started task counts as active so it is visible
  * as an in-flight affordance, not invisible until it starts. Shared one site
@@ -308,12 +308,12 @@ export function isActiveTaskStatus(status: string | undefined): boolean {
 
 /**
  * Whether a tracked task belongs in the background-tasks indicator (parity with
- * Claude Code's `isBackgroundTask`): it must be ACTIVE (running|pending) AND not
+ * the reference's `isBackgroundTask`): it must be ACTIVE (running|pending) AND not
  * explicitly foregrounded. A task whose `isBackgrounded` flag was set to `false`
  * via {@link ProcessManager.foregroundTask} is a FOREGROUND task pulled into the
  * main view and is excluded from the indicator until re-backgrounded; `undefined`
  * (the default — AMI tasks are background-by-construction) counts as a background
- * task. Mirrors Claude's `isBackgrounded === false` exclusion.
+ * task. Mirrors the reference's `isBackgrounded === false` exclusion.
  */
 export function isBackgroundTask(task: Pick<BackgroundProcess, 'status' | 'isBackgrounded'>): boolean {
   return isActiveTaskStatus(task.status) && task.isBackgrounded !== false;
@@ -323,7 +323,7 @@ export function isBackgroundTask(task: Pick<BackgroundProcess, 'status' | 'isBac
  * POSIX convention for a process killed by a signal: exit status 128 + signal
  * number. Lets callers tell a SIGTERM timeout (143) from a SIGKILL (137) from a
  * still-undecided task (null), instead of collapsing every signal death to null.
- * Mirrors Claude Code's #exitHandler synthesising a code from the signal.
+ * Mirrors the reference's #exitHandler synthesising a code from the signal.
  */
 export function signalToExitCode(signal: NodeJS.Signals): number {
   const signo = os.constants.signals[signal];
@@ -345,7 +345,7 @@ export function resolveExitCode(code: number | null, signal: NodeJS.Signals | nu
  * Classify a child's terminal status from its (code, signal). An EXTERNAL
  * SIGTERM/SIGINT (a deliberate interruption the model should not read as a crash)
  * maps to 'killed'; exit 0 is 'completed'; any other non-zero code is 'failed'.
- * Mirrors Claude Code's sessionRunner signal-aware close handler. Self-initiated
+ * Mirrors the reference's sessionRunner signal-aware close handler. Self-initiated
  * kills are already flagged 'killed' by kill() before the exit event fires.
  */
 export function classifyExitStatus(code: number | null, signal: NodeJS.Signals | null): TaskStatus {
@@ -356,7 +356,7 @@ export function classifyExitStatus(code: number | null, signal: NodeJS.Signals |
 /**
  * FUNCTIONAL (parity): build the single aggregate "stopped by the user"
  * model-facing notification shown after the user kills background agents,
- * mirroring Claude Code's useCancelRequest.killAllAgentsAndNotify (which
+ * mirroring the reference's useCancelRequest.killAllAgentsAndNotify (which
  * enqueues ONE notification rather than a per-agent spam). Returns:
  *   - `null`                 when nothing was stopped (0 descriptions)
  *   - `Background agent "X" was stopped by the user.`              (exactly 1)
@@ -374,7 +374,7 @@ export function formatStoppedByUserNotification(descriptions: string[]): string 
 
 /**
  * FUNCTIONAL (parity): the SHORT human-readable outcome phrase for a terminal
- * task, branched on status + exit code, mirroring Claude Code's
+ * task, branched on status + exit code, mirroring the reference's
  * enqueueShellNotification wording:
  *   - completed → `completed (exit code: N)`  (exit code only when known)
  *   - failed    → `failed with exit code N`   (exit code only when known)
@@ -392,7 +392,7 @@ export function buildCompletionSummary(
   const hasExit = exitCode !== null && exitCode !== undefined;
   // A monitor task is a long-lived STREAM, not a command that "succeeds" or
   // "fails" — so its termination is worded as the stream ending/stopping rather
-  // than a pass/fail exit. Parity: Claude Code's monitor-kind notification wording
+  // than a pass/fail exit. Parity: the reference's monitor-kind notification wording
   // ('Monitor "..." stream ended/stopped').
   if (kind === 'monitor') {
     if (status === 'killed') return 'monitor stream stopped';
@@ -407,7 +407,7 @@ export function buildCompletionSummary(
 /**
  * FUNCTIONAL (parity): the `usage` clause appended to a completion note — a
  * ready-made `Usage: ran 3.2s, 1500 tokens, 4 tool uses.` fragment, mirroring
- * Claude Code's LocalAgentTask completion notification which surfaces a usage
+ * the reference's LocalAgentTask completion notification which surfaces a usage
  * section (`duration_ms`, `total_tokens`, `tool_uses`) so the model can see how
  * long a finished background task ran and how much work it did. Each metric is
  * rendered only when it is a known, meaningful value: duration when
@@ -434,7 +434,7 @@ export function formatUsageClause(event: Pick<CompletedTaskEvent, 'durationMs' |
 
 /**
  * FUNCTIONAL (parity): the status-aware model-facing note for a drained background
- * completion, mirroring Claude Code's enqueueShellNotification. Prefers the
+ * completion, mirroring the reference's enqueueShellNotification. Prefers the
  * pre-computed {@link CompletedTaskEvent.summary} (set in emitComplete) so the
  * wording is the single source of truth, falling back to {@link buildCompletionSummary}
  * for a legacy emitter that omitted it. Appends a {@link formatUsageClause} usage
@@ -452,7 +452,7 @@ export function formatBackgroundCompletionNote(event: CompletedTaskEvent): strin
 }
 
 /**
- * Compute a background task's elapsed wall-clock duration, mirroring Claude
+ * Compute a background task's elapsed wall-clock duration, mirroring the reference
  * Code's CoordinatorAgentStatus/useElapsedTime formula:
  *   Math.max(0, (endTime ?? now) - startTime - totalPausedMs)
  * i.e. FREEZE at `endTime` once the task is terminal (so viewing a finished task
@@ -476,7 +476,7 @@ export const OUTPUT_FLUSH_MS = 50;
 
 /**
  * Grace period (ms) a TERMINAL task is retained after it finishes before it is
- * eligible for automatic eviction, mirroring Claude Code's panel-grace /
+ * eligible for automatic eviction, mirroring the reference's panel-grace /
  * `evictAfter` retention window (teammateViewHelpers PANEL_GRACE_MS). A finished
  * task stays in the task table and on disk for this long so the model can still
  * read its output via task_output and see it in task_list; past the deadline it is
@@ -489,13 +489,13 @@ export const TERMINAL_RETENTION_MS = 5 * 60_000; // 5 minutes
  * Idle threshold (ms) after which a RUNNING background agent that has produced no
  * live progress signal (token/tool/summary update — see
  * {@link BackgroundProcess.lastActivity}) is surfaced as "idle" rather than
- * actively working, mirroring Claude Code's CoordinatorAgentStatus activity
+ * actively working, mirroring the reference's CoordinatorAgentStatus activity
  * indicator. Below this window the agent is treated as actively making progress.
  */
 export const PROGRESS_IDLE_MS = 30_000;
 
 /**
- * Stall-watchdog tuning knobs (parity with Claude Code's LocalShellTask
+ * Stall-watchdog tuning knobs (parity with the reference's LocalShellTask
  * STALL_CHECK_INTERVAL_MS / STALL_THRESHOLD_MS / STALL_TAIL_BYTES). AMI previously
  * conflated the poll cadence and the "no growth" threshold into a single 45s
  * interval, so a stalled task could take up to 90s to be noticed and the tail read
@@ -509,7 +509,7 @@ export const STALL_THRESHOLD_MS = 45_000;
 export const STALL_TAIL_BYTES = 1024;
 
 /**
- * SECURITY (parity with Claude Code's diskOutput): flags for creating a task
+ * SECURITY (parity with the reference's diskOutput): flags for creating a task
  * output file. O_EXCL fails if anything already exists at the path (so an
  * attacker-planted file/symlink can't be truncated-through) and O_NOFOLLOW
  * refuses to follow a planted symlink. Windows lacks both numerically; its 'wx'
@@ -539,7 +539,7 @@ function readOutputFileNoFollow(outputPath: string): string {
 }
 
 /**
- * SECURITY + PERF (parity with Claude Code's tailFile): read ONLY the last
+ * SECURITY + PERF (parity with the reference's tailFile): read ONLY the last
  * `maxBytes` of a task-output file via a positioned read, so memory/IO stays
  * bounded regardless of how large the log grew. Opens with O_NOFOLLOW so a
  * planted symlink can't redirect the read. Returns the tail content, the total
@@ -577,7 +577,7 @@ function readOutputTailBytes(
  * keyboard input. Used by the stall watchdog to gate the actionable "waiting for
  * interactive input" hint — we stay silent on commands that are merely slow and
  * only notify when the tail looks like an interactive prompt the model can act on.
- * Mirrors Claude Code's PROMPT_PATTERNS (LocalShellTask): the directed-question
+ * Mirrors the reference's PROMPT_PATTERNS (LocalShellTask): the directed-question
  * matcher catches "Do you want to continue? " and friends that carry no explicit
  * (y/n) marker, and "Press (any key|Enter)" covers "Press any key" (not just Enter).
  */
@@ -593,12 +593,12 @@ const PROMPT_PATTERNS: RegExp[] = [
 ];
 
 /**
- * One captured message in a background AGENT's live transcript (parity with Claude
+ * One captured message in a background AGENT's live transcript (parity with the reference
  * Code's BackgroundTaskState.messages). A foregrounded agent's buffer is synced
  * into the main view ({@link ProcessManager.syncForegroundedMessages}) so the user
  * sees its conversation live; on a user KILL the buffer is COLLAPSED to just the
  * final message ({@link ProcessManager.kill}) to release the retained transcript
- * (parity with Claude Code's spawnInProcess on-kill truncation) while preserving
+ * (parity with the reference's spawnInProcess on-kill truncation) while preserving
  * the last displayed line. Bash/monitor tasks keep no transcript.
  */
 export interface TaskMessage {
@@ -612,7 +612,7 @@ export interface TaskMessage {
 
 /**
  * Snapshot returned by {@link ProcessManager.syncForegroundedMessages} — the state
- * the main view needs to mirror the single foregrounded agent (parity with Claude
+ * the main view needs to mirror the single foregrounded agent (parity with the reference
  * Code's useSessionBackgrounding sync effect, useSessionBackgrounding.ts:L91-L127).
  */
 export interface ForegroundSync {
@@ -659,7 +659,7 @@ export interface BackgroundProcess {
    * Cumulative wall-clock time (ms) the task's elapsed clock has been paused — e.g.
    * while the task sat blocked on an interactive prompt. Subtracted from the
    * wall-clock by computeElapsedMs so the reported duration reflects active work,
-   * not idle waiting. Mirrors Claude Code's task.totalPausedMs. Undefined ⇒ never
+   * not idle waiting. Mirrors the reference's task.totalPausedMs. Undefined ⇒ never
    * paused (treated as 0).
    */
   totalPausedMs?: number;
@@ -668,7 +668,7 @@ export interface BackgroundProcess {
    * automatic eviction — set to `endTime + TERMINAL_RETENTION_MS` on the first
    * terminal transition (see {@link setTerminalTimestamps}). {@link ProcessManager.pruneExpired}
    * reaps terminal entries whose deadline has passed so finished rows/output files
-   * do not accumulate forever. Mirrors Claude Code's `evictAfter` retention field.
+   * do not accumulate forever. Mirrors the reference's `evictAfter` retention field.
    * Undefined while the task is still running.
    */
   evictAfter?: number;
@@ -678,7 +678,7 @@ export interface BackgroundProcess {
    * Cumulative count of tool calls a background AGENT has made so far (undefined
    * for bash/monitor tasks, which make no tool calls). Reported incrementally via
    * {@link ProcessManager.updateEntry} from the agent's event stream and surfaced
-   * by `task_list` alongside {@link tokenCount}. Mirrors Claude Code's live
+   * by `task_list` alongside {@link tokenCount}. Mirrors the reference's live
    * `task.progress.toolCount` — the in-flight tool-use counter that, together with
    * {@link tokenCount}, lets a reader gauge how much work a running agent has done.
    * It is also the basis for incremental progress deltas (see
@@ -686,7 +686,7 @@ export interface BackgroundProcess {
    */
   toolCount?: number;
   /**
-   * Dedicated error message for a FAILED task/agent (parity with Claude Code's
+   * Dedicated error message for a FAILED task/agent (parity with the reference's
    * AsyncAgentDetailDialog error field). Set via {@link ProcessManager.updateEntry}
    * when a background agent ends in a 'failed' state, so a consumer (task_list,
    * agent drill-down) can surface WHY it failed in its own channel instead of the
@@ -695,7 +695,7 @@ export interface BackgroundProcess {
   error?: string;
   /**
    * FINAL-result token total for a finished background AGENT, distinct from the
-   * LIVE {@link tokenCount} progress counter (parity with Claude Code's
+   * LIVE {@link tokenCount} progress counter (parity with the reference's
    * AsyncAgentDetailDialog separating the completed run's `result` stats from the
    * in-flight `progress` stats). The live counter tracks the last `usage_update`
    * seen while running; this is the authoritative total recorded at the terminal
@@ -714,7 +714,7 @@ export interface BackgroundProcess {
   /**
    * Live AI progress summary for a running background AGENT — a short human phrase
    * of what the agent is doing RIGHT NOW (e.g. `bash: npm test`), updated on each
-   * tool invocation (parity with Claude Code's CoordinatorAgentStatus
+   * tool invocation (parity with the reference's CoordinatorAgentStatus
    * `progress.summary`, which takes PRECEDENCE over the static task description).
    * A consumer surfaces this in place of/alongside the description so the reader
    * sees current activity, not just the one-line task label set at spawn. Undefined
@@ -724,7 +724,7 @@ export interface BackgroundProcess {
   /**
    * Wall-clock time (ms epoch) of the last observed progress on a background AGENT —
    * stamped by {@link ProcessManager.updateEntry} whenever a live progress signal
-   * (tokenCount / toolCount / progressSummary) arrives (parity with Claude Code's
+   * (tokenCount / toolCount / progressSummary) arrives (parity with the reference's
    * CoordinatorAgentStatus `progress.lastActivity`, the basis for its
    * activity-direction indicator). A consumer compares `now - lastActivity` against
    * {@link PROGRESS_IDLE_MS} to tell a still-working agent from one that has gone
@@ -732,7 +732,7 @@ export interface BackgroundProcess {
    */
   lastActivity?: number;
   /**
-   * Dedup latch (parity with Claude Code's `task.notified`): true once the model
+   * Dedup latch (parity with the reference's `task.notified`): true once the model
    * has already been told about this task's termination — either because it
    * explicitly killed it via task_kill (kill() latches bash tasks) or because it
    * consumed the result via task_output (markNotified() latches on retrieval).
@@ -740,20 +740,20 @@ export interface BackgroundProcess {
    * model isn't re-announced a termination it already knows about. Undefined/false
    * ⇒ not yet surfaced. Only set for bash tasks; agent kills deliberately stay
    * un-notified so their abort completion (which carries the partial result) still
-   * surfaces, matching Claude's bash-vs-agent split in stopTask.
+   * surfaces, matching the reference's bash-vs-agent split in stopTask.
    */
   notified?: boolean;
   /**
    * Id of the agent (sub-agent task id) that spawned this task, or undefined when
    * it was started from the main thread. Recorded so orphaned background shells can
    * be reaped when their owning agent exits ({@link ProcessManager.killTasksForAgent}),
-   * preventing zombie processes that outlive the agent. Mirrors Claude Code's
+   * preventing zombie processes that outlive the agent. Mirrors the reference's
    * LocalShellTaskState.agentId (killShellTasksForAgent).
    */
   agentId?: string;
   /**
    * Id of the tool_use call that spawned this task, or undefined when it was not
-   * started from a tool invocation (parity with Claude Code's TaskStateBase
+   * started from a tool invocation (parity with the reference's TaskStateBase
    * `toolUseId` / LocalShellSpawnInput.toolUseId). Recorded so a consumer can
    * correlate a background task back to the specific tool call that created it —
    * e.g. to attach the completion to the originating tool_result, or to reap a
@@ -762,19 +762,19 @@ export interface BackgroundProcess {
    */
   toolUseId?: string;
   /**
-   * Per-task foreground/background flag (parity with Claude Code's per-task
+   * Per-task foreground/background flag (parity with the reference's per-task
    * `isBackgrounded`). AMI tasks are background-by-construction, so this is
    * `undefined` (⇒ background) until a consumer FOREGROUNDS one into the main view
    * via {@link ProcessManager.foregroundTask} (sets `false`) or re-backgrounds it
    * via {@link ProcessManager.backgroundTask} (sets `true`). The
    * {@link isBackgroundTask} predicate excludes a task with `isBackgrounded ===
    * false` from the background-tasks indicator while it is foregrounded, mirroring
-   * Claude's task-granular backgrounding (foregroundedTaskId + isBackgrounded).
+   * the reference's task-granular backgrounding (foregroundedTaskId + isBackgrounded).
    */
   isBackgrounded?: boolean;
   /**
    * True when this background AGENT was started by RESUMING a prior agent session
-   * rather than a fresh spawn (parity with Claude Code's resumeAgent introspection
+   * rather than a fresh spawn (parity with the reference's resumeAgent introspection
    * marker, resumeAgent.ts:L222-225 — a resumed invocation is tagged so it can be
    * distinguished from a first run). Set at {@link registerAgent} time from the
    * caller's resume target; undefined/false for a fresh spawn. Surfaced by
@@ -784,7 +784,7 @@ export interface BackgroundProcess {
   resumed?: boolean;
   /**
    * The name of the swarm TEAM this background agent belongs to, when it was spawned
-   * into an active team (parity with Claude Code's pillLabel `identity.teamName`,
+   * into an active team (parity with the reference's pillLabel `identity.teamName`,
    * the basis for its distinct-team count "N teams"). Set at {@link registerAgent}
    * time from the active team; undefined for a solo agent / bash / monitor task.
    * Consumed by task_list's distinct-team tally.
@@ -794,7 +794,7 @@ export interface BackgroundProcess {
    * Per-task ATTENTION sub-state (see {@link TaskAttentionState}) — orthogonal to
    * the lifecycle {@link status}. Lets a still-`running` task signal that it is
    * awaiting review (`plan_ready`) or blocked on the user (`needs_input`) so
-   * task_list can flag it for attention. Parity with Claude Code's ultraplanPhase /
+   * task_list can flag it for attention. Parity with the reference's ultraplanPhase /
    * RemoteAgentTask waiting-for-input badge. Undefined ⇒ `working` (no attention).
    * The stall watchdog sets `needs_input` automatically when a task blocks on an
    * interactive prompt (see {@link ProcessManager.notifyStall}); an orchestrator can
@@ -803,10 +803,10 @@ export interface BackgroundProcess {
   attentionState?: TaskAttentionState;
   /**
    * Natural-language AI SUMMARY of what a background agent has accomplished so far
-   * (parity with Claude Code's LocalAgentTask periodic `updateAgentSummary`, a 1-2
+   * (parity with the reference's LocalAgentTask periodic `updateAgentSummary`, a 1-2
    * sentence LLM-written summary). Distinct from {@link progressSummary} (a raw
    * tool-derived "current activity" tick): the AI summary is authoritative and
-   * takes PRECEDENCE — a raw progress tick NEVER clobbers it (Claude's
+   * takes PRECEDENCE — a raw progress tick NEVER clobbers it (the reference's
    * `existingSummary ? {...progress, summary: existingSummary} : progress` merge).
    * Read via {@link ProcessManager.effectiveSummary} (agentSummary ?? progressSummary).
    * Set via {@link ProcessManager.updateEntry}. Undefined until the first AI summary.
@@ -814,7 +814,7 @@ export interface BackgroundProcess {
   agentSummary?: string;
   /**
    * COOPERATIVE graceful-shutdown flag for a running in-process AGENT (parity with
-   * Claude Code's InProcessTeammateTask `shutdownRequested`). Distinct from a hard
+   * the reference's InProcessTeammateTask `shutdownRequested`). Distinct from a hard
    * {@link ProcessManager.kill} (which aborts the in-flight turn immediately): the
    * agent's drain loop checks this flag BETWEEN turns via
    * {@link ProcessManager.isShutdownRequested} and stops AFTER the current turn
@@ -824,7 +824,7 @@ export interface BackgroundProcess {
    */
   shutdownRequested?: boolean;
   /**
-   * IDLE lifecycle flag for a running in-process AGENT (parity with Claude Code's
+   * IDLE lifecycle flag for a running in-process AGENT (parity with the reference's
    * InProcessTeammateTask `isIdle`): true when the agent has finished its current
    * turn and is quiescent, waiting for the next message rather than actively
    * working. Distinct from the lifecycle {@link status} (a persistent/mailbox agent
@@ -835,7 +835,7 @@ export interface BackgroundProcess {
    */
   idle?: boolean;
   /**
-   * Live transcript buffer for a background AGENT (parity with Claude Code's
+   * Live transcript buffer for a background AGENT (parity with the reference's
    * BackgroundTaskState.messages). Appended via {@link ProcessManager.appendTaskMessage}
    * while the agent runs; synced into the main view when the task is foregrounded
    * ({@link ProcessManager.syncForegroundedMessages}); COLLAPSED to just the final
@@ -851,7 +851,7 @@ export interface BackgroundProcess {
  * Payload emitted on 'complete' and buffered for durable delivery (B4). Carries
  * the terminal `status` (completed/failed/killed) so the model-facing note can be
  * worded status-aware (completed vs failed vs stopped) rather than always saying
- * "completed" — parity with Claude Code's enqueueShellNotification which branches
+ * "completed" — parity with the reference's enqueueShellNotification which branches
  * the summary on status.
  */
 export interface CompletedTaskEvent {
@@ -868,7 +868,7 @@ export interface CompletedTaskEvent {
    * `failed with exit code 1`, `was stopped`), set by emitComplete via
    * {@link buildCompletionSummary}. Lets a consumer (completion note, analytics,
    * task-complete surfacing) read a ready-made summary without re-deriving the
-   * status/exit-code phrasing. Mirrors Claude Code attaching a summary string to
+   * status/exit-code phrasing. Mirrors the reference attaching a summary string to
    * its shell-notification events. Undefined only on a legacy direct emit.
    */
   summary?: string;
@@ -876,13 +876,13 @@ export interface CompletedTaskEvent {
    * Wall-clock active duration (ms) the task ran before reaching this terminal
    * state — frozen pause-discounted value from {@link computeElapsedMs}, set by
    * emitComplete from the tracked entry. Surfaced in the completion note's usage
-   * clause (`ran 3.2s`), mirroring Claude Code's LocalAgentTask `duration_ms`.
+   * clause (`ran 3.2s`), mirroring the reference's LocalAgentTask `duration_ms`.
    * Undefined on a legacy direct emit that bypassed emitComplete.
    */
   durationMs?: number;
   /**
    * Total token usage of a finished background AGENT, surfaced in the completion
-   * note's usage clause (`… 1500 tokens …`) — parity with Claude Code's LocalAgentTask
+   * note's usage clause (`… 1500 tokens …`) — parity with the reference's LocalAgentTask
    * completion `total_tokens`. Attached by emitComplete from the tracked entry
    * ({@link BackgroundProcess.resultTokenCount}, falling back to the live
    * {@link BackgroundProcess.tokenCount}). Undefined/0 for a bash shell (no tokens)
@@ -891,7 +891,7 @@ export interface CompletedTaskEvent {
   tokenCount?: number;
   /**
    * Total tool-call count of a finished background AGENT, surfaced in the completion
-   * note's usage clause (`… 4 tool uses`) — parity with Claude Code's LocalAgentTask
+   * note's usage clause (`… 4 tool uses`) — parity with the reference's LocalAgentTask
    * completion `tool_uses`. Attached by emitComplete from the tracked entry
    * ({@link BackgroundProcess.resultToolCount}, falling back to the live
    * {@link BackgroundProcess.toolCount}). Undefined/0 for a bash shell or a legacy
@@ -902,7 +902,7 @@ export interface CompletedTaskEvent {
 
 /**
  * Payload for the 'killed' introspection event emitted by {@link ProcessManager.kill}.
- * Lets a frontend/engine trace WHY a background process ended (parity with Claude
+ * Lets a frontend/engine trace WHY a background process ended (parity with the reference
  * Code's `LocalShellTask ${taskId} kill requested` debug log) and whether the
  * subsequent completion note was suppressed as noise.
  */
@@ -916,7 +916,7 @@ export interface KilledTaskEvent {
   suppressed: boolean;
   /**
    * Human-readable cause of the kill, when the caller supplied one (parity with
-   * Claude Code's `killShellTasksForAgent: killing orphaned shell task ${taskId}
+   * the reference's `killShellTasksForAgent: killing orphaned shell task ${taskId}
    * (agent ${agentId} exiting)` debug line). Lets a frontend/analytics trace WHY a
    * background process disappeared — e.g. `agent <id> exiting` for an orphan reap,
    * or `output exceeded disk cap`. Undefined for a plain user/model stop.
@@ -973,7 +973,7 @@ interface InternalProcess extends BackgroundProcess {
   _progressBaselined?: boolean;
   /**
    * Byte offset into the task's output file that was last surfaced to the model by
-   * {@link ProcessManager.reportOutputDelta} (parity with Claude Code's
+   * {@link ProcessManager.reportOutputDelta} (parity with the reference's
    * LocalShellTaskState `lastReportedTotalLines` delta cursor). The next report reads
    * only the bytes appended past this offset via {@link ProcessManager.getOutputTail},
    * so a long-running background shell's progress is pushed to the model INCREMENTALLY
@@ -982,7 +982,7 @@ interface InternalProcess extends BackgroundProcess {
   _lastReportedOutputOffset?: number;
   /** Bounded in-memory tail of bytes seen on the child's STDERR stream, so a
    *  consumer can surface stderr DISTINCTLY from the merged output file (parity with
-   *  Claude Code keeping stderr separate in the command-output renderer). Capped at
+   *  the reference keeping stderr separate in the command-output renderer). Capped at
    *  {@link STDERR_TAIL_CAP} bytes — stderr still ALSO flows into the merged output
    *  file unchanged (back-compat), this is the separable copy. See {@link ProcessManager.getStderr}. */
   _stderrTail?: string;
@@ -991,19 +991,19 @@ interface InternalProcess extends BackgroundProcess {
    *  in writeChunk; undefined ⇒ use the manager-level cap. */
   _maxOutputBytes?: number;
   /**
-   * FILE MODE (parity with Claude Code's TaskOutput `stdoutToFile`): true when this
+   * FILE MODE (parity with the reference's TaskOutput `stdoutToFile`): true when this
    * task's stdout AND stderr were wired STRAIGHT to the output-file fd
    * (`stdio: ['ignore', fd, fd]`) at spawn — so neither stream enters the JS heap/
    * event loop (no per-chunk 'data' listener, no `writeChunk`). On very large/fast
    * output this keeps the firehose out of V8 (lower CPU/GC, no pipe backpressure),
-   * matching Claude Code's "neither enters JS" path. The trade-offs mirror Claude's:
+   * matching the reference's "neither enters JS" path. The trade-offs mirror the reference's:
    *   - progress/size is derived by POLLING the file ({@link getOutputSize} stats the
    *     file in this mode instead of reading {@link bytesWritten}, which stays 0);
    *   - the runaway byte-cap is enforced by the poll ({@link enforceFileModeOutputCap})
    *     rather than per-chunk in writeChunk;
    *   - stderr is INTERLEAVED in the merged file, so the separable in-memory stderr
    *     tail ({@link _stderrTail}) is NOT captured and {@link getStderr} returns ''
-   *     (parity with Claude's `getStderr() returns '' in file mode`).
+   *     (parity with the reference's `getStderr() returns '' in file mode`).
    * Undefined/false ⇒ the default PIPE mode (stream through JS; keeps the separable
    * stderr tail). Opt-in per spawn via spawn()'s `fileMode` option.
    */
@@ -1017,11 +1017,11 @@ interface InternalProcess extends BackgroundProcess {
   /** Pending resolvers registered by {@link ProcessManager.waitForIdle} — fired and
    *  cleared the next time the agent transitions to idle ({@link ProcessManager.markIdle}
    *  true) or reaches a terminal state, so a leader can wait event-driven (no poll)
-   *  for a teammate to go idle (parity with Claude Code's `onIdleCallbacks`). */
+   *  for a teammate to go idle (parity with the reference's `onIdleCallbacks`). */
   _onIdleCallbacks?: Array<() => void>;
   /** Cursor for {@link ProcessManager.syncForegroundedMessages}: the messages-buffer
    *  length at the last sync, so a re-sync re-renders ONLY when the buffer grew
-   *  (parity with Claude Code's lastSyncedMessagesLengthRef). Reset when the task is
+   *  (parity with the reference's lastSyncedMessagesLengthRef). Reset when the task is
    *  (re-)foregrounded / backgrounded / killed. */
   _lastSyncedMessagesLength?: number;
 }
@@ -1039,7 +1039,7 @@ export const ADOPT_POLL_INTERVAL_MS = 2_000;
 
 /**
  * One persisted background-task record in the crash-safe registry sidecar (parity
- * with Claude Code's persistRemoteAgentMetadata, RemoteAgentTask.tsx:L442-454). Only
+ * with the reference's persistRemoteAgentMetadata, RemoteAgentTask.tsx:L442-454). Only
  * the identity needed to RE-ADOPT a still-running detached shell after a CLI restart
  * is stored — never the (potentially huge) live output, which already lives in the
  * on-disk output file this record points at. Written on spawn + every terminal
@@ -1059,7 +1059,7 @@ export interface PersistedTaskRecord {
  * {@link ProcessManager.reportProgressDelta}. Reports the CHANGE in tool-call and
  * token counts since the previous report, so a consumer (e.g. `task_list`) can show
  * "+N tools, +M tokens since last check" without re-deriving absolute totals.
- * Mirrors Claude Code's `lastReportedToolCount` / `lastReportedTokenCount` delta
+ * Mirrors the reference's `lastReportedToolCount` / `lastReportedTokenCount` delta
  * caching used "for computing deltas in notifications".
  */
 export interface ProgressDelta {
@@ -1076,7 +1076,7 @@ export interface ProgressDelta {
  * {@link ProcessManager.reportOutputDelta}. A delta larger than this is tail-trimmed
  * to the last {@link OUTPUT_DELTA_MAX_BYTES} bytes (with the dropped prefix counted in
  * {@link OutputDelta.bytesOmitted}) so a burst of background output can never flood a
- * single model attachment. Parity with Claude Code bounding the per-report tail.
+ * single model attachment. Parity with the reference bounding the per-report tail.
  */
 export const OUTPUT_DELTA_MAX_BYTES = 4 * 1024; // 4 KB
 
@@ -1085,7 +1085,7 @@ export const OUTPUT_DELTA_MAX_BYTES = 4 * 1024; // 4 KB
  * returned by {@link ProcessManager.reportOutputDelta} and
  * {@link ProcessManager.drainRunningOutputDeltas}. Carries only the output appended
  * since the last report (the "new output since last check" the model needs to follow a
- * long-running task's progress), mirroring Claude Code's `lastReportedTotalLines`
+ * long-running task's progress), mirroring the reference's `lastReportedTotalLines`
  * line-delta surfaced as a periodic progress attachment.
  */
 export interface OutputDelta {
@@ -1106,7 +1106,7 @@ export interface OutputDelta {
 
 /**
  * FUNCTIONAL (parity): the model-facing attachment note for an incremental background
- * output delta, mirroring Claude Code's periodic "new output from a still-running
+ * output delta, mirroring the reference's periodic "new output from a still-running
  * task" progress attachment. Pure + exported so the wording has ONE source
  * (No-Duplication rule) and is unit-testable in isolation.
  */
@@ -1134,16 +1134,16 @@ export class ProcessManager extends EventEmitter {
 
   /**
    * The single task currently FOREGROUNDED into the main view, or undefined when
-   * none is (parity with Claude Code's AppState.foregroundedTaskId). Set by
+   * none is (parity with the reference's AppState.foregroundedTaskId). Set by
    * {@link foregroundTask}; cleared by {@link backgroundTask} when it re-backgrounds
    * the foregrounded task. At most one task is foregrounded at a time, mirroring
-   * Claude's single-slot foreground.
+   * the reference's single-slot foreground.
    */
   private _foregroundedTaskId: string | undefined;
 
   /**
    * Abort callbacks for RUNNING FOREGROUND in-process subagents, keyed by taskId
-   * (parity with Claude Code's InProcessTeammateDetailDialog 'x' → onKill, which can
+   * (parity with the reference's InProcessTeammateDetailDialog 'x' → onKill, which can
    * abort ANY running teammate — foreground OR background). A foreground subagent
    * BLOCKS the parent turn and is deliberately NOT a tracked background row (it is
    * shown live in the roster tree, not the background task list), so {@link kill} —
@@ -1158,14 +1158,14 @@ export class ProcessManager extends EventEmitter {
 
   /**
    * Per-session cap on concurrently RUNNING background processes (parity with
-   * Claude Code's background-shell limit). Defaults to MAX_BACKGROUND_PROCESSES;
+   * the reference's background-shell limit). Defaults to MAX_BACKGROUND_PROCESSES;
    * exposed as a mutable field so callers/tests can tune the ceiling without
    * touching the module constant. spawn() enforces it; see atCapacity().
    */
   maxBackgroundProcesses: number = MAX_BACKGROUND_PROCESSES;
 
   /**
-   * Per-task output-size cap in bytes (parity with Claude Code's
+   * Per-task output-size cap in bytes (parity with the reference's
    * MAX_TASK_OUTPUT_BYTES / ShellCommand size watchdog). Defaults to
    * {@link MAX_OUTPUT_BYTES}; exposed as a mutable field so a caller/test can tune
    * the ceiling without touching the module constant. writeChunk enforces it: once
@@ -1177,14 +1177,14 @@ export class ProcessManager extends EventEmitter {
   /**
    * The manager's known-good working directory (the session cwd at construction).
    * Used as the recovery fallback when a background spawn's requested cwd has been
-   * deleted mid-session (see {@link resolveSpawnCwd}), mirroring Claude Code's
+   * deleted mid-session (see {@link resolveSpawnCwd}), mirroring the reference's
    * getOriginalCwd() recovery target.
    */
   private readonly rootCwd: string;
 
   /**
    * The session id this manager's task-output directory is SCOPED to, resolved
-   * ONCE at construction and never re-read (parity with Claude Code's diskOutput
+   * ONCE at construction and never re-read (parity with the reference's diskOutput
    * memoizing getSessionId() at first call, utils/task/diskOutput.ts:L33-55). Two
    * things depend on pinning it here:
    *   1. Concurrent sessions in the SAME project cwd get DISTINCT task dirs
@@ -1216,7 +1216,7 @@ export class ProcessManager extends EventEmitter {
    * FUNCTIONAL (parity): true when the number of currently-running tasks has
    * reached `maxBackgroundProcesses`, i.e. a further spawn() would be rejected.
    * Lets callers pre-check and surface a clean message instead of catching the
-   * throw. Mirrors Claude Code refusing to launch beyond its background limit.
+   * throw. Mirrors the reference refusing to launch beyond its background limit.
    */
   atCapacity(): boolean {
     return this.runningCount() >= this.maxBackgroundProcesses;
@@ -1225,7 +1225,7 @@ export class ProcessManager extends EventEmitter {
   spawn(command: string, opts: { cwd: string; description?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number; agentId?: string; toolUseId?: string; kind?: Extract<TaskKind, 'bash' | 'monitor'>; signal?: AbortSignal; maxOutputBytes?: number; fileMode?: boolean }): string {
     // FUNCTIONAL (parity): enforce the concurrent background-process ceiling.
     // Previously MAX_BACKGROUND_PROCESSES was declared but never checked, so a
-    // session could spawn unbounded detached shells. Claude Code caps concurrent
+    // session could spawn unbounded detached shells. the reference caps concurrent
     // background shells; refuse (throw) once the running set is full.
     if (this.atCapacity()) {
       throw new Error(
@@ -1236,7 +1236,7 @@ export class ProcessManager extends EventEmitter {
     const taskId = generateTaskId('bg');
     const description = opts.description || command.slice(0, 80);
 
-    // ABORT-BEFORE-SPAWN short-circuit (parity with Claude Code's Shell.ts
+    // ABORT-BEFORE-SPAWN short-circuit (parity with the reference's Shell.ts
     // `if (abortSignal.aborted) return createAbortedCommand()`, L241-243): a caller
     // that cancels the spawn request before we fork should pay NO fork/openSync
     // cost. Record a terminal 'killed' task (no child, no output file) so the id is
@@ -1245,7 +1245,7 @@ export class ProcessManager extends EventEmitter {
       return this.createTerminalStub(taskId, { command, description, status: 'killed', exitCode: null, kind: opts.kind, agentId: opts.agentId, toolUseId: opts.toolUseId });
     }
 
-    // CWD existence validation + recovery (parity with Claude Code's Shell.ts
+    // CWD existence validation + recovery (parity with the reference's Shell.ts
     // realpath(cwd) recovery, L220-238). If the requested cwd was deleted mid-session
     // (a prior command removed its own temp dir), fall back to the manager's
     // known-good root; if THAT is also gone, short-circuit to 'failed' with a clear
@@ -1270,7 +1270,7 @@ export class ProcessManager extends EventEmitter {
     // spawned, so we never leak a process we can't capture output for.
     const fd = fs.openSync(outputPath, secureWriteFlags());
 
-    // SYNCHRONOUS spawn-failure handling (parity with Claude Code's Shell.ts
+    // SYNCHRONOUS spawn-failure handling (parity with the reference's Shell.ts
     // try/catch around spawn, L315-441). A fork can fail synchronously — EMFILE/
     // EAGAIN under load, or bad spawn options — making child_process.spawn THROW
     // before any child exists. Previously that exception propagated out of spawn()
@@ -1278,8 +1278,8 @@ export class ProcessManager extends EventEmitter {
     // just-opened output fd leaked. We now: close the fd (no leak), write a
     // diagnostic into the output file, and record a terminal 'failed' task with the
     // standard exec-error exit code (126) so the caller ALWAYS gets a trackable
-    // taskId and a model-facing completion — mirroring Claude's createFailedCommand.
-    // FILE MODE (parity with Claude Code's TaskOutput stdoutToFile, L21-36): when the
+    // taskId and a model-facing completion — mirroring the reference's createFailedCommand.
+    // FILE MODE (parity with the reference's TaskOutput stdoutToFile, L21-36): when the
     // caller opts in, wire the child's stdout AND stderr STRAIGHT to the already-open
     // output fd (`stdio: ['ignore', fd, fd]`) so the kernel streams every byte to the
     // file and NEITHER stream enters JS — no 'data' listener, no writeChunk, no pipe
@@ -1311,7 +1311,7 @@ export class ProcessManager extends EventEmitter {
       // A caller may spawn a long-lived STREAMING/monitor shell (`tail -f`, a dev
       // server, a log follower) as kind 'monitor' so the stall watchdog is
       // disabled and its completion is worded as a monitor stream ending rather
-      // than a command succeeding/failing. Parity: Claude Code's BashTaskKind
+      // than a command succeeding/failing. Parity: the reference's BashTaskKind
       // ('bash' | 'monitor') threaded through the spawn input (LocalShellTask).
       kind: opts.kind ?? 'bash',
       exitCode: null,
@@ -1322,7 +1322,7 @@ export class ProcessManager extends EventEmitter {
       proc,
       outputFd: fd,
       bytesWritten: 0,
-      // Per-spawn output cap override (parity with Claude Code's ShellCommand
+      // Per-spawn output cap override (parity with the reference's ShellCommand
       // maxOutputBytes constructor parameter). When the caller supplies a positive
       // maxOutputBytes it pins THIS task's disk-buffer ceiling; absent, writeChunk
       // falls back to the manager-level this.maxOutputBytes (which stays runtime-tunable).
@@ -1343,7 +1343,7 @@ export class ProcessManager extends EventEmitter {
       if (!this.safeWrite(fd, chunk)) return;
       entry.bytesWritten += chunk.length;
       if (entry.bytesWritten >= cap) {
-        // Runaway-output watchdog (parity with Claude Code's ShellCommand size
+        // Runaway-output watchdog (parity with the reference's ShellCommand size
         // watchdog, which SIGKILLs a task whose output file exceeds the cap).
         // Previously AMI silently truncated and let the producer keep running — a
         // stuck `while true; do echo x; done` would then burn CPU/IO forever while
@@ -1366,7 +1366,7 @@ export class ProcessManager extends EventEmitter {
       // STDERR is captured TWICE: into the merged output file (via writeChunk — the
       // existing behavior task_output reads) AND into a bounded, separable in-memory
       // tail so a consumer can surface stderr DISTINCTLY from stdout (parity with
-      // Claude Code's command-output renderer keeping stderr its own block). See
+      // the reference's command-output renderer keeping stderr its own block). See
       // {@link ProcessManager.getStderr} + the task_output stderr section.
       proc.stderr?.on('data', (data: Buffer) => {
         const prev = entry._stderrTail ?? '';
@@ -1392,14 +1392,14 @@ export class ProcessManager extends EventEmitter {
     const stallCheck = setInterval(() => {
       // FILE MODE: writeChunk never runs (output bypasses JS), so the runaway byte-cap
       // is enforced HERE by polling the on-disk size — the task is killed once the file
-      // reaches the cap, mirroring Claude Code's ShellCommand file-size watchdog. If it
+      // reaches the cap, mirroring the reference's ShellCommand file-size watchdog. If it
       // was killed this tick, skip the stall check (the entry is no longer running).
       if (fileMode && this.enforceFileModeOutputCap(taskId)) return;
       lastOutputSize = this.stallTick(taskId, lastOutputSize);
     }, STALL_CHECK_INTERVAL_MS);
     // Observation-only timer: unref() so a still-registered task's poller can never
     // by itself keep the Node event loop alive and block clean process exit
-    // (parity with Claude Code unref-ing its progress-poll interval).
+    // (parity with the reference unref-ing its progress-poll interval).
     stallCheck.unref();
 
     let bgTimeout: ReturnType<typeof setTimeout> | undefined;
@@ -1469,7 +1469,7 @@ export class ProcessManager extends EventEmitter {
       this.emitComplete({ taskId, exitCode: null, command: entry.command, description: entry.description, outputPath: entry.outputPath, status: 'failed' });
     });
 
-    // Cooperative cancellation via an AbortSignal (parity with Claude Code's
+    // Cooperative cancellation via an AbortSignal (parity with the reference's
     // ShellCommand abort-listener, ShellCommand.ts:186-193/264-267): a REAL abort
     // kills the process tree; an abort whose reason is 'interrupt' is a SOFT
     // interrupt — the caller intends to BACKGROUND the in-flight work so its partial
@@ -1483,7 +1483,7 @@ export class ProcessManager extends EventEmitter {
     }
 
     // Persist this newly-running detached shell to the crash-safe registry so a CLI
-    // restart can re-adopt it (parity: Claude Code's persistRemoteAgentMetadata at
+    // restart can re-adopt it (parity: the reference's persistRemoteAgentMetadata at
     // spawn). No-op for the persisted set beyond running bash tasks (see persistRegistry).
     this.syncRegistry();
 
@@ -1528,7 +1528,7 @@ export class ProcessManager extends EventEmitter {
 
   /** Emit a completion AND buffer it for durable drain (B4). */
   private emitComplete(payload: CompletedTaskEvent): void {
-    // Dedup (parity with Claude Code's stopTask `notified` flag): a task the model
+    // Dedup (parity with the reference's stopTask `notified` flag): a task the model
     // was already told about — because it explicitly killed it (task_kill latches
     // bash tasks in kill()) or already consumed its result (task_output →
     // markNotified()) — must NOT re-surface a redundant completion. The model
@@ -1544,7 +1544,7 @@ export class ProcessManager extends EventEmitter {
       payload.summary = buildCompletionSummary(payload.status, payload.exitCode, entry?.kind);
     }
     // Attach the active run duration from the tracked entry so the completion
-    // note's usage clause can report how long the task ran — parity with Claude
+    // note's usage clause can report how long the task ran — parity with the reference
     // Code's completion notification `duration_ms`. Frozen, pause-discounted value
     // via the shared computeElapsedMs formula; omitted for an untracked task or one
     // whose endTime isn't set yet (defensive — emitComplete always runs after the
@@ -1553,7 +1553,7 @@ export class ProcessManager extends EventEmitter {
       payload.durationMs = computeElapsedMs(entry.startTime, entry.endTime, entry.totalPausedMs ?? 0);
     }
     // Attach the agent's final token / tool-use totals so the completion note's usage
-    // clause can report them (parity with Claude Code's LocalAgentTask completion
+    // clause can report them (parity with the reference's LocalAgentTask completion
     // `total_tokens` / `tool_uses`). Prefer the authoritative result totals recorded
     // at the terminal transition, falling back to the last live counter; omitted for
     // a bash shell (no counts) so its clause stays duration-only. See formatUsageClause.
@@ -1565,7 +1565,7 @@ export class ProcessManager extends EventEmitter {
       const tc = entry.resultToolCount ?? entry.toolCount;
       if (typeof tc === 'number' && tc > 0) payload.toolCount = tc;
     }
-    // Bounded buffer (parity with Claude Code's sdkEventQueue): evict the oldest
+    // Bounded buffer (parity with the reference's sdkEventQueue): evict the oldest
     // entry at the cap so the durable buffer can never grow without bound across a
     // long silent turn with active producers (see MAX_COMPLETED_BUFFER).
     if (this._completedBuffer.length >= MAX_COMPLETED_BUFFER) this._completedBuffer.shift();
@@ -1587,7 +1587,7 @@ export class ProcessManager extends EventEmitter {
    * clause, and (c) deduped against a prior task_output read (`notified`). Before this
    * seam agents fired a bare `emit('complete')` that bypassed the buffer entirely —
    * with no live listener anywhere, a finished background agent surfaced NO
-   * model-facing completion note at all. Mirrors Claude Code's LocalAgentTask
+   * model-facing completion note at all. Mirrors the reference's LocalAgentTask
    * completion notification.
    */
   emitCompletion(payload: CompletedTaskEvent): void {
@@ -1595,7 +1595,7 @@ export class ProcessManager extends EventEmitter {
   }
 
   /**
-   * Dedup check-and-set (parity with Claude Code's markTaskNotified): latch a task
+   * Dedup check-and-set (parity with the reference's markTaskNotified): latch a task
    * as already surfaced to the model so its completion is not re-announced. Called
    * by task_output when a TERMINAL task's output is successfully retrieved (the
    * model consumed the result; a follow-up "completed — call task_output" note
@@ -1626,19 +1626,19 @@ export class ProcessManager extends EventEmitter {
    * Stop a running task. `opts.suppressCompletion` (set by the task_kill tool for
    * an EXPLICIT model/user stop) latches a bash task's `notified` flag so its
    * subsequent close→completion is suppressed as noise (the model already learned
-   * it stopped from the tool result) — parity with Claude Code's stopTask. INTERNAL
+   * it stopped from the tool result) — parity with the reference's stopTask. INTERNAL
    * kills (the timeout watchdog, cleanup, killAllAgents) pass no option, so their
    * completion STILL surfaces: a task the model did not ask to stop (e.g. it hit
    * its time limit) must be reported. Agent tasks are never latched (the bash
    * branch is the only latch site) so their abort completion, which carries the
-   * partial result, always surfaces — matching Claude's bash-vs-agent split.
+   * partial result, always surfaces — matching the reference's bash-vs-agent split.
    */
   kill(taskId: string, opts: { suppressCompletion?: boolean; reason?: string } = {}): boolean {
     const entry = this.processes.get(taskId);
     if (!entry || entry.status !== 'running') return false;
 
     entry.status = 'killed';
-    // MEMORY RELEASE (parity with Claude Code's spawnInProcess on-kill truncation,
+    // MEMORY RELEASE (parity with the reference's spawnInProcess on-kill truncation,
     // spawnInProcess.ts:L287-296): a user-KILLED agent releases its retained
     // transcript — collapse the messages buffer to just the FINAL message (the last
     // displayed line) instead of pinning the whole conversation in memory. A
@@ -1671,7 +1671,7 @@ export class ProcessManager extends EventEmitter {
       // Bash (real child) EXPLICIT kill: latch `notified` so the forthcoming
       // proc.on('close') → finalize() → emitComplete() does NOT re-surface a
       // redundant "exit code 137" completion as noise — the model already learned
-      // the task stopped from the task_kill tool result. Parity with Claude Code's
+      // the task stopped from the task_kill tool result. Parity with the reference's
       // stopTask, which suppresses the exit-137 notification for LocalShellTask
       // kills (but deliberately NOT for agent kills, whose abort completion carries
       // the partial result — those run the _registered branch above and stay
@@ -1685,7 +1685,7 @@ export class ProcessManager extends EventEmitter {
       // can throw EBADF when it tries to close the now-invalid fds.
       this.destroyStreams(entry.proc);
 
-      // Robust process-TREE kill (parity with Claude Code's ShellCommand #doKill →
+      // Robust process-TREE kill (parity with the reference's ShellCommand #doKill →
       // treeKill). A bare process-group signal (`process.kill(-pid)`) misses a
       // descendant that escaped the group via setsid()/double-fork/nohup, leaving an
       // orphaned process alive after the stop. killTree() enumerates the full
@@ -1700,7 +1700,7 @@ export class ProcessManager extends EventEmitter {
       entry.outputFd = null;
     }
 
-    // INTROSPECTION (parity with Claude Code's `LocalShellTask ${taskId} kill
+    // INTROSPECTION (parity with the reference's `LocalShellTask ${taskId} kill
     // requested` debug log): emit a structured 'killed' event so a frontend/engine
     // can trace WHY a background process ended (and whether its completion note was
     // suppressed). Unlike the completion note this fires for EVERY kill — including
@@ -1732,12 +1732,12 @@ export class ProcessManager extends EventEmitter {
   /**
    * FUNCTIONAL (parity): single-shot stop of EVERY running in-process agent
    * (ESC/kill-all cancellation), returning the killed agents plus ONE aggregate
-   * model-facing notification. Mirrors Claude Code's useCancelRequest
+   * model-facing notification. Mirrors the reference's useCancelRequest
    * killAllAgentsAndNotify: it filters to `local_agent` tasks that are still
    * running, kills them all, and enqueues a single "stopped by the user" summary
    * rather than a per-agent notification storm. Only {@link registerAgent}-backed
    * tasks (taskType === 'agent') are targeted — background bash shells and MCP
-   * monitors are left running, matching Claude's type filter. The returned
+   * monitors are left running, matching the reference's type filter. The returned
    * `notification` is null when nothing was running so callers can skip the
    * enqueue. kill() already freezes each task's elapsed clock and closes its fd.
    */
@@ -1757,7 +1757,7 @@ export class ProcessManager extends EventEmitter {
   }
 
   /**
-   * FUNCTIONAL (parity with Claude Code's TeamsDialog 'p' prune-idle handler,
+   * FUNCTIONAL (parity with the reference's TeamsDialog 'p' prune-idle handler,
    * TeamsDialog.tsx:L207-217): bulk-stop every tracked AGENT task that is currently
    * {@link isIdle idle} (running, finished its turn, awaiting the next message), in
    * one operation. Mirrors {@link killAllAgents} but filtered to the IDLE subset, so
@@ -1766,7 +1766,7 @@ export class ProcessManager extends EventEmitter {
    * idle — is left alone). Background bash shells and MCP monitors are never targeted
    * (type filter, like {@link killAllAgents}). Returns the snapshots of the agents it
    * stopped (empty when none were idle), so a caller can reconcile its own selection
-   * state after the removals (parity: Claude recomputing the selection index).
+   * state after the removals (parity: the reference recomputing the selection index).
    */
   pruneIdleAgents(): BackgroundProcess[] {
     const stopped: BackgroundProcess[] = [];
@@ -1783,7 +1783,7 @@ export class ProcessManager extends EventEmitter {
   }
 
   /**
-   * FUNCTIONAL (parity: Claude Code's clearConversation task teardown,
+   * FUNCTIONAL (parity: the reference's clearConversation task teardown,
    * commands/clear/conversation.ts:L146-166): on a conversation CLEAR, kill every
    * RUNNING task whose id is NOT in {@link preservedIds} and evict its on-disk
    * output, so background shells / MCP monitors / non-preserved agents spawned in
@@ -1793,7 +1793,7 @@ export class ProcessManager extends EventEmitter {
    * background agents — the alive teammates the caller partitioned out — are left
    * running with their output intact. Each kill+evict is wrapped in its OWN
    * try/catch error boundary so one failing teardown never aborts the clear
-   * (parity: Claude's per-task try/catch + logError). Returns the snapshots of the
+   * (parity: the reference's per-task try/catch + logError). Returns the snapshots of the
    * tasks it stopped (empty when nothing non-preserved was running).
    */
   killForClear(preservedIds: ReadonlySet<string> = new Set()): BackgroundProcess[] {
@@ -1810,7 +1810,7 @@ export class ProcessManager extends EventEmitter {
         // exit-137 completion note for a task the user already discarded; `reason`
         // distinguishes a clear-driven teardown from an ESC/timeout in the trace.
         this.kill(taskId, { suppressCompletion: true, reason: 'conversation cleared' });
-        // Evict the killed task's output file + drop its table row (parity: Claude
+        // Evict the killed task's output file + drop its table row (parity: the reference
         // evicting the task's disk output on clear). kill() has already transitioned
         // it to 'killed', so removeTask (which refuses a running task) accepts it.
         this.removeTask(taskId);
@@ -1824,7 +1824,7 @@ export class ProcessManager extends EventEmitter {
    * FUNCTIONAL (parity): pause a RUNNING task's elapsed-time clock. Idempotent — a
    * second pause() before a resume() is a no-op (returns false). Used by the stall
    * watchdog so a task blocked on an interactive prompt doesn't inflate its
-   * active-work duration. Mirrors Claude Code's pause/resume accounting
+   * active-work duration. Mirrors the reference's pause/resume accounting
    * (task.totalPausedMs). Returns true when the clock transitioned to paused.
    */
   pauseTask(taskId: string): boolean {
@@ -1861,7 +1861,7 @@ export class ProcessManager extends EventEmitter {
 
   /**
    * Collapse a KILLED task's transcript buffer down to just its FINAL message —
-   * the memory-release teardown mirroring Claude Code's spawnInProcess on-kill
+   * the memory-release teardown mirroring the reference's spawnInProcess on-kill
    * truncation (messages → `[messages.at(-1)]`). Preserves the last displayed line
    * so a drill view still shows where the agent stopped, while dropping the rest of
    * the retained conversation. Also clears the foreground sync cursor so a later
@@ -1885,7 +1885,7 @@ export class ProcessManager extends EventEmitter {
 
   /**
    * One stall-check tick for a running background task (extracted from spawn()'s
-   * poll interval so it is unit-testable). Mirrors Claude Code's startStallWatchdog:
+   * poll interval so it is unit-testable). Mirrors the reference's startStallWatchdog:
    * the watchdog POLLS cheaply every STALL_CHECK_INTERVAL_MS but only ACTS once the
    * output has not grown for STALL_THRESHOLD_MS AND the tail (last STALL_TAIL_BYTES)
    * looks like an interactive prompt — then it writes an ACTIONABLE hint into the
@@ -1902,7 +1902,7 @@ export class ProcessManager extends EventEmitter {
     // A monitor task is EXPECTED to idle between bursts (a log follower waiting for
     // the next line, a server between requests), so the no-growth stall watchdog is
     // disabled for it — otherwise a healthy monitor would be mis-flagged as blocked
-    // on an interactive prompt and paused. Parity: Claude Code's startStallWatchdog
+    // on an interactive prompt and paused. Parity: the reference's startStallWatchdog
     // returns a no-op cleanup (`if (kind === 'monitor') return () => {}`).
     if (entry.kind === 'monitor') return lastSize;
     const currentSize = this.getOutputSize(taskId);
@@ -1923,7 +1923,7 @@ export class ProcessManager extends EventEmitter {
     if (now - entry._lastGrowthAt < STALL_THRESHOLD_MS) return currentSize;
     if (!entry._stallNotified) {
       // Byte-bounded tail read (STALL_TAIL_BYTES) so classifying a huge log's tail
-      // never pulls the whole file into memory (parity with Claude's tailFile).
+      // never pulls the whole file into memory (parity with the reference's tailFile).
       const result = this.getOutput(taskId, 10, undefined, STALL_TAIL_BYTES);
       if (result && this.looksLikePrompt(result.output)) {
         entry._stallNotified = true;
@@ -1938,11 +1938,11 @@ export class ProcessManager extends EventEmitter {
   }
 
   /** Write a one-shot actionable stall hint into the task output and emit the
-   *  'stalled' event (mirrors Claude Code's task-notification: tell the model the
+   *  'stalled' event (mirrors the reference's task-notification: tell the model the
    *  command is likely blocked on an interactive prompt and how to recover). */
   private notifyStall(entry: InternalProcess, tail: string): void {
     // A task blocked on an interactive prompt NEEDS the user's attention — flag it
-    // so task_list can surface a "needs input" badge (parity with Claude Code's
+    // so task_list can surface a "needs input" badge (parity with the reference's
     // waiting-for-input task state). Orthogonal to the lifecycle status (still
     // 'running'); cleared only when the task terminates.
     entry.attentionState = 'needs_input';
@@ -1967,7 +1967,7 @@ export class ProcessManager extends EventEmitter {
    * pending-delete — and the old `catch {}` dropped the chunk silently, leaving
    * callers an empty output file with no diagnostic. We now distinguish a fatal
    * closed fd (EBADF — nothing to retry) from a transient error: log it, retry
-   * the write ONCE, and only then give up (logging again). Mirrors Claude Code's
+   * the write ONCE, and only then give up (logging again). Mirrors the reference's
    * #drain retry-once. Returns true if the bytes were written, false if dropped.
    */
   private safeWrite(fd: number, buf: Buffer): boolean {
@@ -2007,7 +2007,7 @@ export class ProcessManager extends EventEmitter {
    * Returns `'agent'` for an in-process agent added via {@link registerAgent}
    * (no real child; `kill` is an abort callback) and `'bash'` for a spawned
    * background shell. Returns `undefined` when the id isn't tracked. Mirrors
-   * Claude Code surfacing `task_type` so stop/list callers can branch on the
+   * the reference surfacing `task_type` so stop/list callers can branch on the
    * kind of task without inspecting internals.
    */
   taskType(taskId: string): 'agent' | 'bash' | undefined {
@@ -2024,7 +2024,7 @@ export class ProcessManager extends EventEmitter {
    * `'bash' | 'monitor' | 'agent'`, or undefined when the id isn't tracked. Unlike
    * {@link taskType} (which collapses monitors to undefined to keep its agent/bash
    * contract) this exposes the monitor kind too, so a pill/label renderer can split
-   * "1 shell, 1 monitor" exactly like Claude Code's getPillLabel.
+   * "1 shell, 1 monitor" exactly like the reference's getPillLabel.
    */
   taskKind(taskId: string): TaskKind | undefined {
     return this.processes.get(taskId)?.kind;
@@ -2035,7 +2035,7 @@ export class ProcessManager extends EventEmitter {
    * map and delete its on-disk output file. Refuses (returns false) for an
    * unknown task or one that is still running, so a live process is never
    * untracked out from under its close/error handler. Returns true when a
-   * terminal task was removed. Mirrors Claude Code reaping completed shells so
+   * terminal task was removed. Mirrors the reference reaping completed shells so
    * the session's task table and tasks/ directory don't grow without bound.
    */
   removeTask(taskId: string): boolean {
@@ -2057,7 +2057,7 @@ export class ProcessManager extends EventEmitter {
   }
 
   /**
-   * outputFileRedundant optimization (parity with Claude Code's TaskOutput
+   * outputFileRedundant optimization (parity with the reference's TaskOutput
    * `outputFileRedundant = bytesTotal <= bytesRead`, diskOutput.ts:L45-48 /
    * TaskOutput.ts:L306-311,L348-359): once a TERMINAL task's ENTIRE output has
    * already been read inline into a tool_result (nothing omitted), the on-disk copy
@@ -2101,7 +2101,7 @@ export class ProcessManager extends EventEmitter {
   }
 
   /**
-   * FUNCTIONAL (parity with Claude Code's `evictAfter` retention): reap every
+   * FUNCTIONAL (parity with the reference's `evictAfter` retention): reap every
    * TERMINAL task whose eviction deadline ({@link BackgroundProcess.evictAfter},
    * set to endTime + {@link TERMINAL_RETENTION_MS}) has passed, via removeTask().
    * Unlike {@link pruneTerminal} (which drops ALL terminal tasks immediately) this
@@ -2125,7 +2125,7 @@ export class ProcessManager extends EventEmitter {
    * FUNCTIONAL (parity): kill every RUNNING task spawned by `agentId` (zombie
    * prevention). Invoked from the sub-agent lifecycle's finally block so background
    * shells a sub-agent launched don't outlive the agent that started them — parity
-   * with Claude Code's killShellTasksForAgent (prevents the "10-day fake-logs.sh
+   * with the reference's killShellTasksForAgent (prevents the "10-day fake-logs.sh
    * zombie" class of orphan). Only tasks whose recorded `agentId` matches and that
    * are still running are affected; returns the count killed. Internal kills (no
    * suppressCompletion) so a leftover task the model didn't explicitly stop still
@@ -2137,7 +2137,7 @@ export class ProcessManager extends EventEmitter {
     for (const taskId of Array.from(this.processes.keys())) {
       const entry = this.processes.get(taskId);
       if (!entry || entry.agentId !== agentId || entry.status !== 'running') continue;
-      // Reason-bearing kill (parity with Claude Code's killShellTasksForAgent debug
+      // Reason-bearing kill (parity with the reference's killShellTasksForAgent debug
       // line) so the emitted 'killed' event explains WHY the orphan shell vanished.
       if (this.kill(taskId, { reason: `agent ${agentId} exiting` })) killed++;
     }
@@ -2153,7 +2153,7 @@ export class ProcessManager extends EventEmitter {
     status: string;
     /** The task KIND discriminator (bash | monitor | agent) so a consumer can label
      *  a background shell vs an internal monitor vs an in-process agent without
-     *  parsing the command text (parity: Claude's shell-vs-monitor wording). */
+     *  parsing the command text (parity: the reference's shell-vs-monitor wording). */
     kind: TaskKind;
     exitCode: number | null;
     output: string;
@@ -2169,7 +2169,7 @@ export class ProcessManager extends EventEmitter {
     const entry = this.processes.get(taskId);
     if (!entry) return null;
 
-    // FUNCTIONAL (parity): optional line filter, mirroring Claude Code's
+    // FUNCTIONAL (parity): optional line filter, mirroring the reference's
     // BashOutput `filter` regex. When supplied, only output lines matching the
     // pattern are retained; the tail is then applied to the FILTERED set so the
     // caller sees the last N *matching* lines rather than N raw lines that may
@@ -2188,7 +2188,7 @@ export class ProcessManager extends EventEmitter {
     let bytesOmitted: number | undefined;
     let totalLinesEstimate: number | undefined;
     try {
-      // FUNCTIONAL (parity with Claude Code's getTaskOutput/tailFile): when a byte
+      // FUNCTIONAL (parity with the reference's getTaskOutput/tailFile): when a byte
       // ceiling is supplied, read ONLY the last `maxReadBytes` of the file via a
       // positioned read so memory/IO is bounded no matter how large the log grew
       // (AMI previously read the WHOLE file into memory on every poll). The skipped
@@ -2222,7 +2222,7 @@ export class ProcessManager extends EventEmitter {
         output = re ? lines.join('\n') : content;
       }
     } catch (err) {
-      // SECURITY/OBSERVABILITY (parity with Claude Code's #readStdoutFromFile):
+      // SECURITY/OBSERVABILITY (parity with the reference's #readStdoutFromFile):
       // a spawned bash task's output file is created up-front (O_CREAT|O_EXCL), so
       // a read failure here means it was deleted/tampered with mid-run — e.g. a
       // concurrent process in the shared project dir removed it. Surface a
@@ -2243,7 +2243,7 @@ export class ProcessManager extends EventEmitter {
       exitCode: entry.exitCode,
       output,
       // Freeze at the terminal timestamp, discount paused time, and clamp negative
-      // skew — the shared Claude-parity formula (see computeElapsedMs).
+      // skew — the shared the reference-parity formula (see computeElapsedMs).
       elapsedMs: computeElapsedMs(entry.startTime, entry.endTime, entry.totalPausedMs ?? 0),
       bytesTotal,
       bytesOmitted,
@@ -2305,7 +2305,7 @@ export class ProcessManager extends EventEmitter {
   /**
    * FUNCTIONAL (parity): the bounded, SEPARABLE stderr tail captured for a task —
    * the bytes the child wrote to STDERR, distinct from the merged stdout+stderr
-   * output file (parity with Claude Code surfacing stderr as its own block). Returns
+   * output file (parity with the reference surfacing stderr as its own block). Returns
    * '' when the task produced no stderr or isn't tracked. `tailLines > 0` trims to
    * the last N lines; otherwise the whole retained tail (capped at
    * {@link STDERR_TAIL_CAP}) is returned. Lets task_output label a stderr-only
@@ -2320,7 +2320,7 @@ export class ProcessManager extends EventEmitter {
   }
 
   /**
-   * FUNCTIONAL (parity with Claude Code's LocalAgentTask summary precedence): the
+   * FUNCTIONAL (parity with the reference's LocalAgentTask summary precedence): the
    * EFFECTIVE progress summary for a tracked agent — the authoritative AI summary
    * ({@link BackgroundProcess.agentSummary}) when set, falling back to the raw
    * tool-derived {@link BackgroundProcess.progressSummary}. A raw progress tick never
@@ -2335,7 +2335,7 @@ export class ProcessManager extends EventEmitter {
   }
 
   /**
-   * FUNCTIONAL (parity with Claude Code's two-tier teammate abort,
+   * FUNCTIONAL (parity with the reference's two-tier teammate abort,
    * useBackgroundTaskNavigation L147-165): SOFT-interrupt a running in-process
    * AGENT's current turn WITHOUT killing it. Invokes the agent's abort callback (the
    * same per-turn AbortController `kill()` uses) to stop the in-flight work, but —
@@ -2450,7 +2450,7 @@ export class ProcessManager extends EventEmitter {
   }
 
   /**
-   * FUNCTIONAL (parity with Claude Code's requestTeammateShutdown / InProcessTeammateTask
+   * FUNCTIONAL (parity with the reference's requestTeammateShutdown / InProcessTeammateTask
    * `shutdownRequested`): request a COOPERATIVE graceful shutdown of a running
    * in-process AGENT. Unlike {@link kill} (a hard abort of the in-flight turn) this
    * only SETS a flag; the agent's drain loop checks it between turns via
@@ -2480,7 +2480,7 @@ export class ProcessManager extends EventEmitter {
   }
 
   /**
-   * FUNCTIONAL (parity with Claude Code's InProcessTeammateTask `isIdle` +
+   * FUNCTIONAL (parity with the reference's InProcessTeammateTask `isIdle` +
    * `onIdleCallbacks`): toggle a running AGENT's IDLE flag. An agent that has finished
    * its current turn and is awaiting the next message marks itself idle (`true`); when
    * it resumes work it marks itself busy (`false`). Transitioning TO idle fires and
@@ -2506,7 +2506,7 @@ export class ProcessManager extends EventEmitter {
   }
 
   /**
-   * FUNCTIONAL (parity with Claude Code's `onIdleCallbacks` leader-wait): resolve
+   * FUNCTIONAL (parity with the reference's `onIdleCallbacks` leader-wait): resolve
    * when a tracked AGENT is idle, WITHOUT polling. Resolves immediately when the task
    * is unknown, already {@link isTerminalTaskStatus terminal} (a finished agent is
    * idle forever), or currently {@link isIdle idle}; otherwise registers a one-shot
@@ -2532,7 +2532,7 @@ export class ProcessManager extends EventEmitter {
   }
 
   /**
-   * FUNCTIONAL (parity with Claude Code's `hasWorkingInProcessTeammates`,
+   * FUNCTIONAL (parity with the reference's `hasWorkingInProcessTeammates`,
    * teammate.ts:L205-292): whether any tracked AGENT is still WORKING — running AND
    * not {@link isIdle idle}. This is the subtle 'alive but busy' distinction vs
    * {@link runningAgentCount} / `hasActiveAgents` (which count every running agent,
@@ -2547,13 +2547,13 @@ export class ProcessManager extends EventEmitter {
   }
 
   /**
-   * FUNCTIONAL (parity with Claude Code's `waitForTeammatesToBecomeIdle`,
+   * FUNCTIONAL (parity with the reference's `waitForTeammatesToBecomeIdle`,
    * teammate.ts:L205-292): resolve once EVERY tracked agent that is currently working
    * (running AND not idle) has gone idle — or terminal — WITHOUT polling. Snapshots
    * the working set first; returns resolved immediately when none are working;
    * otherwise awaits each via {@link waitForIdle}, which itself resolves instantly for
    * any that became idle/terminal between the snapshot and registration (handling the
-   * race Claude handles by re-reading isIdle inside its updater). An optional
+   * race the reference handles by re-reading isIdle inside its updater). An optional
    * `timeoutMs` caps the wait so a wedged teammate can't block shutdown forever;
    * a falsy/<=0 value waits indefinitely. Never rejects.
    */
@@ -2575,12 +2575,12 @@ export class ProcessManager extends EventEmitter {
   }
 
   /**
-   * FUNCTIONAL (parity with Claude Code's InProcessBackend.isActive): composite
+   * FUNCTIONAL (parity with the reference's InProcessBackend.isActive): composite
    * liveness for a tracked task — is it genuinely still doing work?
    *   - unknown id / non-running status  → false
    *   - registered in-process agent      → running AND its abort signal exists and
    *                                        is NOT aborted (missing signal defaults
-   *                                        to INACTIVE, mirroring Claude's
+   *                                        to INACTIVE, mirroring the reference's
    *                                        `abortController?.signal.aborted ?? true`)
    *   - bash / monitor                   → running status is liveness (no signal)
    * Catches an agent that was signalled to abort but whose status has not yet
@@ -2611,7 +2611,7 @@ export class ProcessManager extends EventEmitter {
   }
 
   /**
-   * FILE MODE runaway-output watchdog (parity with Claude Code's ShellCommand size
+   * FILE MODE runaway-output watchdog (parity with the reference's ShellCommand size
    * watchdog). In file mode the child streams straight to the fd, so the per-chunk
    * byte-cap kill in writeChunk never fires; this polled check — driven by the spawn
    * stall interval — kills a task whose ON-DISK output has reached the cap (the
@@ -2654,7 +2654,7 @@ export class ProcessManager extends EventEmitter {
    * FUNCTIONAL (parity): count of ACTIVE tasks — running OR pending — via the
    * shared {@link isActiveTaskStatus} predicate. Unlike {@link runningCount} (which
    * counts only actively-executing tasks) this includes queued/not-yet-started
-   * tasks, matching the two-state set Claude Code's background indicator tracks.
+   * tasks, matching the two-state set the reference's background indicator tracks.
    */
   activeCount(): number {
     let count = 0;
@@ -2667,7 +2667,7 @@ export class ProcessManager extends EventEmitter {
   /**
    * FUNCTIONAL (parity): the tasks that belong in the background-tasks indicator —
    * ACTIVE (running|pending) AND not explicitly foregrounded — via the shared
-   * {@link isBackgroundTask} predicate. Mirrors Claude Code's `isBackgroundTask`
+   * {@link isBackgroundTask} predicate. Mirrors the reference's `isBackgroundTask`
    * filter so a foregrounded task (pulled into the main view) is excluded while it
    * is foregrounded, and a terminal task is excluded entirely. Returns snapshots
    * (no internal fields), like {@link list}.
@@ -2687,12 +2687,12 @@ export class ProcessManager extends EventEmitter {
   }
 
   /**
-   * FUNCTIONAL (parity with Claude Code's useSessionBackgrounding): FOREGROUND a
+   * FUNCTIONAL (parity with the reference's useSessionBackgrounding): FOREGROUND a
    * single tracked task into the main view — set its per-task `isBackgrounded` flag
    * to false (excluding it from the background indicator) and record it as the
    * session's single {@link getForegroundedTaskId foregrounded task}. Any
    * previously-foregrounded task is re-backgrounded (its flag set back to true) so
-   * at most one task is foregrounded at a time, mirroring Claude's single-slot
+   * at most one task is foregrounded at a time, mirroring the reference's single-slot
    * foregroundedTaskId. No-op (returns false) for an unknown task. Returns true on
    * success.
    */
@@ -2705,7 +2705,7 @@ export class ProcessManager extends EventEmitter {
     }
     entry.isBackgrounded = false;
     // Reset the sync cursor so the first {@link syncForegroundedMessages} after a
-    // (re-)foreground re-renders the whole transcript (parity: Claude resets
+    // (re-)foreground re-renders the whole transcript (parity: the reference resets
     // lastSyncedMessagesLengthRef to 0 whenever the foreground slot changes).
     entry._lastSyncedMessagesLength = undefined;
     this._foregroundedTaskId = taskId;
@@ -2713,7 +2713,7 @@ export class ProcessManager extends EventEmitter {
   }
 
   /**
-   * FUNCTIONAL (parity with Claude Code's Ctrl+B re-background): re-BACKGROUND a
+   * FUNCTIONAL (parity with the reference's Ctrl+B re-background): re-BACKGROUND a
    * task — set its per-task `isBackgrounded` flag to true so it re-enters the
    * background-tasks indicator, and clear the session's foregrounded slot when it
    * was the foregrounded task. No-op (returns false) for an unknown task. Returns
@@ -2729,13 +2729,13 @@ export class ProcessManager extends EventEmitter {
   }
 
   /** The id of the single task currently foregrounded into the main view, or
-   *  undefined when none is (parity with Claude Code's AppState.foregroundedTaskId). */
+   *  undefined when none is (parity with the reference's AppState.foregroundedTaskId). */
   getForegroundedTaskId(): string | undefined {
     return this._foregroundedTaskId;
   }
 
   /**
-   * FUNCTIONAL (parity with Claude Code's BackgroundTaskState.messages append):
+   * FUNCTIONAL (parity with the reference's BackgroundTaskState.messages append):
    * append a message to a running background AGENT's live transcript buffer (see
    * {@link BackgroundProcess.messages}). Refuses (returns false) for an unknown
    * task, a non-`agent` task (bash/monitor keep no transcript), or a
@@ -2758,7 +2758,7 @@ export class ProcessManager extends EventEmitter {
   }
 
   /** The abort signal of the currently-foregrounded agent — to adopt as the main-view
-   *  abort target so Escape aborts the foregrounded task (parity with Claude Code's
+   *  abort target so Escape aborts the foregrounded task (parity with the reference's
    *  `setAbortController(foregroundedTask.abortController)`). Undefined when nothing is
    *  foregrounded, it isn't an agent, or it carries no signal. */
   foregroundedAbortSignal(): AbortSignal | undefined {
@@ -2767,7 +2767,7 @@ export class ProcessManager extends EventEmitter {
   }
 
   /**
-   * FUNCTIONAL (parity with Claude Code's useSessionBackgrounding sync effect,
+   * FUNCTIONAL (parity with the reference's useSessionBackgrounding sync effect,
    * useSessionBackgrounding.ts:L91-L127): compute what the main view must mirror for
    * the single {@link foregroundTask foregrounded} agent. Returns `null` when nothing
    * is foregrounded. Otherwise a {@link ForegroundSync} describing:
@@ -2786,7 +2786,7 @@ export class ProcessManager extends EventEmitter {
     const taskId = this._foregroundedTaskId;
     if (taskId === undefined) return null;
     const entry = this.processes.get(taskId);
-    // Vanished or no longer an agent → clear the foreground slot (parity: Claude's
+    // Vanished or no longer an agent → clear the foreground slot (parity: the reference's
     // `foregroundedTask.type !== 'local_agent'` branch resets foregroundedTaskId).
     if (!entry || entry.kind !== 'agent') {
       this._foregroundedTaskId = undefined;
@@ -2819,7 +2819,7 @@ export class ProcessManager extends EventEmitter {
   }
 
   /**
-   * FUNCTIONAL (parity with Claude Code's toolUseId correlation): find the tracked
+   * FUNCTIONAL (parity with the reference's toolUseId correlation): find the tracked
    * task spawned by a given tool_use id, or null when none matches. Lets a consumer
    * map a tool call back to the background task it created (e.g. to attach the
    * completion to the originating tool_result). Returns a snapshot (no internal
@@ -2860,14 +2860,14 @@ export class ProcessManager extends EventEmitter {
      *  ({@link isActive}). Pass the same signal whose abort the {@link abortFn}
      *  triggers so liveness reflects an in-flight cancel. */
     abortSignal?: AbortSignal;
-    /** Id of the tool_use call that spawned this agent (parity with Claude Code's
+    /** Id of the tool_use call that spawned this agent (parity with the reference's
      *  TaskStateBase.toolUseId) — correlates the agent back to its originating tool
      *  invocation. Looked up by {@link findByToolUseId}. */
     toolUseId?: string;
     /** Register the agent in the `pending` (accepted-but-not-yet-started) state
      *  instead of `running` — e.g. when it is queued behind the concurrency cap.
      *  Transition it to running with {@link markRunning} when it actually starts.
-     *  Parity with Claude Code's createTaskStateBase defaulting to 'pending'. */
+     *  Parity with the reference's createTaskStateBase defaulting to 'pending'. */
     pending?: boolean;
     /** True when this agent is a RESUMED continuation of a prior session, not a
      *  fresh spawn (see {@link BackgroundProcess.resumed}). */
@@ -2879,7 +2879,7 @@ export class ProcessManager extends EventEmitter {
     // On RESUME the taskId is reused (same agent continued), so an entry may already
     // exist from the prior run. Carry forward its ORIGINAL startTime so the agent's
     // elapsed-time clock measures its whole life rather than resetting on every
-    // resume (parity: Claude Code's resume re-registration carries prior state —
+    // resume (parity: the reference's resume re-registration carries prior state —
     // framework.ts:L74-117). A fresh spawn has no prior entry → starts the clock now.
     const prior = this.processes.get(taskId);
     const startTime = opts.resumed && prior ? prior.startTime : Date.now();
@@ -2914,7 +2914,7 @@ export class ProcessManager extends EventEmitter {
    * starts (e.g. a slot freed up behind the concurrency cap). No-op (returns false)
    * for an unknown task or one not currently pending. Resets `startTime` to now so
    * the elapsed-time clock measures actual run time, not the time spent queued —
-   * mirroring Claude Code starting the clock when a pending task begins. Returns
+   * mirroring the reference starting the clock when a pending task begins. Returns
    * true when the task transitioned from pending to running.
    */
   markRunning(taskId: string): boolean {
@@ -2958,7 +2958,7 @@ export class ProcessManager extends EventEmitter {
     // Live RAW progress summary (see BackgroundProcess.progressSummary) — current
     // tool activity. It is a SEPARATE field from the authoritative AI summary
     // (agentSummary) and never overwrites it, so a raw progress tick can never
-    // clobber an LLM-written summary (parity: Claude Code's `existingSummary ?
+    // clobber an LLM-written summary (parity: the reference's `existingSummary ?
     // {...progress, summary: existingSummary} : progress`). effectiveSummary()
     // reads agentSummary ?? progressSummary.
     if (updates.progressSummary !== undefined) entry.progressSummary = updates.progressSummary;
@@ -2987,7 +2987,7 @@ export class ProcessManager extends EventEmitter {
   }
 
   /**
-   * FUNCTIONAL (parity with Claude Code's `lastReportedToolCount` /
+   * FUNCTIONAL (parity with the reference's `lastReportedToolCount` /
    * `lastReportedTokenCount`): return the CHANGE in a background agent's tool-call
    * and token counts since the previous call, latching the current totals as the
    * new baseline. Lets a consumer surface "+N tools, +M tokens since last check"
@@ -3019,7 +3019,7 @@ export class ProcessManager extends EventEmitter {
   }
 
   /**
-   * FUNCTIONAL (parity with Claude Code's LocalShellTaskState `lastReportedTotalLines`
+   * FUNCTIONAL (parity with the reference's LocalShellTaskState `lastReportedTotalLines`
    * delta cursor): return the OUTPUT appended to a background task's output file since
    * the previous call, advancing the per-task offset cursor so the next call reports
    * only still-newer bytes. Lets a consumer (the engine turn loop) push a long-running
@@ -3061,7 +3061,7 @@ export class ProcessManager extends EventEmitter {
    * agents ({@link InternalProcess._registered}) are excluded — they spool no shell
    * output; their progress is surfaced via {@link reportProgressDelta} (tokens/tools).
    * The engine calls this each turn to push running-task progress to the model (parity
-   * with Claude Code's periodic still-running-task output attachments), complementing
+   * with the reference's periodic still-running-task output attachments), complementing
    * {@link drainCompletedTasks} which only surfaces TERMINAL completions.
    */
   drainRunningOutputDeltas(maxBytes: number = OUTPUT_DELTA_MAX_BYTES): OutputDelta[] {
@@ -3081,7 +3081,7 @@ export class ProcessManager extends EventEmitter {
 
   /**
    * Persist the identity of every still-RUNNING detached BASH task to the registry
-   * sidecar (parity with Claude Code's persistRemoteAgentMetadata). Only real
+   * sidecar (parity with the reference's persistRemoteAgentMetadata). Only real
    * detached children (kind 'bash', a non-zero pid) are recorded — in-process agents
    * and MCP monitors die WITH the CLI, so re-adopting them is meaningless. Atomic
    * (temp-write + rename) so a crash mid-write can't leave a torn file. Best-effort:
@@ -3109,7 +3109,7 @@ export class ProcessManager extends EventEmitter {
   }
 
   /**
-   * CRASH-SAFE RESUME / RE-ADOPTION (parity with Claude Code's
+   * CRASH-SAFE RESUME / RE-ADOPTION (parity with the reference's
    * restoreRemoteAgentTasksImpl, RemoteAgentTask.tsx:L484-532): on startup/resume,
    * reconcile the persisted {@link persistRegistry registry sidecar} against reality.
    * For each persisted task NOT already tracked in-process:
@@ -3136,7 +3136,7 @@ export class ProcessManager extends EventEmitter {
     let readopted = 0;
     let reaped = 0;
     for (const rec of records) {
-      // PARSE-FAILURE GUARD (parity with Claude Code's ITermBackend split-output
+      // PARSE-FAILURE GUARD (parity with the reference's ITermBackend split-output
       // check, ITermBackend.ts:L217-L223): the registry sidecar is UNTRUSTED input
       // on resume (corrupt / hand-edited / written by a crashed-or-old build), so a
       // record's id/handle is validated before it is propagated into tracked state.
@@ -3247,14 +3247,14 @@ export class ProcessManager extends EventEmitter {
   }
 
   /**
-   * FUNCTIONAL (parity with Claude Code's killShellTasksForAgent reap log): stop
+   * FUNCTIONAL (parity with the reference's killShellTasksForAgent reap log): stop
    * every still-running task at session end, REASON-bearing. Previously cleanup()
    * killed each task SILENTLY — the emitted 'killed' event (consumed by the engine
    * → `background_task_killed` analytics) carried no reason, so a developer tracing
    * the lifecycle could not tell a session-end reap from an explicit user/model
    * stop or an orphan-agent reap. We now pass an explicit `'session exiting'`
    * reason, so the already-wired introspection surface records WHY each background
-   * process disappeared (mirroring Claude's "killing orphaned shell task …" line).
+   * process disappeared (mirroring the reference's "killing orphaned shell task …" line).
    * The reason is scoped to shutdown — a plain task_kill still carries no reason.
    */
   cleanup(): void {

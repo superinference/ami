@@ -7,10 +7,10 @@
  *
  * This is finer-grained than `safeMode` (all-or-nothing project-local block) and
  * composes with it: an admin can lock just `hooks` while still allowing project
- * skills. Parity: Claude Code's `strictPluginOnlyCustomization`
+ * skills. Parity: the reference's `strictPluginOnlyCustomization`
  * (utils/settings/pluginOnlyPolicy.ts + the schema preprocess/.catch in types.ts).
  *
- * The parser is intentionally degrade-safe (mirrors Claude's zod preprocess +
+ * The parser is intentionally degrade-safe (mirrors the reference's zod preprocess +
  * `.catch(undefined)`): an array drops unknown surface names so a future enum
  * value never fails the whole file (degrades to less-locked), and any non-array
  * invalid value degrades to `undefined` (unlocked-for-this-field) rather than
@@ -38,7 +38,7 @@ function isKnownSurface(x: unknown): x is CustomizationSurface {
  *    so a future surface name degrades to less-locked, never fails the file;
  *  - anything else (string, object, number, null, undefined) → `undefined`,
  *    i.e. unlocked-for-this-field rather than everything-broken.
- * Mirrors Claude's zod `.preprocess(...)` + `.catch(undefined)`.
+ * Mirrors the reference's zod `.preprocess(...)` + `.catch(undefined)`.
  */
 export function parseStrictPluginOnlyCustomization(value: unknown): StrictPluginOnlyPolicy | undefined {
   if (typeof value === 'boolean') return value;
@@ -53,7 +53,7 @@ export function parseStrictPluginOnlyCustomization(value: unknown): StrictPlugin
  * with an unknown surface or an invalid non-array shape decides correctly
  * (degrading to unlocked) without the caller having to pre-parse. `true` locks
  * all surfaces; an array locks only the listed ones; absent/`false`/invalid →
- * nothing locked (the default). Parity: Claude's `isRestrictedToPluginOnly`.
+ * nothing locked (the default). Parity: the reference's `isRestrictedToPluginOnly`.
  */
 export function isRestrictedToPluginOnly(surface: CustomizationSurface, policy: unknown): boolean {
   const parsed = parseStrictPluginOnlyCustomization(policy);
@@ -69,7 +69,7 @@ export function isRestrictedToPluginOnly(surface: CustomizationSurface, policy: 
  *   - `policySettings` — managed/admin settings, admin-controlled by definition;
  *   - `built-in` / `builtin` / `bundled` — ship with the CLI, not user-authored.
  * Everything else (user/project/local filesystem sources) is user-controlled and
- * is blocked when its surface is locked. Parity: Claude's ADMIN_TRUSTED_SOURCES.
+ * is blocked when its surface is locked. Parity: the reference's ADMIN_TRUSTED_SOURCES.
  */
 export const ADMIN_TRUSTED_SOURCES: ReadonlySet<string> = new Set([
   'plugin',

@@ -8,7 +8,7 @@ import { createHash } from 'crypto';
 
 /**
  * Conservative mime → file-extension allowlist for persisting binary resource
- * blobs, mirroring Claude's `extensionForMimeType`. Known types get their proper
+ * blobs, mirroring the reference's `extensionForMimeType`. Known types get their proper
  * extension (the extension matters because the Read tool dispatches on it — PDFs,
  * images, office docs, etc. need the right ext); EVERYTHING else is forced to
  * `bin`. We never derive an extension from an untrusted mimeType subtype, which
@@ -92,9 +92,9 @@ export const listMcpResourcesTool: ToolDefinition = {
     '(each row is prefixed with its server for disambiguation); pass `server` to scope to one. ' +
     'Example: {"server": "github"}. Resources are read via ReadMcpResource.',
   // Synonyms NOT already in the name/description so the tool is findable by intent
-  // via tool_search. Parity: Claude's ListMcpResourcesTool.searchHint.
+  // via tool_search. Parity: the reference's ListMcpResourcesTool.searchHint.
   searchHint: 'enumerate discover available resource catalog inventory',
-  // Declared result-size knob driving the spill cap below. Parity: Claude's
+  // Declared result-size knob driving the spill cap below. Parity: the reference's
   // ListMcpResourcesTool.maxResultSizeChars (100_000).
   maxResultSizeChars: 100_000,
   inputSchema: {
@@ -131,7 +131,7 @@ export const listMcpResourcesTool: ToolDefinition = {
       });
       // Cap the joined listing the same way the read tool caps its body, so a
       // server advertising a very large resource catalog cannot return an
-      // unbounded string into the model context (Claude's maxResultSizeChars).
+      // unbounded string into the model context (the reference's maxResultSizeChars).
       const cap = listMcpResourcesTool.maxResultSizeChars ?? 100_000;
       const output = spillToolText(context.cwd, 'mcp-resources', lines.join('\n'), cap);
       return { output, metadata: { count: resources.length, server: serverFilter } };
@@ -159,7 +159,7 @@ function normalizeResourceResult(result: unknown, dir: string, server: string): 
         const file = path.join(dir, name);
         fs.writeFileSync(file, bytes);
         // Keep both the structured path AND a legible saved-to-disk message so the
-        // base64 is never inlined into the context (Claude-parity blob interception).
+        // base64 is never inlined into the context (the reference-parity blob interception).
         const source = `[Resource from ${server} at ${it.uri ?? ''}] `;
         return { uri: it.uri, mimeType: it.mimeType, blobSavedTo: file, text: getBinaryBlobSavedMessage(file, it.mimeType, bytes.length, source) };
       } catch (err) {
@@ -180,9 +180,9 @@ export const readMcpResourceTool: ToolDefinition = {
     'Text contents are returned inline (pretty-printed); binary blobs are decoded and saved to disk, ' +
     'with the file path returned as `blobSavedTo`.',
   // Synonyms NOT already in the name/description so the tool is findable by intent
-  // via tool_search. Parity: Claude's ReadMcpResourceTool.searchHint.
+  // via tool_search. Parity: the reference's ReadMcpResourceTool.searchHint.
   searchHint: 'fetch retrieve download a specific resource by uri',
-  // Declared result-size knob driving the spill cap below. Parity: Claude's
+  // Declared result-size knob driving the spill cap below. Parity: the reference's
   // ReadMcpResourceTool.maxResultSizeChars (100_000).
   maxResultSizeChars: 100_000,
   inputSchema: {

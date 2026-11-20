@@ -4,7 +4,7 @@ import { findCredentials } from '../credential-guard';
 
 /**
  * Hard upper bounds on the body a single memory write may persist, mirroring
- * Claude Code's memdir caps (memdir/memdir.ts:36-39 MAX_ENTRYPOINT_LINES /
+ * the reference's memdir caps (memdir/memdir.ts:36-39 MAX_ENTRYPOINT_LINES /
  * MAX_ENTRYPOINT_BYTES). A memory file is injected into context on load, so an
  * unbounded body bloats every future turn; reject an over-large write up front
  * (naming WHICH cap fired) so the model splits it into focused memories instead
@@ -16,18 +16,18 @@ export const MAX_MEMORY_BODY_BYTES = 25_000;
 
 /**
  * Warm, varied one-line acknowledgements appended to a successful memory save.
- * Mirrors Claude Code's UserMemoryInputMessage (components/messages/
+ * Mirrors the reference's UserMemoryInputMessage (components/messages/
  * UserMemoryInputMessage.tsx L8-10), which samples a friendly saving line from
  * this exact set and renders it dimmed below the memory so a save feels human
  * rather than mechanical. AMI surfaces it as the tail of the write_memory tool
  * result (which both the TUI and the detached runner render), so the warmth
- * reaches the model/user identically in both modes — unlike Claude's TUI-only
+ * reaches the model/user identically in both modes — unlike the reference's TUI-only
  * affordance. Exported so the picker stays single-sourced and testable.
  */
 export const SAVE_ACKNOWLEDGEMENTS = ['Got it.', 'Good to know.', 'Noted.'] as const;
 
 /**
- * Pick one warm acknowledgement at random (parity with Claude's lodash `sample`).
+ * Pick one warm acknowledgement at random (parity with the reference's lodash `sample`).
  * `rng` is an injectable [0,1) source — defaulting to {@link Math.random} in
  * production — so a test can pin the selection deterministically without mutating
  * the global RNG. Clamped so an rng returning exactly 1 still maps to a valid
@@ -43,7 +43,7 @@ export function pickSaveAcknowledgement(rng: () => number = Math.random): string
 
 /**
  * Map a Node filesystem error to an actionable, human-readable hint instead of
- * leaking a raw errno string. Mirrors Claude Code's FileWriteTool typed error
+ * leaking a raw errno string. Mirrors the reference's FileWriteTool typed error
  * classes (perms/space/path-is-a-dir) so the model gets a result it can act on.
  */
 function describeFsError(err: unknown): string {
@@ -122,7 +122,7 @@ export const writeMemoryTool: ToolDefinition = {
 
     // Size-cap guard: a memory body is injected into context on load, so reject an
     // over-large write naming WHICH cap fired (lines or bytes) rather than silently
-    // persisting an unbounded dump. Parity with Claude's memdir MAX_ENTRYPOINT caps.
+    // persisting an unbounded dump. Parity with the reference's memdir MAX_ENTRYPOINT caps.
     const lineCount = content.split('\n').length;
     const byteCount = Buffer.byteLength(content, 'utf-8');
     if (lineCount > MAX_MEMORY_BODY_LINES || byteCount > MAX_MEMORY_BODY_BYTES) {
@@ -150,7 +150,7 @@ export const writeMemoryTool: ToolDefinition = {
     // committed/synced, so credentials must never be written to it. Block the
     // write and name only the KIND(s) of credential detected (the rule label,
     // e.g. "Anthropic Key") so the model knows what to remove — but NEVER echo
-    // the matched value itself. Mirrors Claude's team-memory secret guard, which
+    // the matched value itself. Mirrors the reference's team-memory secret guard, which
     // records the gitleaks ruleId and never the secret. For a TEAM-scoped write
     // the consequence is sharper (teamMemSecretGuard.ts): the file would be
     // shared with every repository collaborator, so the message says so.
@@ -176,7 +176,7 @@ export const writeMemoryTool: ToolDefinition = {
     const type: MemoryType | undefined =
       rawType && (MEMORY_TYPES as readonly string[]).includes(rawType) ? (rawType as MemoryType) : undefined;
 
-    // Save mode: by default do Claude Code's TWO-step save (write the topic file
+    // Save mode: by default do the reference's TWO-step save (write the topic file
     // AND append a one-line pointer to the directory's MEMORY.md index so the
     // always-loaded index stays in sync). `skipIndex:true` selects the ONE-step
     // save (file only, no index pointer) — parity with extractMemories' skipIndex
@@ -189,7 +189,7 @@ export const writeMemoryTool: ToolDefinition = {
     // slug-disambiguated distinct memory (total grows by one). saveMemory already
     // avoids destroying an unrelated memory via resolveNonClobberingPath; this just
     // reports WHICH happened so the model is not silently told "Saved" when it in
-    // fact replaced a prior memory's body (Claude's create path special-cases an
+    // fact replaced a prior memory's body (the reference's create path special-cases an
     // existing file; AMI updates-in-place, so surface the distinction).
     const before = mgr.countMemoriesByScope();
 
@@ -199,11 +199,11 @@ export const writeMemoryTool: ToolDefinition = {
       savedPath = mgr.saveMemory(name, content, description, type, scope, !skipIndex);
       // Count-bearing confirmation (teamMemSaved.ts): after the save, report how
       // many memories now exist, split by scope, with singular/plural agreement and
-      // zero-suppression of the team segment (parity with Claude's teamCount split).
+      // zero-suppression of the team segment (parity with the reference's teamCount split).
       counts = mgr.countMemoriesByScope();
     } catch (err) {
       // Typed, actionable I/O-boundary error instead of leaking a raw errno to the
-      // model — parity with Claude's structured FileWriteTool error classes.
+      // model — parity with the reference's structured FileWriteTool error classes.
       return { output: `Error: could not save memory "${name}": ${describeFsError(err)}`, isError: true };
     }
 

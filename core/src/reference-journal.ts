@@ -1,6 +1,6 @@
 /**
  * reference-journal — persist per-session agent telemetry as append-only JSONL under the
- * user's data dir, using the SAME on-disk conventions a Claude-Code-style analytics
+ * user's data dir, using the SAME on-disk conventions a reference-style analytics
  * dashboard reads (projects/<cwd-slug>/<sessionId>.jsonl with `assistant`/`user` records).
  *
  * This is the WRITE side only: pure path/schema/mapping helpers plus a crash-safe append.
@@ -36,7 +36,7 @@ export const COMPAT_VERSION = '2.1.307';
 // ---------------------------------------------------------------------------
 
 /**
- * Resolve the user's home directory with Claude-parity precedence (parity:
+ * Resolve the user's home directory with the reference-parity precedence (parity:
  * xdg.ts `resolveOptions`): an explicit `homedir` override wins, then the `HOME`
  * env var, then the OS passwd lookup. On POSIX `os.homedir()` reads the passwd
  * entry and does NOT reflect a re-exported `$HOME`, so a sandbox / CI / `su`
@@ -70,7 +70,7 @@ export function expandConfigDir(value: string, env: NodeJS.ProcessEnv = process.
 /**
  * Reject an externally-supplied storage root that is dangerous to trust as the
  * base for ALL per-project state (sessions, memory, checkpoints) — parity with
- * Claude's `validateMemoryPath` (memdir/paths.ts). A bad override must never
+ * the reference's `validateMemoryPath` (memdir/paths.ts). A bad override must never
  * silently redirect every write under the cwd or near the filesystem root.
  * Rejects (after `path.normalize` + trailing-separator strip):
  *  - non-absolute ("../foo" — interpreted relative to cwd)
@@ -152,7 +152,7 @@ const _cacheDirCache = new Map<string, string>();
 /**
  * Resolve the TRANSIENT cache dir for discardable diagnostics (per-server MCP logs,
  * error traces) as a config knob distinct from the durable data dir — parity with
- * Claude Code's `cachePaths` (`envPaths('claude-cli').cache`, which honors
+ * the reference's `cachePaths` (`envPaths('claude-cli').cache`, which honors
  * `XDG_CACHE_HOME` and the platform cache root). Precedence:
  *  1. An explicit storage override (CLAUDE_CONFIG_DIR / SUPERINFERENCE_DATA_DIR)
  *     wins and keeps cache co-located with data, so a user/test that pins one dir
@@ -197,7 +197,7 @@ export function resolveCacheDir(env: NodeJS.ProcessEnv = process.env, homedir?: 
  * The conventional per-user executable directory — `~/.local/bin` — honoring the
  * same HOME-aware precedence as every other path resolver here ({@link resolveHome}:
  * an explicit `homedir` override wins, then `$HOME`, then the OS passwd entry).
- * Parity with Claude Code's `getUserBinDir()` (xdg.ts): "not technically XDG but
+ * Parity with the reference's `getUserBinDir()` (xdg.ts): "not technically XDG but
  * follows the convention", the location a native per-user installer would place (or
  * symlink) an executable so it lands on a dir that is commonly already on `PATH`.
  * AMI's own native install root is `~/.ami/bin`; this exposes the broader
@@ -263,7 +263,7 @@ export function readCachedCapability(
 
 /**
  * Asymmetric capability cache — persist ONLY a POSITIVE machine-local capability
- * detection into the shared GLOBAL config, NEVER a negative (parity: Claude Code's
+ * detection into the shared GLOBAL config, NEVER a negative (parity: the reference's
  * `isChromeExtensionInstalled_CACHED_MAY_BE_STALE`, which writes only a positive
  * `cachedChromeExtensionInstalled`).
  *
@@ -348,7 +348,7 @@ export interface ModelAliasMigration {
  * One-time, idempotent startup migration of a persisted, DEPRECATED/renamed pinned
  * `model` string in the GLOBAL (user-level) settings to its current successor id —
  * so the settings file, `/model`, and downstream pricing all reflect a live model
- * instead of a retired one (parity: Claude's migrateLegacyOpusToCurrent /
+ * instead of a retired one (parity: the reference's migrateLegacyOpusToCurrent /
  * migrateFennecToOpus settings-value migrations). Runs alongside
  * {@link migrateLegacyDataDir} at startup.
  *
@@ -411,7 +411,7 @@ export async function migrateDeprecatedModelAlias(
  * user's persisted `migrationVersion` lags this constant, then stamps it. Bumping this
  * number re-runs the WHOLE set for every existing user, so a NEW migration is added by
  * appending its call to {@link runStartupMigrations} and incrementing this — an
- * extensible, ordered, idempotent framework (parity: Claude Code's
+ * extensible, ordered, idempotent framework (parity: the reference's
  * CURRENT_MIGRATION_VERSION / runMigrations(), replacing the previous single ad-hoc
  * migrateLegacyDataDir() call that had no version counter or ordered dispatch).
  */
@@ -484,7 +484,7 @@ export interface StartupMigrationNoticeOptions {
   /**
    * Presentation-layer renderer that appends the "how to opt out" control to the
    * model-alias notice — the model remap is an AUTOMATIC change, so (parity with
-   * Claude Code's useModelMigrationNotifications.tsx:L29 "Model updated … · Set
+   * the reference's useModelMigrationNotifications.tsx:L29 "Model updated … · Set
    * CLAUDE_CODE_DISABLE_LEGACY_MODEL_REMAP=1 to opt out") the announcement also tells
    * the user the single env var that disables it. Injected (not hard-coded here) so the
    * canonical opt-out-control formatter stays in ONE place (the CLI's
@@ -496,13 +496,13 @@ export interface StartupMigrationNoticeOptions {
 
 /**
  * Human-readable one-time notices describing what {@link runStartupMigrations} silently
- * changed on disk, so the startup surface can tell the user (parity: Claude's
+ * changed on disk, so the startup surface can tell the user (parity: the reference's
  * post-migration one-time notification driven by a persisted flag). Empty when the set
  * was skipped (version already current) or ran but changed nothing — so a caller prints
  * nothing on a steady-state startup, and the version stamp guarantees the notice shows at
  * most once per generation. When {@link StartupMigrationNoticeOptions.appendOptOut} is
  * supplied, the model-remap notice carries the opt-out control so the user learns how to
- * disable the auto-remap inline (parity with Claude Code's migration-notification hint).
+ * disable the auto-remap inline (parity with the reference's migration-notification hint).
  */
 export function formatStartupMigrationNotices(
   result: StartupMigrationResult,
@@ -530,7 +530,7 @@ export function formatStartupMigrationNotices(
 
 /**
  * Every data dir the Usage/spend view should READ from — so it aggregates spend across ALL
- * agents, not just ours: our own journal, Claude Code's (~/.claude), and any dirs registered
+ * agents, not just ours: our own journal, the reference's (~/.claude), and any dirs registered
  * in the dashboard config. An explicit CLAUDE_CONFIG_DIR / SUPERINFERENCE_DATA_DIR override is
  * treated as authoritative and REPLACES the defaults (keeps tests + power-users deterministic).
  */
@@ -591,7 +591,7 @@ function cappedComponent(transformed: string, raw: string, maxLen: number): stri
 
 /**
  * Canonicalize a filesystem path before it is used to derive a stable project
- * identity (parity: Claude's canonicalizePath). Two things make the RAW cwd an
+ * identity (parity: the reference's canonicalizePath). Two things make the RAW cwd an
  * unstable key: symlinks (two paths that are the same directory) and Unicode
  * normalization (the same name encoded NFC vs NFD slugs differently). We resolve
  * the deepest existing ancestor via `realpathSync` (re-joining any not-yet-existing
@@ -625,7 +625,7 @@ const GIT_ROOT_TIMEOUT_MS = 2_000;
  * and friends are called many times per turn (often with `dirname(file)` across many
  * directories), so the result MUST be memoized — but with a BOUNDED LRU, not an
  * unbounded Map: a long-running session editing files across hundreds of directories
- * would otherwise accumulate cache entries forever. Parity with Claude Code's
+ * would otherwise accumulate cache entries forever. Parity with the reference's
  * `findGitRoot`, which wraps the walk in `memoizeWithLRU(…, 50)` for the same reason.
  */
 const GIT_ROOT_CACHE_MAX = 50;
@@ -634,7 +634,7 @@ const GIT_ROOT_CACHE_MAX = 50;
  * Resolve `cwd` to the canonical MAIN git-worktree root so EVERY worktree (and
  * every subdirectory) of one repository shares a single project identity —
  * memory, sessions and checkpoints follow the repo, not the exact directory you
- * happened to `cd` into (parity: Claude's findCanonicalGitRoot, fixing
+ * happened to `cd` into (parity: the reference's findCanonicalGitRoot, fixing
  * per-worktree / per-subdir state fragmentation).
  *
  * `git rev-parse --git-common-dir` returns the SHARED .git directory even from a
@@ -704,7 +704,7 @@ function sanitizeId(id: string): string {
 }
 
 /**
- * The GLOBAL per-project state dir — `<configDir>/projects/<cwd-slug>/` — mirroring Claude Code's
+ * The GLOBAL per-project state dir — `<configDir>/projects/<cwd-slug>/` — mirroring the reference's
  * `~/.claude/projects/<cwd-slug>/`. All per-project RUNTIME state (session transcripts, resume
  * blobs, checkpoints, tasks, plans, memory, …) lives here keyed by cwd slug, so the in-repo
  * `<cwd>/.ami/` holds only committed CONFIG. An optional `sub` names a subfolder (e.g. 'sessions').
@@ -729,7 +729,7 @@ export function journalPathFor(cwd: string, sessionId: string, env: NodeJS.Proce
  * (`projects/<slug>/subagents/[<run>/]agent-<id>.jsonl`). An optional `subdir`
  * groups related subagent transcripts under a run folder (e.g. a workflow /
  * task run id) so a downstream dashboard can roll the run up as one unit —
- * parity with Claude Code's agentId→subdir grouping map
+ * parity with the reference's agentId→subdir grouping map
  * (`setAgentTranscriptSubdir` → `subagents/workflows/<runId>/agent-<id>.jsonl`).
  * The subdir is sanitized ({@link sanitizeId}) so a hostile / separator-bearing
  * run id can never traverse outside the `subagents` root; an empty / whitespace
@@ -752,7 +752,7 @@ export function subagentJournalPathFor(
 // Vocabulary mapping (our internal ids -> the dashboard's names)
 // ---------------------------------------------------------------------------
 
-/** Our tool ids -> the dashboard's tool vocabulary (PascalCase Claude-Code names). */
+/** Our tool ids -> the dashboard's tool vocabulary (PascalCase the reference names). */
 export const AMI_TO_CLAUDE_TOOL: Record<string, string> = {
   bash: 'Bash',
   file_read: 'Read',
@@ -861,7 +861,7 @@ export interface JournalUsage {
  * Map our usage into the dashboard's snake_case API usage. `input_tokens` is the FRESH
  * (uncached) prompt portion — total prompt minus cache-read and cache-creation — so the
  * dashboard's input + cache_read + cache_creation sum reconstructs the full prompt.
- * Cache-creation is split per ephemeral TTL (parity: Claude's emptyUsage
+ * Cache-creation is split per ephemeral TTL (parity: the reference's emptyUsage
  * `cache_creation.{ephemeral_5m_input_tokens, ephemeral_1h_input_tokens}`): when
  * the provider surfaces an explicit 5m/1h split it is honored; otherwise the full
  * cache-creation total is attributed to the 5m TTL (the default ephemeral window),
@@ -976,7 +976,7 @@ export interface UserEntryArgs {
      * The structured patch was omitted (left empty) because the edited file
      * exceeded the diff-scan cap — the edit happened but its location could not
      * be rendered. Lets a replay/introspection surface distinguish "edit location
-     * not shown — file too large to scan" from a genuine no-op. Parity: Claude's
+     * not shown — file too large to scan" from a genuine no-op. Parity: the reference's
      * readEditContext `truncated: true` signal.
      */
     truncated?: boolean;

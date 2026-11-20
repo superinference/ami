@@ -58,7 +58,7 @@ export interface CoordinatorState {
  *  lets the coordinator step the active model all the way back to the primary.
  *  Returned by {@link ProviderCoordinator.recordSuccess} so the engine can
  *  announce "returned to <primary> after recovery" — the mirror of the
- *  user-visible fallback notification (parity: Claude Code announces both the
+ *  user-visible fallback notification (parity: the reference announces both the
  *  demotion to and the recovery from a degraded-capacity model). */
 export interface ModelRecovery {
   /** The fallback model that was active when recovery completed. */
@@ -178,7 +178,7 @@ export class ProviderCoordinator {
    * null, so it cannot tell a healthy key from the last-resort throttled one. This
    * exposes that distinction: the engine can consult it after a 429 to WAIT until
    * {@link CredentialBackpressure.nextAvailableAt} instead of immediately hammering
-   * an exhausted key with no backoff (parity: Claude Code waits out the window
+   * an exhausted key with no backoff (parity: the reference waits out the window
    * reset rather than reusing an exhausted credential). Single-credential mode has
    * no pool and is never "exhausted" (nothing to back off to).
    */
@@ -287,7 +287,7 @@ export class ProviderCoordinator {
    * Raw per-window rate-limit utilization from the most recent response (fraction
    * in [0, 1] + reset instant per bucket), tracked on every response rather than
    * only when a warning fires. Surfaced to the statusline so a ported script can
-   * read `.rate_limit.requests.utilization` (parity: Claude's getRawUtilization).
+   * read `.rate_limit.requests.utilization` (parity: the reference's getRawUtilization).
    */
   getRawUtilization(): RawUtilization {
     return this.rateLimits.getRawUtilization();
@@ -298,7 +298,7 @@ export class ProviderCoordinator {
    * cooldown, prefer the SERVER-DIRECTED delay: the coordinator already ingests
    * each response's headers via {@link updateRateLimits}, so the latest parsed
    * `Retry-After` (ms) is honored verbatim by the pool (clamped, no escalation)
-   * instead of the fixed escalating default. This mirrors Claude Code's
+   * instead of the fixed escalating default. This mirrors the reference's
    * getRetryDelay, which uses the server `retry-after` header as the delay and
    * only falls back to exponential backoff when the server did not direct one.
    */

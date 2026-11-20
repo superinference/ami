@@ -1,7 +1,7 @@
 /**
  * LSP client — a real JSON-RPC request/response client over stdio.
  *
- * Mirrors Claude Code's LSPClient/LSPServerInstance behavior without pulling in
+ * Mirrors the reference's LSPClient/LSPServerInstance behavior without pulling in
  * vscode-jsonrpc (core/ stays dependency-light): it frames outbound messages
  * with Content-Length headers, PARSES the Content-Length-framed stream the
  * server writes back, correlates responses to pending requests by id, and
@@ -59,7 +59,7 @@ const LSP_CONTENT_MODIFIED = -32801;
 const DEFAULT_REQUEST_TIMEOUT_MS = 15000;
 /** Default bounded wait for diagnostics to settle after open/change. */
 const DEFAULT_DIAGNOSTICS_TIMEOUT_MS = 2000;
-/** Default crash-recovery cap (matches Claude's maxRestarts default). */
+/** Default crash-recovery cap (matches the reference's maxRestarts default). */
 const DEFAULT_MAX_RESTARTS = 3;
 /**
  * Bounded wait for a server's reply to the graceful `shutdown` request before we
@@ -73,7 +73,7 @@ const DEFAULT_SHUTDOWN_TIMEOUT_MS = 1000;
 const EXIT_GRACE_MS = 50;
 /**
  * Consecutive diagnostic-handling failures for one server before we emit a loud
- * warning. Mirrors Claude Code's passiveFeedback threshold (warn after >= 3) so a
+ * warning. Mirrors the reference's passiveFeedback threshold (warn after >= 3) so a
  * persistently misbehaving (or malicious) language server whose diagnostics keep
  * failing to process is surfaced instead of being silently swallowed forever.
  */
@@ -92,7 +92,7 @@ const LSP_STDERR_TAIL_BYTES = 4096;
  * The BCP-47 locale AMI advertises to a language server in the `initialize`
  * handshake, derived from the process environment (LC_ALL > LC_MESSAGES > LANG),
  * stripped of any `.encoding`/`@modifier` suffix (`en_US.UTF-8` → `en_US`).
- * Falls back to `en` when unset. Mirrors Claude Code's `locale` InitializeParam,
+ * Falls back to `en` when unset. Mirrors the reference's `locale` InitializeParam,
  * which lets a server localize its diagnostic messages.
  */
 export function lspLocale(env: NodeJS.ProcessEnv = process.env): string {
@@ -102,7 +102,7 @@ export function lspLocale(env: NodeJS.ProcessEnv = process.env): string {
 }
 
 /**
- * Lifecycle state of a single language server, mirroring Claude Code's
+ * Lifecycle state of a single language server, mirroring the reference's
  * `LspServerState` (services/lsp/LSPServerInstance.ts). `error` is retained after
  * a crash so the failure reason stays attributable once the live process is gone.
  */
@@ -110,7 +110,7 @@ export type LspServerState = 'stopped' | 'starting' | 'running' | 'stopping' | '
 
 /**
  * Introspection snapshot of one language server's lifecycle — the AMI analogue of
- * Claude's `LSPServerInstance` readonly getters (`state`, `startTime`, `lastError`,
+ * the reference's `LSPServerInstance` readonly getters (`state`, `startTime`, `lastError`,
  * `restartCount`) plus the `isHealthy` predicate and the last `exitCode`. Surfaced
  * by `getServerStatus`/`getAllServerStatus` and rendered in `/doctor`.
  */
@@ -129,7 +129,7 @@ export interface LspServerStatus {
   /**
    * Number of CONSECUTIVE `publishDiagnostics` deliveries from this server that
    * failed to process (reset to 0 on the next successful delivery). Mirrors
-   * Claude Code's passiveFeedback per-server `diagnosticFailures` counter; once it
+   * the reference's passiveFeedback per-server `diagnosticFailures` counter; once it
    * reaches `DIAGNOSTIC_FAILURE_WARN_THRESHOLD` a warning is logged. Surfaced by
    * `getServerStatus`/`getAllServerStatus` so `/doctor` can flag a flapping server.
    */
@@ -137,7 +137,7 @@ export interface LspServerStatus {
 }
 
 /**
- * Client-wide initialization status, mirroring Claude Code's manager-level
+ * Client-wide initialization status, mirroring the reference's manager-level
  * `getInitializationStatus()` discriminated union — lets a UI/tool report WHY LSP
  * is (un)available instead of a bare boolean.
  */
@@ -149,8 +149,8 @@ export type LspInitializationStatus =
 
 /**
  * Aggregate outcome of wiring diagnostic-notification handling across every
- * language server, mirroring Claude Code's passiveFeedback `HandlerRegistrationResult`
- * (services/lsp/passiveFeedback.ts L104-L114). Claude registers a
+ * language server, mirroring the reference's passiveFeedback `HandlerRegistrationResult`
+ * (services/lsp/passiveFeedback.ts L104-L114). the reference registers a
  * `textDocument/publishDiagnostics` handler on each `LSPServerInstance` in a loop,
  * isolates per-server failures, and returns this typed object for monitoring/testing.
  *
@@ -160,7 +160,7 @@ export type LspInitializationStatus =
  * servers attempted this session, VALIDATES each can actually deliver diagnostics
  * (live, initialized, readable stdout), isolates a dead/half-open server as a
  * per-server `registrationError`, and returns this SAME typed shape — consolidating
- * the already-tracked per-server lifecycle + diagnostic-failure state into Claude's
+ * the already-tracked per-server lifecycle + diagnostic-failure state into the reference's
  * monitoring schema rather than adding a parallel tracker.
  */
 export interface HandlerRegistrationResult {
@@ -172,7 +172,7 @@ export interface HandlerRegistrationResult {
   registrationErrors: Array<{ serverName: string; error: string }>;
   /**
    * Snapshot copy of the consecutive `publishDiagnostics` processing-failure counts
-   * per server (Claude's `diagnosticFailures` map). A copy, so a caller inspecting
+   * per server (the reference's `diagnosticFailures` map). A copy, so a caller inspecting
    * the monitoring result cannot mutate the client's live failure tracker.
    */
   diagnosticFailures: Map<string, { count: number; lastError: string }>;
@@ -213,7 +213,7 @@ export class LSPClient implements DiagnosticSource {
    * otherwise observe a half-open entry and fail in `sendRequest` with
    * "server is starting". Tracking the handshake promise lets every concurrent
    * `ensureServer`/`request` for the same language await the SAME result — the
-   * AMI analogue of Claude Code's generation-guarded init + `waitForInitialization`.
+   * AMI analogue of the reference's generation-guarded init + `waitForInitialization`.
    */
   private handshakes: Map<string, Promise<boolean>> = new Map();
   /**
@@ -222,7 +222,7 @@ export class LSPClient implements DiagnosticSource {
    * `await`; if `shutdown()` (or any teardown) bumped it while the handshake was in
    * flight, the now-STALE handshake is abandoned instead of resolving into — and
    * clobbering — the newer client state (e.g. re-recording a server as `error`
-   * after shutdown already cleared it). This is the AMI analogue of Claude Code's
+   * after shutdown already cleared it). This is the AMI analogue of the reference's
    * `initializationGeneration` guard (services/lsp/manager.ts): the stale promise's
    * resolution becomes a no-op. Without it, a shutdown mid-handshake leaves a
    * phantom `failed` server in `getInitializationStatus()`/`getServerStatus()`.
@@ -231,7 +231,7 @@ export class LSPClient implements DiagnosticSource {
   /**
    * Retained per-language lifecycle status. Unlike the live `servers` map (which a
    * crash removes), this survives a crash so the failure state + reason stay
-   * attributable — the AMI analogue of Claude's per-`LSPServerInstance` state.
+   * attributable — the AMI analogue of the reference's per-`LSPServerInstance` state.
    */
   private serverStatus: Map<string, LspServerStatus> = new Map();
   /** Number of ensureServer handshakes currently in flight (drives init 'pending'). */
@@ -247,7 +247,7 @@ export class LSPClient implements DiagnosticSource {
   /**
    * Per-language consecutive `publishDiagnostics` processing-failure tracker
    * ({count,lastError}). Incremented when delivering a diagnostics notification
-   * throws, reset on the next success — the AMI analogue of Claude's
+   * throws, reset on the next success — the AMI analogue of the reference's
    * passiveFeedback `diagnosticFailures` map. Surfaced in the per-server status.
    */
   private diagnosticFailures: Map<string, { count: number; lastError: string }> = new Map();
@@ -256,7 +256,7 @@ export class LSPClient implements DiagnosticSource {
    * lazy LSP client only (re)checks a server when a tool touches a matching file;
    * this loop re-checks on a fixed interval so a server that crashes BETWEEN tool
    * calls — i.e. after a successful launch — is still surfaced, and gives up once
-   * the client has definitively failed. Parity with Claude Code's
+   * the client has definitively failed. Parity with the reference's
    * useLspInitializationNotification polling. See {@link startHealthMonitoring}.
    */
   private healthMonitor?: LspHealthMonitor;
@@ -264,13 +264,13 @@ export class LSPClient implements DiagnosticSource {
    * User-facing health-error listeners (e.g. the CLI's transient-flash sink). Every
    * server failure routes through {@link recordError}, which emits to these so a
    * spawn/init failure or a post-startup crash is SURFACED to the user instead of
-   * only being logged — the AMI analogue of Claude Code's
+   * only being logged — the AMI analogue of the reference's
    * `useLspInitializationNotification` toast. Deduped via {@link notifiedHealthErrors}
    * so the same failure is shown at most once per session (never spammed).
    */
   private healthErrorListeners: Array<(error: LspHealthError) => void> = [];
   /** Deduper for {@link emitHealthError}, keyed `source:message` (parity with
-   * Claude's `notifiedErrorsRef` set and the health monitor's own per-source dedup). */
+   * the reference's `notifiedErrorsRef` set and the health monitor's own per-source dedup). */
   private notifiedHealthErrors = new Set<string>();
 
   /** Baseline/diff tracker reading diagnostics from this client. */
@@ -322,7 +322,7 @@ export class LSPClient implements DiagnosticSource {
   }
 
   /**
-   * Lazy-handler affordance (parity with Claude Code's LSPClient "Queued … handler
+   * Lazy-handler affordance (parity with the reference's LSPClient "Queued … handler
    * (connection not ready)" / "Applied queued … handler" debug hints): AMI applies
    * client-level handlers at dispatch time rather than queuing them per connection,
    * so a handler registered BEFORE any server is connected is not lost — but the
@@ -380,7 +380,7 @@ export class LSPClient implements DiagnosticSource {
    * Concurrency: a fully-initialized server is reused immediately; otherwise
    * callers that arrive while a handshake is still in flight await the SAME
    * handshake promise (no duplicate spawn, no half-open "starting" race). This is
-   * the init-pending await Claude's manager performs before answering a request.
+   * the init-pending await the reference's manager performs before answering a request.
    */
   async ensureServer(language: string, cwd: string): Promise<boolean> {
     if (this.servers.get(language)?.initialized) return true;
@@ -409,7 +409,7 @@ export class LSPClient implements DiagnosticSource {
     const generation = this.generation;
 
     // Only stdio transport is implemented. `socket` is a valid config value
-    // (Claude-Code schema parity) but we refuse to spawn rather than silently
+    // (the reference schema parity) but we refuse to spawn rather than silently
     // treat it as stdio, so a misconfiguration fails loudly and visibly.
     if (config.transport && config.transport !== 'stdio') {
       this.recordError(
@@ -422,7 +422,7 @@ export class LSPClient implements DiagnosticSource {
     // Supply-chain guard: never let npx auto-fetch a server from the registry.
     // A violating config is a MISCONFIGURATION the operator must see — record it
     // on the server status AND surface it through the shared error logger (read by
-    // `/doctor`) instead of swallowing it silently. Parity with Claude Code's LSP
+    // `/doctor`) instead of swallowing it silently. Parity with the reference's LSP
     // discovery, which never throws (LSP is optional) but logs every failure "to
     // improve the feature" rather than failing invisibly.
     try {
@@ -433,13 +433,13 @@ export class LSPClient implements DiagnosticSource {
     }
 
     // Crash-recovery cap: refuse to respawn a persistently crashing server. The
-    // crash counter doubles as Claude's `restartCount` — each respawn after a
+    // crash counter doubles as the reference's `restartCount` — each respawn after a
     // crash bumps it, and exceeding `maxRestarts` leaves the server in `error`.
     const maxRestarts = config.maxRestarts ?? DEFAULT_MAX_RESTARTS;
     const restartCount = this.crashCounts.get(language) ?? 0;
     // Honor `restartOnCrash: false` — a server that has crashed at least once
     // stays down for the rest of the session instead of being respawned on the
-    // next incidental file event (parity with Claude's `restartOnCrash` knob).
+    // next incidental file event (parity with the reference's `restartOnCrash` knob).
     if (restartCount > 0 && config.restartOnCrash === false) {
       this.recordError(
         language,
@@ -464,7 +464,7 @@ export class LSPClient implements DiagnosticSource {
       // Ordered-candidate fallback: try `command` then each `commandAlternatives`
       // entry in preference order and spawn the FIRST installed one, so a server
       // published under several interchangeable binary names still launches when
-      // the canonical one is absent (parity with Claude Code's alternate-binary
+      // the canonical one is absent (parity with the reference's alternate-binary
       // fallback). The shared `firstAvailableBinary` resolver runs through this
       // client's `_isBinaryInstalled` seam so tests drive it deterministically.
       const candidates = [config.command, ...(config.commandAlternatives ?? [])];
@@ -485,7 +485,7 @@ export class LSPClient implements DiagnosticSource {
 
       // Lifecycle introspection: a "starting" debug line so the on-demand launch
       // of a language server is observable (which binary, with which args) — the
-      // AMI analogue of Claude Code's per-server load logging. Pairs with the
+      // AMI analogue of the reference's per-server load logging. Pairs with the
       // `initialized` line below and the `command not found` error above so a
       // started / missing / failed server is distinguishable in the debug log.
       log('lsp', `[LSP ${language}] starting server (command=${resolvedCommand} ${(config.args ?? []).join(' ')})`.trimEnd(), undefined, 'debug');
@@ -513,7 +513,7 @@ export class LSPClient implements DiagnosticSource {
       // server's lastError so the crash reason survives the connection teardown.
       // When the retained stderr matches a known-recoverable signature, the typed
       // remediation steps are appended so `/doctor` tells the user HOW to recover
-      // (parity: Claude Code's verifyIt2Setup stderr → remediation classification).
+      // (parity: the reference's verifyIt2Setup stderr → remediation classification).
       const onExit = (code: number | null) => {
         this.crashCounts.set(language, (this.crashCounts.get(language) ?? 0) + 1);
         const crashed = code !== 0 && code !== null;
@@ -616,7 +616,7 @@ export class LSPClient implements DiagnosticSource {
       conn.initialized = true;
       // Push per-server settings via workspace/didChangeConfiguration once the
       // handshake is complete (LSP requires the server be initialized first).
-      // Mirrors Claude Code's per-server `settings` knob.
+      // Mirrors the reference's per-server `settings` knob.
       if (config.settings !== undefined) {
         this.rawNotify(conn, 'workspace/didChangeConfiguration', { settings: config.settings });
       }
@@ -696,7 +696,7 @@ export class LSPClient implements DiagnosticSource {
    * sink). The listener fires once per distinct failure (deduped per
    * `source:message`), isolating a throwing listener so one bad sink never breaks
    * the rest. This is the subscription a frontend uses to turn a silent LSP
-   * spawn/init failure into a visible toast — parity with Claude Code's
+   * spawn/init failure into a visible toast — parity with the reference's
    * `useLspInitializationNotification` `addNotification`.
    */
   onHealthError(listener: (error: LspHealthError) => void): void {
@@ -737,7 +737,7 @@ export class LSPClient implements DiagnosticSource {
     return {
       processId: process.pid,
       // Identify AMI (name + real version) to the server, matching the full LSP
-      // InitializeParams Claude sends. Reuses the single version source of truth
+      // InitializeParams the reference sends. Reuses the single version source of truth
       // (also used for the MCP handshake) — no second hardcoded version string.
       clientInfo: { ...AMI_CLIENT_INFO },
       // BCP-47 locale so a server can localize its diagnostic messages.
@@ -791,7 +791,7 @@ export class LSPClient implements DiagnosticSource {
 
   /**
    * Health predicate backing tool affordances: true when at least one language
-   * server is connected and initialized. Mirrors Claude's `isLspConnected()`.
+   * server is connected and initialized. Mirrors the reference's `isLspConnected()`.
    */
   isConnected(): boolean {
     for (const conn of this.servers.values()) {
@@ -801,7 +801,7 @@ export class LSPClient implements DiagnosticSource {
   }
 
   /**
-   * Health predicate for a single language server, mirroring Claude's
+   * Health predicate for a single language server, mirroring the reference's
    * `LSPServerInstance.isHealthy()`: true only when the server is running AND its
    * initialize handshake completed. Used to gate requests with a clear error.
    */
@@ -812,7 +812,7 @@ export class LSPClient implements DiagnosticSource {
 
   /**
    * Introspection snapshot for one language server, or `undefined` if no server
-   * for that language has ever been attempted. Mirrors Claude's per-instance
+   * for that language has ever been attempted. Mirrors the reference's per-instance
    * readonly getters (state/startTime/lastError/restartCount) + isHealthy.
    */
   getServerStatus(language: string): LspServerStatus | undefined {
@@ -835,10 +835,10 @@ export class LSPClient implements DiagnosticSource {
 
   /**
    * Wire diagnostic-notification handling across every language server and report
-   * the aggregate outcome, mirroring Claude Code's
+   * the aggregate outcome, mirroring the reference's
    * `registerLSPNotificationHandlers` (services/lsp/passiveFeedback.ts L124-L324).
    *
-   * Claude loops over each server instance, registers a
+   * the reference loops over each server instance, registers a
    * `textDocument/publishDiagnostics` handler, isolates per-server failures, and
    * returns a {@link HandlerRegistrationResult}. AMI dispatches publishDiagnostics
    * CENTRALLY, so an optional `observer` is attached ONCE at the client level (its
@@ -847,7 +847,7 @@ export class LSPClient implements DiagnosticSource {
    * initialized connection with a readable stdout channel — and isolates a
    * crashed/half-open/errored server as a per-server `registrationError` so one bad
    * server never masks the readiness of the rest. The aggregate "N/M ready" status
-   * is logged (parity with Claude's aggregate report) and the typed result is
+   * is logged (parity with the reference's aggregate report) and the typed result is
    * returned for monitoring/introspection (surfaced by `/doctor`) and testing. No
    * second diagnostic tracker is created: `diagnosticFailures` is a snapshot of the
    * existing per-server consecutive-failure state.
@@ -861,7 +861,7 @@ export class LSPClient implements DiagnosticSource {
     let successCount = 0;
     // Enumeration universe: every server attempted this session. The retained
     // status map survives a crash (unlike the live `servers` map), so a server that
-    // failed to start is still counted and reported — the AMI analogue of Claude's
+    // failed to start is still counted and reported — the AMI analogue of the reference's
     // `manager.getAllServers()`.
     const languages = [...this.serverStatus.keys()];
     for (const language of languages) {
@@ -889,7 +889,7 @@ export class LSPClient implements DiagnosticSource {
     }
 
     const totalServers = languages.length;
-    // Aggregate status report (parity with Claude's "N/M succeeded, failed …").
+    // Aggregate status report (parity with the reference's "N/M succeeded, failed …").
     if (registrationErrors.length > 0) {
       const failed = registrationErrors.map((e) => `${e.serverName} (${e.error})`).join(', ');
       logError(
@@ -912,7 +912,7 @@ export class LSPClient implements DiagnosticSource {
   }
 
   /**
-   * Client-wide initialization status, mirroring Claude's manager-level
+   * Client-wide initialization status, mirroring the reference's manager-level
    * `getInitializationStatus()`: `pending` while a handshake is in flight,
    * `success` once any server is connected, `failed` (with the captured error)
    * when the last attempt(s) failed and none is connected, else `not-started`.
@@ -1046,7 +1046,7 @@ export class LSPClient implements DiagnosticSource {
    * out to any registered handlers, tracking CONSECUTIVE per-server failures.
    * A successful delivery resets the server's failure streak; a throwing handler
    * (or storage error) increments it and, past the threshold, logs a warning —
-   * mirroring Claude Code's passiveFeedback diagnostic-failure circuit breaker.
+   * mirroring the reference's passiveFeedback diagnostic-failure circuit breaker.
    * Errors never break the read loop (the caller's try/catch is a second net).
    */
   private deliverDiagnostics(language: string, params: unknown): void {
@@ -1065,7 +1065,7 @@ export class LSPClient implements DiagnosticSource {
   /**
    * Increment a server's consecutive diagnostic-failure count, retain the last
    * error, and emit a loud warning once the count reaches
-   * `DIAGNOSTIC_FAILURE_WARN_THRESHOLD` (parity with Claude's warn-after-3). The
+   * `DIAGNOSTIC_FAILURE_WARN_THRESHOLD` (parity with the reference's warn-after-3). The
    * warning routes through the shared logger (the in-memory ring `/doctor` reads).
    */
   private recordDiagnosticFailure(language: string, message: string): void {
@@ -1110,7 +1110,7 @@ export class LSPClient implements DiagnosticSource {
    * structurally validated before use: a non-null object carrying both a string
    * `uri` AND an array `diagnostics`. Malformed payloads are logged (with the
    * server's language for attribution) and dropped rather than being cast blindly
-   * — parity with Claude Code's passiveFeedback validation. An empty diagnostics
+   * — parity with the reference's passiveFeedback validation. An empty diagnostics
    * array is still stored: it is how a server clears a file's previous
    * diagnostics, which the baseline/diff tracker depends on.
    */
@@ -1155,7 +1155,7 @@ export class LSPClient implements DiagnosticSource {
     const id = ++conn.nextId;
     const body = JSON.stringify({ jsonrpc: '2.0', id, method, params });
     // JSON-RPC protocol trace (verbose; filtered out by default), mirroring
-    // Claude's `[LSP PROTOCOL <name>]` tracing hook for deep debugging.
+    // the reference's `[LSP PROTOCOL <name>]` tracing hook for deep debugging.
     log('lsp', `[LSP PROTOCOL ${conn.language}] → request #${id} ${method}`, undefined, 'verbose');
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -1199,7 +1199,7 @@ export class LSPClient implements DiagnosticSource {
    * Document-sync notification (didOpen/didChange/didSave) whose write failure
    * MUST NOT be silently swallowed: on a failed stdin write we record a contextual
    * error on the server's status (so `/doctor` surfaces the desync) and throw so
-   * the caller learns the document is no longer in sync — parity with Claude's
+   * the caller learns the document is no longer in sync — parity with the reference's
    * LSPServerManager, which logs `Failed to sync file <action> <path>` and
    * re-throws rather than leaving AMI believing the document is synced.
    */
@@ -1218,7 +1218,7 @@ export class LSPClient implements DiagnosticSource {
   async sendRequest<T = unknown>(language: string, method: string, params: unknown, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS): Promise<T> {
     const conn = this.servers.get(language);
     if (!conn || !conn.initialized) {
-      // Contextual, Claude-parity wording: name the server, its current lifecycle
+      // Contextual, the reference-parity wording: name the server, its current lifecycle
       // state, and its retained lastError so the failure is attributable.
       const status = this.serverStatus.get(language);
       const state = status?.state ?? 'stopped';
@@ -1236,13 +1236,13 @@ export class LSPClient implements DiagnosticSource {
         // Progress/affordance hint for a transient ContentModified retry: the
         // server's state changed mid-request (e.g. still indexing). Surface the
         // attempt counter + backoff delay so a stalled request is diagnosable
-        // instead of silently waiting. Mirrors Claude's retry progress logging.
+        // instead of silently waiting. Mirrors the reference's retry progress logging.
         onRetry: ({ attempt, delayMs }) =>
           log('lsp', `LSP server "${language}" request "${method}" content modified; retry ${attempt}/3 in ${delayMs}ms`),
       });
     } catch (e) {
       // Wrap the server/timeout error with the server name + method for context,
-      // matching Claude's `LSP server <name> request <method> failed: <msg>`.
+      // matching the reference's `LSP server <name> request <method> failed: <msg>`.
       const message = `LSP server "${language}" request "${method}" failed: ${(e as Error).message}`;
       logError('lsp', message);
       throw new Error(message);
@@ -1253,7 +1253,7 @@ export class LSPClient implements DiagnosticSource {
    * Position-addressed request keyed by file path: resolves the language,
    * ensures the server is up and the document is open, then forwards the
    * request. Returns `undefined` (not a throw) when no server handles the file
-   * type — matching Claude's "no LSP server available" fallback.
+   * type — matching the reference's "no LSP server available" fallback.
    */
   async request<T = unknown>(filePath: string, cwd: string, method: string, params: unknown): Promise<T | undefined> {
     const lang = resolveLanguageForExtension(path.extname(filePath));
@@ -1272,7 +1272,7 @@ export class LSPClient implements DiagnosticSource {
     if (this.openedDocuments.has(uri)) {
       // Lifecycle introspection: the didOpen short-circuit is otherwise invisible,
       // so a developer cannot tell a skipped-because-already-open from a never-sent
-      // didOpen. Mirrors Claude's "File already open, skipping didOpen" debug line.
+      // didOpen. Mirrors the reference's "File already open, skipping didOpen" debug line.
       log('lsp', `[LSP ${conn.language}] file already open, skipping didOpen: ${filePath}`, undefined, 'debug');
       return;
     }
@@ -1280,7 +1280,7 @@ export class LSPClient implements DiagnosticSource {
     let text = content;
     if (text === undefined) {
       // File-size boundary: never stream a huge file into the server (OOM/wedge
-      // guard, parity with Claude's MAX_LSP_FILE_SIZE_BYTES). Open it as empty so
+      // guard, parity with the reference's MAX_LSP_FILE_SIZE_BYTES). Open it as empty so
       // the document is still registered but no multi-hundred-MB buffer is read.
       const size = lspFileSizeBytes(filePath);
       if (size !== undefined && size > MAX_LSP_FILE_SIZE_BYTES) {
@@ -1296,7 +1296,7 @@ export class LSPClient implements DiagnosticSource {
     this.documentVersions.set(uri, 1);
     // Lifecycle introspection: record which document was opened and with which
     // languageId, so a "server saw the file but produced no diagnostics" case is
-    // distinguishable from "the file was never synced" (parity with Claude's
+    // distinguishable from "the file was never synced" (parity with the reference's
     // per-sync debug logging in LSPServerManager).
     log('lsp', `[LSP ${conn.language}] didOpen ${filePath} (languageId=${languageId})`, undefined, 'debug');
   }
@@ -1365,7 +1365,7 @@ export class LSPClient implements DiagnosticSource {
   /**
    * Number of files with an in-flight `getDiagnostics` wait — i.e. documents the
    * client has synced and is still awaiting a `publishDiagnostics` for. The AMI
-   * analogue of Claude Code's `getPendingLSPDiagnosticCount()` monitoring accessor
+   * analogue of the reference's `getPendingLSPDiagnosticCount()` monitoring accessor
    * (LSPDiagnosticRegistry): a non-zero count means diagnostics are still settling,
    * which a `/doctor`-style introspection surface can report instead of guessing
    * whether "no diagnostics" means clean or not-yet-arrived.
@@ -1446,7 +1446,7 @@ export class LSPClient implements DiagnosticSource {
     }
     // Collect each server's graceful-stop promise so their outcomes can be
     // aggregated. AMI's teardown stays NON-blocking (the client-level state is
-    // cleared synchronously below, a superset of Claude Code's awaited-throwing
+    // cleared synchronously below, a superset of the reference's awaited-throwing
     // `LSPServerManager.shutdown`), but — rather than swallowing a stuck/zombie
     // server the way the old per-process `try { kill() } catch {}` did — every
     // per-server stop is settled via `Promise.allSettled` and any failures are
@@ -1499,7 +1499,7 @@ export class LSPClient implements DiagnosticSource {
    *
    * Returns a promise that RESOLVES once the process has been (force-)killed and
    * REJECTS if the kill itself throws — so {@link shutdown} can aggregate which
-   * servers failed to stop (parity with Claude Code's per-server stop outcomes).
+   * servers failed to stop (parity with the reference's per-server stop outcomes).
    */
   private gracefulStop(language: string, conn: ServerConn, openUris: string[]): Promise<void> {
     return new Promise<void>((resolve, reject) => {

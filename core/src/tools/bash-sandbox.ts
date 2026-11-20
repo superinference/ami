@@ -19,7 +19,7 @@ export interface SandboxConfig {
   // PARITY (host denylist): domains blocked for outbound traffic. Honored only
   // within the allowlist path (alongside `allowedDomains`), where their resolved
   // IPs are DROPped BEFORE the allow ACCEPT rules so a denied host wins over the
-  // allowlist even if it also matches an allowed entry. Mirrors Claude's
+  // allowlist even if it also matches an allowed entry. Mirrors the reference's
   // `SandboxNetworkConfig.deniedHosts` ("deny wins over allow"). Additive:
   // undefined/empty leaves the allowlist behavior unchanged.
   deniedDomains?: string[];
@@ -31,19 +31,19 @@ export interface SandboxConfig {
   allowUnixSockets?: boolean;
   // PARITY (per-path socket allow): specific Unix-socket paths to RE-ALLOW (i.e.
   // NOT bind /dev/null over) even while the blanket socket denial is otherwise
-  // active. Mirrors Claude's `SandboxNetworkConfig.allowUnixSockets: string[]`:
+  // active. Mirrors the reference's `SandboxNetworkConfig.allowUnixSockets: string[]`:
   // granular control instead of the all-or-nothing `allowUnixSockets` boolean.
   // A path listed here is removed from the default-denied set. Additive:
   // undefined/empty keeps every default socket denied.
   allowedUnixSockets?: string[];
   // PARITY (filesystem read-deny): absolute paths that must be UNreadable inside
   // the sandbox. Each is bind-mounted with /dev/null so a read returns empty,
-  // using the same technique as credential file-hiding. Mirrors Claude's
+  // using the same technique as credential file-hiding. Mirrors the reference's
   // `SandboxFilesystemConfig.denyRead`. Additive: undefined/empty is a no-op.
   denyReadPaths?: string[];
   // PARITY (filesystem write-deny): absolute paths that must be read-only inside
   // the sandbox even if they would otherwise be writable. Each is bind-remounted
-  // read-only, the same technique as `readOnlyPaths`. Mirrors Claude's
+  // read-only, the same technique as `readOnlyPaths`. Mirrors the reference's
   // `SandboxFilesystemConfig.denyWrite`. Additive: undefined/empty is a no-op.
   denyWritePaths?: string[];
   // PARITY (config-rewrite / privilege-escalation escape): when true, the
@@ -51,7 +51,7 @@ export interface SandboxConfig {
   // auto-loaded skills/commands/agents directories (under the command's cwd)
   // read-only, so a sandboxed command cannot rewrite the trusted config to
   // weaken the sandbox, nor plant an auto-discovered skill/command/agent that
-  // would later run with full capabilities. Mirrors Claude Code's
+  // would later run with full capabilities. Mirrors the reference's
   // sandbox-adapter unconditional `denyWrite` of settings.json files and
   // `.claude/skills`/commands/agents. Additive: undefined/false is a no-op.
   denyConfigWrites?: boolean;
@@ -60,13 +60,13 @@ export interface SandboxConfig {
   // (HEAD, objects, refs, hooks, config) under cwd, so a sandboxed command
   // cannot alter a planted/pre-existing bare-repo marker (e.g. a `config` with
   // `core.fsmonitor`) that a later UNsandboxed `git` run would execute. Mirrors
-  // Claude Code's sandbox-adapter bare-repo guard. Additive: undefined/false is
+  // the reference's sandbox-adapter bare-repo guard. Additive: undefined/false is
   // a no-op.
   denyBareGitPoisoning?: boolean;
   // PARITY (fail-closed hard gate): when true, an unavailable sandbox is a
   // FATAL startup error rather than a silent degrade-to-unsandboxed. Consumed
   // by callers via {@link validateSandboxEnabled}'s `fatal` flag. Intended for
-  // managed deployments that require sandboxing. Mirrors Claude Code's
+  // managed deployments that require sandboxing. Mirrors the reference's
   // `SandboxSettings.failIfUnavailable`. Additive: undefined/false preserves the
   // warn-and-run-unsandboxed default.
   failIfUnavailable?: boolean;
@@ -74,14 +74,14 @@ export interface SandboxConfig {
   // stay READABLE inside the sandbox even when they fall inside a `denyReadPaths`
   // region. Any `denyReadPaths` entry equal to, or nested under, one of these is
   // NOT /dev/null-bound — "allowRead wins over denyRead for matching paths".
-  // Mirrors Claude's `SandboxFilesystemConfig.allowRead`. Additive: undefined/
+  // Mirrors the reference's `SandboxFilesystemConfig.allowRead`. Additive: undefined/
   // empty leaves every `denyReadPaths` entry denied.
   allowReadPaths?: string[];
   // PARITY (filesystem write RE-allow with precedence): absolute paths that must
   // stay WRITABLE inside the sandbox even when they fall inside a `denyWritePaths`
   // region. Any `denyWritePaths` entry equal to, or nested under, one of these is
   // NOT read-only-remounted — the write mirror of `allowReadPaths`,
-  // "allowWrite wins over denyWrite for matching paths" (Claude's nested
+  // "allowWrite wins over denyWrite for matching paths" (the reference's nested
   // `SandboxFilesystemConfig.allowWrite` / `denyWithinAllow` carve-out model, and
   // the host-backend home of `permissions.additionalDirectories`/`--add-dir`
   // grants). Additive: undefined/empty leaves every `denyWritePaths` entry denied.
@@ -89,17 +89,17 @@ export interface SandboxConfig {
   // PARITY (proxy-routed network isolation): when set, the sandbox exports the
   // standard HTTP/HTTPS proxy env vars pointing at a loopback proxy on this port
   // so outbound traffic is routed (and can be MITM-filtered) through it instead
-  // of the raw iptables IP allowlist. Mirrors Claude's
+  // of the raw iptables IP allowlist. Mirrors the reference's
   // `SandboxNetworkConfig.httpProxyPort`. Additive: undefined/invalid is a no-op.
   httpProxyPort?: number;
   // PARITY (proxy-routed network isolation, SOCKS): loopback SOCKS proxy port
-  // exported as `all_proxy`/`ALL_PROXY`. Mirrors Claude's
+  // exported as `all_proxy`/`ALL_PROXY`. Mirrors the reference's
   // `SandboxNetworkConfig.socksProxyPort`. Additive: undefined/invalid is a no-op.
   socksProxyPort?: number;
   // PARITY (sandbox-scoped temp dir): directory to pin as the sandbox's TMPDIR/
   // TMP/TEMP so a sandboxed command's scratch/heredoc temp files land in a
   // writable, isolated location (created if missing) rather than leaking to a
-  // user-env TMPDIR that could point outside the sandbox. Mirrors Claude's
+  // user-env TMPDIR that could point outside the sandbox. Mirrors the reference's
   // bash/powershell provider `sandboxTmpDir` TMPDIR override. Additive:
   // undefined is a no-op.
   sandboxTmpDir?: string;
@@ -107,7 +107,7 @@ export interface SandboxConfig {
   // namespace (outbound network off) the loopback interface starts DOWN, so a
   // sandboxed server/test that binds 127.0.0.1 fails. When true, bring loopback
   // UP so purely-LOCAL binding works WITHOUT opening outbound network. Mirrors
-  // Claude's `SandboxNetworkConfig.allowLocalBinding`. No-op when outbound
+  // the reference's `SandboxNetworkConfig.allowLocalBinding`. No-op when outbound
   // network is already on (loopback is up) or the knob is unset.
   allowLocalBinding?: boolean;
   // PARITY (enableWeakerNestedSandbox): drop the `--map-root-user` unshare flag,
@@ -120,7 +120,7 @@ export interface SandboxConfig {
   // proxy's validator) stays reachable. Security-weakening escape hatch.
   // Additive: undefined/false keeps the default socket denial.
   enableWeakerNetworkIsolation?: boolean;
-  // PARITY (encoded-command seam — Claude's PowerShell `-EncodedCommand`): when
+  // PARITY (encoded-command seam — the reference's PowerShell `-EncodedCommand`): when
   // true, the user command is handed to the inner shell base64-encoded and decoded
   // at exec time, so NO additional shell-quoting layer (a nested `sh -c`, the outer
   // `bash -c '...'` body being re-wrapped, a sandbox runtime re-applying
@@ -135,7 +135,7 @@ export interface SandboxConfig {
 }
 
 /**
- * PARITY (encoded-command seam — Claude's PowerShell `-EncodedCommand`): the env
+ * PARITY (encoded-command seam — the reference's PowerShell `-EncodedCommand`): the env
  * gate `AMI_SANDBOX_ENCODE_COMMAND` that opts the host `unshare` sandbox into
  * passing the user command base64-encoded (decoded at exec time) so a nested
  * shell-quoting layer cannot corrupt quoting-sensitive metacharacters. Default OFF
@@ -150,7 +150,7 @@ export function isSandboxEncodeCommandEnabled(env: NodeJS.ProcessEnv = process.e
 }
 
 /**
- * PARITY (sandbox-indicator knob — Claude's `CLAUDE_CODE_BASH_SANDBOX_SHOW_INDICATOR`
+ * PARITY (sandbox-indicator knob — the reference's `CLAUDE_CODE_BASH_SANDBOX_SHOW_INDICATOR`
  * → `SandboxedBash` userFacingName): the env gate `AMI_BASH_SANDBOX_SHOW_INDICATOR`
  * that, when truthy AND a command is actually sandboxed, surfaces a visible
  * `[sandboxed]` indicator to the user so they can tell a sandboxed run from an
@@ -164,7 +164,7 @@ export function isSandboxIndicatorEnabled(env: NodeJS.ProcessEnv = process.env):
 }
 
 /**
- * The user-facing indicator for a bash call, parity with Claude's `SandboxedBash`
+ * The user-facing indicator for a bash call, parity with the reference's `SandboxedBash`
  * vs `Bash` userFacingName switch: returns `'SandboxedBash'` only when the command
  * IS sandboxed AND the indicator knob is enabled; otherwise `'Bash'`. Pure; env
  * injectable. Consumed by the bash tool to annotate a sandboxed command's output.
@@ -219,7 +219,7 @@ export type WslVersion = 'none' | 'wsl1' | 'wsl2';
 export const _sandboxPlatformHooks: { release: () => string } = { release };
 
 /**
- * PARITY (Claude Code's WSL1-vs-WSL2 sandbox gating — `isSupportedPlatform()`):
+ * PARITY (the reference's WSL1-vs-WSL2 sandbox gating — `isSupportedPlatform()`):
  * classify a kernel release/version string into the WSL generation. Pure +
  * injectable so the branch can be tested on any host:
  *   - no `microsoft`/`wsl` marker → `'none'` (native Linux or other),
@@ -229,7 +229,7 @@ export const _sandboxPlatformHooks: { release: () => string } = { release };
  * (is-this-WSL-at-all, for `/mnt/c` config discovery): the sandbox needs the
  * GENERATION, because WSL2 runs a real Linux kernel (user namespaces + `unshare`
  * work → the sandbox runs) while WSL1 is a syscall-translation shim with NO
- * namespace support, so the host sandbox cannot run there and Claude reports a
+ * namespace support, so the host sandbox cannot run there and the reference reports a
  * targeted "requires WSL2" error rather than a confusing generic unshare failure.
  */
 export function detectWslVersion(kernel: string): WslVersion {
@@ -276,7 +276,7 @@ export interface SandboxPlatformSupport {
 }
 
 /**
- * PARITY (Claude Code's `isSupportedPlatform()` with WSL1 special-casing): decide
+ * PARITY (the reference's `isSupportedPlatform()` with WSL1 special-casing): decide
  * whether the host namespace sandbox is runnable on the given platform + WSL
  * generation. Non-Linux and WSL1 are unsupported, each with a SPECIFIC reason so
  * the diagnostic names the actual blocker instead of a generic unshare failure.
@@ -341,7 +341,7 @@ function isCommandAvailable(name: string): boolean {
 
 /**
  * Structured, two-tier result of a sandbox dependency pre-flight (parity with
- * Claude Code's `SandboxManager.checkDependencies()` → `{ errors, warnings }`):
+ * the reference's `SandboxManager.checkDependencies()` → `{ errors, warnings }`):
  *   - `errors`   — the namespace sandbox (real filesystem/network isolation)
  *                  cannot run at all; each string names the specific missing
  *                  dependency/capability and how to install/enable it.
@@ -362,7 +362,7 @@ export interface SandboxDependencyCheck {
  * and `warnings` (a requested control silently cannot be enforced — an
  * `allowedDomains`/`deniedDomains` policy with `iptables`/`getent` missing).
  *
- * Mirrors Claude Code's `checkDependencies()` two-tier contract and closes the
+ * Mirrors the reference's `checkDependencies()` two-tier contract and closes the
  * "security control silently unenforced" footgun: `buildNetworkAllowlist`
  * swallows iptables failures with `2>/dev/null`, so without this warning a user
  * who set `allowedDomains` on a host lacking iptables would believe outbound
@@ -455,7 +455,7 @@ export function checkSandboxDependencies(cfg?: Partial<SandboxConfig>): SandboxD
   //     globs. A path value containing glob metacharacters (`*?[]{}`) therefore
   //     silently matches nothing and the restriction is a no-op — surface it so
   //     an operator who wrote `denyRead: ['/home/*/.ssh']` learns it won't apply
-  //     rather than believing the path is protected. Mirrors Claude Code's
+  //     rather than believing the path is protected. Mirrors the reference's
   //     "glob pattern unsupported on this platform" restriction warning. ---
   if (cfg && process.platform === 'linux') {
     const globbed = collectGlobPatternPaths(cfg);
@@ -526,7 +526,7 @@ const SANDBOX_EXEMPT_PATTERNS = [
  *     defaults entirely (an operator opting into a stricter or fully custom
  *     exemption policy).
  *
- * Exemption matching mirrors Claude Code's `containsExcludedCommand`: each
+ * Exemption matching mirrors the reference's `containsExcludedCommand`: each
  * top-level subcommand is normalized to a fixed-point candidate set by stripping
  * leading env-var assignments (except binary-hijack vars, see
  * {@link BINARY_HIJACK_VARS}) and safe wrappers (`timeout`, `nice`, …) so
@@ -541,7 +541,7 @@ export interface SandboxExemptionOptions {
   overrideDefaults?: boolean;
   // PARITY (default-deny coverage): when true, {@link shouldUseSandbox} sandboxes
   // EVERY command that is not explicitly exempt instead of only the hardcoded
-  // `SANDBOX_TRIGGER_PATTERNS`. Mirrors Claude Code's `shouldUseSandbox()`, which
+  // `SANDBOX_TRIGGER_PATTERNS`. Mirrors the reference's `shouldUseSandbox()`, which
   // returns true for all commands once sandboxing is enabled and false only for
   // excluded commands — closing the hole where a non-trigger command (`./evil`,
   // `nc`, `ssh`, `scp`, `dd`, a path-invoked script, `> /etc/…`) ran unsandboxed.
@@ -567,7 +567,7 @@ export function buildSandboxExemptPatterns(options?: SandboxExemptionOptions): R
  * `bazel:*` exemption cannot be smuggled onto a hijacked binary via
  * `LD_PRELOAD=evil.so bazel ...` or `PATH=/evil bazel ...`. Heuristic only
  * (excludedCommands is a convenience, not a security boundary), mirroring
- * Claude Code's `BINARY_HIJACK_VARS`.
+ * the reference's `BINARY_HIJACK_VARS`.
  */
 const BINARY_HIJACK_VARS = /^(LD_|DYLD_|PATH$)/;
 
@@ -593,7 +593,7 @@ function stripOneLeadingEnvVar(cmd: string): string | null {
 /**
  * Safe command wrappers whose leading occurrence can be transparently stripped
  * before exemption matching so `timeout 300 bazel run` still matches a `bazel:*`
- * exemption. Mirrors Claude Code's `stripSafeWrappers` safe-list — deliberately
+ * exemption. Mirrors the reference's `stripSafeWrappers` safe-list — deliberately
  * EXCLUDING `sudo`/`env`/`bash -c`/`eval`, which run arbitrary code and must
  * never be transparently stripped (doing so would let them inherit an exemption
  * meant for the inner command).
@@ -630,7 +630,7 @@ function stripOneSafeWrapper(cmd: string): string | null {
  * Build the fixed-point candidate set for a subcommand by iteratively stripping
  * leading env-var assignments and safe wrappers until no new form is produced.
  * This handles interleaved patterns like `timeout 300 FOO=bar bazel run`
- * (mirrors Claude Code's fixed-point candidate generation).
+ * (mirrors the reference's fixed-point candidate generation).
  */
 function buildExemptionCandidates(subcommand: string): string[] {
   const start = subcommand.trim();
@@ -660,7 +660,7 @@ type ExcludedRule =
 
 /**
  * True when `pattern` contains an UNescaped `*` (a real wildcard), ignoring the
- * legacy `:*` prefix suffix and `\*` escapes. Mirrors Claude Code's
+ * legacy `:*` prefix suffix and `\*` escapes. Mirrors the reference's
  * `hasWildcards`.
  */
 function hasUnescapedWildcard(pattern: string): boolean {
@@ -675,7 +675,7 @@ function hasUnescapedWildcard(pattern: string): boolean {
 }
 
 /**
- * Parse one `excludedCommands` entry into a structured rule (mirrors Claude
+ * Parse one `excludedCommands` entry into a structured rule (mirrors the reference
  * Code's `bashPermissionRule`). A `foo:*` legacy suffix and a bare token both
  * become PREFIX rules (AMI's additive-prefix convenience — a prefix rule also
  * matches the exact command); any other unescaped `*` becomes a WILDCARD rule.
@@ -803,12 +803,12 @@ export function shouldUseSandbox(command: string, options?: SandboxExemptionOpti
     // argument or inside another command can never flip the exemption.
     if (commandIsExcluded(sub, userRules)) continue;
     // PARITY (default-deny coverage): once a subcommand survived both exemption
-    // checks above, Claude Code sandboxes it unconditionally — there is no trigger
+    // checks above, the reference sandboxes it unconditionally — there is no trigger
     // gate. When `defaultSandbox` is on we do the same, so any non-exempt command
     // (`./evil`, `nc`, `ssh`, a path-invoked script, `> /etc/…`) is sandboxed
     // instead of slipping through the narrow trigger allowlist. Per-subcommand, so
     // one exempt subcommand still cannot suppress the sandbox for a sibling
-    // (AMI's stricter superset over Claude's whole-command check is preserved).
+    // (AMI's stricter superset over the reference's whole-command check is preserved).
     if (options?.defaultSandbox) return true;
     // Triggers match on the quote-stripped subcommand so trigger text inside
     // quotes (`echo "curl is a tool"`) does not force the sandbox.
@@ -847,7 +847,7 @@ export interface HostSandboxEligibilityOptions {
  * wrapping) and by the permission layer's `autoAllowBashIfSandboxed` host-mode
  * path, which auto-allows exactly the commands that WILL be sandboxed and lets
  * sandbox-incompatible commands fall through to a regular permission prompt
- * (parity: Claude Code's "auto-allow" sandbox mode — try sandboxed, otherwise
+ * (parity: the reference's "auto-allow" sandbox mode — try sandboxed, otherwise
  * regular permissions). Does NOT account for `dangerouslyDisableSandbox` (a
  * per-call input the caller handles separately). Pure.
  */
@@ -867,9 +867,9 @@ export function commandWillBeHostSandboxed(
 }
 
 /**
- * PARITY (CC-specific sandbox fs path conventions — Claude's
+ * PARITY (CC-specific sandbox fs path conventions — the reference's
  * `resolveSandboxFilesystemPath`): normalize one `sandbox.filesystem.*` path entry
- * the way Claude Code resolves `allowWrite`/`denyWrite`/`allowRead`/`denyRead`
+ * the way the reference resolves `allowWrite`/`denyWrite`/`allowRead`/`denyRead`
  * settings values, so an operator's path works as written rather than being
  * silently mis-matched by the literal bind-mount sandbox:
  *   - `//path` → `/path`  (legacy permission-rule escape, accepted for compat),
@@ -877,7 +877,7 @@ export function commandWillBeHostSandboxed(
  *   - a RELATIVE path (`./x`, `x`) → resolved against `cwd` (AMI's settings/project
  *     root) when a `cwd` is supplied; left as-is when it is not,
  *   - an already-absolute `/path` → returned unchanged (as-written, NOT
- *     settings-relative; matches Claude's #30067 fix).
+ *     settings-relative; matches the reference's #30067 fix).
  * Pure; absolute inputs are returned verbatim so a policy of absolute paths maps
  * identically to the pre-normalization behavior (fully additive).
  */
@@ -915,7 +915,7 @@ export function hostSandboxConfigFromPolicy(policy?: SandboxPolicy, cwd?: string
   if (!policy) return cfg;
   const net = policy.network;
   if (net) {
-    // PARITY (enterprise managed-domains lockdown — Claude's
+    // PARITY (enterprise managed-domains lockdown — the reference's
     // shouldAllowManagedSandboxDomainsOnly): when the managed policy forces
     // domains-only egress, the effective outbound allowlist is the managed list
     // ALONE — user `allowedHosts` (incl. web_fetch-allow rules folded in by
@@ -943,7 +943,7 @@ export function hostSandboxConfigFromPolicy(policy?: SandboxPolicy, cwd?: string
     const norm = (list: string[]): string[] => list.map((p) => normalizeSandboxFsPath(p, cwd));
     if (fs.denyRead) cfg.denyReadPaths = norm(fs.denyRead);
     if (fs.denyWrite) cfg.denyWritePaths = norm(fs.denyWrite);
-    // PARITY (enterprise managed read-paths lockdown — Claude's
+    // PARITY (enterprise managed read-paths lockdown — the reference's
     // allowManagedReadPathsOnly): under the managed lockdown the read RE-allow set
     // is the managed list ALONE — user `allowRead` is ignored so a lower tier
     // cannot re-open a managed-denied read region. denyRead above still applies.
@@ -997,7 +997,7 @@ export function wrapWithSandbox(
 }
 
 /**
- * PARITY (explicit weaker-fallback warning — Claude's "Cannot block …" degraded-
+ * PARITY (explicit weaker-fallback warning — the reference's "Cannot block …" degraded-
  * mode notices): when the host sandbox silently degrades to the resource-limits-
  * only backend (namespace isolation unavailable) but the operator EXPLICITLY
  * configured one or more network/filesystem carve-outs, enumerate the requested
@@ -1096,7 +1096,7 @@ export function wrapWithUnshare(command: string, cwd: string, cfg: SandboxConfig
   const loopbackSetup = buildLoopbackSetup(cfg);
   // Scratch-dir + proxy env exports apply right before the command runs so a
   // sandboxed command's temp files are contained and its outbound traffic is
-  // proxy-routed (parity: Claude's sandboxTmpDir / http(s)/socks proxy knobs).
+  // proxy-routed (parity: the reference's sandboxTmpDir / http(s)/socks proxy knobs).
   const tmpDirEnv = buildSandboxTmpDir(cfg);
   const proxyEnv = buildProxyEnv(cfg);
   // Deny rules are emitted (and thus iptables-appended) BEFORE the allowlist's
@@ -1117,7 +1117,7 @@ export function wrapWithUnshare(command: string, cwd: string, cfg: SandboxConfig
  * WITHOUT enabling outbound network. Returns '' unless the sandbox has its own
  * netns (outbound network OFF) AND `allowLocalBinding` is set — when outbound
  * network is on, loopback is already up, and when the knob is unset the stricter
- * default (loopback left down) is preserved. Mirrors Claude's
+ * default (loopback left down) is preserved. Mirrors the reference's
  * `SandboxNetworkConfig.allowLocalBinding`. Best-effort (`2>/dev/null`).
  */
 export function buildLoopbackSetup(cfg: SandboxConfig): string {
@@ -1174,7 +1174,7 @@ const CONFIG_ESCAPE_RELPATHS = [
  * settings/config files and auto-loaded skills/commands/agents directories
  * (under cwd) so a sandboxed command can neither weaken the sandbox by editing
  * trusted config nor plant an auto-loaded skill/command/agent. Returns '' when
- * `denyConfigWrites` is off. Mirrors Claude Code's sandbox-adapter unconditional
+ * `denyConfigWrites` is off. Mirrors the reference's sandbox-adapter unconditional
  * `denyWrite` of settings files + `.claude/skills`/commands/agents.
  */
 export function buildConfigWriteGuard(cwd: string, cfg: SandboxConfig): string {
@@ -1194,8 +1194,8 @@ export const BARE_GIT_REPO_FILES = ['HEAD', 'objects', 'refs', 'hooks', 'config'
  * marker files under cwd so a sandboxed command cannot modify a planted/pre-
  * existing HEAD/objects/refs/hooks/config that a later unsandboxed `git` would
  * honor. Returns '' when `denyBareGitPoisoning` is off. Existence-guarded so a
- * non-existent marker is never stubbed (matching Claude Code's avoidance of
- * 0-byte stubs that break `git`). Mirrors Claude Code's sandbox-adapter guard.
+ * non-existent marker is never stubbed (matching the reference's avoidance of
+ * 0-byte stubs that break `git`). Mirrors the reference's sandbox-adapter guard.
  */
 export function buildBareGitRepoGuard(cwd: string, cfg: SandboxConfig): string {
   if (!cfg.denyBareGitPoisoning) return '';
@@ -1231,7 +1231,7 @@ function buildReadOnlyMounts(cfg: SandboxConfig): string {
  * overlaps a broader deny is re-opened on the host backend. Reuses the same
  * bind+remount technique as {@link buildReadOnlyMounts}; failures are tolerated
  * (`2>/dev/null`). Returns '' when nothing is denied (or everything is
- * re-allowed). Mirrors Claude's nested `SandboxFilesystemConfig.allowWrite` /
+ * re-allowed). Mirrors the reference's nested `SandboxFilesystemConfig.allowWrite` /
  * `denyWrite` carve-out model.
  */
 export function buildWriteDenials(cfg: SandboxConfig): string {
@@ -1266,7 +1266,7 @@ function pathIsWithin(child: string, parent: string): boolean {
  * an `allowReadPaths` region, which is left readable ("allowRead wins over
  * denyRead for matching paths"). Reuses the same /dev/null-bind technique as the
  * credential file-hiding path; each bind is best-effort (`2>/dev/null`). Returns
- * '' when nothing is denied (or everything is re-allowed). Mirrors Claude's
+ * '' when nothing is denied (or everything is re-allowed). Mirrors the reference's
  * `SandboxFilesystemConfig.denyRead` + `allowRead`.
  */
 export function buildReadDenials(cfg: SandboxConfig): string {
@@ -1295,7 +1295,7 @@ export function isValidProxyPort(port: unknown): port is number {
  * (which can allowlist/MITM-filter) instead of (or alongside) the raw iptables IP
  * allowlist. `httpProxyPort` sets http/https proxy vars; `socksProxyPort` sets
  * all_proxy (SOCKS). Returns '' when neither is a valid port. Ports are numbers
- * validated to 1..65535, so the emitted env is injection-free. Mirrors Claude's
+ * validated to 1..65535, so the emitted env is injection-free. Mirrors the reference's
  * `SandboxNetworkConfig.httpProxyPort` / `socksProxyPort`.
  */
 export function buildProxyEnv(cfg: SandboxConfig): string {
@@ -1315,21 +1315,21 @@ export function buildProxyEnv(cfg: SandboxConfig): string {
  * PARITY (sandbox-scoped temp dir): pin TMPDIR/TMP/TEMP to `sandboxTmpDir` inside
  * the sandbox (creating it if missing) so scratch/heredoc temp files land in a
  * writable, contained location rather than a user-env TMPDIR that could point
- * outside the sandbox. Returns '' when unset. Mirrors Claude's shell-provider
+ * outside the sandbox. Returns '' when unset. Mirrors the reference's shell-provider
  * `sandboxTmpDir` TMPDIR override.
  */
 export function buildSandboxTmpDir(cfg: SandboxConfig): string {
   if (!cfg.sandboxTmpDir) return '';
   const esc = cfg.sandboxTmpDir.replace(/'/g, "'\\''");
   // Besides TMPDIR/TMP/TEMP, pin two more env knobs so NO scratch file leaks to
-  // the host (PARITY — Claude's shell providers set these when sandboxed,
+  // the host (PARITY — the reference's shell providers set these when sandboxed,
   // bashProvider.ts:L235-L247):
   //   - TMPPREFIX: zsh writes heredoc temp files under $TMPPREFIX (default
   //     /tmp/zsh*), NOT TMPDIR, so a sandboxed zsh heredoc would otherwise land on
-  //     the host /tmp. Pin it to `<scratch>/zsh` (Claude's posixJoin(tmpDir,'zsh')).
+  //     the host /tmp. Pin it to `<scratch>/zsh` (the reference's posixJoin(tmpDir,'zsh')).
   //     Safe unconditionally — non-zsh shells ignore TMPPREFIX.
   //   - AMI_SANDBOX_TMPDIR: exposes the scratch dir to child processes that look it
-  //     up explicitly (Claude's CLAUDE_CODE_TMPDIR).
+  //     up explicitly (the reference's CLAUDE_CODE_TMPDIR).
   return (
     `mkdir -p '${esc}' 2>/dev/null; export TMPDIR='${esc}' TMP='${esc}' TEMP='${esc}' ` +
     `TMPPREFIX='${esc}/zsh' AMI_SANDBOX_TMPDIR='${esc}'; `
@@ -1386,7 +1386,7 @@ export function buildSocketDenial(cfg: SandboxConfig): string {
   if (cfg.allowUnixSockets || cfg.enableWeakerNetworkIsolation) return '';
   // PARITY (per-path socket allow): re-allow any default-denied socket whose path
   // the operator explicitly listed in `allowedUnixSockets`, leaving the rest
-  // denied — Claude's granular `allowUnixSockets: string[]` instead of the
+  // denied — the reference's granular `allowUnixSockets: string[]` instead of the
   // all-or-nothing boolean. Normalize whitespace so a padded entry still matches.
   const allowed = new Set(
     (cfg.allowedUnixSockets ?? []).map(s => s.trim()).filter(s => s.length > 0),
@@ -1402,7 +1402,7 @@ export function buildSocketDenial(cfg: SandboxConfig): string {
  * (and iptables-appended) BEFORE {@link buildNetworkAllowlist}'s ACCEPT rules so
  * a denied host is dropped first even if it also appears in / overlaps the
  * allowlist — "deny wins over allow". Trailing dots are stripped (FQDN
- * normalization), matching the allowlist builder. Mirrors Claude's
+ * normalization), matching the allowlist builder. Mirrors the reference's
  * `SandboxNetworkConfig.deniedHosts`.
  */
 export function buildDeniedDomainRules(domains?: string[]): string {
@@ -1476,7 +1476,7 @@ function escapeShell(s: string): string {
 
 /**
  * Report the host-side isolation capability plus a `warnings` channel surfacing
- * any degraded/unenforced controls (parity with Claude's dependency-aware status).
+ * any degraded/unenforced controls (parity with the reference's dependency-aware status).
  * `available` stays true (AMI always has at least the ulimits fallback). When the
  * namespace sandbox cannot run, its diagnostic is folded into `warnings` (the
  * ulimits fallback still runs, so from the user's view it's a degradation, not a
@@ -1486,7 +1486,7 @@ function escapeShell(s: string): string {
  */
 /**
  * PARITY (sandbox.enabledPlatforms): decide whether the sandbox (and its
- * auto-allow) applies on a given platform. Semantics mirror Claude's
+ * auto-allow) applies on a given platform. Semantics mirror the reference's
  * sandbox-adapter `enabledPlatforms`:
  *   - `undefined` → enabled on ALL supported platforms (the default),
  *   - `[]`        → enabled on NONE (sandbox fully disabled by config),
@@ -1514,7 +1514,7 @@ export interface SandboxTradeoffWarning {
  * PARITY (explicit security-tradeoff warnings): enumerate every ENABLED
  * security-weakening knob on a {@link SandboxPolicy} with blunt, user-facing
  * wording, so the operator sees the tradeoff instead of a silent relaxation.
- * Mirrors Claude Code's per-option "**Reduces security** — …" descriptions on
+ * Mirrors the reference's per-option "**Reduces security** — …" descriptions on
  * `enableWeakerNetworkIsolation` et al. Returns `[]` for a policy with no
  * weakening options set (and for `mode: 'off'`, where the sandbox is inactive).
  */
@@ -1540,7 +1540,7 @@ export function describeSandboxSecurityTradeoffs(policy?: SandboxPolicy): Sandbo
 }
 
 /**
- * PARITY (dependency-aware socket-warning suppression — Claude's
+ * PARITY (dependency-aware socket-warning suppression — the reference's
  * `showSocketWarning = hasWarnings && !allowAllUnixSockets`): the host's ability to
  * block privileged Unix-domain sockets (bind /dev/null over the Docker/containerd
  * socket) depends on a working MOUNT namespace. When that capability is degraded
@@ -1596,7 +1596,7 @@ export interface SandboxValidation {
   // PARITY (fail-closed gate): when the sandbox is NOT valid, `fatal` tells the
   // caller whether to abort (true → the `failIfUnavailable` hard gate was set)
   // or degrade to running unsandboxed with a warning (false → the default).
-  // Always false/absent on the valid path. Mirrors Claude Code's
+  // Always false/absent on the valid path. Mirrors the reference's
   // `SandboxSettings.failIfUnavailable` semantics.
   fatal?: boolean;
 }

@@ -16,7 +16,7 @@ import { getContextWindow, getModelMaxOutputTokens } from './model-capabilities'
 
 /**
  * Per-request execution speed tier. A `fast` (premium) request can be billed at an
- * elevated pricing tier — mirrors Claude's `usage.speed` → fast-mode cost tier. AMI
+ * elevated pricing tier — mirrors the reference's `usage.speed` → fast-mode cost tier. AMI
  * maps Anthropic's `service_tier: 'priority'` to `'fast'`. Absent/`medium`/`slow`
  * price at the model's standard rate.
  */
@@ -69,7 +69,7 @@ export interface ModelCostUsage {
   webSearchRequests: number;
   /**
    * This model's total context window (tokens), resolved from model-capabilities — lets the
-   * Usage view annotate each model's window alongside its spend. Mirrors Claude's per-model
+   * Usage view annotate each model's window alongside its spend. Mirrors the reference's per-model
    * `contextWindow` on the usage record. Undefined when the model is unknown to capabilities.
    */
   contextWindow?: number;
@@ -92,7 +92,7 @@ export interface ModelCostUsage {
 //
 // The optional 5th/6th slots are an ELEVATED-SPEED (fast / priority) pricing tier:
 // a `fast` request is billed at fastInput/fastOutput instead of the standard rate,
-// mirroring Claude's speed-dependent cost tier (getOpus46CostTier(fastMode)). When
+// mirroring the reference's speed-dependent cost tier (getOpus46CostTier(fastMode)). When
 // absent, a fast request prices at the standard rate (no premium). Cached/cache-write
 // derive from the fast input rate at the same ratios when not themselves explicit.
 // ---------------------------------------------------------------------------
@@ -275,7 +275,7 @@ function matchPricing(model: string, fallbackModel?: string): PricingEntry {
   }
   // Unknown model: before using the generic DEFAULT_PRICING, fall back to the
   // user's configured default (main-loop) model's REAL tier when one was supplied
-  // and is itself priced — mirroring Claude's getModelCosts(), which prices an
+  // and is itself priced — mirroring the reference's getModelCosts(), which prices an
   // unknown model at MODEL_COSTS[defaultMainLoopModel] rather than a flat constant.
   // The caller still flags the request 'estimated' (isPricedModel is false for it).
   if (fallbackModel && fallbackModel !== model && isPricedModel(fallbackModel)) {
@@ -438,7 +438,7 @@ export class CostTracker {
   /**
    * Re-seed the running aggregate totals from a prior session's persisted
    * {@link CostState} so a RESUMED session's live `/cost` continues from where it
-   * left off instead of restarting at $0 (PARITY — Claude's
+   * left off instead of restarting at $0 (PARITY — the reference's
    * restoreCostStateForSession/setCostStateForRestore, gated on a session-id match
    * by the caller). Only the coarse totals are restored — cost, input/output token
    * counts (and their sum), and request count — since those are all the on-disk
@@ -488,7 +488,7 @@ export class CostTracker {
     const byModel: Record<string, ModelCostUsage> = {};
     for (const [model, u] of this._byModel) {
       // Annotate each per-model rollup with its context window / max-output ceiling so the
-      // Usage view can show each model's limits next to its spend (mirrors Claude's per-model
+      // Usage view can show each model's limits next to its spend (mirrors the reference's per-model
       // contextWindow/maxOutputTokens on the usage record).
       byModel[model] = {
         ...u,
@@ -569,13 +569,13 @@ export function estimateUsageCost(
   },
   /**
    * Configured default (main-loop) model whose REAL pricing tier is used when `model`
-   * itself is unknown, instead of the generic DEFAULT_PRICING constant — mirrors Claude's
+   * itself is unknown, instead of the generic DEFAULT_PRICING constant — mirrors the reference's
    * unknown-model fallback to the default model's cost. Omit to keep the generic fallback.
    */
   fallbackModel?: string,
   /**
    * Per-request execution speed. When `'fast'` AND the model advertises an elevated-speed
-   * (priority) tier, the request is billed at that premium tier — mirrors Claude's
+   * (priority) tier, the request is billed at that premium tier — mirrors the reference's
    * speed-dependent cost tier (getOpus46CostTier(fastMode)). Absent / `'medium'` / `'slow'`
    * bills at the standard rate.
    */
@@ -714,7 +714,7 @@ export function diffStringLists(
  * Models excluded from cache-break detection. Some models' server-side prompt-cache
  * semantics differ enough (e.g. Anthropic Haiku) that a cache-read drop is NOT a
  * comparable break signal, so scoring them produces false-positive break notifications.
- * Mirrors Claude's isExcludedModel (promptCacheBreakDetection.ts).
+ * Mirrors the reference's isExcludedModel (promptCacheBreakDetection.ts).
  */
 export function isExcludedModel(model: string): boolean {
   return /haiku/i.test(model);
@@ -735,7 +735,7 @@ export function fingerprint(input: string): string {
 // ---------------------------------------------------------------------------
 // Prompt-state diff artifact (cache-break debugging affordance)
 //
-// On a prompt-cache break Claude Code serializes the full before/after prompt
+// On a prompt-cache break the reference serializes the full before/after prompt
 // state (model + joined system prompt + sorted per-tool name/description/schema)
 // and writes a unified diff to a temp file, embedding the path in the break
 // warning so the exact byte that busted the cache is inspectable. AMI mirrors
@@ -755,7 +755,7 @@ export interface DiffableTool {
  * Render the canonical, order-stable "prompt state" string diffed on a cache break:
  * the model, the joined system prompt, and every tool's name/description/input-schema
  * sorted by name (so a stable tool set with a reordered advertise list does NOT look
- * like a change). Mirrors Claude's buildDiffableContent (promptCacheBreakDetection.ts).
+ * like a change). Mirrors the reference's buildDiffableContent (promptCacheBreakDetection.ts).
  */
 export function buildDiffableContent(
   model: string,
@@ -930,7 +930,7 @@ let _diffArtifactCounter = 0;
 
 /**
  * Write a unified diff of the prev→current prompt-state to a temp file and return its
- * path (undefined on any failure). Mirrors Claude's writeCacheBreakDiff — the path is
+ * path (undefined on any failure). Mirrors the reference's writeCacheBreakDiff — the path is
  * surfaced in the cache-break warning so the exact prompt change is inspectable.
  */
 export function writeCacheBreakDiff(prevContent: string, newContent: string): string | undefined {
@@ -1083,7 +1083,7 @@ export class CacheMissDiagnostics {
 
   /**
    * Diagnose ALL concurrent causes of a cache break (priority-ordered, each with a
-   * human-readable magnitude), mirroring Claude's multi-cause explanation: model
+   * human-readable magnitude), mirroring the reference's multi-cause explanation: model
    * switch, idle-past-TTL (5min vs 1h bucket), tool-def changes (which tool's
    * schema), system-prompt char delta, thinking mode, betas added/removed,
    * cache-control / extra-body / effort / fast-mode / global-cache-strategy flips.
@@ -1244,7 +1244,7 @@ export interface CostState {
   requestCount: number;
   /**
    * The session this cost state belongs to. Serialized so a resume can enforce a
-   * session-id boundary check (parity: Claude's getStoredSessionCosts, which returns
+   * session-id boundary check (parity: the reference's getStoredSessionCosts, which returns
    * undefined when projectConfig.lastSessionId !== the resuming sessionId) — another
    * session's spend can never be restored into the wrong session. Omitted for an unscoped
    * (session-agnostic) state.
@@ -1252,7 +1252,7 @@ export interface CostState {
   sessionId?: string;
   /**
    * Optional TUI render-performance snapshot captured at save time and persisted alongside
-   * the session's costs (parity: Claude's saveCurrentSessionCosts(getFpsMetrics()) →
+   * the session's costs (parity: the reference's saveCurrentSessionCosts(getFpsMetrics()) →
    * lastFpsAverage/lastFpsLow1Pct). Absent for non-interactive / unsampled sessions.
    */
   fpsMetrics?: FpsMetrics;
@@ -1333,7 +1333,7 @@ export function deserializeCostState(json: string): CostState | null {
 
 /**
  * Deserialize a persisted cost state ONLY when it belongs to `sessionId` — a session-id
- * boundary check mirroring Claude's getStoredSessionCosts (which returns undefined when
+ * boundary check mirroring the reference's getStoredSessionCosts (which returns undefined when
  * projectConfig.lastSessionId !== the resuming sessionId). A state carrying a DIFFERENT
  * embedded sessionId (e.g. a copied or corrupted session file) is rejected (`null`) so
  * another session's spend can never be restored into this one. A state with NO embedded

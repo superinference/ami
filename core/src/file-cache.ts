@@ -65,7 +65,7 @@ export interface FileChangeResult {
  * Produced by {@link FileCache.dump} and consumed by {@link FileCache.load} /
  * {@link FileCache.fromDump}, so read-file-state can be snapshotted across a
  * compaction boundary or forked for an isolated sub-agent branch WITHOUT losing the
- * size config. Mirrors Claude Code's `FileStateCache.dump()`/`load()` serialization.
+ * size config. Mirrors the reference's `FileStateCache.dump()`/`load()` serialization.
  */
 export interface FileCacheDump {
   maxSizeBytes: number;
@@ -74,7 +74,7 @@ export interface FileCacheDump {
 }
 
 /**
- * Build the Claude-style "read it again" affordance message for a stale file, naming the
+ * Build the reference-style "read it again" affordance message for a stale file, naming the
  * LIKELY cause (user/tool vs linter/formatter vs deletion) and the exact next action, so the
  * model recovers correctly instead of seeing a flat "modified since read". Driven by the
  * {@link FileChangeReason} from {@link FileCache.describeChange}. `verb` is the blocked action
@@ -138,7 +138,7 @@ const FS_INACCESSIBLE_ERRNOS = new Set([
 /**
  * True when `err` is a filesystem error that means the path is temporarily/structurally
  * inaccessible (see {@link FS_INACCESSIBLE_ERRNOS}) — distinct from ENOENT (deleted)
- * and from a genuinely unexpected error. Mirrors Claude Code's isENOENT-only eviction
+ * and from a genuinely unexpected error. Mirrors the reference's isENOENT-only eviction
  * while classifying the remaining FS errnos as "keep the entry, do not swallow bugs".
  */
 export function isFsInaccessible(err: unknown): boolean {
@@ -257,7 +257,7 @@ export class FileCache {
       // badly UNDER-counts it. Estimate against the real per-file-type ratio (JSON
       // ~2 chars/token, else ~4) so the cache's token total — surfaced via
       // getTotalTokens()/getStats()/`/files` — reflects actual context cost.
-      // Mirrors Claude's bytesPerTokenForFileType-aware read-state accounting.
+      // Mirrors the reference's bytesPerTokenForFileType-aware read-state accounting.
       tokenEstimate: estimateTokensForFileType(content, path.extname(key)),
     });
     this.totalBytes += byteSize;
@@ -307,7 +307,7 @@ export class FileCache {
   /**
    * Classify WHY (and whether) a cached file is stale, returning a discriminated
    * {@link FileChangeResult} so downstream consumers (file_edit / notebook_edit) can emit the
-   * Claude-style affordance that names the likely cause and the exact next action instead of a
+   * reference-style affordance that names the likely cause and the exact next action instead of a
    * flat "modified since read". {@link hasChanged} is the boolean projection of this.
    *
    * The classification mirrors the old hasChanged logic exactly:
@@ -382,7 +382,7 @@ export class FileCache {
    * Record that the model's most recent read of this file was a specific line
    * RANGE (offset/limit). Preserves any already-cached full content (so a later
    * full re-read still dedups) while stamping the window + mtime, so an identical
-   * repeat range read on an unchanged file can be short-circuited. Mirrors Claude
+   * repeat range read on an unchanged file can be short-circuited. Mirrors the reference
    * Code's readFileState range tracking.
    */
   markRangeRead(path: string, mtime: number, offset: number, limit: number): void {
@@ -399,7 +399,7 @@ export class FileCache {
    * True when the file's most recent read was an IDENTICAL range (same offset AND
    * limit), it was not a partial view, and the file is unchanged on disk since —
    * i.e. a repeat ranged read can be served from the "unchanged" stub instead of
-   * re-streaming the same window. Mirrors Claude Code's range dedup short-circuit.
+   * re-streaming the same window. Mirrors the reference's range dedup short-circuit.
    */
   isRangeUnchanged(path: string, offset: number, limit: number): boolean {
     const cached = this.cache.get(this.norm(path));
@@ -437,7 +437,7 @@ export class FileCache {
    * re-hashes to also catch a same-mtime-tick rewrite on coarse-timestamp
    * filesystems (used by the read-before-edit staleness guard), whereas this
    * accelerator trusts the already-statted mtime for the read-tool hot path.
-   * Mirrors Claude Code's `fileReadCache` mtime-hit fast return.
+   * Mirrors the reference's `fileReadCache` mtime-hit fast return.
    */
   getCachedRead(path: string, mtimeMs: number): { content: string; encoding: string } | null {
     const key = this.norm(path);
@@ -455,7 +455,7 @@ export class FileCache {
    * the entry is stale. This is the "what you last saw" accessor the stale-file
    * error path needs: when a formatter/linter rewrote the file out of band, the
    * cached content is exactly the `before` side of the change snippet shown to the
-   * model (parity: Claude Code's `edited_text_file` attachment, built from the
+   * model (parity: the reference's `edited_text_file` attachment, built from the
    * prior fileState.content). Returns undefined when nothing (or a content-less
    * mtime/partial stub) is cached.
    */
@@ -507,7 +507,7 @@ export class FileCache {
    * Serialize the whole cache — size configuration + every entry in LRU order — to a
    * plain {@link FileCacheDump} object that can be persisted across a compaction
    * boundary or handed to {@link FileCache.fromDump} to reconstruct an independent
-   * copy. Mirrors Claude Code's `FileStateCache.dump()`.
+   * copy. Mirrors the reference's `FileStateCache.dump()`.
    */
   dump(): FileCacheDump {
     return { maxSizeBytes: this.maxSizeBytes, maxEntries: this.maxEntries, entries: this.entries() };
@@ -518,7 +518,7 @@ export class FileCache {
    * (restoring their LRU order and recomputing the byte total), enforcing THIS
    * instance's current eviction bounds. The dump's size config is informational —
    * this instance keeps the ceilings it was constructed with; use {@link FileCache.fromDump}
-   * to reconstruct an instance that also adopts the dumped config. Mirrors Claude
+   * to reconstruct an instance that also adopts the dumped config. Mirrors the reference
    * Code's `FileStateCache.load()`.
    */
   load(dump: FileCacheDump): void {
@@ -529,7 +529,7 @@ export class FileCache {
 
   /**
    * Reconstruct a fresh cache from a {@link FileCacheDump}, adopting BOTH its size
-   * configuration (byte + entry ceilings) and its entries/LRU order. Mirrors Claude
+   * configuration (byte + entry ceilings) and its entries/LRU order. Mirrors the reference
    * Code's `cloneFileStateCache`, which recreates the cache preserving max-entries +
    * max-bytes before loading the dumped entries.
    */
@@ -548,7 +548,7 @@ export class FileCache {
    * sub-engine starts from a SNAPSHOT of its parent's cache — so it already knows
    * what the parent read and need not re-read — while its subsequent reads/edits
    * mutate only its own copy and never leak back into (or get clobbered by) the
-   * parent's cache. Mirrors Claude Code's `cloneFileStateCache`, which clones the
+   * parent's cache. Mirrors the reference's `cloneFileStateCache`, which clones the
    * parent's `readFileState` into every forked agent context.
    */
   clone(): FileCache {
@@ -564,7 +564,7 @@ export class FileCache {
    * in the copy), so a probe/re-read can be run in isolation without polluting the
    * session's read-before-edit state.
    *
-   * Mirrors Claude Code's `updateMagicDoc` dedup-bust: it `cloneFileStateCache(x)`
+   * Mirrors the reference's `updateMagicDoc` dedup-bust: it `cloneFileStateCache(x)`
    * then `clonedReadFileState.delete(docPath)` so `FileReadTool` returns the actual
    * doc content (not a `file_unchanged` stub) to re-detect the header, while keeping
    * the clone isolated from the main session's cache. This is the ONE canonical
@@ -640,7 +640,7 @@ export class FileCache {
  * Merge two file caches with timestamp-wins semantics, returning a NEW cache that
  * leaves both inputs untouched. Clones `first`, then overlays each of `second`'s
  * entries only where it is strictly newer (by `mtime`) than — or absent from —
- * `first`. The result inherits `first`'s size configuration. Mirrors Claude Code's
+ * `first`. The result inherits `first`'s size configuration. Mirrors the reference's
  * `mergeFileStateCaches(first, second)` — the primitive for reconciling two
  * independently-read read-file-state views (compaction/sub-agent branches) while
  * keeping the freshest entry per file.

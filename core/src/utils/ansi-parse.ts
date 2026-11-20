@@ -7,7 +7,7 @@
  * ANSI *emitters* (cli/src/render.ts, common/src/tips.ts) and *exporters*
  * (common/src/ansi-to-png.ts) — those produce ANSI, this consumes it.
  *
- * Parity target: Claude Code's `parseAnsi()` / `get256Color()`
+ * Parity target: the reference's `parseAnsi()` / `get256Color()`
  * (references/claude/claude-code-main/src/utils/ansiToSvg.ts) plus the
  * graceful-degradation Action model from its termio parser
  * (references/claude/claude-code-main/src/ink/termio/types.ts:L223-236), where
@@ -48,7 +48,7 @@ export type AnsiSpanLine = AnsiSpan[];
 
 /**
  * Semantic token produced by {@link tokenizeAnsi}. Mirrors the error-handling
- * boundary of Claude Code's termio `Action` union: recognized control events
+ * boundary of the reference's termio `Action` union: recognized control events
  * are first-class, and anything unrecognized is preserved verbatim.
  */
 export type AnsiToken =

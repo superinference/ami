@@ -43,7 +43,7 @@ export function writeTaskOutputNoFollow(filePath: string, data: string): void {
  * Function constructor and run in-process, so an unbounded script is a memory /
  * compile-time DoS vector. 512 KiB is far larger than any legitimate
  * orchestration script yet rejects pathological input before it is compiled.
- * (Parity hardening — Claude Code's Workflow tool guards script size.)
+ * (Parity hardening — the reference's Workflow tool guards script size.)
  */
 export const MAX_WORKFLOW_SCRIPT_BYTES = 512 * 1024;
 
@@ -225,7 +225,7 @@ export const workflowTool: ToolDefinition = {
     if (!meta) {
       return { output: 'Error: Script must begin with `export const meta = { name, description }`', isError: true };
     }
-    // Claude Code parity: meta must declare BOTH a name and a description.
+    // the reference parity: meta must declare BOTH a name and a description.
     // parseWorkflowMeta coerces missing fields to '' rather than failing, so the
     // tool enforces the required-field contract here.
     if (!meta.name.trim() || !meta.description.trim()) {

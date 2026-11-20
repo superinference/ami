@@ -1,5 +1,5 @@
 /**
- * Scalable fuzzy file-PATH index (pure-TypeScript port of Claude Code's native
+ * Scalable fuzzy file-PATH index (pure-TypeScript port of the reference's native
  * file-index, which wraps nucleo — https://github.com/helix-editor/nucleo).
  *
  * Unlike the per-call subsequence scorer in {@link ./workspace-indexer} (which

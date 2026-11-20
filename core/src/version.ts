@@ -22,7 +22,7 @@ export const AMI_CLIENT_INFO = { name: AMI_CLIENT_NAME, version: AMI_VERSION } a
  * …). The single source for reading this knob, so every surface-identifying site
  * (User-Agent, git-commit trailer) agrees rather than re-reading the env ad hoc.
  *
- * Parity with Claude Code's entrypoint knob (`CLAUDE_CODE_ENTRYPOINT`, read by
+ * Parity with the reference's entrypoint knob (`CLAUDE_CODE_ENTRYPOINT`, read by
  * `getMCPUserAgent`/`getUserAgent` in `src/utils/http.ts`): AMI prefers its own
  * `AMI_ENTRYPOINT`, then honors `CLAUDE_CODE_ENTRYPOINT` for cross-tool
  * compatibility. Returns `undefined` for an unset/blank value so UA builders can
@@ -47,7 +47,7 @@ function readSurfaceKnob(env: NodeJS.ProcessEnv, amiKey: string, claudeKey: stri
  * request AMI makes (skill-catalog fetch, plugin download, update check, MCP
  * HTTP/SSE transport, …).
  *
- * Mirrors Claude Code's `getClaudeCodeUserAgent()` / `getMCPUserAgent()`
+ * Mirrors the reference's `getClaudeCodeUserAgent()` / `getMCPUserAgent()`
  * (`src/utils/http.ts`), which return `claude-code/${VERSION}` plus a
  * parenthesized suffix tagging the originating surface. AMI's form is
  * `ami/<version>` with a parenthesized suffix composed of, in order:
@@ -56,9 +56,9 @@ function readSurfaceKnob(env: NodeJS.ProcessEnv, amiKey: string, claudeKey: stri
  *   2. the originating entrypoint ({@link resolveEntrypoint}: `AMI_ENTRYPOINT`
  *      then `CLAUDE_CODE_ENTRYPOINT`), so downstream servers see which frontend
  *      drove the request (TUI vs detached CLI vs MCP vs an embedding host);
- *   3. `agent-sdk/<ver>` from `AMI_AGENT_SDK_VERSION` (or Claude's
+ *   3. `agent-sdk/<ver>` from `AMI_AGENT_SDK_VERSION` (or the reference's
  *      `CLAUDE_AGENT_SDK_VERSION`) when AMI is driven by an embedding SDK;
- *   4. `client-app/<id>` from `AMI_AGENT_SDK_CLIENT_APP` (or Claude's
+ *   4. `client-app/<id>` from `AMI_AGENT_SDK_CLIENT_APP` (or the reference's
  *      `CLAUDE_AGENT_SDK_CLIENT_APP`) so an embedding application can tag itself.
  * Each piece is appended only when present, so with nothing set the UA stays the
  * bare `ami/<version>`. Callers import this ONE helper rather than re-spelling a
@@ -109,7 +109,7 @@ function parseCoreSegment(seg: string | undefined, loose: boolean): number | nul
  * its components, or `null` when the core is not dotted-numeric / is malformed.
  *
  * This is the `{ loose: true }` parsing option AMI previously lacked and the
- * *prerelease / build-metadata aware* half of Claude Code's `utils/semver.ts`
+ * *prerelease / build-metadata aware* half of the reference's `utils/semver.ts`
  * (which delegates to npm `semver` with `{ loose: true }`). Implemented
  * dependency-free so it stays a self-contained core building block (core must
  * not pull runtime deps). Loose tolerances: a leading `v`/`=` and surrounding
@@ -183,7 +183,7 @@ function comparePrerelease(a: Array<string | number>, b: Array<string | number>)
 /**
  * Full SemVer 2.0.0 precedence comparison (prerelease-aware, build-metadata
  * ignored). Returns -1 / 0 / 1 for `a` < / = / > `b`. Unparseable operands
- * degrade to `0.0.0` (graceful fallback, never throws), mirroring Claude Code's
+ * degrade to `0.0.0` (graceful fallback, never throws), mirroring the reference's
  * loose `order()`.
  */
 export function orderSemver(a: string, b: string): -1 | 0 | 1 {

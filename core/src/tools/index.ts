@@ -74,7 +74,7 @@ export class ToolRegistry {
     // Pass the tool's declared aliases so the guard both collision-checks them and
     // can resolve a legacy/renamed name back to the canonical tool (parity: aliases).
     // PARITY (additive): built-ins-win on a CROSS-source name collision. Mirrors
-    // Claude Code's `uniqBy([...builtIns, ...mcp], 'name')` precedence in
+    // the reference's `uniqBy([...builtIns, ...mcp], 'name')` precedence in
     // tools.ts:assembleToolPool — a plugin/MCP tool must never silently overwrite
     // an incumbent built-in of the same name. The guard returns a ToolConflict for a
     // cross-source duplicate (and for an invalid name/alias); in that case we keep the
@@ -98,7 +98,7 @@ export class ToolRegistry {
 
   /**
    * PARITY (additive): cache-stable assembly of the full tool pool, mirroring
-   * Claude Code's `tools.ts:assembleToolPool`. Built-in tools (registered under the
+   * the reference's `tools.ts:assembleToolPool`. Built-in tools (registered under the
    * `core`/`builtin` sources) are sorted by name into a contiguous PREFIX; MCP /
    * installed-plugin / user tools are sorted by name into a SUFFIX partition.
    *
@@ -156,7 +156,7 @@ export function createDefaultTools(_cwd: string): ToolRegistry {
   // PARITY (additive): the complete default tool pool, listed unconditionally.
   // Conditionally-available subsystems (teammates, workflow scripts, LSP, cron)
   // each declare their own `ToolDefinition.isEnabled()` predicate rather than
-  // being hand-gated here — mirroring Claude Code's declarative per-tool
+  // being hand-gated here — mirroring the reference's declarative per-tool
   // `Tool.isEnabled()` (ScheduleCron/TeamDelete/TaskCreate). `filterAvailableTools`
   // honors those predicates uniformly, so there is ONE gating mechanism and the
   // whole pool is self-describing. All subsystems default ON; their env flags
@@ -237,13 +237,13 @@ export function createDefaultTools(_cwd: string): ToolRegistry {
     // (opt-in via AMI_COMPUTER_USE), so OFF by default it is dropped at registration
     // and the pool is unchanged. When enabled it dispatches actions through an
     // injectable native backend; absent one (every non-macOS host) each call returns
-    // a clear platform-unavailability message (parity: Claude's non-darwin guard).
+    // a clear platform-unavailability message (parity: the reference's non-darwin guard).
     computerUseTool,
   ];
 
   // PARITY (additive): apply the operator-configurable AMI_DENY_TOOLS blocklist so a
   // denied tool/server is stripped from the pool before registration (and therefore
-  // before the model or tool-search can see it), mirroring Claude's deny-rule filter.
+  // before the model or tool-search can see it), mirroring the reference's deny-rule filter.
   const denied = parseDeniedTools();
   const denyPredicate = denied.size > 0 ? (name: string) => isToolDenied(name, denied) : undefined;
   for (const tool of filterAvailableTools<ToolDefinition, ToolContext>(

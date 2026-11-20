@@ -10,7 +10,7 @@ import { log } from './logger';
  * current GitHub repo — AMI previously had no such resolver, only the PII-free
  * `getRepoRemoteHash` identity and scout's per-clone URL cache.
  *
- * Parity with Claude Code's `detectRepository.ts` (`ParsedRepository`).
+ * Parity with the reference's `detectRepository.ts` (`ParsedRepository`).
  */
 export type ParsedRepository = {
   host: string;
@@ -21,7 +21,7 @@ export type ParsedRepository = {
 /**
  * Per-cwd memo of the resolved repository, INCLUDING the negative result: a cwd
  * with no `origin` remote (or where git fails) caches `null`, so a repeated probe
- * of the same checkout never re-spawns git. Mirrors Claude Code's
+ * of the same checkout never re-spawns git. Mirrors the reference's
  * `repositoryWithHostCache` (both success and failure are memoised).
  */
 const repositoryWithHostCache = new Map<string, ParsedRepository | null>();
@@ -30,7 +30,7 @@ const repositoryWithHostCache = new Map<string, ParsedRepository | null>();
  * Invalidate the cwd-keyed repository cache (both positive and negative entries).
  * Call after a checkout's `origin` remote changes (add/rename/remove) so the next
  * detection re-reads git instead of serving a stale (possibly negative) result.
- * Parity with Claude Code's `clearRepositoryCaches()`.
+ * Parity with the reference's `clearRepositoryCaches()`.
  */
 export function clearRepositoryCaches(): void {
   repositoryWithHostCache.clear();
@@ -42,7 +42,7 @@ export function clearRepositoryCaches(): void {
  * per cwd with a fail-soft fallback: a checkout with no remote, an unparseable
  * remote, or a git failure caches (and returns) `null` rather than throwing.
  * Callers that need to construct URLs against a specific GitHub host use this
- * variant. Parity with Claude Code's `detectCurrentRepositoryWithHost()`.
+ * variant. Parity with the reference's `detectCurrentRepositoryWithHost()`.
  */
 export function detectCurrentRepositoryWithHost(
   cwd: string = process.cwd(),
@@ -72,7 +72,7 @@ export function detectCurrentRepositoryWithHost(
  * Resolve the current repository as `owner/name`, restricted to github.com
  * hosts (GHE hosts return `null` to avoid breaking downstream consumers that
  * assume a github.com repo — use {@link detectCurrentRepositoryWithHost} for GHE
- * support). Parity with Claude Code's `detectCurrentRepository()`.
+ * support). Parity with the reference's `detectCurrentRepository()`.
  */
 export function detectCurrentRepository(cwd: string = process.cwd()): string | null {
   const result = detectCurrentRepositoryWithHost(cwd);
@@ -86,7 +86,7 @@ export function detectCurrentRepository(cwd: string = process.cwd()): string | n
  * `owner/name`, or `null` when it has not been resolved yet or the host is not
  * github.com. Unlike {@link detectCurrentRepository} this NEVER spawns git —
  * call {@link detectCurrentRepositoryWithHost}/{@link detectCurrentRepository}
- * first to populate the cache. Parity with Claude Code's `getCachedRepository()`.
+ * first to populate the cache. Parity with the reference's `getCachedRepository()`.
  */
 export function getCachedRepository(cwd: string = process.cwd()): string | null {
   const parsed = repositoryWithHostCache.get(cwd);
@@ -107,7 +107,7 @@ export function getCachedRepository(cwd: string = process.cwd()): string | null 
  * `github.com-work`) are rejected via {@link looksLikeRealHostname}. Returns
  * `null` for anything that does not match a recognized remote shape.
  *
- * Parity with Claude Code's `parseGitRemote()`.
+ * Parity with the reference's `parseGitRemote()`.
  */
 export function parseGitRemote(input: string): ParsedRepository | null {
   const trimmed = input.trim();
@@ -157,7 +157,7 @@ export function parseGitRemote(input: string): ParsedRepository | null {
  * {@link parseGitRemote} for GHE support). A trailing `.git` on the shorthand's
  * repo segment is stripped. Returns `null` for anything unrecognized.
  *
- * Parity with Claude Code's `parseGitHubRepository()`.
+ * Parity with the reference's `parseGitHubRepository()`.
  */
 export function parseGitHubRepository(input: string): string | null {
   const trimmed = input.trim();

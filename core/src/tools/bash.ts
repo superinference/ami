@@ -42,7 +42,7 @@ const MIN_OUTPUT_LENGTH = 1_000;
 // Absolute ceiling for the resolved output cap. A mistaken or hostile
 // BASH_MAX_OUTPUT_LENGTH=999999999 would otherwise force the tool to buffer and
 // serialize ~1GB of command output per call (memory-exhaustion DoS). Parity with
-// Claude Code's validateBoundedIntEnvVar upper-limit cap: a value above this is
+// the reference's validateBoundedIntEnvVar upper-limit cap: a value above this is
 // clamped down to it (and the capped status is debug-logged) rather than honored.
 const DEFAULT_TIMEOUT_MS = 120000;
 const HARD_MAX_TIMEOUT_MS = 3_600_000; // 1 hour
@@ -55,13 +55,13 @@ const _bashCache = new BashResultCache();
  * every bash call. This module-level `name@marketplace` set — mutated through the
  * {@link evaluatePluginHint} `seen` gate — bounds a repeated trigger to a single
  * surfaced recommendation for the life of the process, so a thrashing source can't
- * spam the output. Parity: Claude Code's `triedThisSession` set in
+ * spam the output. Parity: the reference's `triedThisSession` set in
  * `utils/plugins/hintRecommendation.ts` (L83-L96), including its test-only reset.
  */
 const _pluginHintSession = new Set<string>();
 
 /**
- * Test-only reset of the per-session plugin-hint dedup set (parity: Claude Code's
+ * Test-only reset of the per-session plugin-hint dedup set (parity: the reference's
  * `resetHintSessionForTest`, hintRecommendation.ts L94-96), so a test can exercise
  * the first-surface path again without a fresh process.
  */
@@ -77,7 +77,7 @@ export function _resetPluginHintSessionForTest(): void {
  * non-positive values are rejected AND a value above `maxMs` is CAPPED (with the
  * capped/invalid status debug-logged) rather than flowing through verbatim — a
  * mistaken or hostile `BASH_MAX_TIMEOUT_MS=999999999` can no longer hang the
- * agent for ~11 days. Parity: Claude Code's `validateBoundedIntEnvVar`
+ * agent for ~11 days. Parity: the reference's `validateBoundedIntEnvVar`
  * upper-limit cap + invalid/capped reporting (envValidation.ts).
  */
 function parseEnvMs(name: string, maxMs: number): number | undefined {
@@ -89,9 +89,9 @@ function parseEnvMs(name: string, maxMs: number): number | undefined {
 }
 
 /**
- * Enforced upper bound for the bash output cap (parity: Claude Code's
+ * Enforced upper bound for the bash output cap (parity: the reference's
  * BASH_MAX_OUTPUT_UPPER_LIMIT). AMI keeps its deliberately generous 200k default
- * (a superset of Claude's 30k default) and makes that the enforced ceiling too, so
+ * (a superset of the reference's 30k default) and makes that the enforced ceiling too, so
  * a mistaken or hostile `BASH_MAX_OUTPUT_LENGTH=99999999` cannot flow through and
  * exhaust the context (resource-exhaustion / DoS) — it is capped to this bound.
  */
@@ -99,7 +99,7 @@ export const BASH_MAX_OUTPUT_UPPER_LIMIT = MAX_OUTPUT_LENGTH;
 
 /**
  * [functional parity] Resolve the effective bash output-character cap. Honors
- * BASH_MAX_OUTPUT_LENGTH (parity: Claude Code's BASH_MAX_OUTPUT_LENGTH tuning
+ * BASH_MAX_OUTPUT_LENGTH (parity: the reference's BASH_MAX_OUTPUT_LENGTH tuning
  * knob — registered in env-protection's SAFE_ENV_VARS and merged by the config
  * layer). Routes through the canonical {@link validateBoundedIntEnvVar} so the knob
  * is bounded, not just defaulted: absent/invalid/below-MIN_OUTPUT_LENGTH falls back
@@ -111,7 +111,7 @@ export function resolveBashMaxOutput(): number {
   // Routed through the canonical bounded-int helper so an absent/non-positive value
   // falls back to the default AND an out-of-range value is capped to
   // BASH_MAX_OUTPUT_UPPER_LIMIT (DoS/memory-exhaustion guard) instead of forcing the
-  // tool to buffer gigabytes — parity with Claude Code's upper-limit cap (U208).
+  // tool to buffer gigabytes — parity with the reference's upper-limit cap (U208).
   // min:1 (not MIN_OUTPUT_LENGTH) so a small-but-positive value is accepted and then
   // clamped UP to the floor via Math.max — whereas 0 / negative / NaN are rejected as
   // invalid and fall back to the default. An over-large value is capped to the upper
@@ -128,13 +128,13 @@ export function resolveBashMaxOutput(): number {
 
 /**
  * Resolve the effective bash timeout. Honors BASH_DEFAULT_TIMEOUT_MS (default
- * when no per-call timeout) and BASH_MAX_TIMEOUT_MS (ceiling), matching Claude
+ * when no per-call timeout) and BASH_MAX_TIMEOUT_MS (ceiling), matching the reference
  * Code. A per-call `timeout` still wins but is clamped to the max.
  */
 export function resolveBashTimeout(inputTimeout?: unknown): number {
   const def = parseEnvMs('BASH_DEFAULT_TIMEOUT_MS', HARD_MAX_TIMEOUT_MS) ?? DEFAULT_TIMEOUT_MS;
   // [functional parity] The effective ceiling must never be below the configured
-  // default. Mirror Claude Code's getMaxBashTimeoutMs, which floors the max UP to
+  // default. Mirror the reference's getMaxBashTimeoutMs, which floors the max UP to
   // the default via Math.max — a BASH_MAX_TIMEOUT_MS misconfigured below the
   // default is raised to the default rather than silently shrinking every
   // command's timeout below the operator's chosen default.
@@ -150,7 +150,7 @@ export function resolveBashTimeout(inputTimeout?: unknown): number {
  * Resolve the assistant/detached-mode blocking budget: the wall-clock ceiling
  * after which a still-running FOREGROUND command is auto-moved to the background
  * so the main agent stays responsive. Honors BASH_ASSISTANT_BLOCKING_BUDGET_MS
- * (parity: Claude Code's ASSISTANT_BLOCKING_BUDGET_MS, advertised at ~15s). Only
+ * (parity: the reference's ASSISTANT_BLOCKING_BUDGET_MS, advertised at ~15s). Only
  * applied when running in detached/assistant mode; returns `undefined` when the
  * knob is unset so the normal per-call/default timeout governs (preserving AMI's
  * existing behavior unless an operator opts in). A value at/above the effective
@@ -171,7 +171,7 @@ const DEFAULT_BG_TIMEOUT_MS = 30 * 60 * 1000;
  * via {@link parseEnvMs}, which rejects NaN AND non-positive values (so
  * `=-5`/`=0`/`=abc` fall back to the default): the previous inline
  * `parseInt(raw,10)` idiom let a negative value through, yielding a nonsensical
- * negative timeout (and `=abc` → NaN → `Math.min(NaN, …)` → NaN). Parity: Claude
+ * negative timeout (and `=abc` → NaN → `Math.min(NaN, …)` → NaN). Parity: the reference
  * Code's envValidation rejects `isNaN(parsed) || parsed <= 0`.
  */
 export function resolveBackgroundTimeoutMs(inputTimeout: unknown): number {
@@ -237,7 +237,7 @@ function isReadOnlyBashCommand(command: string): boolean {
 }
 
 /**
- * Bare-repository attack probe (parity with Claude Code's
+ * Bare-repository attack probe (parity with the reference's
  * `isCurrentDirectoryBareGitRepo`). When `cwd` contains bare-repo indicators —
  * a root-level `HEAD` file, an `objects/` directory, or a `refs/` directory —
  * WITHOUT a valid `.git/HEAD`, git's `setup_git_directory()` treats `cwd`
@@ -355,7 +355,7 @@ export function injectFindMaxdepth(command: string): string {
  * under Git Bash routinely emits the POSIX drive form (`cd /c/proj && …`); both
  * variants are stripped. `platform` is injectable so the Windows branch is
  * testable off-Windows.
- * Parity: Claude Code api.ts BashTool normalizeToolInput (L586-592).
+ * Parity: the reference api.ts BashTool normalizeToolInput (L586-592).
  */
 export function stripRedundantCdPrefix(
   command: string,
@@ -379,7 +379,7 @@ export function stripRedundantCdPrefix(
  * a reserved device name that is extremely hard to delete and breaks `git add .`
  * / `git clone`. Matches `>nul`, `> NUL`, `2>nul`, `&>nul`, `>>nul`
  * (case-insensitive); does NOT match `>null`, `>nul.txt`, or `cat nul.txt`.
- * Parity: Claude Code utils/bash/shellQuoting.ts rewriteWindowsNullRedirect.
+ * Parity: the reference utils/bash/shellQuoting.ts rewriteWindowsNullRedirect.
  */
 const NUL_REDIRECT_RE = /(\d?&?>+\s*)[Nn][Uu][Ll](?=\s|$|[|&;)\n])/g;
 export function rewriteWindowsNullRedirect(command: string): string {
@@ -390,7 +390,7 @@ export function rewriteWindowsNullRedirect(command: string): string {
  * Collapse an over-escaped `find -exec … \\;` terminator to `\;`. Models
  * frequently double-escape the terminator through JSON, emitting
  * `find … -exec rm {} \\;` (literal backslash-backslash-semicolon) which breaks
- * `find` at the shell boundary. Parity: Claude Code api.ts normalizeToolInput
+ * `find` at the shell boundary. Parity: the reference api.ts normalizeToolInput
  * (`normalizedCommand.replace(/\\\\;/g, '\\;')`, L594-595).
  */
 export function collapseFindExecEscape(command: string): string {
@@ -413,7 +413,7 @@ export function normalizeBashInput(command: string, cwd: string | undefined): st
 }
 
 /**
- * The hardened pwsh flag set (parity: Claude Code powershell/parser.ts L1171-1179)
+ * The hardened pwsh flag set (parity: the reference powershell/parser.ts L1171-1179)
  * prepended to a PowerShell invocation: `-NoProfile` skips profile code,
  * `-NonInteractive` avoids prompts/ANSI, `-NoLogo` suppresses the banner. Paired
  * with `-EncodedCommand` (UTF-16LE base64) to run the script without any shell
@@ -423,7 +423,7 @@ export const HARDENED_PWSH_FLAGS = ['-NoProfile', '-NonInteractive', '-NoLogo'] 
 
 /**
  * Encode a PowerShell script as the UTF-16LE base64 string pwsh's `-EncodedCommand`
- * expects (parity: Claude Code powershell/parser.ts `toUtf16LeBase64`). A base64
+ * expects (parity: the reference powershell/parser.ts `toUtf16LeBase64`). A base64
  * payload survives any surrounding shell-quoting layer intact.
  */
 export function encodeUtf16LeBase64(script: string): string {
@@ -438,7 +438,7 @@ const PWSH_SIMPLE_INVOCATION_RE = /^(\s*)(pwsh|powershell(?:\.exe)?)\s+(?:-Comma
 
 /**
  * Harden a simple PowerShell invocation to pwsh's safe, deterministic form
- * (parity: Claude Code powershell/parser.ts L1167-1180): rewrite
+ * (parity: the reference powershell/parser.ts L1167-1180): rewrite
  * `powershell -Command "<script>"` to
  * `powershell -NoProfile -NonInteractive -NoLogo -EncodedCommand <utf16le-base64>`.
  * The encoded form avoids command-line escaping/injection and interactive-mode
@@ -454,7 +454,7 @@ export function rewritePwshInvocation(command: string): string {
 
 /**
  * The env gate `AMI_SEARCH_SHADOW` that opts bare `grep`/`find` run through the
- * bash tool into GrepTool-matching default flags (parity: Claude Code
+ * bash tool into GrepTool-matching default flags (parity: the reference
  * ShellSnapshot.createFindGrepShellIntegration). Default OFF so command behavior is
  * unchanged unless explicitly enabled. Truthy = `1`/`true`/`yes`/`on`.
  */
@@ -469,7 +469,7 @@ const SEARCH_SHADOW_VCS_DIRS = ['.git', '.svn', '.hg', '.bzr', '.jj', '.sl'] as 
 
 /**
  * Build the shell preamble that shadows bare `grep`/`find` with GrepTool-matching
- * defaults (parity: Claude Code ShellSnapshot.createFindGrepShellIntegration — the
+ * defaults (parity: the reference ShellSnapshot.createFindGrepShellIntegration — the
  * PORTABLE subset, since AMI ships no embedded bfs/ugrep). First clears any
  * renaming alias (`alias grep=ggrep`) so the function — not the alias — handles the
  * call, then shadows `grep` with the GNU flags GrepTool relies on: `-I` (skip
@@ -490,7 +490,7 @@ export function buildSearchShadowPreamble(): string {
 /**
  * The env gate `AMI_PLUGIN_HINTS` that opts into surfacing a plugin-install
  * suggestion when a tool emits an `<ami-hint type="plugin" …/>` tag on stderr
- * (parity: Claude Code's stderr-hint plugin recommendation). Default OFF — the hint
+ * (parity: the reference's stderr-hint plugin recommendation). Default OFF — the hint
  * TAG is always stripped from output regardless, only the user-facing suggestion is
  * gated. Truthy = `1`/`true`/`yes`/`on`.
  */
@@ -503,11 +503,11 @@ export function isPluginHintsEnabled(env: NodeJS.ProcessEnv = process.env): bool
 /**
  * The env gate `AMI_BASH_OUTPUT_FILE_MODE` that opts a BACKGROUND bash command into
  * "file mode": its stdout+stderr are wired STRAIGHT to the task output-file fd so
- * neither stream enters the JS heap/event loop (parity with Claude Code's TaskOutput
+ * neither stream enters the JS heap/event loop (parity with the reference's TaskOutput
  * `stdoutToFile`, which routes a bash command's output to a file fd so "neither enters
  * JS"). On a very large/fast firehose this keeps V8 out of the hot path — lower CPU/GC
  * and no pipe backpressure — at the cost of the separable in-memory stderr tail (stderr
- * is interleaved in the merged file, exactly as Claude's file mode does). Default OFF
+ * is interleaved in the merged file, exactly as the reference's file mode does). Default OFF
  * (truthy = `1`/`true`/`yes`/`on`) so the normal pipe path — which keeps the distinct
  * `--- stderr ---` task_output section — is unchanged unless an operator opts in.
  */
@@ -519,7 +519,7 @@ export function isBashOutputFileModeEnabled(env: NodeJS.ProcessEnv = process.env
 
 /**
  * Resolve the official-marketplace allowlist (`AMI_PLUGIN_HINT_MARKETPLACES`, a
- * comma list) for the plugin-hint sync gate (parity: Claude's official-marketplace
+ * comma list) for the plugin-hint sync gate (parity: the reference's official-marketplace
  * filter). Returns `undefined` when unset — no marketplace restriction is applied.
  */
 export const PLUGIN_HINT_MARKETPLACES_ENV = 'AMI_PLUGIN_HINT_MARKETPLACES';
@@ -531,7 +531,7 @@ export function resolveOfficialMarketplaces(env: NodeJS.ProcessEnv = process.env
 }
 
 /**
- * Process the plugin-hint tags a command emitted on stderr (parity: Claude Code's
+ * Process the plugin-hint tags a command emitted on stderr (parity: the reference's
  * Bash tool `<claude-code-hint>` handling): ALWAYS strip the internal tags from the
  * model-visible stderr, and — when `AMI_PLUGIN_HINTS` is enabled — run each hint
  * through the synchronous {@link evaluatePluginHint} gate to produce the resolved
@@ -573,7 +573,7 @@ export function processPluginHints(stderr: string): {
  * (`ENOENT`/`ENOTDIR`) it falls back to the session's original launch directory
  * (`fallback`, default `process.cwd()`), returning `{ recovered: true }` so the
  * caller can surface the reset. Returns `null` only when neither the cwd nor the
- * fallback can be resolved. Parity: Claude Code Shell.ts `setCwd` (realpath-and-
+ * fallback can be resolved. Parity: the reference Shell.ts `setCwd` (realpath-and-
  * act, no existsSync pre-check) + the delete-recovery fallback to the original
  * cwd.
  */
@@ -605,7 +605,7 @@ export function resolveWorkingDirectory(
  * interior blank lines and in-line indentation. Unlike `String.prototype.trim()`
  * — which also strips meaningful leading indentation of the first content line
  * and trailing spaces of the last — this removes only whole empty boundary lines.
- * Parity: Claude Code tools/BashTool/utils.ts stripEmptyLines.
+ * Parity: the reference tools/BashTool/utils.ts stripEmptyLines.
  */
 export function stripEmptyLines(content: string): string {
   const lines = content.split('\n');
@@ -621,7 +621,7 @@ export function stripEmptyLines(content: string): string {
  * Base commands that normally produce NO stdout on success (`mkdir`, `mv`, …).
  * When a command is composed entirely of these, an empty stdout is expected, so
  * the UI shows a success affordance instead of a misleading "(no output)".
- * Parity: Claude Code BashTool BASH_SILENT_COMMANDS.
+ * Parity: the reference BashTool BASH_SILENT_COMMANDS.
  */
 const BASH_SILENT_COMMANDS = new Set([
   'mv', 'cp', 'rm', 'mkdir', 'rmdir', 'chmod', 'chown', 'chgrp', 'touch', 'ln',
@@ -631,7 +631,7 @@ const BASH_SILENT_COMMANDS = new Set([
 /**
  * Commands that carry no semantic weight; after a `||` they are pure fallbacks
  * (e.g. `rm x || echo "failed"`), so they do not make a silent command noisy.
- * Parity: Claude Code BashTool BASH_SEMANTIC_NEUTRAL_COMMANDS.
+ * Parity: the reference BashTool BASH_SEMANTIC_NEUTRAL_COMMANDS.
  */
 const BASH_SEMANTIC_NEUTRAL_COMMANDS = new Set(['echo', 'printf', 'true', 'false', ':']);
 
@@ -646,7 +646,7 @@ const BASH_SEMANTIC_NEUTRAL_COMMANDS = new Set(['echo', 'printf', 'true', 'false
  * command following `||` (an error-path fallback like `… || echo failed`) is
  * skipped rather than counted as noisy output. Returns false when any segment is
  * not silent (e.g. `cp a b && ls`, `rm x | tee log`) or when there is no real
- * command at all. Parity: Claude Code BashTool isSilentBashCommand.
+ * command at all. Parity: the reference BashTool isSilentBashCommand.
  */
 export function isSilentBashCommand(command: string): boolean {
   // Split while capturing the sequencing operator before each segment so the
@@ -682,7 +682,7 @@ const GREP_COMMANDS = /^\s*(?:grep|egrep|fgrep)\b/;
  * (`cd ../../other && cat secret`) resolves against the STATIC launch cwd here
  * but at runtime resolves against the NEW cwd, so an "inside workspace" verdict
  * for a relative token can't be trusted and must be re-gated. Absolute tokens are
- * cwd-immune, so they stay trustworthy. Parity: Claude's compoundCommandHasCd
+ * cwd-immune, so they stay trustworthy. Parity: the reference's compoundCommandHasCd
  * forces approval for cwd-relative paths in a cd-bearing compound command.
  */
 export interface BashReadPathRef {
@@ -737,7 +737,7 @@ export const GIT_VALUE_OPTS = new Set([
 ]);
 
 /**
- * Classification of a `git commit` invocation. Parity: Claude Code's
+ * Classification of a `git commit` invocation. Parity: the reference's
  * gitOperationTracking `CommitKind` distinguishes an amend (history rewrite)
  * from a plain commit, so the two can be surfaced/advised differently. A
  * cherry-pick is a separate git subcommand (not `commit`) and is intentionally
@@ -794,7 +794,7 @@ export function detectGitCommit(command: string): boolean {
 /**
  * If the first line of a bash command is a `# comment` (not a `#!` shebang),
  * return the comment text with its leading `#`(s) and surrounding whitespace
- * stripped; otherwise `undefined`. Parity: Claude Code's
+ * stripped; otherwise `undefined`. Parity: the reference's
  * BashTool/commentLabel `extractBashCommentLabel` — the leading comment a model
  * writes is a human-readable label for the command, used as the tool-use /
  * background-task description before falling back to the raw command text.
@@ -1008,7 +1008,7 @@ export function detectForcePushToProtected(command: string): string | null {
 /**
  * Non-blocking advisory for ANY force push, independent of branch name.
  * `detectForcePushToProtected` hard-blocks force pushes to protected branches
- * (main/master/…); this surfaces Claude Code's destructiveCommandWarning
+ * (main/master/…); this surfaces the reference's destructiveCommandWarning
  * "may overwrite remote history" notice for every OTHER force push (feature
  * branches, no explicit branch arg, `--force-with-lease`, bare `-f`) so the
  * model is warned before trusting the result. Returns null when the command is
@@ -1110,7 +1110,7 @@ export function detectBlockedSleep(command: string, runInBackground: boolean, ha
  * command overruns its timeout. A `sleep` that times out is a pointless process
  * to keep alive as a background task — the model wanted a delay, not a
  * long-running job — so it stays in the foreground and surfaces a plain timeout
- * error instead of lingering as a zombie background task. Parity: Claude Code
+ * error instead of lingering as a zombie background task. Parity: the reference
  * BashTool `DISALLOWED_AUTO_BACKGROUND_COMMANDS` (bashCommandHelpers.ts:219-220).
  */
 const DISALLOWED_AUTO_BACKGROUND_COMMANDS = new Set(['sleep']);
@@ -1122,7 +1122,7 @@ const DISALLOWED_AUTO_BACKGROUND_COMMANDS = new Set(['sleep']);
  * `sleep.exe`), which must surface a timeout error rather than linger as a
  * background task. This gate applies ONLY to automatic backgrounding on timeout;
  * an explicit `run_in_background: true` still honours the request regardless of
- * the command. Parity: Claude Code BashTool `isAutobackgroundingAllowed`
+ * the command. Parity: the reference BashTool `isAutobackgroundingAllowed`
  * (bashCommandHelpers.ts:307-315) gating `shouldAutoBackground`.
  */
 export function isAutobackgroundingAllowed(command: string): boolean {
@@ -1218,7 +1218,7 @@ export function sanitizeEnvForSubprocess(env: Record<string, string | undefined>
  * every child process spawned by the `bash` tool — i.e. what overriding/stripping
  * AMI injects into spawned shells. Pure (reads the static policy only; no spawn).
  *
- * Parity note: Claude Code exposes isolation-state getters (e.g. `tmuxSocket.ts`'s
+ * Parity note: the reference exposes isolation-state getters (e.g. `tmuxSocket.ts`'s
  * `getClaudeTmuxEnv()` / `isSocketInitialized()`) so a caller can inspect what env
  * a child inherits. AMI's isolation is credential-stripping rather than a socket,
  * so this surfaces THAT policy — the exact secret names scrubbed, the suffix
@@ -1286,7 +1286,7 @@ export function _resetPythonShimCache(): void { cachedPythonShimDir = undefined;
  * `AMI_TMPDIR`/`CLAUDE_CODE_TMPDIR`), NOT the raw `os.tmpdir()`. Under a restrictive
  * sandbox the global tmpdir is not writable — only the sandbox-pinned tmp dir is —
  * so routing the aux-file write through the same base the sandbox exports keeps the
- * shim materializable instead of failing on an un-writable `/tmp` (parity: Claude's
+ * shim materializable instead of failing on an un-writable `/tmp` (parity: the reference's
  * PowerShell provider sandbox-tmpdir fallback for provider aux files).
  */
 export function ensurePythonShimDir(pathValue: string | undefined = process.env.PATH, make = true): string | null {
@@ -1321,7 +1321,7 @@ export function ensurePythonShimDir(pathValue: string | undefined = process.env.
  * set, `SSL_CERT_FILE` (OpenSSL/curl), `REQUESTS_CA_BUNDLE` (python-requests) and
  * `CURL_CA_BUNDLE` (curl) are each populated with the same path — but ONLY when
  * the user has not already set that specific var, so an explicit per-runtime
- * override always wins. Parity: Claude Code's upstreamproxy `getUpstreamProxyEnv`
+ * override always wins. Parity: the reference's upstreamproxy `getUpstreamProxyEnv`
  * CA-bundle fan-out. Mutates and returns `env`.
  */
 export function applyCaBundleFanout(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
@@ -1354,7 +1354,7 @@ const PROXY_FANOUT_GROUPS: ReadonlyArray<readonly [string, string]> = [
  * case the operator (or an upstream relay launcher) exported. For each group the
  * first set variant is the source of truth; the unset sibling is populated with
  * it, but an explicitly-set sibling is never overwritten (explicit per-runtime
- * override always wins). Parity: Claude Code's upstreamproxy `getUpstreamProxyEnv`
+ * override always wins). Parity: the reference's upstreamproxy `getUpstreamProxyEnv`
  * injects `HTTPS_PROXY` + friends into every subprocess so relayed sessions work;
  * AMI has no relay process but honors whatever proxy the environment provides and
  * makes it consistent across tools. Mirrors {@link applyCaBundleFanout}. Mutates
@@ -1393,13 +1393,13 @@ function scrubEnv(extra?: Record<string, string>): NodeJS.ProcessEnv {
   // already exists (shim dir is null).
   const shimDir = ensurePythonShimDir(env.PATH);
   if (shimDir) env.PATH = env.PATH ? shimDir + path.delimiter + env.PATH : shimDir;
-  // Active-skill env (e.g. CLAUDE_SKILL_DIR / CLAUDE_PLUGIN_ROOT) so imported Claude-Code skills
+  // Active-skill env (e.g. CLAUDE_SKILL_DIR / CLAUDE_PLUGIN_ROOT) so imported the reference skills
   // that shell out via $CLAUDE_SKILL_DIR work (issue #22). Applied last; never stripped.
   if (extra) for (const [k, v] of Object.entries(extra)) env[k] = v;
   // Imported-skill helper resolution (issue #33): when a skill is active, PREPEND its
   // `scripts/` dir and the skill dir to PATH — mirroring the python-shim prepend above and
   // honoring issue #33's suggested fix ("put $CLAUDE_SKILL_DIR / the skill's scripts/ dir on
-  // PATH"). Imported Claude-Code skills frequently ship a helper under `<skillDir>/scripts/`;
+  // PATH"). Imported the reference skills frequently ship a helper under `<skillDir>/scripts/`;
   // without this, invoking it by BARE name (e.g. `impeccable`) from a cwd that is NOT the
   // skill dir failed with "command not found" (the agent's cwd is usually a scratch/project
   // dir). PATH is composed FROM the already-scrubbed base (never REPLACED — putting PATH in
@@ -1408,7 +1408,7 @@ function scrubEnv(extra?: Record<string, string>): NodeJS.ProcessEnv {
   // (not SKILL_DIR, which is the same value) is the trigger. REGRESSION LOCK: if a skill is
   // active and `<skillDir>/scripts` is NOT on PATH, imported-skill helpers break again.
   // AMI_SKILL_DIR is the canonical var AMI exports; CLAUDE_SKILL_DIR is the compat alias
-  // for imported Claude-Code skills (both point at the same dir).
+  // for imported the reference skills (both point at the same dir).
   const activeSkillDir = extra?.AMI_SKILL_DIR ?? extra?.CLAUDE_SKILL_DIR;
   if (activeSkillDir) {
     const skillPathEntries = [path.join(activeSkillDir, 'scripts'), activeSkillDir].join(path.delimiter);
@@ -1422,7 +1422,7 @@ function scrubEnv(extra?: Record<string, string>): NodeJS.ProcessEnv {
  * active skill's env AND any session-scoped env vars the user set via `/env`.
  * User-set session vars are merged first and the framework skill env
  * (CLAUDE_SKILL_DIR / CLAUDE_PLUGIN_ROOT) applied last so an operator cannot
- * accidentally clobber the skill wiring. Parity: Claude Code's shell provider
+ * accidentally clobber the skill wiring. Parity: the reference's shell provider
  * merges `getSessionEnvVars()` into `getEnvironmentOverrides()` for every
  * spawned command (the REPL process itself is never mutated). The lookup is
  * session-scoped via `context.sessionId`.
@@ -1444,7 +1444,7 @@ const BASH_DESCRIPTION_BASE =
   + 'edit files with file_edit (NOT sed/awk), search with grep/glob (NOT grep/rg/find), and write files with file_write '
   + '(NOT echo >/cat <<EOF). Communicate by writing text directly (NOT echo/printf to the shell). '
   + 'Use absolute paths. Quote paths with spaces. '
-  // [functional parity] Affordance hint (Claude prompt.ts:L332): verify the
+  // [functional parity] Affordance hint (the reference prompt.ts:L332): verify the
   // parent directory before creating files/dirs so a typo'd path fails loudly
   // instead of silently writing to the wrong place.
   + 'If a command will create new files or directories, first run `ls` to verify the parent directory exists and is the '
@@ -1452,11 +1452,11 @@ const BASH_DESCRIPTION_BASE =
   + 'The working directory persists between commands, but shell state does NOT: each call runs in a fresh non-interactive '
   + 'shell that is not initialized from your profile (~/.bashrc/.zshrc), so a prior `cd`, exported variables, and your '
   + 'user-defined aliases/functions are unavailable in the next call — use absolute paths and chain dependent commands with &&. '
-  // [functional parity] Working-directory stability guidance (Claude prompt.ts:L334):
+  // [functional parity] Working-directory stability guidance (the reference prompt.ts:L334):
   // keep the cwd stable across the session — prefer absolute paths and avoid `cd`,
   // using it only when the user explicitly asks.
   + 'Keep your working directory stable: prefer absolute paths and avoid `cd` — only `cd` when the user explicitly asks you to. '
-  // [functional parity] Multiple-command guidance (Claude prompt.ts:L297-L302):
+  // [functional parity] Multiple-command guidance (the reference prompt.ts:L297-L302):
   // separate commands with `&&`/`;`, never newlines (newlines are fine only
   // inside quoted strings); run INDEPENDENT commands as parallel tool calls
   // rather than chaining them.
@@ -1468,7 +1468,7 @@ const BASH_DESCRIPTION_BASE =
   + 'Do not run interactive/blocking commands that wait for input (e.g. `git rebase -i`, `git add -i`, or anything that opens '
   + 'an editor or prompts for a password); they will hang. ';
 
-// Git guidance, suppressed when git instructions are disabled (parity: Claude's
+// Git guidance, suppressed when git instructions are disabled (parity: the reference's
 // prompt.ts shouldIncludeGitInstructions()/getCommitAndPRInstructions() gate,
 // which drops the git/commit-PR section for deployments that don't want it).
 const BASH_DESCRIPTION_GIT =
@@ -1476,7 +1476,7 @@ const BASH_DESCRIPTION_GIT =
   + 'commit unless explicitly asked. ';
 
 // Closing sleep guidance, always present (it is not git- or background-specific).
-// [functional parity] Anti-retry-loop / anti-poll guidance (Claude prompt.ts:L310-L328):
+// [functional parity] Anti-retry-loop / anti-poll guidance (the reference prompt.ts:L310-L328):
 // never retry a failing command inside a sleep loop — diagnose the root cause
 // instead of polling. (The companion "you'll be notified, don't poll a background
 // task" line lives in BASH_DESCRIPTION_BACKGROUND so it is dropped with the
@@ -1491,7 +1491,7 @@ const BASH_DESCRIPTION_BACKGROUND =
   + 'the background so the session stays responsive. You will be notified when a background command finishes — do not poll it.';
 
 /**
- * [functional parity] Output-truncation threshold surfaced to the model (Claude
+ * [functional parity] Output-truncation threshold surfaced to the model (the reference
  * PowerShellTool/prompt.ts:L121-L125 "If the output exceeds N characters, output
  * will be truncated"). AMI truncates bash output head+tail at the effective cap
  * ({@link resolveBashMaxOutput}, honoring BASH_MAX_OUTPUT_LENGTH), but never told
@@ -1505,9 +1505,9 @@ function describeOutputTruncation(): string {
 
 /**
  * Model-facing bash description. When background tasks are disabled the
- * run_in_background guidance is dropped (parity: Claude's prompt.ts suppresses the
+ * run_in_background guidance is dropped (parity: the reference's prompt.ts suppresses the
  * background usage note behind CLAUDE_CODE_DISABLE_BACKGROUND_TASKS). When git
- * instructions are disabled the git/commit sentence is dropped (parity: Claude's
+ * instructions are disabled the git/commit sentence is dropped (parity: the reference's
  * shouldIncludeGitInstructions()/getCommitAndPRInstructions() gate).
  */
 export function buildBashDescription(backgroundDisabled: boolean, gitDisabled = false): string {
@@ -1520,7 +1520,7 @@ export function buildBashDescription(backgroundDisabled: boolean, gitDisabled = 
 /**
  * Model-facing bash input schema. When background tasks are disabled the
  * `run_in_background` property is omitted entirely from the advertised schema
- * (parity: Claude's BashTool lazySchema omit behind CLAUDE_CODE_DISABLE_BACKGROUND_TASKS)
+ * (parity: the reference's BashTool lazySchema omit behind CLAUDE_CODE_DISABLE_BACKGROUND_TASKS)
  * so the model cannot request a background run in a locked-down deployment.
  */
 export function buildBashInputSchema(backgroundDisabled: boolean, sandboxEscapeDisabled = false): ToolInputSchema {
@@ -1568,12 +1568,12 @@ export function buildBashInputSchema(backgroundDisabled: boolean, sandboxEscapeD
           'outside the project, or a network/unix-socket connection error — retry that SAME command with ' +
           'dangerouslyDisableSandbox: true. Scope the override to the individual command that needs it; do not disable the ' +
           'sandbox pre-emptively. ' +
-          // [functional parity] dangerouslyDisableSandbox guardrails (Claude
+          // [functional parity] dangerouslyDisableSandbox guardrails (the reference
           // prompt.ts:L228-L257): prefer the sandbox-writable $TMPDIR for temp
           // files, and never weaken the sandbox to reach credential paths.
           'Prefer $TMPDIR (sandbox-writable) over /tmp for temporary files, and never weaken the sandbox to reach ' +
           'credential paths such as ~/.bashrc, ~/.zshrc, ~/.ssh/*, or other secret files. ' +
-          // [functional parity] Unsandboxed-override policy gate wording (Claude
+          // [functional parity] Unsandboxed-override policy gate wording (the reference
           // sandboxTypes.ts): the flag is NOT a free escape — in enforced
           // container-sandbox mode it is ignored (the command still runs inside
           // the container), and whenever it is honoured it always requires
@@ -1591,7 +1591,7 @@ export function buildBashInputSchema(backgroundDisabled: boolean, sandboxEscapeD
     delete schema.properties.background_kind;
   }
   // When policy forbids the escape hatch, omit it from the advertised schema so
-  // the model cannot even request it (parity: Claude's prompt states the
+  // the model cannot even request it (parity: the reference's prompt states the
   // parameter is 'disabled by policy' and drops it). The runtime also ignores a
   // smuggled flag — see the execute() sandbox branch.
   if (sandboxEscapeDisabled) {
@@ -1613,19 +1613,19 @@ export const bashTool: ToolDefinition = {
   isReadOnly: false,
   isConcurrencySafe: false,
 
-  // Human-readable live-progress phrase (parity: Claude's getActivityDescription):
+  // Human-readable live-progress phrase (parity: the reference's getActivityDescription):
   // "Running <description|command>". Shown in a sub-agent's task_list progressSummary.
   getActivityDescription(input: Record<string, unknown>): string {
     return describeToolActivity('bash', input) ?? 'Running command';
   },
   // Per-invocation read/search/list classification from the actual command (parity:
-  // Claude's isSearchOrReadCommand → isSearchOrReadBashCommand), so a read-only
+  // the reference's isSearchOrReadCommand → isSearchOrReadBashCommand), so a read-only
   // shell command (`cat`, `grep`, `ls`) collapses in live progress while a mutation
   // stays visible.
   isSearchOrReadCommand(input: Record<string, unknown>) {
     return classifyBashAccess(typeof input?.command === 'string' ? input.command : '');
   },
-  // The resolved timeout this foreground command will be killed at (parity: Claude's
+  // The resolved timeout this foreground command will be killed at (parity: the reference's
   // timeoutMs threaded into shell progress/result UI). Surfaced by the executor on a
   // long-running call's live progress so the user can see how close the command is to
   // its timeout boundary. Honors the per-call `timeout` plus BASH_DEFAULT_TIMEOUT_MS /
@@ -1690,7 +1690,7 @@ export const bashTool: ToolDefinition = {
         isError: true,
         // Discriminate a pre-spawn setup failure (the shell never ran) from a
         // command that ran and exited non-zero/timed out, so callers can treat it
-        // as a tooling fault rather than a command result. Parity: Claude's
+        // as a tooling fault rather than a command result. Parity: the reference's
         // dedicated preSpawnError result field (ShellCommand.createFailedCommand).
         metadata: { preSpawnError: 'cwd-missing' },
       };
@@ -1710,7 +1710,7 @@ export const bashTool: ToolDefinition = {
     const commitKind = detectGitCommitKind(command);
     if (commitKind) {
       // Parity: distinguish an amend (history rewrite) from a plain commit so the
-      // guidance can call it out specifically (Claude gitOperationTracking CommitKind).
+      // guidance can call it out specifically (the reference gitOperationTracking CommitKind).
       const amendNote =
         commitKind === 'amended'
           ? '\n\nNote: `git commit --amend` rewrites the last commit; amending via bash is especially not allowed. ' +
@@ -1809,7 +1809,7 @@ export const bashTool: ToolDefinition = {
     }
     // When background tasks are disabled (AMI_DISABLE_BACKGROUND_TASKS), force the
     // command to run in the foreground even if the model still requested a
-    // background run — the capability is fully off (parity: Claude runs such
+    // background run — the capability is fully off (parity: the reference runs such
     // commands in the foreground when CLAUDE_CODE_DISABLE_BACKGROUND_TASKS is set).
     const runInBackground = ribParsed.value && !isBackgroundTasksDisabled();
     const sleepBlock = detectBlockedSleep(command, runInBackground, !!input.timeout);
@@ -1822,7 +1822,7 @@ export const bashTool: ToolDefinition = {
     // `sed` binary afterwards could write bytes that differ from that previewed
     // diff (sed-vs-JS-regex divergence). To GUARANTEE the write equals what the
     // user approved, perform the SAME in-memory substitution and write it directly
-    // — the identical exactness guarantee as Claude Code's SedEditPermissionRequest
+    // — the identical exactness guarantee as the reference's SedEditPermissionRequest
     // `_simulatedSedEdit` (the approved write uses the JS-computed newContent, not a
     // re-run of sed). Only faithful, single-file, foreground substitutions take this
     // path (applySimulatedSedEdit returns null otherwise → the real binary runs).
@@ -1868,13 +1868,13 @@ export const bashTool: ToolDefinition = {
     // Session environment: prepend the persisted env script (parent-supplied
     // CLAUDE_ENV_FILE/AMI_ENV_FILE + per-hook env fragments) so venv/conda
     // activation and exported vars survive across separate, stateless bash
-    // invocations (Claude Code `sessionEnvironment` parity). [FUNCTIONAL CHANGE]
+    // invocations (the reference `sessionEnvironment` parity). [FUNCTIONAL CHANGE]
     // The script is folded into the EXECUTED command only; the display `command`
     // is left untouched so transcripts/output stay clean.
     const sessionEnvScript = await getSessionEnvironmentScript(context.sessionId);
     // Harden a simple PowerShell invocation to the `-NoProfile -NonInteractive
     // -NoLogo -EncodedCommand` form at EXECUTION time only (display `command` stays
-    // the readable original). [FUNCTIONAL CHANGE] Parity: Claude pwsh parser.
+    // the readable original). [FUNCTIONAL CHANGE] Parity: the reference pwsh parser.
     const hardenedCommand = rewritePwshInvocation(command);
     // Opt-in (AMI_SEARCH_SHADOW): prepend a preamble that shadows bare grep/find
     // with GrepTool-matching defaults. Folded into the EXECUTED command only, like
@@ -1947,7 +1947,7 @@ export const bashTool: ToolDefinition = {
       // — every command must run sandboxed (a managed-deployment lockout).
       // The escape hatch is locked out by EITHER the per-config policy
       // (allowUnsandboxedCommands === false) OR the global env knob
-      // (AMI_DISABLE_SANDBOX_ESCAPE) — both mirror Claude's
+      // (AMI_DISABLE_SANDBOX_ESCAPE) — both mirror the reference's
       // areUnsandboxedCommandsAllowed() policy boundary.
       const sandboxEscapeLocked = context.sandbox?.allowUnsandboxedCommands === false || isSandboxEscapeDisabled();
       const disableSandbox = sandboxEscapeLocked ? false : coerceBool(input.dangerouslyDisableSandbox);
@@ -2012,7 +2012,7 @@ export const bashTool: ToolDefinition = {
       const bgTimeoutMs = resolveBackgroundTimeoutMs(input.timeout);
       // A model-requested 'monitor' kind opts a streaming command out of the stall
       // watchdog and gives it stream-ended completion wording. Any other value
-      // (incl. the default/absent) is a plain 'bash' task. Parity: Claude Code's
+      // (incl. the default/absent) is a plain 'bash' task. Parity: the reference's
       // BashTaskKind threaded through the spawn input.
       const backgroundKind = input.background_kind === 'monitor' ? 'monitor' as const : undefined;
       const taskId = context.processManager.spawn(effectiveCommand, {
@@ -2024,12 +2024,12 @@ export const bashTool: ToolDefinition = {
         // Record the owning agent so the shell is reaped if that agent exits first
         // (zombie prevention — see ProcessManager.killTasksForAgent).
         agentId: context.agentId,
-        // Cooperative cancellation (parity: Claude Code Shell.ts abortSignal): a
+        // Cooperative cancellation (parity: the reference Shell.ts abortSignal): a
         // turn abort kills the background shell; an abort whose reason is 'interrupt'
         // is a soft interrupt that leaves the shell running to be backgrounded.
         ...(context.abortSignal ? { signal: context.abortSignal } : {}),
         // File mode (AMI_BASH_OUTPUT_FILE_MODE): route stdout+stderr straight to the
-        // output fd so the firehose bypasses the JS heap (parity: Claude TaskOutput
+        // output fd so the firehose bypasses the JS heap (parity: the reference TaskOutput
         // stdoutToFile). Opt-in; default pipe mode keeps the separable stderr tail.
         ...(isBashOutputFileModeEnabled() ? { fileMode: true } : {}),
       });
@@ -2039,7 +2039,7 @@ export const bashTool: ToolDefinition = {
         isError: false,
         // The model EXPLICITLY requested run_in_background — tag it so callers can
         // distinguish a user/model-intended background task from an auto-moved one
-        // (the timeout path sets `assistantAutoBackgrounded`). Parity: Claude's
+        // (the timeout path sets `assistantAutoBackgrounded`). Parity: the reference's
         // ExecResult `backgroundedByUser` vs assistant auto-background discriminator.
         metadata: { backgrounded: true, backgroundedByUser: true, taskId },
       };
@@ -2092,7 +2092,7 @@ export const bashTool: ToolDefinition = {
       // session stays responsive — but NOT for commands that must never be
       // auto-backgrounded (a bare `sleep` that times out is a pointless process
       // to keep alive; it falls through to a plain timeout error below). Parity:
-      // Claude Code gates this behind isAutobackgroundingAllowed / shouldAutoBackground.
+      // the reference gates this behind isAutobackgroundingAllowed / shouldAutoBackground.
       if (context.processManager && isAutobackgroundingAllowed(command)) {
         const taskId = context.processManager.spawn(effectiveCommand, {
           cwd: context.cwd,
@@ -2175,7 +2175,7 @@ export const bashTool: ToolDefinition = {
     // Plugin-install hints: a CLI/SDK may emit an `<ami-hint type="plugin" .../>`
     // tag on stderr. The tag is ALWAYS stripped so it never leaks to the model; when
     // AMI_PLUGIN_HINTS is enabled, surface a non-blocking install suggestion + record
-    // it in metadata for introspection. Parity: Claude's stderr-hint recommendation.
+    // it in metadata for introspection. Parity: the reference's stderr-hint recommendation.
     const pluginHintResult = processPluginHints(rawStderr);
     const stderr = pluginHintResult.stderr;
 
@@ -2201,7 +2201,7 @@ export const bashTool: ToolDefinition = {
     if (sandboxFallbackAdvisory) output += `\n\n[Warning: ${sandboxFallbackAdvisory}]`;
     if (pluginHintResult.note) output += pluginHintResult.note;
     // PARITY (sandbox indicator): prefix the visible marker when the resolved
-    // user-facing name is `SandboxedBash` (Claude's indicator-knob name switch).
+    // user-facing name is `SandboxedBash` (the reference's indicator-knob name switch).
     if (sandboxDisplayName !== 'Bash') output = `[${sandboxDisplayName}]\n${output}`;
 
     let exitCodeInfo: ExitCodeInfo | null = null;
@@ -2236,7 +2236,7 @@ export const bashTool: ToolDefinition = {
       // A SPAWN_FAILURE_EXIT_CODE (126) from the shell layer means the child
       // process could not be started (pre-exec spawn 'error' event), not that a
       // command ran and failed — tag it so callers can distinguish a tooling
-      // fault from a genuine non-zero exit. Parity: Claude's preSpawnError field.
+      // fault from a genuine non-zero exit. Parity: the reference's preSpawnError field.
       metadata: {
         ...(result.exitCode === SPAWN_FAILURE_EXIT_CODE
           ? { readOnly, preSpawnError: 'spawn-failure' }
@@ -2244,7 +2244,7 @@ export const bashTool: ToolDefinition = {
         ...(pluginHintResult.recommendations.length ? { pluginHints: pluginHintResult.recommendations } : {}),
         // When stdout overflowed the inline cap, the full output was persisted to
         // disk; surface the path + byte size structurally so a programmatic caller
-        // need not re-parse the banner. Parity: Claude's ExecResult
+        // need not re-parse the banner. Parity: the reference's ExecResult
         // outputFilePath/outputFileSize (ShellCommand.ts #handleExit).
         ...(spilled.outputFilePath
           ? { outputFilePath: spilled.outputFilePath, outputFileSize: spilled.outputFileSize }
@@ -2298,7 +2298,7 @@ function presentCommandOutput(
 const SHELL_IMAGE_DATA_URI_RE = /^data:(image\/[a-z0-9.+_-]+);base64,([A-Za-z0-9+/=\s]+)$/i;
 
 /** Raw-byte ceiling for a shell-produced image before we refuse to decode it
- *  (parity: Claude Code's MAX_IMAGE_FILE_SIZE = 20MB). Estimated from the base64
+ *  (parity: the reference's MAX_IMAGE_FILE_SIZE = 20MB). Estimated from the base64
  *  length BEFORE allocating the buffer, so a pathological data URI can't OOM us. */
 const MAX_SHELL_IMAGE_RAW_BYTES = 20 * 1024 * 1024;
 
@@ -2312,7 +2312,7 @@ const MAX_SHELL_IMAGE_RAW_BYTES = 20 * 1024 * 1024;
  * compressImageBuffer for the shared size/dimension caps (high-DPI downsample +
  * 5MB API ceiling), matching how file reads encode images. Returns null when
  * stdout is not a bare image data URI (ordinary text output is unchanged).
- * Parity: Claude Code BashTool utils isImageOutput / buildImageToolResult /
+ * Parity: the reference BashTool utils isImageOutput / buildImageToolResult /
  * resizeShellImageOutput.
  */
 export async function maybeBuildShellImageOutput(stdout: string): Promise<string | null> {
@@ -2436,10 +2436,10 @@ export function interpretExitCode(command: string, exitCode: number): ExitCodeIn
 
 /**
  * Render a millisecond duration as a compact human-readable string for
- * model/user-facing messages (timeouts). Parity: Claude Code
+ * model/user-facing messages (timeouts). Parity: the reference
  * ShellCommand `Command timed out after ${formatDuration(timeout)}` — e.g.
  * 120000 → "2m", 90000 → "1m 30s", 3661000 → "1h 1m 1s". As a superset over
- * Claude's whole-second rendering, a sub-second value keeps ms precision
+ * the reference's whole-second rendering, a sub-second value keeps ms precision
  * ("400ms") rather than collapsing to "0s". Non-finite/negative input falls back
  * to the raw `${ms}ms` form so the message is never silently wrong.
  */
@@ -2536,12 +2536,12 @@ export function formatTimeoutBackgroundOutput(
     `Command timed out after ${formatDuration(timeout)}. Auto-moved to background as task ${taskId}. ` +
     'The command is still running in the background — use task_output to check progress.';
   // Surface where the full output is being written so the model can tail/re-read
-  // it (parity: Claude's background notice includes the output file path).
+  // it (parity: the reference's background notice includes the output file path).
   if (opts?.outputPath) {
     notice += ` Output is being written to: ${opts.outputPath}.`;
   }
   // Assistant/detached-mode coaching: steer the main agent to keep itself
-  // responsive rather than blocking on the long task (parity: Claude's
+  // responsive rather than blocking on the long task (parity: the reference's
   // assistant-mode auto-background wording).
   if (opts?.detachedMode) {
     notice +=

@@ -195,7 +195,7 @@ export const cronCreateTool: ToolDefinition = {
       maxAgeDays = n;
     }
 
-    // Optional per-job model override (parity: Claude's session_context.model). A
+    // Optional per-job model override (parity: the reference's session_context.model). A
     // present-but-blank/non-string value is a mistake — reject it up front rather
     // than storing an empty override that silently inherits the session model.
     let model: string | undefined;
@@ -205,7 +205,7 @@ export const cronCreateTool: ToolDefinition = {
       }
       model = input.model.trim();
     }
-    // Optional per-job allowed-tools whitelist (parity: Claude's allowed_tools). Must
+    // Optional per-job allowed-tools whitelist (parity: the reference's allowed_tools). Must
     // be an array of non-empty tool-name strings; an empty array (deny-everything) is
     // almost always a mistake for a scheduled task, so it is refused with a clear error.
     let allowedTools: string[] | undefined;

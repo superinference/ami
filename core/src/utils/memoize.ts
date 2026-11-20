@@ -17,7 +17,7 @@ import { logError } from '../logger';
  *                                    guarded), so an aborted/failed lookup can't
  *                                    poison future turns.
  *
- * Parity with Claude Code's `utils/memoize.ts`. The LRU is backed by an
+ * Parity with the reference's `utils/memoize.ts`. The LRU is backed by an
  * insertion-ordered Map (no external `lru-cache` dependency): a hit re-inserts
  * the key to mark it most-recent, and the oldest key is evicted first once the
  * bound is exceeded — the same behavior lru-cache provides.
@@ -266,7 +266,7 @@ export function memoizeWithLRU<
  * Memoize an ASYNC function with a bounded LRU that caches the in-flight PROMISE
  * (so concurrent callers for the same key share one invocation) and EVICTS the
  * cached entry if that promise rejects — an aborted or failed lookup can never
- * poison future turns. Mirrors Claude Code's `utils/shell/prefix.ts` two-layer
+ * poison future turns. Mirrors the reference's `utils/shell/prefix.ts` two-layer
  * pattern (L111-L118): the outer memoizer stores the promise, and a `.catch`
  * handler removes it on rejection.
  *

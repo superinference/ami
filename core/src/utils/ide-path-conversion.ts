@@ -8,7 +8,7 @@
  * agent's filesystem and paths sent back to the IDE (diff views, "open file") resolve
  * for Windows.
  *
- * This mirrors Claude Code's `utils/idePathConversion.ts`
+ * This mirrors the reference's `utils/idePathConversion.ts`
  * (`WindowsToWSLConverter` + `checkWSLDistroMatch`): the canonical conversion runs
  * the real `wslpath -u`/`-w` tool and falls back to a deterministic manual mapping
  * when `wslpath` is unavailable. A WSL UNC path belonging to a *different* distro is
@@ -21,7 +21,7 @@
  * when AMI runs INSIDE WSL alongside a Windows editor — a different path space and a
  * different tool (`wslpath`), so the two do not overlap.
  *
- * [FUNCTIONAL CHANGE] New module — Windows<->WSL IDE path-space parity with Claude Code.
+ * [FUNCTIONAL CHANGE] New module — Windows<->WSL IDE path-space parity with the reference.
  */
 
 import { execFileSync } from 'child_process';
@@ -30,7 +30,7 @@ import { execFileSync } from 'child_process';
  * Matches a Windows WSL UNC path and captures the distro name. Both the
  * `\\wsl.localhost\<distro>\...` (Windows 11) and legacy `\\wsl$\<distro>\...`
  * forms are accepted. Capture group 1 is the distro name; group 2 is the
- * remainder of the path. Mirrors Claude Code's regex verbatim.
+ * remainder of the path. Mirrors the reference's regex verbatim.
  */
 export const WSL_UNC_PATH_RE = /^\\\\wsl(?:\.localhost|\$)\\([^\\]+)(.*)$/;
 
@@ -67,7 +67,7 @@ export interface IDEPathConverter {
  * Returns `false` only when the path is a WSL UNC path (`\\wsl.localhost\<d>\...`
  * or `\\wsl$\<d>\...`) whose distro `<d>` differs from `wslDistroName`. Any
  * non-UNC path (a plain drive path, a POSIX path, …) is considered a match and
- * returns `true`, because there is no distro to mismatch. Parity with Claude
+ * returns `true`, because there is no distro to mismatch. Parity with the reference
  * Code's `checkWSLDistroMatch`.
  */
 export function checkWSLDistroMatch(windowsPath: string, wslDistroName: string): boolean {
@@ -83,7 +83,7 @@ export function checkWSLDistroMatch(windowsPath: string, wslDistroName: string):
  * Deterministic Windows->WSL mapping used when `wslpath` is unavailable: flip
  * backslashes to forward slashes, then rewrite a leading drive letter
  * (`C:` → `/mnt/c`). Pure + exported for direct coverage. Parity with the
- * catch-branch of Claude Code's `toLocalPath`.
+ * catch-branch of the reference's `toLocalPath`.
  */
 export function manualWindowsToWSL(windowsPath: string): string {
   return windowsPath
@@ -138,7 +138,7 @@ export class WindowsToWSLConverter implements IDEPathConverter {
         .trim();
     } catch {
       // `wslpath` missing/failed — there is no safe manual Windows form, so
-      // return the original path unchanged (parity with Claude Code).
+      // return the original path unchanged (parity with the reference).
       return wslPath;
     }
   }

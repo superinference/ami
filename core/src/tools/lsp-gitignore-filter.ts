@@ -16,7 +16,7 @@ export const _gitIgnoreFilterHooks: { execFileAsync: typeof execFileAsync } = {
 /** How many paths to pass to a single `git check-ignore` invocation. */
 const BATCH_SIZE = 50;
 /** Bound on each `git check-ignore` subprocess so a hung git can't block a tool
- *  call (mirrors Claude Code's 5s check-ignore timeout). */
+ *  call (mirrors the reference's 5s check-ignore timeout). */
 const CHECK_IGNORE_TIMEOUT_MS = 5_000;
 
 /**
@@ -55,7 +55,7 @@ async function checkIgnoreBatch(batch: string[], cwd: string): Promise<Set<strin
  *
  * De-dupes URIs → paths, batches `git check-ignore` in groups of {@link
  * BATCH_SIZE} (each bounded by {@link CHECK_IGNORE_TIMEOUT_MS}), and removes any
- * item whose path git reported as ignored. Mirrors Claude Code's
+ * item whose path git reported as ignored. Mirrors the reference's
  * `filterGitIgnoredLocations`. Returns the input unchanged when there is nothing
  * to check or nothing is ignored.
  */

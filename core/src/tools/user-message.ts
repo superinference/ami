@@ -4,7 +4,7 @@ import { isEnvTruthy } from '../privacy-level';
 /**
  * Opt-in env toggles for the output-gating ("channel") mode and its backing
  * `user_message` tool. OFF by default so the default tool pool is unchanged; the
- * canonical AMI name plus the Claude-config compatibility alias are both honored.
+ * canonical AMI name plus the reference-config compatibility alias are both honored.
  */
 export const OUTPUT_GATE_ENV = 'AMI_OUTPUT_GATE';
 export const OUTPUT_GATE_ENV_COMPAT = 'CLAUDE_CODE_BRIEF_ONLY';
@@ -12,7 +12,7 @@ export const OUTPUT_GATE_ENV_COMPAT = 'CLAUDE_CODE_BRIEF_ONLY';
 /**
  * True when output-gating mode is OPT-IN enabled for this process (env flag). This
  * gates BOTH the registration of the {@link userMessageTool} and the availability of
- * the `/output-gate` slash command — mirroring Claude Code's `brief` command
+ * the `/output-gate` slash command — mirroring the reference's `brief` command
  * `isEnabled()` entitlement check (commands/brief.ts) and its two-way
  * `setUserMsgOptIn` tool-availability sync.
  *
@@ -32,7 +32,7 @@ export const USER_MESSAGE_MAX_CHARS = 100_000;
 
 /**
  * `user_message` — the dedicated user-facing output CHANNEL for output-gating mode
- * (parity: Claude Code's `SendUserMessage` / brief-mode tool). When the engine's
+ * (parity: the reference's `SendUserMessage` / brief-mode tool). When the engine's
  * output-gating mode is active, the model's plain-text completions are hidden from
  * the user and every user-facing message must be emitted through this tool, so the
  * conversation surface is driven by structured tool emissions rather than free prose.

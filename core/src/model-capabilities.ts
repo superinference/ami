@@ -11,9 +11,9 @@ export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
  * Human-readable, per-level descriptions of what each reasoning/thinking tier
  * means, surfaced by `/thinking` (no-arg state, `help`/info args, and invalid
  * input) so a user can pick a level deliberately instead of guessing. Mirrors
- * Claude's `/effort help` per-level copy (commands/effort/effort.tsx:L173-L176)
+ * the reference's `/effort help` per-level copy (commands/effort/effort.tsx:L173-L176)
  * and `getEffortValueDescription` (utils/effort.ts); AMI additionally documents
- * `off` since its scale includes a disabled tier that Claude's does not.
+ * `off` since its scale includes a disabled tier that the reference's does not.
  */
 export const THINKING_LEVEL_DESCRIPTIONS: Record<ThinkingLevel, string> = {
   off: 'Thinking disabled — fastest, no extended reasoning',
@@ -55,7 +55,7 @@ export interface ModelCapabilities {
   /**
    * The model defaults to adaptive thinking and REJECTS a request to disable it
    * (`thinking: { type:'disabled' }`) — reasoning cannot be turned off. Mirrors
-   * Claude Code's AntModel `alwaysOnThinking` knob (utils/model/antModels.ts:L14-15).
+   * the reference's AntModel `alwaysOnThinking` knob (utils/model/antModels.ts:L14-15).
    * When true, callers that build the per-provider thinking request must still send
    * a thinking config even on the `off` level (the model reasons regardless), and
    * UIs should not advertise `off` as an effective choice for such a model.
@@ -156,7 +156,7 @@ function hasOneMillionMarker(modelId: string): boolean {
  * WITHOUT the marker, a raw overwrite silently drops the effective window from
  * 1M to the base (200k) key, which trips compaction/autocompact far too early.
  *
- * Rules (mirrors Claude Code's `resolveSkillModelOverride`):
+ * Rules (mirrors the reference's `resolveSkillModelOverride`):
  * - The skill model already carries a 1M marker → leave it untouched.
  * - The current session model has no 1M marker → nothing to carry, return as-is.
  * - Otherwise carry `[1m]` ONLY when the skill's target family actually supports
@@ -176,7 +176,7 @@ export function resolveSkillModelOverride(skillModel: string, currentModel: stri
 /**
  * Anthropic's 1M-context window is gated behind the `context-1m-2025-08-07`
  * beta header. Per Anthropic's docs it is available on the Sonnet 4+ family AND
- * the Opus 5+ family — Claude Code ships a dedicated `checkOpus1mAccess()`
+ * the Opus 5+ family — the reference ships a dedicated `checkOpus1mAccess()`
  * parallel to `checkSonnet1mAccess()`, i.e. Opus is a gated 1M-beta family too
  * (ref utils/model/check1mAccess.ts:L45-L58). We detect conservatively by
  * model-id substring: Sonnet major version 4+ and Opus major version 5+ (Opus 4
@@ -190,7 +190,7 @@ export function resolveSkillModelOverride(skillModel: string, currentModel: stri
  * `context-1m-2025-08-07` beta is never requested AND the local context budget
  * falls back to the model's base (200k) window, so compaction timing matches
  * what the endpoint will actually serve. Read at call time so it can be toggled
- * per-process/test. Mirrors Claude's is1mContextDisabled env gate.
+ * per-process/test. Mirrors the reference's is1mContextDisabled env gate.
  */
 export function is1mContextDisabled(): boolean {
   const v = process.env.SUPERINFERENCE_DISABLE_1M_CONTEXT;
@@ -213,7 +213,7 @@ export function supportsOneMillionContextBeta(modelId: string): boolean {
  * that only sizes the context budget / selects the beta header — the endpoint's
  * model id has no such marker and rejects it (an unknown model) when it leaks
  * through. Callers resolve betas/window sizing from the marker-carrying id FIRST,
- * then normalize right before the request. Mirrors Claude Code's
+ * then normalize right before the request. Mirrors the reference's
  * `normalizeModelStringForAPI` (utils/model/model.ts:L616-L618), extended to the
  * `-1m`/`_1m` suffix forms AMI also treats as markers. A non-string id passes
  * through unchanged.
@@ -231,7 +231,7 @@ export function normalizeModelStringForAPI(modelId: string): string {
  * useful when the endpoint serves a 1M window but a smaller budget is wanted for
  * cost/latency control. Returns `undefined` when unset, non-numeric, or <= 0 so the
  * normal resolution path runs. Read at call time so it can be toggled per
- * process/test. Mirrors Claude's `CLAUDE_CODE_MAX_CONTEXT_TOKENS` override.
+ * process/test. Mirrors the reference's `CLAUDE_CODE_MAX_CONTEXT_TOKENS` override.
  */
 export function getContextWindowOverride(): number | undefined {
   const raw = process.env.SUPERINFERENCE_MAX_CONTEXT_TOKENS;
@@ -245,7 +245,7 @@ export function getContextWindowOverride(): number | undefined {
  * Env vars naming a dedicated small/fast model for cheap, throwaway auxiliary LLM
  * calls (prompt-hook verification verdicts, away/session recaps, title
  * generation) so they do not burn the main model's budget/latency. Checked in
- * order; the first non-empty value wins. Mirrors Claude Code's
+ * order; the first non-empty value wins. Mirrors the reference's
  * `getSmallFastModel` (utils/model/model.ts:L36-L38), which keys off
  * `ANTHROPIC_SMALL_FAST_MODEL`; AMI also honors a provider-neutral `AMI_SMALL_FAST_MODEL`.
  */
@@ -253,7 +253,7 @@ export const SMALL_FAST_MODEL_ENV_VARS = ['ANTHROPIC_SMALL_FAST_MODEL', 'AMI_SMA
 
 /**
  * The configured small/fast model id for cheap auxiliary calls, or `fallback`
- * when none is set. Unlike Claude (which hardcodes a Haiku default), AMI is
+ * when none is set. Unlike the reference (which hardcodes a Haiku default), AMI is
  * multi-provider, so the knob only activates when an operator sets it — callers
  * pass the session model as `fallback` to preserve current behavior (aux calls
  * reuse the main model) when the env is unset. Read at call time so it can be
@@ -280,14 +280,14 @@ export function getContextWindow(modelId: string): number {
   // OR when the model is one for which the provider unconditionally sends the
   // `context-1m-2025-08-07` beta (Sonnet 4+). In the latter case the endpoint
   // actually serves a 1M window with no id marker, so the local budget must match
-  // or compaction fires far too early. Mirrors Claude's betas+modelSupports1M path.
+  // or compaction fires far too early. Mirrors the reference's betas+modelSupports1M path.
   const oneMillion = !is1mContextDisabled() && (hasOneMillionMarker(modelId) || supportsOneMillionContextBeta(modelId));
   const applyBeta = (tokens: number) => (oneMillion ? Math.max(tokens, 1_000_000) : tokens);
   const entries = Object.entries(CONTEXT_WINDOWS);
   // 1. Exact id match (case-insensitive) always wins — the most-specific resolution.
   //    This matters for runtime-discovered ids appended by discoverFromModelList in
   //    arbitrary order, where a shorter family key could otherwise shadow the full id.
-  //    Mirrors Claude's getModelCapability (exact-match before substring, utils/model/modelCapabilities.ts:L75-L83).
+  //    Mirrors the reference's getModelCapability (exact-match before substring, utils/model/modelCapabilities.ts:L75-L83).
   for (const [key, tokens] of entries) {
     if (key.toLowerCase() === lower) return applyBeta(tokens);
   }
@@ -539,7 +539,7 @@ export function parseClaudeVersion(
  * HTTP 400 ("adaptive thinking is not supported on this model") and must use the legacy
  * `{ type:'enabled', budget_tokens }` shape instead. This split is exactly what the
  * @ai-sdk/anthropic provider's own model metadata encodes (supportsAdaptiveThinking) — ui#24.
- * Returns null for non-reasoning Claude families (e.g. haiku), which keep thinking off.
+ * Returns null for non-reasoning the reference families (e.g. haiku), which keep thinking off.
  */
 export function claudeReasoningCapabilities(modelId: string): ModelCapabilities | null {
   const v = parseClaudeVersion(modelId);
@@ -547,8 +547,8 @@ export function claudeReasoningCapabilities(modelId: string): ModelCapabilities 
   // Current reasoning scope: Opus / Sonnet. Other families (haiku, …) stay non-reasoning.
   if (v.family !== 'opus' && v.family !== 'sonnet') return null;
   const supportsAdaptiveThinking = v.major >= 5 || (v.major === 4 && v.minor >= 6);
-  // The 5.x Claude line defaults to adaptive thinking and rejects a disabled-thinking
-  // request — reasoning cannot be turned off (Claude's AntModel.alwaysOnThinking). The
+  // The 5.x the reference line defaults to adaptive thinking and rejects a disabled-thinking
+  // request — reasoning cannot be turned off (the reference's AntModel.alwaysOnThinking). The
   // 4.x family (including the adaptive 4.6+) still accepts an off/disabled request.
   const alwaysOnThinking = v.major >= 5;
   return {
@@ -561,7 +561,7 @@ export function claudeReasoningCapabilities(modelId: string): ModelCapabilities 
     // The thinking budget must stay strictly below the model's real output cap —
     // a model whose completion ceiling is 32k (e.g. Opus 4.0) cannot spend 128k
     // on thinking. Derive it from the per-family output upperLimit (upperLimit-1,
-    // mirroring Claude's getMaxThinkingTokensForModel) when the model is in the
+    // mirroring the reference's getMaxThinkingTokensForModel) when the model is in the
     // output-cap table; otherwise keep the 128k default for untabled flagship ids
     // so a newer model is never under-budgeted. Uses the static lookup directly to
     // avoid recursing through getModelCapabilities (which calls this function).
@@ -571,7 +571,7 @@ export function claudeReasoningCapabilities(modelId: string): ModelCapabilities 
 
 /**
  * The thinking-token ceiling for a Claude model, tied to its real output cap.
- * Returns the tabled output upperLimit minus one (parity with Claude's
+ * Returns the tabled output upperLimit minus one (parity with the reference's
  * getMaxThinkingTokensForModel, utils/context.ts) so thinking can never request
  * more than the model will emit; falls back to 128_000 when the id is not in the
  * static output-cap table (an untabled flagship). Reads the static table directly
@@ -584,7 +584,7 @@ function deriveMaxThinkingBudget(modelId: string): number {
   // bounds the thinking budget exactly as it bounds output — thinking can never
   // request more tokens than the model will actually emit. Prefer it over the
   // static family ladder so a server-advertised output cap dynamically resizes the
-  // thinking ceiling (parity with Claude's getMaxThinkingTokensForModel, which
+  // thinking ceiling (parity with the reference's getMaxThinkingTokensForModel, which
   // derives the thinking cap from the live output upperLimit). A plain Map read, so
   // it introduces no recursion back through getModelCapabilities.
   const dynamicCap = dynamicOutputCaps.get(lower);
@@ -741,7 +741,7 @@ export function discoverFromModelList(records: Record<string, unknown>[]): {
 // A provider's live /models listing advertises each model's context window and
 // completion cap. Re-fetching that on every cold start is wasteful and leaves the
 // FIRST turn under-sized (compaction can fire too early) until discovery lands.
-// Mirroring Claude Code's refreshModelCapabilities (utils/model/modelCapabilities.ts
+// Mirroring the reference's refreshModelCapabilities (utils/model/modelCapabilities.ts
 // :L60-118), AMI persists the discovered windows/caps to a JSON file so the next
 // run can WARM them before — or in lieu of — a network fetch. The file carries a
 // timestamp, is written with a sorted, stable model list, is skipped when nothing
@@ -931,7 +931,7 @@ export function discoveryToCacheEntries(discovery: {
 
 /**
  * Capability dimensions a user can explicitly declare for a pinned third-party
- * model via a `*_SUPPORTED_CAPABILITIES` env var. Mirrors Claude's
+ * model via a `*_SUPPORTED_CAPABILITIES` env var. Mirrors the reference's
  * `ModelCapabilityOverride` (utils/model/modelSupportOverrides.ts:L4-L9). AMI's
  * {@link ModelCapabilities} currently maps `effort`/`thinking` → `reasoning` and
  * `adaptive_thinking` → `supportsAdaptiveThinking`; `max_effort` /
@@ -959,7 +959,7 @@ const THIRD_PARTY_BASE_URL_ENV = [
  * reliable. The capability-override escape hatch below is INTENTIONALLY ignored on
  * a first-party endpoint: a user-declared list can only correct a misdetected
  * gateway model, never silently strip a known-correct first-party capability.
- * Mirrors Claude's `getAPIProvider() === 'firstParty'` short-circuit
+ * Mirrors the reference's `getAPIProvider() === 'firstParty'` short-circuit
  * (utils/model/modelSupportOverrides.ts:L32-L34); AMI detects it from the absence
  * of any custom `*_BASE_URL` env at call time.
  */
@@ -986,7 +986,7 @@ const CAPABILITY_OVERRIDE_TIERS = [
  * (`ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL`) and declare its capabilities in
  * the parallel `*_SUPPORTED_CAPABILITIES` list (comma-separated, case-insensitive).
  *
- * Precisely mirrors Claude's `get3PModelCapabilityOverride`
+ * Precisely mirrors the reference's `get3PModelCapabilityOverride`
  * (utils/model/modelSupportOverrides.ts:L30-L50):
  *  - ignored entirely on a first-party endpoint ({@link isFirstPartyProvider});
  *  - a tier with no pin OR an unset capability list is skipped (→ `undefined`);
@@ -1051,11 +1051,11 @@ function applyCapabilityOverrides(
   return result;
 }
 
-/** Auto-detected capabilities (dynamic registry → version-aware Claude → pattern table). */
+/** Auto-detected capabilities (dynamic registry → version-aware the reference → pattern table). */
 function detectModelCapabilities(modelId: string): ModelCapabilities | null {
   const dynamic = dynamicCapabilities.get(modelId.toLowerCase());
   if (dynamic !== undefined) return dynamic;
-  // Claude thinking classification is version-aware (adaptive is 4.6+/5.x; pre-4.6 uses
+  // the reference thinking classification is version-aware (adaptive is 4.6+/5.x; pre-4.6 uses
   // legacy budget_tokens — ui#24), which a flat regex can't do without mis-reading dated
   // snapshots. Handle it before the generic pattern table.
   const claudeCaps = claudeReasoningCapabilities(modelId);
@@ -1117,7 +1117,7 @@ export function modelSupportsVision(modelId: string): boolean {
 
 /**
  * Model families that accept native `document` (PDF) content blocks. Narrower than
- * {@link VISION_MODEL_PREFIXES}: native PDF ingestion is currently an Anthropic-Claude
+ * {@link VISION_MODEL_PREFIXES}: native PDF ingestion is currently an Anthropic-the reference
  * and Google-Gemini capability, so a vision-only model (e.g. an open-weight VLM) is NOT
  * assumed to accept documents. A live /models payload can override this per-model via
  * `registerModelCapabilities({ supportsDocuments })`.
@@ -1133,7 +1133,7 @@ const DOCUMENT_MODEL_PREFIXES: string[] = [
  * Whether the given model can accept native `document` (e.g. PDF) input. Honors an
  * explicitly registered `supportsDocuments` capability first, then falls back to the
  * known document-capable family prefix table. Unknown models default to false so a
- * document is never sent blindly to a model that would reject it. Parity: Claude's
+ * document is never sent blindly to a model that would reject it. Parity: the reference's
  * PDF `document` content block (supported on Claude models). */
 export function modelSupportsDocuments(modelId: string): boolean {
   if (typeof modelId !== 'string' || !modelId) return false;
@@ -1156,8 +1156,8 @@ const BUDGET_MAP: Record<ThinkingLevel, number> = {
 export const DEFAULT_MAX_OUTPUT_TOKENS = 32_768;
 
 /**
- * Global fallback output-token ceiling for a recognized-but-untabled Claude
- * model (Claude's MAX_OUTPUT_TOKENS_UPPER_LIMIT, utils/context.ts). Used only as
+ * Global fallback output-token ceiling for a recognized-but-untabled the reference
+ * model (the reference's MAX_OUTPUT_TOKENS_UPPER_LIMIT, utils/context.ts). Used only as
  * the `upperLimit` fallback in {@link getModelMaxOutputTokens}; it is NOT a cap
  * for unknown/non-Claude models (those still return undefined from
  * {@link getMaxOutputTokens} so no clamp is applied).
@@ -1165,7 +1165,7 @@ export const DEFAULT_MAX_OUTPUT_TOKENS = 32_768;
 export const MAX_OUTPUT_TOKENS_UPPER_LIMIT = 64_000;
 
 /** A model's output-token budget split: the conservative default sent by
- *  default, and the hard ceiling a caller may escalate to. Mirrors Claude's
+ *  default, and the hard ceiling a caller may escalate to. Mirrors the reference's
  *  `getModelMaxOutputTokens(): { default, upperLimit }` (utils/context.ts) and
  *  the AntModel `defaultMaxTokens` / `upperMaxTokensLimit` knobs. */
 export interface MaxOutputTokenRange {
@@ -1180,9 +1180,9 @@ export interface MaxOutputTokenRange {
  * and a hard `upperLimit`. Several models pair a large context window with a much
  * smaller completion cap (e.g. claude-3-5-sonnet has a 200k window but only an
  * 8,192-token output cap), so a request that fits the window can still exceed the
- * model's output limit and be rejected by the API. Modern Claude families
+ * model's output limit and be rejected by the API. Modern the reference families
  * additionally ship a default BELOW their ceiling (e.g. opus-4-6 sends 64k by
- * default but may be raised to 128k) — mirroring Claude's getModelMaxOutputTokens
+ * default but may be raised to 128k) — mirroring the reference's getModelMaxOutputTokens
  * ladder (utils/context.ts:L146-L210). Longer / more-specific ids come first so
  * `claude-3-5-sonnet` is not shadowed by `claude-3`, and `opus-4-6` is not
  * shadowed by `opus-4`. A live `/models` capability or registered
@@ -1253,7 +1253,7 @@ function capabilityOutputCap(lowerId: string, modelId: string): number | undefin
 /**
  * The model's output-token budget as a {@link MaxOutputTokenRange} — the
  * conservative `default` sent by default and the hard `upperLimit` a caller may
- * escalate to. Mirrors Claude's getModelMaxOutputTokens (utils/context.ts):
+ * escalate to. Mirrors the reference's getModelMaxOutputTokens (utils/context.ts):
  * start from the per-family ladder (or the global default/upper for an unlisted
  * model), then let a capability-advertised cap (>= 4096) raise the ceiling and
  * clamp the default not to exceed it. Always returns a defined pair.
@@ -1396,11 +1396,11 @@ export function clampEffortLevel(requested: ThinkingLevel, maxLevel: ThinkingLev
  * The thinking level a model runs at when the user asks for "auto" / the default
  * (no explicit level). Resolved PER MODEL from its detected
  * {@link ModelCapabilities} — a reasoning model yields its
- * `defaultThinkingLevel` (e.g. Gemini-flash defaults to `low`, Claude to
+ * `defaultThinkingLevel` (e.g. Gemini-flash defaults to `low`, the reference to
  * `medium`), while a non-reasoning model yields `off` because it cannot think.
  * This is the resolver behind the `/thinking auto` sentinel: it lets the UI show
  * "auto (currently <level>)" with the level that will actually be applied on the
- * active model. Mirrors Claude's per-model default-effort resolution
+ * active model. Mirrors the reference's per-model default-effort resolution
  * (commands/effort/effort.tsx `auto` state). An empty / unknown id → `off`.
  */
 export function getDefaultThinkingLevel(modelId: string): ThinkingLevel {
@@ -1412,7 +1412,7 @@ export function getDefaultThinkingLevel(modelId: string): ThinkingLevel {
  * so an interactive cycle (`/thinking up`/`down`, a keybinding) never lands
  * out of range. When `includeMax` is false the top `max` rung is skipped — used
  * where a model does not accept the `max` effort tier so cycling clamps to `high`
- * instead of offering an unusable level. Mirrors Claude's ModelPicker effort
+ * instead of offering an unusable level. Mirrors the reference's ModelPicker effort
  * cycling with wraparound + clamp-to-high (components/ModelPicker.tsx). An
  * unrecognized `current` is treated as the first rung (`off`).
  */
@@ -1439,7 +1439,7 @@ export function cycleThinkingLevel(
  * not a global config knob: the `max` tier can be offered/applied on one model
  * and must be downgraded on another.
  *
- * Resolution order mirrors Claude's `modelSupportsMaxEffort`
+ * Resolution order mirrors the reference's `modelSupportsMaxEffort`
  * (utils/effort.ts:L50-65):
  *  1. An explicit 3rd-party `max_effort` capability override (pinned-tier env,
  *     gateway/proxy endpoints only) wins — see {@link get3PModelCapabilityOverride}.
@@ -1459,14 +1459,14 @@ export function modelSupportsMaxEffort(modelId: string): boolean {
 
 /**
  * Whether the current MAIN-LOOP model is capable of driving a secondary
- * advisor/architect model. Mirrors Claude Code's `modelSupportsAdvisor`
+ * advisor/architect model. Mirrors the reference's `modelSupportsAdvisor`
  * (utils/advisor.ts:L88-L96), which gates the advisor tool on the Opus/Sonnet
  * 4.6+ generations (`opus-4-6`/`sonnet-4-6` and newer). AMI applies the same
  * version-aware family match — Opus or Sonnet with major≥5, or major 4 minor≥6 —
  * so a bare `claude-sonnet-4` (4.0) or a 3.x model is NOT advisor-capable and the
  * `/architect` secondary model is reported as INACTIVE rather than silently doing
  * nothing. The id may carry a gateway prefix, so the match is unanchored; Haiku,
- * non-Claude ids, and empty/non-string inputs are never advisor-capable.
+ * non-the reference ids, and empty/non-string inputs are never advisor-capable.
  */
 export function modelSupportsAdvisor(modelId: string): boolean {
   if (typeof modelId !== 'string' || !modelId) return false;
@@ -1478,7 +1478,7 @@ export function modelSupportsAdvisor(modelId: string): boolean {
 /**
  * Whether the model defaults to adaptive thinking and REJECTS a request to turn
  * reasoning off (`thinking: { type:'disabled' }`). Resolves from the model's
- * detected {@link ModelCapabilities} `alwaysOnThinking` flag (the 5.x Claude line);
+ * detected {@link ModelCapabilities} `alwaysOnThinking` flag (the 5.x the reference line);
  * an honored `thinking`/`effort` 3rd-party override that enables reasoning on a
  * pinned gateway model does NOT by itself make it always-on. Used by the provider
  * request builder to still send a thinking config on the `off` level for such a
@@ -1496,7 +1496,7 @@ export function modelAlwaysOnThinking(modelId: string): boolean {
  * max-effort-capable ({@link modelSupportsMaxEffort}), so the provider never
  * sends `effort: 'max'` to a model that would reject it with an API error — and
  * the displayed level stays consistent with what is sent. Every other level
- * passes through unchanged. Mirrors Claude's `resolveAppliedEffort` max→high
+ * passes through unchanged. Mirrors the reference's `resolveAppliedEffort` max→high
  * downgrade (utils/effort.ts:L162-165).
  */
 export function resolveMaxEffortLevel(level: ThinkingLevel, modelId: string): ThinkingLevel {
@@ -1540,7 +1540,7 @@ export function resolveTemperature(
     return configTemperature;
   }
 
-  // Claude: temperature must be omitted (SDK sets it to 1 internally)
+  // the reference: temperature must be omitted (SDK sets it to 1 internally)
   if (caps.requiresTemperatureOne) return undefined;
 
   // OpenAI o-series: temperature must not be sent at all
@@ -1631,8 +1631,8 @@ const ONE_MILLION_CONTEXT = 1_000_000;
 
 /**
  * A larger-context model variant reachable from the current model, mirroring the
- * descriptor Claude Code's `getAvailableUpgrade()` returns
- * (utils/model/contextWindowUpgradeCheck.ts:L9-L27). Unlike Claude's absolute
+ * descriptor the reference's `getAvailableUpgrade()` returns
+ * (utils/model/contextWindowUpgradeCheck.ts:L9-L27). Unlike the reference's absolute
  * window table, AMI expresses the gain as a relative {@link multiplier} so a
  * message can say "{N}x more context" from any base window.
  */
@@ -1642,7 +1642,7 @@ export interface ContextUpgrade {
   /** Human-readable name of the larger-context variant (e.g. `Opus 1M`). */
   name: string;
   /** Relative context-size gain of the variant over the current window
-   *  (`1M / currentWindow`, rounded, never below 2). Claude hard-codes 5; AMI
+   *  (`1M / currentWindow`, rounded, never below 2). the reference hard-codes 5; AMI
    *  derives it from the live window so it stays accurate across base sizes. */
   multiplier: number;
 }
@@ -1654,12 +1654,12 @@ export interface ContextUpgrade {
  * and the `opus`/`sonnet` families that expose a 1M variant (core's `MODEL_ALIASES`),
  * so it needs no registry import and never special-cases a vendor entitlement.
  *
- * Mirrors Claude Code's forward-upgrade detection (`getAvailableUpgrade`,
+ * Mirrors the reference's forward-upgrade detection (`getAvailableUpgrade`,
  * utils/model/contextWindowUpgradeCheck.ts) — the inverse of
  * {@link getModelSwitchWarning}, which only warns about switching DOWN to a smaller
  * window. `currentContextLimit` (the session's resolved window) lets the caller
  * suppress the suggestion once already on a ≥1M window and makes the multiplier
- * exact; when omitted the multiplier falls back to Claude's canonical 5x.
+ * exact; when omitted the multiplier falls back to the reference's canonical 5x.
  */
 export function getAvailableContextUpgrade(
   currentModel: string | null | undefined,
@@ -1685,7 +1685,7 @@ export function getAvailableContextUpgrade(
  * Coarse hosting class a retirement date is keyed by. The SAME logical model
  * retires on DIFFERENT dates depending on where it is served (Anthropic first
  * party vs Bedrock vs Vertex vs Foundry), so a single flat date would be wrong
- * for 3P users. Mirrors Claude's APIProvider union (utils/model/providers.ts).
+ * for 3P users. Mirrors the reference's APIProvider union (utils/model/providers.ts).
  */
 export type ApiProviderClass = 'firstParty' | 'bedrock' | 'vertex' | 'foundry';
 
@@ -1710,7 +1710,7 @@ export function toApiProviderClass(provider: string | null | undefined): ApiProv
  * snapshot or a gateway prefix still matches), newest-retiring handled by
  * first-match. A `null` date means the model is NOT retiring on that host, so no
  * warning fires there. Add an entry here to warn users off a model before the
- * endpoint starts rejecting it. Mirrors Claude's DEPRECATED_MODELS registry with
+ * endpoint starts rejecting it. Mirrors the reference's DEPRECATED_MODELS registry with
  * per-provider retirement dates (utils/model/deprecation.ts:L21-L101).
  */
 const DEPRECATED_MODELS: Record<string, { modelName: string; retirementDates: Record<ApiProviderClass, string | null> }> = {
@@ -1738,7 +1738,7 @@ const DEPRECATED_MODELS: Record<string, { modelName: string; retirementDates: Re
  * resolved host). Returned verbatim by the `/model` slash command so switching
  * to — or viewing — a retiring model nudges the user toward a newer one. The
  * `provider` argument is an AMI provider id (defaults to first-party hosting);
- * the retirement DATE varies by host. Mirrors Claude's getModelDeprecationWarning.
+ * the retirement DATE varies by host. Mirrors the reference's getModelDeprecationWarning.
  */
 export function getModelDeprecationWarning(
   modelId: string | null | undefined,
@@ -1762,7 +1762,7 @@ export function getModelDeprecationWarning(
  * highlight / underline the trigger it recognized and acknowledge the
  * escalation to the user. A fresh global regex is built per call —
  * `String.prototype.matchAll` copies `lastIndex` from the source pattern, so a
- * shared instance would leak state between calls. Mirrors Claude Code's
+ * shared instance would leak state between calls. Mirrors the reference's
  * `findThinkingTriggerPositions` (utils/thinking.ts:L37-L58). Returns `[]` for a
  * non-string or keyword-free input.
  */
@@ -1785,7 +1785,7 @@ export function findThinkingTriggerPositions(
  * turn's reasoning to the deepest level, independent of the sticky `/thinking`
  * level or any env override. Word-boundary + case-insensitive, so `ultrathink`,
  * `Ultrathink` and `ULTRATHINK` all match but `ultrathinking`/`myultrathink` do
- * not. Mirrors Claude Code's `hasUltrathinkKeyword` (utils/thinking.ts:L29-L31).
+ * not. Mirrors the reference's `hasUltrathinkKeyword` (utils/thinking.ts:L29-L31).
  */
 export function hasUltrathinkKeyword(text: string): boolean {
   if (typeof text !== 'string') return false;
@@ -1801,7 +1801,7 @@ export function hasUltrathinkKeyword(text: string): boolean {
  * always serves the current model, so no downgrade is warranted — see
  * {@link isFirstPartyProvider}) and for any id outside the known chain.
  *
- * Mirrors Claude Code's `get3PModelFallbackSuggestion` (services/api/errors.ts:
+ * Mirrors the reference's `get3PModelFallbackSuggestion` (services/api/errors.ts:
  * L936-L959): Opus 4.6→4.1, Sonnet 4.6→4.5, Sonnet 4.5→4. This is DISTINCT from
  * {@link getModelDeprecationWarning} / `suggestDeprecatedReplacement` (which map a
  * removed/old id UP to a newer successor); this maps a too-new id DOWN to the

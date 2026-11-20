@@ -25,7 +25,7 @@ export const PLAN_SOFT_CAP_CHARS = 12_000;
  * When enabled, `enter` delivers an interview-first workflow — clarify
  * requirements with AskUserQuestion, then run parallel read-only exploration —
  * instead of the linear exploration workflow. Off by default; opt in with
- * `AMI_PLAN_MODE_INTERVIEW_PHASE` (the Claude-config var
+ * `AMI_PLAN_MODE_INTERVIEW_PHASE` (the reference-config var
  * `CLAUDE_CODE_PLAN_MODE_INTERVIEW_PHASE` is honored for compatibility).
  */
 export function isPlanModeInterviewPhaseEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -42,7 +42,7 @@ export const PLAN_AGENT_COUNT_DEFAULT = 1;
  * Number of parallel read-only exploration passes/agents plan mode may use
  * during the interview phase (plan mode V2 parity: getPlanModeV2AgentCount).
  *
- * Overridable via `AMI_PLAN_AGENT_COUNT` (the Claude-config var
+ * Overridable via `AMI_PLAN_AGENT_COUNT` (the reference-config var
  * `CLAUDE_CODE_PLAN_V2_AGENT_COUNT` is honored for compatibility), clamped to
  * `[PLAN_AGENT_COUNT_MIN, PLAN_AGENT_COUNT_MAX]`. Unset, non-numeric, or
  * out-of-range values fall back to {@link PLAN_AGENT_COUNT_DEFAULT}.
@@ -67,7 +67,7 @@ export function getPlanFilePath(): string | null { return _planFilePath; }
  * Prefers the last plan submitted on exit (`_lastPlan`); when none has been
  * submitted in this plan session it falls back to reading the active plan file
  * from disk, so a plan that was written but not yet submitted — or that must be
- * re-rendered after a rejection — is never lost. Mirrors Claude's `getPlan()`,
+ * re-rendered after a rejection — is never lost. Mirrors the reference's `getPlan()`,
  * which reads the plan file directly.
  */
 export function getPlan(): string | null {
@@ -136,7 +136,7 @@ export function clearPlansDirectoryCache(): void {
 
 /** Per-session plan slug cache (SessionId -> word slug). A session reuses one
  *  stable, human-readable slug so repeated enter/exit cycles and the plan
- *  file name line up, mirroring Claude's getPlanSlugCache. */
+ *  file name line up, mirroring the reference's getPlanSlugCache. */
 const _planSlugCache = new Map<string, string>();
 
 /**
@@ -196,7 +196,7 @@ function sanitizeAgentId(agentId: string): string {
 }
 
 /**
- * Per-agent plan-file suffix (Claude parity: `getPlanFilePath(agentId?)` in
+ * Per-agent plan-file suffix (the reference parity: `getPlanFilePath(agentId?)` in
  * utils/plans.ts L113-129, which names a subagent's plan `{slug}-agent-{agentId}.md`
  * so concurrent agents don't clobber each other's plan files).
  *
@@ -211,12 +211,12 @@ export function planFileAgentSuffix(agentId?: string | null): string {
 }
 
 /**
- * Stateful plan-rejection tracker (Claude parity: `ExitPlanModeScanner`'s
+ * Stateful plan-rejection tracker (the reference parity: `ExitPlanModeScanner`'s
  * `rejectCount` / `rejectedIds` / iterate-until-approved state machine —
  * utils/ultraplan/ccrSession.ts L80-181).
  *
  * AMI's plan-mode exit is a human consent gate that can DECLINE an exit, keeping the
- * model sandboxed in plan mode. Claude additionally tracks how many plans were
+ * model sandboxed in plan mode. the reference additionally tracks how many plans were
  * rejected and skips an already-rejected plan so the agent keeps iterating until one
  * is approved. This tracker ports that state to AMI's single-exit consent model: it
  * records each rejected plan keyed by its normalized content so the engine can

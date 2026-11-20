@@ -1,7 +1,7 @@
 /**
  * LSP diagnostic tracking — baseline capture + new-vs-current diff.
  *
- * Mirrors Claude Code's DiagnosticTrackingService (references
+ * Mirrors the reference's DiagnosticTrackingService (references
  * services/diagnosticTracking.ts): before an edit we snapshot a file's
  * diagnostics into a per-file baseline; after the edit we fetch the current
  * diagnostics and surface ONLY the ones that are not already in the baseline,
@@ -20,7 +20,7 @@ import { getSymbolAtPosition } from './symbol-context';
 export const DIAGNOSTIC_SEVERITY_NAMES = ['Error', 'Warning', 'Info', 'Hint'] as const;
 
 /**
- * Max bytes of a file we will stream into a language server. Matches Claude
+ * Max bytes of a file we will stream into a language server. Matches the reference
  * Code's `MAX_LSP_FILE_SIZE_BYTES` (10MB). A larger file can OOM or wedge the
  * server, so the open/change path skips reading it and the LSP tool reports it.
  */
@@ -28,7 +28,7 @@ export const MAX_LSP_FILE_SIZE_BYTES = 10_000_000;
 
 /**
  * Per-file / total caps on untrusted diagnostics injected into the model's
- * context, matching Claude's LSPDiagnosticRegistry constants. A noisy or
+ * context, matching the reference's LSPDiagnosticRegistry constants. A noisy or
  * malicious server cannot flood the conversation past these.
  */
 export const MAX_DIAGNOSTICS_PER_FILE = 10;
@@ -36,7 +36,7 @@ export const MAX_TOTAL_DIAGNOSTICS = 30;
 
 /**
  * PARITY (additive, resource-exhaustion boundary): max number of distinct files
- * whose baseline the {@link DiagnosticTracker} retains at once. Mirrors Claude
+ * whose baseline the {@link DiagnosticTracker} retains at once. Mirrors the reference
  * Code's `LRUCache({ max: MAX_DELIVERED_FILES })` (LSPDiagnosticRegistry.ts
  * L46-56) — "prevents unbounded memory growth in long sessions". AMI tracks a
  * per-file diagnostic baseline (an array of `Diagnostic` objects) keyed by
@@ -47,12 +47,12 @@ export const MAX_TOTAL_DIAGNOSTICS = 30;
  */
 export const MAX_TRACKED_BASELINE_FILES = 500;
 
-/** Char budget for a rendered diagnostics block (Claude's 4000) + marker. */
+/** Char budget for a rendered diagnostics block (the reference's 4000) + marker. */
 export const MAX_DIAGNOSTICS_SUMMARY_CHARS = 4000;
 
 /**
  * PARITY (additive): per-diagnostic message char cap for UNTRUSTED server text.
- * Mirrors Claude Code's LSPDiagnosticRegistry message truncation (L296-310): a
+ * Mirrors the reference's LSPDiagnosticRegistry message truncation (L296-310): a
  * language server (possibly malicious) can emit an arbitrarily long `message`,
  * which would otherwise flood a single diagnostic line and blow the context
  * budget before the block-level {@link MAX_DIAGNOSTICS_SUMMARY_CHARS} cap even
@@ -82,7 +82,7 @@ export function truncateWithMarker(text: string, max: number, marker = '…[trun
  * an exotic object whose `String()` coercion throws). This coerces safely inside
  * a try/catch — a coercion failure yields a fixed placeholder rather than
  * aborting the whole {@link convertPublishDiagnostics} batch — then truncates to
- * {@link MAX_DIAGNOSTIC_MESSAGE_CHARS}. Mirrors Claude Code's defensive
+ * {@link MAX_DIAGNOSTIC_MESSAGE_CHARS}. Mirrors the reference's defensive
  * serialization + message truncation before diagnostics are logged/surfaced.
  */
 export function truncateDiagnosticMessage(message: unknown): string {
@@ -99,7 +99,7 @@ export function truncateDiagnosticMessage(message: unknown): string {
  * True for a UNC path (`\\server\share` or `//server/share`). Touching one with
  * stat()/readFile() on Windows triggers an outbound SMB/NTLM auth, leaking
  * credentials — so the LSP entry points short-circuit before any filesystem
- * access. Mirrors Claude's validateInput UNC guard.
+ * access. Mirrors the reference's validateInput UNC guard.
  */
 export function isUncPath(p: string): boolean {
   return p.startsWith('\\\\') || p.startsWith('//');
@@ -116,7 +116,7 @@ export function lspFileSizeBytes(filePath: string): number | undefined {
 
 /**
  * Distinct outcome of {@link validateLspFilePath}'s failure path. `errorCode`
- * mirrors Claude Code's LSPTool.validateInput classification (LSPTool.ts
+ * mirrors the reference's LSPTool.validateInput classification (LSPTool.ts
  * L175-208) so a programmatic caller can branch on WHY the path was rejected:
  *   1 = file does not exist (ENOENT)
  *   2 = path exists but is not a regular file (dir, socket, fifo, …)
@@ -136,7 +136,7 @@ export interface LspFilePathOk {
 
 /**
  * PARITY (additive): pre-flight existence + regular-file validation for an LSP
- * file operation, mirroring Claude Code's LSPTool.validateInput (LSPTool.ts
+ * file operation, mirroring the reference's LSPTool.validateInput (LSPTool.ts
  * L175-208). AMI previously accepted any `file_path` and only distinguished
  * "no server" — a missing file, a directory, or an unreadable path were all
  * reported identically (or silently fell through the size check, which returns
@@ -148,7 +148,7 @@ export interface LspFilePathOk {
  * for the {@link MAX_LSP_FILE_SIZE_BYTES} boundary (no redundant second stat).
  *
  * The caller is responsible for the UNC short-circuit ({@link isUncPath}) BEFORE
- * invoking this, matching Claude's ordering where a UNC path skips the stat.
+ * invoking this, matching the reference's ordering where a UNC path skips the stat.
  */
 export function validateLspFilePath(filePath: string): LspFilePathOk | LspFilePathError {
   let stats: fs.Stats;
@@ -225,7 +225,7 @@ export function mapLspSeverity(severity: number | undefined): DiagnosticSeverity
 /**
  * Convert a `textDocument/publishDiagnostics` payload into normalized
  * Diagnostics. `code` is coerced to a string (null/undefined → undefined),
- * matching Claude's `String(code)` coercion.
+ * matching the reference's `String(code)` coercion.
  *
  * FUNCTIONAL (robustness): a malformed/malicious server may publish a diagnostic
  * with a missing or partial `range` (the LSP spec requires it, but we never trust
@@ -250,7 +250,7 @@ export function convertPublishDiagnostics(params: PublishDiagnosticsParams): Dia
 }
 
 /**
- * PARITY (additive): Claude Code's virtual read-only filesystem scheme
+ * PARITY (additive): the reference's virtual read-only filesystem scheme
  * (`_claude_fs_right:`), used when a diagnostic originates from its in-memory fs
  * rather than an on-disk `file://` URI (DiagnosticsDisplay.tsx L87). AMI emits
  * `file://` URIs, but a diagnostic SOURCE can be any editor/tool, so the header
@@ -260,7 +260,7 @@ export const CLAUDE_VIRTUAL_FS_SCHEME = '_claude_fs_right:';
 
 /**
  * PARITY (additive): the scheme-label suffix for a diagnostic file header,
- * mirroring Claude Code's 3-way branch (DiagnosticsDisplay.tsx L87):
+ * mirroring the reference's 3-way branch (DiagnosticsDisplay.tsx L87):
  *   - `file://…`            → `file://`
  *   - `_claude_fs_right:…`  → `claude_fs_right`
  *   - any other scheme      → the generic scheme name (`uri.split(':')[0]`)
@@ -278,10 +278,10 @@ export function diagnosticSchemeLabel(uri: string | undefined): string {
 }
 
 /**
- * Strip the known/virtual scheme prefixes before path handling: the Claude
+ * Strip the known/virtual scheme prefixes before path handling: the reference
  * virtual-fs scheme ({@link CLAUDE_VIRTUAL_FS_SCHEME}) is removed here, then
  * {@link uriToPath} handles the `file://` scheme (+ percent-decode + Windows
- * drive). A generic-scheme URI is left intact (Claude only `.replace`s the two
+ * drive). A generic-scheme URI is left intact (the reference only `.replace`s the two
  * known schemes). Returns `null` for a missing/empty URI so callers can skip
  * filesystem work (symbol resolution) for an unknown location.
  */
@@ -321,7 +321,7 @@ export function diagnosticPathsEqual(a: string, b: string): boolean {
 }
 
 /**
- * PARITY (additive): display-oriented path formatter mirroring Claude Code's
+ * PARITY (additive): display-oriented path formatter mirroring the reference's
  * `formatUri` (tools/LSPTool/formatters.ts). Strips the `file://` protocol
  * (Windows drive-letter aware) and percent-decodes via {@link uriToPath}, then —
  * when `cwd` is given — prefers a cwd-relative path ONLY if it is strictly
@@ -359,7 +359,7 @@ export function areDiagnosticsEqual(a: Diagnostic, b: Diagnostic): boolean {
 }
 
 /**
- * PARITY (additive): stable content key for a single diagnostic, mirroring Claude
+ * PARITY (additive): stable content key for a single diagnostic, mirroring the reference
  * Code's `createDiagnosticKey` (LSPDiagnosticRegistry.ts L106-124). Serializes the
  * dedup-identity field set — `message`, `severity`, `range`, `source`, `code` — in
  * a FIXED key order (so two structurally-identical diagnostics always produce the
@@ -393,7 +393,7 @@ export function createDiagnosticKey(diag: {
  * retransmitted `publishDiagnostics`), which would otherwise surface as
  * duplicate "new" entries and inflate the delta count. Equality is the full
  * structural key (range + message + severity + source + code) via
- * `areDiagnosticsEqual`, matching the dedup Claude's registry applies before
+ * `areDiagnosticsEqual`, matching the dedup the reference's registry applies before
  * presenting diagnostics. Input is not mutated.
  */
 export function dedupeDiagnostics(diagnostics: Diagnostic[]): Diagnostic[] {
@@ -424,11 +424,11 @@ export class DiagnosticTracker {
   /**
    * When each file's baseline was last snapshotted (captured by
    * {@link beforeFileEdited}) or rolled forward (by {@link getNewDiagnostics}),
-   * in epoch-ms. Parity (additive): Claude Code's diagnosticTracking
+   * in epoch-ms. Parity (additive): the reference's diagnosticTracking
    * `lastProcessedTimestamps` (Map<path,number>, diagnosticTracking.ts:L321-343) —
    * records when each file was last processed so a consumer can tell a stale
    * baseline from a fresh one and so the per-query-loop reset clears the same
-   * three-map state Claude's `handleQueryStart` does (baseline +
+   * three-map state the reference's `handleQueryStart` does (baseline +
    * last-processed cache here; the right-file state is AMI's registry, cleared
    * separately on session reset). Kept in lock-step with {@link baseline}: every
    * store records a timestamp, every eviction/clear drops it.
@@ -465,7 +465,7 @@ export class DiagnosticTracker {
   /**
    * Epoch-ms when `filePath`'s baseline was last snapshotted/rolled forward, or
    * `undefined` when no baseline is (or ever was) tracked for it. Parity with
-   * Claude's `lastProcessedTimestamps` lookup; exposed for introspection and for
+   * the reference's `lastProcessedTimestamps` lookup; exposed for introspection and for
    * staleness checks by consumers (e.g. skip re-snapshotting a file processed
    * within the same turn).
    */
@@ -478,7 +478,7 @@ export class DiagnosticTracker {
    * A re-store deletes then re-inserts the key so it becomes the most-recently
    * used (Map preserves insertion order); once the retained count exceeds
    * {@link maxFiles}, the least-recently-used baselines are evicted. This bounds
-   * memory in long sessions exactly like Claude's `LRUCache` without changing the
+   * memory in long sessions exactly like the reference's `LRUCache` without changing the
    * delta semantics for the files that remain tracked.
    */
   private storeBaseline(key: string, diagnostics: Diagnostic[]): void {
@@ -533,7 +533,7 @@ export class DiagnosticTracker {
    * return ONLY the diagnostics not present in each baseline. Rolls the
    * baseline forward to the current set so a subsequent call reports the next
    * delta. Only files with a baseline are considered (never-edited files are
-   * ignored, matching Claude).
+   * ignored, matching the reference).
    */
   async getNewDiagnostics(filePaths?: string[]): Promise<DiagnosticFile[]> {
     const keys = filePaths
@@ -576,7 +576,7 @@ export class DiagnosticTracker {
 
   /**
    * Clear all tracked baselines AND the last-processed timestamp cache at the
-   * start of a new query loop (parity: Claude's `handleQueryStart` reset()ing
+   * start of a new query loop (parity: the reference's `handleQueryStart` reset()ing
    * every tracking map, diagnosticTracking.ts:L321-343), so diagnostics
    * snapshotted during a prior turn never leak into the next turn's "new" set.
    */
@@ -599,7 +599,7 @@ export function diagnosticSeveritySymbol(severity: DiagnosticSeverityName): stri
 }
 
 /**
- * One-line summary of the post-edit delta, matching Claude's wording exactly:
+ * One-line summary of the post-edit delta, matching the reference's wording exactly:
  * "Found N new diagnostic issue(s) in M file(s)" with correct singular/plural.
  * Returns the empty string when there are no new diagnostics.
  */
@@ -626,7 +626,7 @@ function severityRank(severity: DiagnosticSeverityName): number {
  * each file's diagnostics are sorted severity-first (so errors survive), capped
  * at MAX_DIAGNOSTICS_PER_FILE, then the running total is capped at
  * MAX_TOTAL_DIAGNOSTICS. Files that end up empty are dropped. Input is not
- * mutated. Mirrors Claude's LSPDiagnosticRegistry volume limiting.
+ * mutated. Mirrors the reference's LSPDiagnosticRegistry volume limiting.
  */
 export function capDiagnosticVolume(files: DiagnosticFile[]): DiagnosticFile[] {
   return capDiagnosticVolumeReport(files).files;
@@ -642,7 +642,7 @@ export interface CappedDiagnostics {
 
 /**
  * PARITY (additive): {@link capDiagnosticVolume} that also reports how many
- * diagnostics were dropped, so a caller can surface Claude Code's explicit
+ * diagnostics were dropped, so a caller can surface the reference's explicit
  * "Volume limiting removed N diagnostic(s)" affordance (LSPDiagnosticRegistry
  * L256-288) instead of silently truncating. `capDiagnosticVolume` delegates here
  * for its files-only view — one canonical capping implementation, no duplication.
@@ -675,11 +675,11 @@ export function capDiagnosticVolumeReport(files: DiagnosticFile[]): CappedDiagno
  * file's diagnostics. Mirrors the defensive `<unknown location>` guard used for
  * the other LSP tool outputs (tools/lsp.ts formatUri).
  *
- * PARITY (additive): strips the Claude virtual-fs scheme
+ * PARITY (additive): strips the reference virtual-fs scheme
  * ({@link CLAUDE_VIRTUAL_FS_SCHEME}) and — when `cwd` is given — rebases the path
  * relative to it via the shared {@link formatLspDisplayPath} (one canonical
  * scheme-strip + relative-rebasing implementation; no duplicate path logic),
- * mirroring Claude's `relative(getCwd(), uri.replace('file://','').replace(
+ * mirroring the reference's `relative(getCwd(), uri.replace('file://','').replace(
  * '_claude_fs_right:',''))` header. With no `cwd`, the absolute path is kept
  * (back-compat).
  */
@@ -696,7 +696,7 @@ export function diagnosticHeaderPath(uri: string | undefined, cwd?: string): str
  *
  * PARITY (additive): the file header is rendered as `${displayPath} (${scheme}):`
  * — a scheme label ({@link diagnosticSchemeLabel}) plus, when `cwd` is given, a
- * cwd-relative path ({@link diagnosticHeaderPath}) — matching Claude Code's
+ * cwd-relative path ({@link diagnosticHeaderPath}) — matching the reference's
  * DiagnosticsDisplay header (DiagnosticsDisplay.tsx L87). The DISPLAY path is
  * decoupled from the absolute filesystem path used for symbol resolution so a
  * cwd-relative header never breaks {@link getSymbolAtPosition} (which must read
@@ -716,7 +716,7 @@ export function formatDiagnosticsDetail(files: DiagnosticFile[], cwd?: string): 
           const loc = `[Line ${d.range.start.line + 1}:${d.range.start.character + 1}]`;
           // Resolve the identifier/word at the diagnostic's position so the line
           // shows a readable `symbol: foo` label instead of only a bare line:char
-          // (parity with Claude Code's getSymbolAtPosition tool-use affordance).
+          // (parity with the reference's getSymbolAtPosition tool-use affordance).
           // Additive + best-effort: on any failure the label is simply omitted and
           // the raw location stands, so a missing/huge/unreadable file never breaks
           // rendering. The LSP range is 0-indexed, which getSymbolAtPosition expects.

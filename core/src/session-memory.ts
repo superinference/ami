@@ -35,7 +35,7 @@ export interface SessionMemoryConfig {
    * of small-but-numerous facts cannot silently blow the compaction budget. When the
    * merged facts exceed this many tokens (counted with the same byte-aware estimate
    * as the rest of the engine), the lowest-priority facts are evicted — recency- and
-   * criticality-protected first — until the total fits. Parity: Claude's
+   * criticality-protected first — until the total fits. Parity: the reference's
    * `MAX_TOTAL_SESSION_MEMORY_TOKENS` whole-document budget (default 12000) that
    * triggers a condense pass preserving the most critical sections
    * (SessionMemory/prompts.ts:L9,L168-L187).
@@ -58,7 +58,7 @@ export interface SessionMemoryConfig {
   /**
    * Max time (ms) a consumer (e.g. pre-compaction / shutdown coordination) will
    * block in {@link SessionMemoryExtractor.waitForSessionMemoryExtraction} waiting
-   * for an in-flight extraction before giving up and proceeding. Parity: Claude's
+   * for an in-flight extraction before giving up and proceeding. Parity: the reference's
    * `EXTRACTION_WAIT_TIMEOUT_MS` (default 15000)
    * (SessionMemory/sessionMemoryUtils.ts:L12,L99-102).
    */
@@ -66,7 +66,7 @@ export interface SessionMemoryConfig {
   /**
    * Age (ms) past which an in-progress extraction is treated as STALE and no longer
    * waited on, so a crashed/abandoned pass whose completion mark never fired cannot
-   * wedge a waiting consumer indefinitely. Parity: Claude's
+   * wedge a waiting consumer indefinitely. Parity: the reference's
    * `EXTRACTION_STALE_THRESHOLD_MS` (default 60000)
    * (SessionMemory/sessionMemoryUtils.ts:L13,L92-96).
    */
@@ -85,7 +85,7 @@ export interface SessionMemoryConfig {
   /**
    * Minimum total context-window tokens before the FIRST extraction is allowed.
    * Until the conversation is at least this large, no extraction runs — there is
-   * nothing worth persisting yet. Parity: Claude's `minimumMessageTokensToInit`
+   * nothing worth persisting yet. Parity: the reference's `minimumMessageTokensToInit`
    * (default 10000), counted the same way as autocompact so the two features agree
    * (SessionMemory/sessionMemoryUtils.ts:L18-35).
    */
@@ -93,20 +93,20 @@ export interface SessionMemoryConfig {
   /**
    * Minimum context-window GROWTH (in tokens) since the last extraction before the
    * next one is allowed. Measures actual context growth, not cumulative API usage.
-   * Parity: Claude's `minimumTokensBetweenUpdate` (default 5000)
+   * Parity: the reference's `minimumTokensBetweenUpdate` (default 5000)
    * (SessionMemory/sessionMemoryUtils.ts:L21-26, hasMetUpdateThreshold).
    */
   minTokensBetweenUpdate: number;
   /**
    * Number of tool calls since the last extraction before a new pass is allowed.
-   * Parity: Claude's `toolCallsBetweenUpdates` (default 3)
+   * Parity: the reference's `toolCallsBetweenUpdates` (default 3)
    * (SessionMemory/sessionMemoryUtils.ts:L27).
    */
   toolCallsBetweenUpdate: number;
   /**
    * Categories treated as critical. During eviction they receive a scoring boost
    * (see {@link SessionMemoryConfig.criticalityBoost}) so important facts survive
-   * pruning even at lower confidence. Parity: Claude's eviction "preserves the most
+   * pruning even at lower confidence. Parity: the reference's eviction "preserves the most
    * critical information", not confidence alone (SessionMemory/prompts.ts:L63-68).
    */
   criticalCategories: SessionFact['category'][];
@@ -142,18 +142,18 @@ export const DEFAULT_SESSION_MEMORY_CONFIG: SessionMemoryConfig = {
 export const MAX_MEMORY_ENTRIES = DEFAULT_SESSION_MEMORY_CONFIG.maxEntries;
 export const MAX_MEMORY_ENTRY_CHARS = DEFAULT_SESSION_MEMORY_CONFIG.maxEntryChars;
 /** Aggregate token budget for the whole persisted session-memory document (parity:
- *  Claude's `MAX_TOTAL_SESSION_MEMORY_TOKENS`). See {@link SessionMemoryConfig.maxTotalTokens}. */
+ *  the reference's `MAX_TOTAL_SESSION_MEMORY_TOKENS`). See {@link SessionMemoryConfig.maxTotalTokens}. */
 export const MAX_SESSION_MEMORY_TOTAL_TOKENS = DEFAULT_SESSION_MEMORY_CONFIG.maxTotalTokens;
 /** Max time a consumer blocks waiting for an in-flight extraction (parity:
- *  Claude's `EXTRACTION_WAIT_TIMEOUT_MS`). See {@link SessionMemoryConfig.extractionWaitTimeoutMs}. */
+ *  the reference's `EXTRACTION_WAIT_TIMEOUT_MS`). See {@link SessionMemoryConfig.extractionWaitTimeoutMs}. */
 export const EXTRACTION_WAIT_TIMEOUT_MS = DEFAULT_SESSION_MEMORY_CONFIG.extractionWaitTimeoutMs;
 /** Age past which an in-progress extraction is treated as stale and not waited on
- *  (parity: Claude's `EXTRACTION_STALE_THRESHOLD_MS`). See {@link SessionMemoryConfig.extractionStaleThresholdMs}. */
+ *  (parity: the reference's `EXTRACTION_STALE_THRESHOLD_MS`). See {@link SessionMemoryConfig.extractionStaleThresholdMs}. */
 export const EXTRACTION_STALE_THRESHOLD_MS = DEFAULT_SESSION_MEMORY_CONFIG.extractionStaleThresholdMs;
 
 /** The incremental window of messages to run a memory-extraction pass over, plus
  *  the cursor the caller should persist AFTER a successful extraction (parity:
- *  Claude's UUID-cursor extractMemories). Advancing only on success means a failed
+ *  the reference's UUID-cursor extractMemories). Advancing only on success means a failed
  *  pass is retried over the same window next turn rather than silently skipped. */
 export interface IncrementalWindow {
   window: Message[];
@@ -223,7 +223,7 @@ export function redactSecrets(text: string): string {
 /**
  * Convert unambiguous relative date terms ("today", "yesterday", "tomorrow") in a
  * fact to absolute `YYYY-MM-DD` calendar dates, resolved against `now` (defaults to
- * the current date). Parity: Claude's project-memory guidance mandates "Always
+ * the current date). Parity: the reference's project-memory guidance mandates "Always
  * convert relative dates in user messages to absolute dates when saving … so the
  * memory remains interpretable after time passes" (memdir/memoryTypes.ts:79). A
  * persisted fact like "freeze merges tomorrow" is meaningless when recalled days
@@ -334,7 +334,7 @@ export const DEFAULT_MEMORY_PROMPT_TEMPLATE =
  * `$&`/`$1`/`$$` (or arbitrary user/tool text) is never reinterpreted as a regex
  * backreference, and the single pass means a value that itself contains `{{other}}`
  * is NOT re-expanded (no double-substitution / injection). Unknown tokens are left
- * untouched. Parity: Claude's SessionMemory `substituteVariables`
+ * untouched. Parity: the reference's SessionMemory `substituteVariables`
  * (SessionMemory/prompts.ts:L198-212).
  */
 export function substituteMemoryVariables(template: string, variables: Record<string, string>): string {
@@ -351,7 +351,7 @@ export function substituteMemoryVariables(template: string, variables: Record<st
  * `{{existingMemory}}` substitution tokens. Falls back to
  * {@link DEFAULT_MEMORY_PROMPT_TEMPLATE} when the file is absent (ENOENT); any other
  * read error is logged and also falls back, so a malformed config can never break
- * extraction. Parity: Claude's `loadSessionMemoryPrompt`
+ * extraction. Parity: the reference's `loadSessionMemoryPrompt`
  * (SessionMemory/prompts.ts:L106-129), rehomed under the AMI config dir.
  */
 export async function loadSessionMemoryPromptTemplate(configDir?: string): Promise<string> {
@@ -391,7 +391,7 @@ export class SessionMemoryExtractor {
    *  loop. Defaults to a real timer; tests override it to resolve instantly (and to
    *  advance a fake clock) so the wait/stale/timeout branches run without real time. */
   _sleep: (ms: number) => Promise<void> = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-  /** Poll interval (ms) of the extraction wait loop (parity: Claude polls every 1s). */
+  /** Poll interval (ms) of the extraction wait loop (parity: the reference polls every 1s). */
   _waitPollMs = 1000;
 
   /**
@@ -400,7 +400,7 @@ export class SessionMemoryExtractor {
    * {@link markExtractionStarted} (called at the top of {@link extractFacts}) and
    * cleared by {@link markExtractionCompleted} (its `finally`), so
    * {@link isExtractionInProgress} / {@link waitForSessionMemoryExtraction} always
-   * reflect reality. Parity: Claude's module-level `extractionStartedAt`
+   * reflect reality. Parity: the reference's module-level `extractionStartedAt`
    * (SessionMemory/sessionMemoryUtils.ts:L46,L74-82).
    */
   private _extractionStartedAt?: number;
@@ -409,13 +409,13 @@ export class SessionMemoryExtractor {
    * Whether session memory has crossed its initialization threshold at least once.
    * Before this is true, {@link shouldExtractFacts} defers all extraction until the
    * context reaches `config.minInitContextTokens` — the first extraction is held off
-   * until there is enough context to be worth persisting. Parity: Claude's
+   * until there is enough context to be worth persisting. Parity: the reference's
    * `isSessionMemoryInitialized` / `markSessionMemoryInitialized`.
    */
   private _initialized = false;
   /**
    * Total context-window token count recorded at the last extraction, used to
-   * measure growth for the `minTokensBetweenUpdate` gate. Parity: Claude's
+   * measure growth for the `minTokensBetweenUpdate` gate. Parity: the reference's
    * `tokensAtLastExtraction` (0 until the first extraction).
    */
   private _tokensAtLastExtraction = 0;
@@ -429,7 +429,7 @@ export class SessionMemoryExtractor {
 
   /**
    * Threshold/cadence gate: whether enough has happened to warrant an extraction
-   * pass, given the CURRENT total context-window token count. Mirrors Claude's
+   * pass, given the CURRENT total context-window token count. Mirrors the reference's
    * `shouldExtractMemory` exactly:
    *
    * 1. **Init gate** — before the first extraction, defer until the context reaches
@@ -478,7 +478,7 @@ export class SessionMemoryExtractor {
   /**
    * Record that an extraction pass ran at `currentContextTokens`, advancing the
    * growth baseline for the next `minTokensBetweenUpdate` check and latching the
-   * initialized state. Parity: Claude's `recordExtractionTokenCount` +
+   * initialized state. Parity: the reference's `recordExtractionTokenCount` +
    * `markSessionMemoryInitialized`. Call this only after a pass actually completes.
    */
   recordExtraction(currentContextTokens: number): void {
@@ -489,7 +489,7 @@ export class SessionMemoryExtractor {
   /**
    * Clear the extraction cadence state (initialized latch + growth baseline) so the
    * init gate applies again — e.g. when switching to a fresh session. Parity:
-   * Claude's `resetSessionMemoryState`.
+   * the reference's `resetSessionMemoryState`.
    */
   resetExtractionState(): void {
     this._initialized = false;
@@ -501,7 +501,7 @@ export class SessionMemoryExtractor {
    * concurrent consumer (e.g. an interrupt-driven shutdown, or pre-compaction) can
    * coordinate with the in-flight pass via {@link waitForSessionMemoryExtraction}.
    * Called at the top of {@link extractFacts}; idempotent-safe to call directly.
-   * Parity: Claude's `markExtractionStarted` (SessionMemory/sessionMemoryUtils.ts:L74-76).
+   * Parity: the reference's `markExtractionStarted` (SessionMemory/sessionMemoryUtils.ts:L74-76).
    */
   markExtractionStarted(): void {
     this._extractionStartedAt = this._now().getTime();
@@ -510,7 +510,7 @@ export class SessionMemoryExtractor {
   /**
    * Mark the in-flight extraction pass as finished (clears the start timestamp), so
    * {@link waitForSessionMemoryExtraction} stops blocking. Called from
-   * {@link extractFacts}'s `finally`. Parity: Claude's `markExtractionCompleted`
+   * {@link extractFacts}'s `finally`. Parity: the reference's `markExtractionCompleted`
    * (SessionMemory/sessionMemoryUtils.ts:L81-83).
    */
   markExtractionCompleted(): void {
@@ -518,7 +518,7 @@ export class SessionMemoryExtractor {
   }
 
   /** Whether a fact-extraction pass is currently in flight (introspection seam for
-   *  consumers/tests). Parity: the `extractionStartedAt` truthiness check Claude's
+   *  consumers/tests). Parity: the `extractionStartedAt` truthiness check the reference's
    *  wait helper performs (SessionMemory/sessionMemoryUtils.ts:L89). */
   isExtractionInProgress(): boolean {
     return this._extractionStartedAt !== undefined;
@@ -534,7 +534,7 @@ export class SessionMemoryExtractor {
    *    completion mark never fired) and the wait returns without blocking further.
    *  - **timeout** — after `config.extractionWaitTimeoutMs` of waiting, the wait
    *    returns and the caller proceeds anyway.
-   * Parity: Claude's `waitForSessionMemoryExtraction`
+   * Parity: the reference's `waitForSessionMemoryExtraction`
    * (SessionMemory/sessionMemoryUtils.ts:L88-106).
    */
   async waitForSessionMemoryExtraction(): Promise<void> {
@@ -559,7 +559,7 @@ export class SessionMemoryExtractor {
    *
    * `existingFacts` (the facts already persisted for this session) are pre-injected
    * into the prompt as a manifest so the extraction model dedupes/updates against
-   * them instead of re-deriving facts it already knows — parity with Claude's
+   * them instead of re-deriving facts it already knows — parity with the reference's
    * formatMemoryManifest, which pre-injects the memory listing "so the extraction
    * agent doesn't spend a turn on `ls`" (memdir/memoryScan.ts:L24-34).
    */
@@ -591,7 +591,7 @@ export class SessionMemoryExtractor {
 
     // Pre-inject a manifest of already-persisted facts so the model can dedupe /
     // update against them instead of re-emitting known facts. Capped at maxEntries
-    // and category-tagged, mirroring Claude's formatMemoryManifest affordance hint.
+    // and category-tagged, mirroring the reference's formatMemoryManifest affordance hint.
     const existingManifest = existingFacts && existingFacts.length > 0
       ? `\n\n## Existing Memory (already saved — do NOT repeat; only add new or updated facts)\n${existingFacts
           .slice(0, this.config.maxEntries)

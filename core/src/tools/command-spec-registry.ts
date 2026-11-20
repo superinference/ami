@@ -2,9 +2,9 @@ import { memoizeAsyncWithLRU } from '../utils/memoize';
 
 /**
  * Extensible per-command option/argument schema resolver — AMI's parity analogue
- * of Claude Code's `utils/bash/registry.ts` (`getCommandSpec` / `loadFigSpec`).
+ * of the reference's `utils/bash/registry.ts` (`getCommandSpec` / `loadFigSpec`).
  *
- * Claude resolves a command's flag/argument schema at runtime by (1) checking a
+ * the reference resolves a command's flag/argument schema at runtime by (1) checking a
  * bundled table of built-in specs, then (2) dynamically importing a Fig
  * autocomplete spec (`@withfig/autocomplete/build/<command>.js`) as a fallback —
  * giving structured flag/arg coverage of thousands of CLI tools without
@@ -19,12 +19,12 @@ import { memoizeAsyncWithLRU } from '../utils/memoize';
  *     there is no duplicate table of the same commands).
  *   - {@link loadFigSpec} — the path-safety-validated `@withfig/autocomplete`
  *     dynamic-import fallback (returns null when the optional package is absent,
- *     exactly like Claude when it is not installed).
+ *     exactly like the reference when it is not installed).
  *   - {@link getCommandSpec} — built-in → fig → null, wrapped in the shared
  *     {@link memoizeWithLRU} (keyed by command name), so repeated lookups never
  *     re-run the dynamic import.
  *
- * The CommandSpec shape mirrors Claude's `@withfig/autocomplete`-compatible type
+ * The CommandSpec shape mirrors the reference's `@withfig/autocomplete`-compatible type
  * so a real Fig spec loaded via {@link loadFigSpec} is structurally usable.
  *
  * Wiring: {@link valueFlagsForCommand} derives, from a built-in spec's options,
@@ -111,7 +111,7 @@ function optionFlagNames(option: CommandOption): string[] {
 }
 
 /**
- * Path-safety validator for a dynamically-imported spec name — mirrors Claude's
+ * Path-safety validator for a dynamically-imported spec name — mirrors the reference's
  * `loadFigSpec` guard: reject anything that could escape the package build
  * directory or be interpreted as a flag. A bare `-` is allowed (it names stdin in
  * some specs); any other leading-`-` name is rejected.
@@ -128,7 +128,7 @@ export function isSafeCommandSpecName(command: string): boolean {
  * Optional Fig-autocomplete fallback loader. Dynamically imports
  * `@withfig/autocomplete/build/<command>.js` when the (optional) package is
  * present, after path-safety validation. Returns null when the name is unsafe or
- * the package/spec is absent — exactly like Claude Code when the dependency is
+ * the package/spec is absent — exactly like the reference when the dependency is
  * not installed.
  *
  * The specifier is assembled from a runtime variable so neither the type checker
@@ -150,7 +150,7 @@ export async function loadFigSpec(command: string): Promise<CommandSpec | null> 
 /**
  * Resolve a command's spec: a built-in spec first, then the Fig fallback, then
  * null. Memoized by command name via {@link memoizeAsyncWithLRU} (cap 200, parity
- * with Claude Code's prefix.ts cache bound) so a cold lookup's dynamic import runs
+ * with the reference's prefix.ts cache bound) so a cold lookup's dynamic import runs
  * at most once per command. Because the shared primitive caches the in-flight
  * promise and evicts it (identity-guarded) if it ever rejects, a transient failure
  * during the dynamic import can't poison future lookups for that command — a later

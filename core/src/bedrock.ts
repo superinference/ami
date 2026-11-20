@@ -7,7 +7,7 @@
  * account actually provisioned in its region. AMI lets the user declare the
  * account's profiles via an env knob and then derives the region-aware id by
  * substring-matching the canonical first-party model id against that list —
- * mirroring Claude Code's getBedrockModelStrings canonical-substring matching
+ * mirroring the reference's getBedrockModelStrings canonical-substring matching
  * with a fallback to the plain model id when nothing matches.
  */
 
@@ -25,14 +25,14 @@ export const BEDROCK_REGION_PREFIX_ENV = 'AMI_BEDROCK_REGION';
  * this bearer token instead of SigV4 / long-term AWS access keys: its presence
  * skips credential refresh and selects API-key auth. Canonical home for the
  * constant (provider.ts re-exports it so its existing importers are unchanged).
- * Mirrors Claude Code's `AWS_BEARER_TOKEN_BEDROCK` branch (utils/model/bedrock.ts).
+ * Mirrors the reference's `AWS_BEARER_TOKEN_BEDROCK` branch (utils/model/bedrock.ts).
  */
 export const AWS_BEARER_TOKEN_BEDROCK_ENV = 'AWS_BEARER_TOKEN_BEDROCK';
 
 /**
  * Env var overriding the Bedrock gateway endpoint (a custom / proxy gateway).
  * When unset, the region-derived `bedrock-runtime.<region>.amazonaws.com` endpoint
- * is used instead. Mirrors Claude Code's `ANTHROPIC_BEDROCK_BASE_URL`
+ * is used instead. Mirrors the reference's `ANTHROPIC_BEDROCK_BASE_URL`
  * (utils/model/bedrock.ts) — the single declaration consumed by provider-config.
  */
 export const ANTHROPIC_BEDROCK_BASE_URL_ENV = 'ANTHROPIC_BEDROCK_BASE_URL';
@@ -40,7 +40,7 @@ export const ANTHROPIC_BEDROCK_BASE_URL_ENV = 'ANTHROPIC_BEDROCK_BASE_URL';
 /**
  * Bedrock cross-region inference-profile prefixes. A region-scoped profile id
  * carries one of these as its leading dot-segment (e.g.
- * `eu.anthropic.claude-opus-4-6-v1:0`). Mirrors Claude Code's cross-region
+ * `eu.anthropic.claude-opus-4-6-v1:0`). Mirrors the reference's cross-region
  * prefix set (utils/model/bedrock.ts).
  */
 export const BEDROCK_REGION_PREFIXES = ['us', 'eu', 'apac', 'global'] as const;
@@ -67,7 +67,7 @@ export function extractBedrockRegionPrefix(id: string): BedrockRegionPrefix | un
  * is first normalized to its trailing id. If the id already carries a recognized
  * region prefix it is REPLACED (`us.anthropic.claude-...` + `eu` →
  * `eu.anthropic.claude-...`); otherwise the prefix is PREPENDED
- * (`anthropic.claude-...` + `eu` → `eu.anthropic.claude-...`). Mirrors Claude
+ * (`anthropic.claude-...` + `eu` → `eu.anthropic.claude-...`). Mirrors the reference
  * Code's applyBedrockRegionPrefix branch logic (utils/model/bedrock.ts).
  */
 export function applyBedrockRegionPrefix(id: string, region: BedrockRegionPrefix): string {
@@ -79,7 +79,7 @@ export function applyBedrockRegionPrefix(id: string, region: BedrockRegionPrefix
 
 /**
  * Inherit a Bedrock cross-region inference-profile prefix from a PARENT model onto
- * a sub-agent's resolved model id — a data-residency boundary (parity: Claude
+ * a sub-agent's resolved model id — a data-residency boundary (parity: the reference
  * Code's subagent model resolution carrying the parent's region prefix,
  * `utils/model/agent.ts`). A sub-agent spawned by a Bedrock session must invoke a
  * profile in the SAME account region as its parent, or the call fails / silently
@@ -131,7 +131,7 @@ export function getBedrockInferenceProfiles(env: NodeJS.ProcessEnv = process.env
  * claude-opus-4-6-v1:0` → `us.anthropic.claude-opus-4-6-v1:0`). Inputs that are
  * not ARNs (no `arn:` prefix) and ARNs without a `/` are returned unchanged, so
  * a plain model id or first-party id passes through untouched. This mirrors
- * Claude Code's extractModelIdFromArn boundary handling and lets a model copied
+ * the reference's extractModelIdFromArn boundary handling and lets a model copied
  * verbatim as an ARN from the AWS console resolve instead of being sent raw to
  * the gateway.
  */
@@ -187,7 +187,7 @@ export interface BedrockAuthAffordance {
 /**
  * The Bedrock auth/config affordances AMI actually honors, surfaced so a user can
  * discover the non-default ways to authenticate and target a Bedrock account
- * WITHOUT reading source (parity: Claude Code exposes bearer-token auth, an
+ * WITHOUT reading source (parity: the reference exposes bearer-token auth, an
  * endpoint override, and region selection in utils/model/bedrock.ts; AMI had the
  * behavior wired but never advertised it). This is the SINGLE declaration consumed
  * by both the `/providers` provider hint and the `ami --introspect` manifest — the
@@ -205,13 +205,13 @@ export const BEDROCK_AUTH_AFFORDANCES: readonly BedrockAuthAffordance[] = [
     env: AWS_BEARER_TOKEN_BEDROCK_ENV,
     affects: 'auth',
     description:
-      'Bedrock API-key (bearer-token) auth; when set it takes precedence over AWS access keys and skips SigV4 credential resolution (parity: Claude Code AWS_BEARER_TOKEN_BEDROCK).',
+      'Bedrock API-key (bearer-token) auth; when set it takes precedence over AWS access keys and skips SigV4 credential resolution (parity: the reference AWS_BEARER_TOKEN_BEDROCK).',
   },
   {
     env: ANTHROPIC_BEDROCK_BASE_URL_ENV,
     affects: 'endpoint',
     description:
-      'Override the Bedrock gateway endpoint (custom / proxy gateway); otherwise the region-derived bedrock-runtime endpoint is used (parity: Claude Code ANTHROPIC_BEDROCK_BASE_URL).',
+      'Override the Bedrock gateway endpoint (custom / proxy gateway); otherwise the region-derived bedrock-runtime endpoint is used (parity: the reference ANTHROPIC_BEDROCK_BASE_URL).',
   },
   {
     env: 'AWS_REGION',

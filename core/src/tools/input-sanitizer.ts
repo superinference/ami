@@ -29,7 +29,7 @@ const DISPLAY_CONTROL_RE = /[\u0000-\u0008\u000B-\u001F\u007F]/g;
  * before it gives up. One pass is not a fixpoint: NFKC normalization can expose
  * a new strippable codepoint, and stripping can enable a new composition — so we
  * iterate until the string stops changing. The bound is an explicit DoS boundary
- * for adversarially-layered/deeply-composed input (mirrors Claude Code's
+ * for adversarially-layered/deeply-composed input (mirrors the reference's
  * MAX_ITERATIONS). Exported so callers/tests can tighten it.
  */
 export const MAX_SANITIZE_ITERATIONS = 10;
@@ -63,7 +63,7 @@ export function stripInvisibleUnicode(text: string, maxIterations: number = MAX_
 /**
  * POSIX/terminal default tab-stop interval. A hard tab advances the cursor to the
  * NEXT multiple of this column, not a fixed run of spaces — so the visual width of
- * a tab depends on the column it starts at. Parity: Claude Code's
+ * a tab depends on the column it starts at. Parity: the reference's
  * `DEFAULT_TAB_INTERVAL` in `ink/tabstops.ts` (8, hardcoded in terminals like
  * Ghostty). Exported so callers/tests can pin a different interval.
  */
@@ -76,9 +76,9 @@ export const DEFAULT_TAB_INTERVAL = 8;
  * to the next `tabWidth`-column stop (`tabWidth - (column % tabWidth)`), NOT a
  * fixed run — so tab-separated columns stay aligned regardless of the terminal's
  * own tab setting. The column counter resets to 0 at every newline so each line
- * aligns independently. Mirrors Claude Code's `ink/tabstops.ts` `expandTabs`.
+ * aligns independently. Mirrors the reference's `ink/tabstops.ts` `expandTabs`.
  *
- * Divergence note: Claude measures run width with `stringWidth` (CJK/ANSI-aware)
+ * Divergence note: the reference measures run width with `stringWidth` (CJK/ANSI-aware)
  * in its ink renderer; this helper lives in core/ (no ink, no terminal), so it
  * advances the column by one per code point — a deterministic approximation that
  * is correct for the common ASCII case and never under-pads (same convention as
@@ -118,7 +118,7 @@ const MAX_UNICODE_SANITIZE_DEPTH = 20;
  * an arbitrary JSON-ish value (strings, arrays, plain objects). This is the ONE
  * canonical deep sanitizer for UNTRUSTED MCP server payloads — tool metadata
  * (names/descriptions/schema strings) advertised to the model and tool/resource/
- * prompt results returned from a server — mirroring Claude Code's
+ * prompt results returned from a server — mirroring the reference's
  * `recursivelySanitizeUnicode` over `result.tools`. Non-string leaves are
  * returned unchanged; object keys are preserved verbatim (only values are
  * sanitized) so schema property names stay stable. Prototype-poisoning keys are
@@ -153,7 +153,7 @@ const MAX_SANITIZE_DEPTH = 20;
  * past the `POISONED_KEYS` denylist, and a hidden-Unicode key would carry an
  * invisible payload into the sanitized object. Runs the SAME canonical
  * `stripInvisibleUnicode` (NFKC + invisible/format/private-use class) the value
- * path uses, then removes NUL — mirroring Claude Code's `recursivelySanitizeUnicode`,
+ * path uses, then removes NUL — mirroring the reference's `recursivelySanitizeUnicode`,
  * which sanitizes BOTH keys and values. Keys are not trimmed (leading/trailing
  * spaces in a key are structural, not smuggling).
  */
@@ -166,7 +166,7 @@ function sanitizeToolKey(key: string): string {
  * through the canonical `stripInvisibleUnicode` (NFKC fold + invisible/format/
  * private-use/unassigned stripping) THEN NUL-stripped and trimmed — so hidden
  * instructions smuggled into a tool argument as zero-width/bidi/compatibility
- * Unicode are neutralized before the tool runs, matching Claude Code's
+ * Unicode are neutralized before the tool runs, matching the reference's
  * `recursivelySanitizeUnicode` over tool input. ARRAYS are recursed
  * element-by-element (so a string smuggled inside `{ paths: ['  rm\x00 -rf /  '] }`
  * is cleaned, not passed through), plain objects re-enter `sanitizeToolInput`
@@ -215,7 +215,7 @@ export const MAX_PROMPT_IDENTIFIER_LEN = 80;
  *     private-use/unassigned removal), then
  *  2. replaces every C0/C1 control char (newlines, CR, tab, …) with a single
  *     space — using an explicit control class, NOT `\s`, so a name can never
- *     smuggle a line break, mirroring Claude Code's `appNames` boundary, then
+ *     smuggle a line break, mirroring the reference's `appNames` boundary, then
  *  3. collapses whitespace runs to one space, trims, and hard-caps the length.
  * Printable punctuation that is legitimate in identifiers (`-`, `_`, `:`, `/`,
  * `.`) is preserved so real plugin/skill names (e.g. `plugin:skill`) render

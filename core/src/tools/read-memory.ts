@@ -9,7 +9,7 @@ import {
 /**
  * Build a staleness caveat for a memory body surfaced WITHOUT its own
  * system-reminder wrapper (this tool returns the body directly to the model).
- * Mirrors Claude's memoryFreshnessNote: fires only for memories older than a
+ * Mirrors the reference's memoryFreshnessNote: fires only for memories older than a
  * day so the model treats a potentially-outdated fact with appropriate caution.
  */
 export function memoryFreshnessNote(ageDays: number | undefined): string {
@@ -89,7 +89,7 @@ function editDistance(a: string, b: string): number {
  * Turn a not-found read into a self-correcting hint instead of a dead end: pick the
  * closest known name (case-insensitive edit distance within a small threshold) and,
  * when any names exist, list the available ones so the model can retry without
- * re-guessing blind. Mirrors Claude's FileReadTool "Did you mean …?" fallback.
+ * re-guessing blind. Mirrors the reference's FileReadTool "Did you mean …?" fallback.
  */
 export function suggestMemoryNames(name: string, names: string[]): string {
   const available = names.map((n) => n.trim()).filter(Boolean);

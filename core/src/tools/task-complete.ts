@@ -31,22 +31,22 @@ import {
  *     `blocked` surface an honest "not fully complete" signal.
  *   - SCHEMA-VALIDATED FINAL OUTPUT — an optional caller-supplied `resultSchema`
  *     is validated (shape + payload) in validateInput so the concluding tool can
- *     enforce a machine-readable `result`, mirroring Claude's SyntheticOutputTool
+ *     enforce a machine-readable `result`, mirroring the reference's SyntheticOutputTool
  *     Ajv-backed conclusion ("Output does not match required schema: …").
  *   - COMPLETION-HOOK VETO — a blocking `taskCompleted` hook can refuse a clean
- *     completion and feed its reason back to the model (parity: Claude's
+ *     completion and feed its reason back to the model (parity: the reference's
  *     executeTaskCompletedHooks / getTaskCompletedHookMessage).
  *   - ANTI-SELF-CERTIFICATION — a clean completion that did not affirm a
  *     verification step gets a nudge to verify before the final summary (parity:
- *     Claude's verificationNudge).
+ *     the reference's verificationNudge).
  *
- * (parity: Claude Code's task-completion signalling — status, result capture,
+ * (parity: the reference's task-completion signalling — status, result capture,
  * idempotency, validateInput, schema-validated output, completion hooks.)
  */
 
 /**
  * Anti-self-certification nudge appended to a clean completion the model did not
- * affirm as verified. Mirrors Claude's verification-agent nudge: a caveat in the
+ * affirm as verified. Mirrors the reference's verification-agent nudge: a caveat in the
  * summary is not a substitute for actually running and observing the checks pass.
  */
 const VERIFICATION_NUDGE =
@@ -187,7 +187,7 @@ export const taskCompleteTool: ToolDefinition = {
   isReadOnly: true,
 
   /**
-   * Pre-body validation (parity: Claude's validateInput). Rejects an unknown
+   * Pre-body validation (parity: the reference's validateInput). Rejects an unknown
    * `status` token and a malformed `taskId` with a machine-readable error BEFORE
    * the tool runs, so the model gets a clean, self-correcting correction.
    */
@@ -196,7 +196,7 @@ export const taskCompleteTool: ToolDefinition = {
   ): Promise<ToolValidationResult> {
     // Edge-case rejection: a present `summary` must be a string, so a non-string
     // (object/array/number) can never be interpolated as "[object Object]" into
-    // the result. (parity: Claude's Tool.validateInput boundary type check.)
+    // the result. (parity: the reference's Tool.validateInput boundary type check.)
     if (input.summary !== undefined && typeof input.summary !== 'string') {
       return {
         result: false,
@@ -226,7 +226,7 @@ export const taskCompleteTool: ToolDefinition = {
     }
     // Schema-validated final output: when a caller-supplied `resultSchema` is
     // present, validate its shape then the `result` payload against it, returning
-    // a precise diagnostic on mismatch. (parity: Claude's SyntheticOutputTool
+    // a precise diagnostic on mismatch. (parity: the reference's SyntheticOutputTool
     // Ajv-backed schema conclusion.)
     if (input.resultSchema !== undefined && input.resultSchema !== null) {
       const shapeErr = validateSchemaShape(input.resultSchema);

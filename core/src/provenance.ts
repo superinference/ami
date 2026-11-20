@@ -161,7 +161,7 @@ export function describeIntegrity(integrity: ProvenanceIntegrity): ProvenanceInt
 
 /**
  * Build human-readable warning copy for a count of untrusted sources, or `null`
- * when nothing is untrusted. Mirrors Claude's trust-dialog guidance so surfaces
+ * when nothing is untrusted. Mirrors the reference's trust-dialog guidance so surfaces
  * can explain the risk instead of showing an opaque count.
  */
 export function provenanceWarning(untrustedCount: number): string | null {
@@ -226,7 +226,7 @@ export interface IntegrityCheckResult {
  * 'verified' ONLY on an exact constant-time match, 'failed' otherwise. This is
  * the real cryptographic check that the 'verified' integrity state is reserved
  * for — it is never derived from the origin tier. A 'failed' result is the
- * tampering/MITM analog of Claude's changed-host-key detection: the content does
+ * tampering/MITM analog of the reference's changed-host-key detection: the content does
  * not match the trusted reference, so it must not be silently trusted.
  */
 export function verifyContentSignature(

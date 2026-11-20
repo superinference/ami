@@ -6,7 +6,7 @@
  * answer "what is this session doing and what, if anything, does it need?" without
  * scanning the event stream.
  *
- * Parity targets (Claude Code `utils/sessionState.ts`, `entrypoints/sdk/coreSchemas.ts`):
+ * Parity targets (the reference `utils/sessionState.ts`, `entrypoints/sdk/coreSchemas.ts`):
  *  - tri-state `SessionState` ('idle' | 'running' | 'requires_action')
  *  - `RequiresActionDetails` descriptor of what a blocked session is waiting on
  *  - `SessionExternalMetadata` queryable fields (pending_action, post_turn_summary, …)
@@ -29,7 +29,7 @@ export function isSessionState(v: unknown): v is SessionState {
 /**
  * Context carried with a `requires_action` transition so downstream surfaces can
  * show WHAT the session is blocked on, not merely that it is blocked. Parity:
- * Claude's `RequiresActionDetails`.
+ * the reference's `RequiresActionDetails`.
  */
 export interface RequiresActionDetails {
   /** The tool awaiting a decision, e.g. `bash`, `file_edit`. */
@@ -48,7 +48,7 @@ export interface RequiresActionDetails {
 /**
  * Queryable external metadata mirrored onto the session for out-of-process
  * consumers. `null` on a field is a meaningful RFC-7396 "clear this" signal.
- * Parity: Claude's `SessionExternalMetadata`.
+ * Parity: the reference's `SessionExternalMetadata`.
  */
 export interface SessionExternalMetadata {
   permissionMode?: string | null;
@@ -66,7 +66,7 @@ export interface SessionExternalMetadata {
 /**
  * A pure session-state machine. Each {@link transition} returns the metadata
  * patch a caller should mirror onto the session (and emit to listeners), applying
- * the same clearing rules Claude uses: entering `requires_action` with details sets
+ * the same clearing rules the reference uses: entering `requires_action` with details sets
  * `pendingAction`; leaving it clears `pendingAction` to `null`; reaching `idle`
  * clears `taskSummary` to `null`. A patch is only returned when something actually
  * changed, so a no-op transition yields `null`.
@@ -124,7 +124,7 @@ export function isStatusCategory(v: unknown): v is StatusCategory {
 /**
  * Structured "what just happened and what it needs" summary emitted after an
  * assistant turn, so a host/dashboard can show status without parsing the
- * transcript. Parity: Claude's `SDKPostTurnSummaryMessage`.
+ * transcript. Parity: the reference's `SDKPostTurnSummaryMessage`.
  */
 export interface PostTurnStatusSummary {
   /** Uuid of the assistant message this summarizes. */

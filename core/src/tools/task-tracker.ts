@@ -7,7 +7,7 @@ import { log as debugLog } from '../logger';
 import { isTaskTrackerEnabled } from './tool-gates';
 
 /**
- * Lifecycle debug trail (PARITY): Claude Code's task watcher emits a
+ * Lifecycle debug trail (PARITY): the reference's task watcher emits a
  * step-by-step `logForDebugging` trail for the claim/submit/release lifecycle
  * ('Found available task #N: <subject>', 'Failed to claim task #N: <reason>',
  * 'releasing claim') — the only way to introspect why an autonomous/teammate
@@ -26,7 +26,7 @@ function taskDebug(msg: string, data?: Record<string, unknown>): void {
 }
 
 /**
- * Emit a live `task_updated` child event (PARITY): mirrors Claude Code's
+ * Emit a live `task_updated` child event (PARITY): mirrors the reference's
  * reactive task signal + auto-expand-task-view affordance — every mutating
  * action (create/update/claim/release/delete) surfaces the change to the
  * frontend so a live task panel reflects it immediately, instead of the state
@@ -63,13 +63,13 @@ interface Task {
 
 /**
  * Default task-list identifier used when no explicit team/task-list scope is set,
- * mirroring Claude Code's `DEFAULT_TASKS_MODE_TASK_LIST_ID`. Kept as a named
+ * mirroring the reference's `DEFAULT_TASKS_MODE_TASK_LIST_ID`. Kept as a named
  * constant so scope-resolution logic has a single source of truth.
  */
 export const DEFAULT_TASKS_MODE_TASK_LIST_ID = 'tasklist';
 
 /**
- * Sanitize a task-list identifier for safe use in a file name — mirrors Claude
+ * Sanitize a task-list identifier for safe use in a file name — mirrors the reference
  * Code's `sanitizeForFilePath`: strip everything but ASCII letters, digits,
  * hyphen and underscore so a list id can never escape the state dir via
  * traversal (`../`) or path separators. An id that sanitizes to empty is
@@ -85,7 +85,7 @@ export function sanitizeTaskListId(raw: unknown): string {
  * `AMI_TASK_LIST_ID` env knob, then the Claude-Code-compatible
  * `CLAUDE_CODE_TASK_LIST_ID` (cross-framework compat), falling back to the
  * default list. A scoped list lets teammates/teams share one named task file
- * while isolated sessions keep separate state. Mirrors Claude Code's
+ * while isolated sessions keep separate state. Mirrors the reference's
  * `getTaskListId()` priority waterfall.
  */
 export function resolveTaskListId(explicit?: string): string {
@@ -108,7 +108,7 @@ function taskFileName(listId: string): string {
 
 /**
  * Hard cap on the characters a single task_tracker call may return, mirroring
- * Claude Code's `maxResultSizeChars` bound on the task tools. A runaway list of
+ * the reference's `maxResultSizeChars` bound on the task tools. A runaway list of
  * thousands of tasks must not blow up the model's context — overflow is truncated
  * with an explicit marker.
  */
@@ -147,7 +147,7 @@ export function setTaskPersistPath(cwd: string, listId?: string): void {
 }
 
 /**
- * Delete a scoped task-list file from disk (parity: Claude Code removes a team's
+ * Delete a scoped task-list file from disk (parity: the reference removes a team's
  * tasks directory on disband — in AMI a team's 1:1 task list is a single
  * `tasks-<id>.json` file). The DEFAULT shared list (`tasks.json`) is never removed
  * — a bad listId can only ever delete its own scoped file. Also unbinds the
@@ -178,13 +178,13 @@ const VALID_STATUSES = new Set(['pending', 'in_progress', 'completed']);
  * The non-mutating task_tracker actions. These read the store (or disk) but never
  * write it, so they are classified read-only per-invocation (see
  * `taskTrackerTool.isReadOnlyForInput`) — this is the single source of truth for
- * which actions join the concurrent read batch / auto-allow, mirroring Claude
+ * which actions join the concurrent read batch / auto-allow, mirroring the reference
  * Code's dedicated read-only TaskList/TaskGet tools.
  */
 const TASK_READ_ACTIONS = new Set(['list', 'get', 'next', 'status']);
 
 /**
- * Strict task-id parser (PARITY FIX). Claude Code's task tools treat the id as
+ * Strict task-id parser (PARITY FIX). the reference's task tools treat the id as
  * an opaque identifier and reject anything that is not a clean integer; Node's
  * `parseInt` is lenient — `parseInt('3abc', 10) === 3` and `parseInt('3.9', 10)
  * === 3` — so a malformed id silently retargets the call at the WRONG task
@@ -205,7 +205,7 @@ export function parseTaskId(raw: unknown): number | null {
 
 /**
  * Normalize an owner/assignee (PARITY FIX): trim surrounding whitespace and
- * treat a blank or whitespace-only value as "no owner". Mirrors Claude Code's
+ * treat a blank or whitespace-only value as "no owner". Mirrors the reference's
  * assignee handling, where "  alice  " and "alice" are the SAME agent and a
  * blank assignee is unset. Without this, whitespace-variant owners fragment
  * getAgentStatuses into duplicate rows and a whitespace-only owner makes a task
@@ -222,7 +222,7 @@ export function normalizeOwner(v: unknown): string | undefined {
  * blockerId onto blockedId.blockedBy) introduce a dependency cycle? (PARITY
  * FIX.) A cycle means a task transitively blocks itself, producing a deadlock no
  * agent can ever claim out of — `next`/`claim` would permanently report every
- * node in the cycle as blocked. Claude Code rejects such edges; we walk the
+ * node in the cycle as blocked. the reference rejects such edges; we walk the
  * existing blockedBy graph from blockerId and report a cycle if blockedId is
  * reachable (blockerId already depends, directly or transitively, on blockedId).
  */
@@ -245,7 +245,7 @@ export function wouldCreateCycle(blockerId: number, blockedId: number): boolean 
  * Structural validation of a single persisted task record. A corrupt or
  * partially-written record (hand-edited file, interrupted write, schema drift
  * from an older version) must be dropped rather than poisoning the in-memory
- * store — mirrors Claude Code's per-record `TaskSchema.safeParse` on read.
+ * store — mirrors the reference's per-record `TaskSchema.safeParse` on read.
  */
 function isValidTaskRecord(t: unknown): t is Task {
   if (!t || typeof t !== 'object') return false;
@@ -340,7 +340,7 @@ function reloadForRead(): void {
 
 /**
  * Default debounce interval (ms) for the task-list directory watcher — mirrors
- * Claude Code's useTaskListWatcher `DEBOUNCE_MS = 1000`. Rapid successive writes by
+ * the reference's useTaskListWatcher `DEBOUNCE_MS = 1000`. Rapid successive writes by
  * concurrent swarm/teammate processes to the shared tasks file would otherwise
  * trigger a re-scan storm; the debounce coalesces a burst of fs events into a single
  * reconcile pass.
@@ -411,7 +411,7 @@ function readTaskFile(file: string): Map<number, Task> {
  * (status or subject), so a self-write (memory already matches the file it just
  * wrote) produces NO spurious event. The in-memory store is reconciled to disk for
  * each reported change so the same external delta is not re-emitted on the next scan.
- * Returns an empty list when persistence is disabled. Mirrors Claude Code's
+ * Returns an empty list when persistence is disabled. Mirrors the reference's
  * task-watcher reconcile that re-lists the dir and surfaces newly-available tasks.
  */
 export function reconcileExternalTaskChanges(): ExternalTaskChange[] {
@@ -446,7 +446,7 @@ export interface TaskListWatcher {
  * Watch the bound task-list directory and invoke `onChange` (debounced) with the
  * tasks another process created/changed/deleted, so a consumer (the engine's live
  * `task_updated` feed) can surface cross-process writes between this session's own
- * turns. Mirrors Claude Code's useTaskListWatcher: an fs.watch on the tasks dir, a
+ * turns. Mirrors the reference's useTaskListWatcher: an fs.watch on the tasks dir, a
  * DEBOUNCE_MS timer collapsing bursts, a filename filter so only events for the
  * BOUND list's file trigger a reconcile, and unref() on both the watcher and the
  * timer so the watch never keeps the process alive.
@@ -556,7 +556,7 @@ function capOutput(output: string): string {
 /**
  * Derive each owner's idle/busy status from the current store — an agent is
  * "busy" if it owns at least one unresolved (pending/in_progress) task. Mirrors
- * Claude Code's `getAgentStatuses` ownership-based introspection. Used by the
+ * the reference's `getAgentStatuses` ownership-based introspection. Used by the
  * agent-busy claim guard below.
  */
 function busyTasksFor(owner: string): number[] {
@@ -569,7 +569,7 @@ function busyTasksFor(owner: string): number[] {
 
 /**
  * Select the NEXT available task to work on — the lowest-id pending task that is
- * unblocked and either unowned or owned by `owner` — mirroring Claude Code's
+ * unblocked and either unowned or owned by `owner` — mirroring the reference's
  * findAvailableTask used by the pull-based teammate self-claim loop. Returns null
  * when there is nothing claimable.
  */
@@ -586,7 +586,7 @@ export function findAvailableTask(owner?: string): Task | null {
 /**
  * Per-owner idle/busy introspection derived from task ownership — an owner is
  * "busy" if it holds an unresolved (pending/in_progress) task, else "idle".
- * Mirrors Claude Code's getAgentStatuses. Returns one row per owner that appears
+ * Mirrors the reference's getAgentStatuses. Returns one row per owner that appears
  * on any task.
  */
 export function getAgentStatuses(): Array<{ owner: string; status: 'busy' | 'idle'; tasks: number[] }> {
@@ -601,7 +601,7 @@ export function getAgentStatuses(): Array<{ owner: string; status: 'busy' | 'idl
 /**
  * Result of releasing a departing teammate's in-flight tasks: the tasks that were
  * reset, plus a human-readable notification to surface to the team lead. Mirrors
- * Claude Code's `UnassignTasksResult`.
+ * the reference's `UnassignTasksResult`.
  */
 export interface UnassignTasksResult {
   unassignedTasks: Array<{ id: number; subject: string }>;
@@ -613,7 +613,7 @@ export interface UnassignTasksResult {
  * shuts down, release every unresolved (non-completed) task it still owns back to
  * the pool — clear the owner and reset the status to `pending` — so the work is not
  * orphaned and an idle teammate can claim it. Completed tasks and tasks owned by
- * other agents are left untouched. Mirrors Claude Code's `unassignTeammateTasks`
+ * other agents are left untouched. Mirrors the reference's `unassignTeammateTasks`
  * (src/utils/tasks.ts:L818-L860): finds the agent's unresolved tasks, resets them,
  * and builds a notification message naming the released tasks.
  *
@@ -660,7 +660,7 @@ export async function unassignTeammateTasks(
 /**
  * Post-completion affordance (PARITY): after a task transitions to completed,
  * point the agent at its next available work and, when the whole list is done,
- * nudge for a verification step. Mirrors Claude Code's TaskUpdateTool completion
+ * nudge for a verification step. Mirrors the reference's TaskUpdateTool completion
  * reminders — the "find your next / now-unblocked task" hint plus the structural
  * "all done, nothing covers verification" nudge (all-completed && >=3 tasks &&
  * no subject matching /verif/i).
@@ -696,7 +696,7 @@ const ALLOWED_INPUT_KEYS = new Set([
 export const taskTrackerTool: ToolDefinition = {
   name: 'task_tracker',
   // Gated by the task-tracker enablement knob (default ON) so an SDK/headless caller
-  // can opt the richer task tool out and rely on `todo_write` alone, mirroring Claude
+  // can opt the richer task tool out and rely on `todo_write` alone, mirroring the reference
   // Code's `CLAUDE_CODE_ENABLE_TASKS` task-mode toggle. See {@link isTaskTrackerEnabled}.
   isEnabled: () => isTaskTrackerEnabled(),
   description:
@@ -765,7 +765,7 @@ export const taskTrackerTool: ToolDefinition = {
     required: ['action'],
   },
   isReadOnly: false,
-  // Per-invocation read-only classification (PARITY): Claude Code ships task
+  // Per-invocation read-only classification (PARITY): the reference ships task
   // LISTING/GET as dedicated tools that declare isReadOnly()=>true AND
   // isConcurrencySafe()=>true, so a pure task read joins the concurrent read-only
   // execution batch and auto-allows without a permission prompt. AMI consolidates
@@ -1020,7 +1020,7 @@ export const taskTrackerTool: ToolDefinition = {
         reloadForRead();
         const task = tasks.get(id);
         if (!task) {
-          // Graceful, NON-error "not found" on read (PARITY): Claude Code's
+          // Graceful, NON-error "not found" on read (PARITY): the reference's
           // TaskGet returns a normal tool result ("Task not found") for a missing
           // id rather than an error — a read that finds nothing is a valid answer,
           // not a tool failure. A teammate polling for a task it may have already
@@ -1061,7 +1061,7 @@ export const taskTrackerTool: ToolDefinition = {
         }
         const owner = normalizeOwner(input.owner);
         const checkAgentBusy = input.checkAgentBusy === true;
-        // Structured claim-failure reasons mirror Claude Code's ClaimTaskResult.
+        // Structured claim-failure reasons mirror the reference's ClaimTaskResult.
         let reason: 'task_not_found' | 'already_claimed' | 'already_resolved' | 'blocked' | 'agent_busy' | null = null;
         let detail = '';
         let claimedSubject = '';
@@ -1120,7 +1120,7 @@ export const taskTrackerTool: ToolDefinition = {
         // claimed a task but cannot start it (submission rejected, agent aborted,
         // work failed to begin) gives the claim back — clear the owner and revert
         // an in_progress task to pending so `next`/`claim` can surface it to the
-        // next worker. Mirrors Claude Code's watcher releasing a claim via
+        // next worker. Mirrors the reference's watcher releasing a claim via
         // updateTask(..., { owner: undefined }) when onSubmitTask returns false.
         const id = parseTaskId(input.task_id);
         if (id === null) {

@@ -5,12 +5,12 @@ import { projectStateDir } from '../reference-journal';
 import { formatSize } from './spill-output';
 // Reuse the single canonical mime→extension vocabulary (web-fetch) so MCP
 // binary-blob persistence and web-fetch share ONE map (no parallel copy).
-// Mirrors Claude Code's extensionForMimeType (utils/mcpOutputStorage.ts).
+// Mirrors the reference's extensionForMimeType (utils/mcpOutputStorage.ts).
 import { extensionForMimeType } from './web-fetch';
 
 /**
  * Build the model-facing message describing where a decoded binary blob was
- * saved, mirroring Claude Code's `getBinaryBlobSavedMessage`
+ * saved, mirroring the reference's `getBinaryBlobSavedMessage`
  * (utils/mcpOutputStorage.ts:L181-189):
  *
  *   `<sourceDescription>Binary content (<mime>, <human size>) saved to <path>`
@@ -38,7 +38,7 @@ export type PersistBinaryResult =
  * mime-derived extension, so a PDF/xlsx/image returned by an MCP tool can
  * later be opened by the Read tool (which dispatches on the extension) instead
  * of having its base64 dumped into — and bloating — the model context. Mirrors
- * Claude Code's `persistBinaryContent` (utils/mcpOutputStorage.ts:L138-174).
+ * the reference's `persistBinaryContent` (utils/mcpOutputStorage.ts:L138-174).
  *
  * The filename stem is a content hash (deterministic + collision-resistant) so
  * replaying the same blob is idempotent and never leaks the raw bytes inline.

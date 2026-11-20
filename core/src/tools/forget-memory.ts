@@ -6,7 +6,7 @@ import { MemoryManager } from '../memory';
  * lets the model AUTHOR a memory and the save guidance tells it to "remove
  * memories that turn out to be wrong or outdated", but there was no surface to
  * actually do the removal — so "forget X" was unfulfillable. This wraps
- * MemoryManager.deleteMemory with a typed tool surface, mirroring Claude Code's
+ * MemoryManager.deleteMemory with a typed tool surface, mirroring the reference's
  * extractMemories "if they ask you to forget something, find and remove the
  * relevant entry" affordance. It removes the topic file in BOTH the private and
  * team scopes and prunes the MEMORY.md index pointer. (gap: extractMemories

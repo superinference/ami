@@ -13,7 +13,7 @@ import { AGENT_COLORS, AgentColorName, parseAgentColor } from '../skills';
 import { getTeammateContext, isInProcessTeammate } from './teammate-context';
 
 /**
- * Structured, prefixed diagnostic line for a team-state mutation (parity: Claude
+ * Structured, prefixed diagnostic line for a team-state mutation (parity: the reference
  * Code's `logForDebugging('[TeammateTool] …')`). Every add/remove/mode/active/
  * cleanup/reconnect action emits one so the swarm lifecycle is observable via the
  * `team` debug component (`AMI_DEBUG_COMPONENTS=team`), satisfying AMI's
@@ -24,7 +24,7 @@ function teamDebug(msg: string): void {
   coreLog('team', `[TeammateTool] ${msg}`);
 }
 
-/** Env-var fallback for a teammate identity field (parity: Claude's
+/** Env-var fallback for a teammate identity field (parity: the reference's
  *  env-var teammate identity, e.g. CLAUDE_CODE_AGENT_ID). Returns undefined for an
  *  unset/empty value so it never shadows a bound dynamic/ALS identity. */
 function envIdentity(name: string): string | undefined {
@@ -39,20 +39,20 @@ const ENV_TEAM_NAME = 'AMI_TEAMMATE_TEAM_NAME';
 const ENV_COLOR = 'AMI_TEAMMATE_COLOR';
 /**
  * Claude-Code-compatible env knobs for seeding a SEPARATE-PROCESS teammate's
- * identity (parity: Claude Code's `CLAUDE_CODE_AGENT_ID` /
+ * identity (parity: the reference's `CLAUDE_CODE_AGENT_ID` /
  * `CLAUDE_CODE_PARENT_SESSION_ID`, read in `utils/agentContext.ts`). A swarm
  * teammate launched out-of-process (tmux/iTerm2) has no in-process
  * {@link TeammateContext} (AsyncLocalStorage) or runtime {@link DynamicTeamContext}
- * to carry its id, so Claude injects the identity through the environment. AMI
+ * to carry its id, so the reference injects the identity through the environment. AMI
  * already reads other `CLAUDE_CODE_*` knobs (`CLAUDE_CODE_MAX_*` in
  * subagent-limiter, `CLAUDE_CODE_PLAN_MODE_REQUIRED` here); these two complete the
  * set. They sit BELOW AMI's own `AMI_TEAMMATE_*` knob in precedence so AMI's
- * native variable always wins when both are set — the Claude name is a compat
+ * native variable always wins when both are set — the reference name is a compat
  * fallback, not an override.
  */
 const ENV_CC_AGENT_ID = 'CLAUDE_CODE_AGENT_ID';
 const ENV_CC_PARENT_SESSION_ID = 'CLAUDE_CODE_PARENT_SESSION_ID';
-/** Env-var fallback for the per-teammate plan-mode-required gate (parity: Claude
+/** Env-var fallback for the per-teammate plan-mode-required gate (parity: the reference
  *  Code's `CLAUDE_CODE_PLAN_MODE_REQUIRED`). A spawned teammate process inherits
  *  the "must plan before writing code" enforcement through this when no in-process
  *  ALS / dynamic context carries it. */
@@ -72,7 +72,7 @@ function envBool(name: string): boolean | undefined {
 }
 
 /**
- * Format a deterministic agent id as `agentName@teamName` (mirrors Claude Code's
+ * Format a deterministic agent id as `agentName@teamName` (mirrors the reference's
  * `formatAgentId` in utils/agentId.ts). The `@` separator makes the id
  * reproducible — the same name in the same team always yields the same id — which
  * enables reconnection after a crash/restart and lets a lead COMPUTE a teammate's
@@ -84,7 +84,7 @@ export function formatAgentId(agentName: string, teamName: string): string {
 
 /**
  * Parse a deterministic agent id back into its parts, splitting on the FIRST `@`
- * (mirrors Claude Code's `parseAgentId`). Splitting on the first `@` means a team
+ * (mirrors the reference's `parseAgentId`). Splitting on the first `@` means a team
  * name may itself contain `@` while the agent name (which never does) is always
  * recovered intact. Returns null when there is no `@` separator (not one of our
  * ids), so callers can treat a bare name/opaque id as unparseable rather than
@@ -97,7 +97,7 @@ export function parseAgentId(agentId: string): { agentName: string; teamName: st
 }
 
 /**
- * Round-robin teammate color assignment (parity: Claude Code's
+ * Round-robin teammate color assignment (parity: the reference's
  * `teammateLayoutManager` assignTeammateColor/getTeammateColor/clearTeammateColors).
  * Each distinct teammate id is tinted with the next color from the shared
  * {@link AGENT_COLORS} palette (reused from skills.ts — NOT a second palette) so
@@ -136,11 +136,11 @@ export function clearTeammateColors(): void {
   teammateColorIndex = 0;
 }
 
-/** Max length of a user-supplied team name (mirrors Claude's identifier bounds). */
+/** Max length of a user-supplied team name (mirrors the reference's identifier bounds). */
 const MAX_TEAM_NAME_LEN = 64;
 
 /**
- * Max length of the free-text team description persisted to disk. Mirrors Claude's
+ * Max length of the free-text team description persisted to disk. Mirrors the reference's
  * cap on the analogous whenToUse/description field (5000 chars): the description is
  * written verbatim into team.json, so an unbounded value is an on-disk size/DoS gap.
  */
@@ -148,13 +148,13 @@ const MAX_TEAM_DESCRIPTION_LEN = 5000;
 
 /**
  * Normalize a user-supplied team name into a filesystem-safe slug that becomes a
- * directory component (parity: Claude Code's `sanitizeName` in
+ * directory component (parity: the reference's `sanitizeName` in
  * utils/swarm/teamHelpers.ts, which replaces every unsafe char with `-` and uses
  * the result rather than rejecting it). Human-friendly names like `"My Team!"` are
  * ACCEPTED and normalized to `"My-Team"` instead of failing validation.
  *
  * AMI superset (kept, not dropped): an already-valid name is preserved VERBATIM —
- * `_`, `-`, and letter CASE survive (Claude would lowercase and collapse `_`→`-`),
+ * `_`, `-`, and letter CASE survive (the reference would lowercase and collapse `_`→`-`),
  * so existing team dirs/paths are unchanged.
  *
  * Security (preserved): the slug is always a single, self-contained path component
@@ -177,7 +177,7 @@ function sanitizeTeamName(name: string): string | null {
 }
 
 /**
- * Teammate execution backend (parity: Claude Code's swarm `BackendType`): the
+ * Teammate execution backend (parity: the reference's swarm `BackendType`): the
  * mechanism a teammate runs under. `tmux`/`iterm2` are terminal-pane backends;
  * `in-process` runs a teammate inside the same Node process with an isolated
  * context. Persisted per-member so a resumed session knows how each teammate runs.
@@ -187,7 +187,7 @@ export type BackendType = 'tmux' | 'iterm2' | 'in-process';
 const BACKEND_TYPES: readonly BackendType[] = ['tmux', 'iterm2', 'in-process'];
 
 /**
- * Type guard for a valid {@link BackendType} (parity: Claude validates persisted
+ * Type guard for a valid {@link BackendType} (parity: the reference validates persisted
  * backend fields against a known set when deserializing a team file). Any value
  * outside the known set — including `undefined`, a number, or a stale enum name —
  * returns false so the caller can coerce it away rather than trust bad data.
@@ -197,7 +197,7 @@ export function isBackendType(v: unknown): v is BackendType {
 }
 
 /**
- * Type guard for a PANE-based backend only (parity: Claude Code's `isPaneBackend`,
+ * Type guard for a PANE-based backend only (parity: the reference's `isPaneBackend`,
  * used when projecting a teammate's status — a non-pane or unknown backend yields
  * `undefined` rather than a bogus pane backend). `in-process` is deliberately NOT a
  * pane backend.
@@ -207,7 +207,7 @@ export function isPaneBackend(v: unknown): v is 'tmux' | 'iterm2' {
 }
 
 /**
- * A rich per-member record in the team file, mirroring Claude Code's team config
+ * A rich per-member record in the team file, mirroring the reference's team config
  * member schema: a stable identity plus the operating knobs a teammate runs
  * under (model, working dir, subscriptions, per-teammate permission mode) and an
  * idle/active flag used by the delete guard.
@@ -221,20 +221,20 @@ export interface TeamMember {
   subscriptions?: string[];
   permissionMode?: string;
   /** Presentational display color tinting this teammate's badge/output so
-   *  concurrent agents are distinguishable (parity: Claude Code's per-member
+   *  concurrent agents are distinguishable (parity: the reference's per-member
    *  `color`). Drawn round-robin from the shared {@link AGENT_COLORS} palette on
    *  spawn ({@link assignTeammateColor}), or set explicitly at declaration. */
   color?: AgentColorName;
   /** Absolute path of the git worktree this teammate runs in, when it was spawned
-   *  into a dedicated worktree. Removed on team_delete (parity: Claude Code's
+   *  into a dedicated worktree. Removed on team_delete (parity: the reference's
    *  cleanupTeamDirectories tears down per-teammate worktrees, not just dirs). */
   worktreePath?: string;
-  /** Execution backend this teammate runs under (parity: Claude's per-member
+  /** Execution backend this teammate runs under (parity: the reference's per-member
    *  `backendType`). Validated against {@link BackendType} on read; an unknown
    *  persisted value is coerced to undefined. */
   backendType?: BackendType;
   /** Terminal pane id this teammate renders into for a PANE backend (parity:
-   *  Claude Code's per-member `tmuxPaneId`). Used to derive the member's hidden
+   *  the reference's per-member `tmuxPaneId`). Used to derive the member's hidden
    *  state against the team's {@link TeamFile.hiddenPaneIds} set and to remove a
    *  member by its pane ({@link removeMemberByPaneId}). Absent for an in-process
    *  teammate (which has no pane). Validated to a non-empty string on read. */
@@ -247,7 +247,7 @@ export interface TeamMember {
 }
 
 /**
- * The derived run-state of a teammate, mirroring Claude Code's `TeammateStatus`
+ * The derived run-state of a teammate, mirroring the reference's `TeammateStatus`
  * (teamDiscovery.ts). Projected from a {@link TeamMember} on read: `isActive`
  * defaults to active when undefined, so an absent flag maps to `'running'`.
  */
@@ -259,18 +259,18 @@ export interface TeammateStatus {
   status: 'running' | 'idle';
   mode?: string;
   cwd?: string;
-  /** Display color for this teammate (parity: Claude's TeammateStatus.color),
+  /** Display color for this teammate (parity: the reference's TeammateStatus.color),
    *  surfaced so a roster/renderer can tint each agent consistently. */
   color?: AgentColorName;
-  /** The teammate's execution backend, limited to a PANE backend (parity: Claude's
+  /** The teammate's execution backend, limited to a PANE backend (parity: the reference's
    *  TeammateStatus.backendType, built via isPaneBackend — a non-pane/unknown
    *  backend is surfaced as undefined). */
   backendType?: 'tmux' | 'iterm2';
-  /** The teammate's terminal pane id (parity: Claude's TeammateStatus.tmuxPaneId),
+  /** The teammate's terminal pane id (parity: the reference's TeammateStatus.tmuxPaneId),
    *  surfaced so a renderer can target the pane. Undefined for an in-process
    *  teammate. */
   tmuxPaneId?: string;
-  /** Whether this teammate's pane is hidden in the roster view (parity: Claude's
+  /** Whether this teammate's pane is hidden in the roster view (parity: the reference's
    *  TeammateStatus.isHidden, derived from the team's `hiddenPaneIds` set). A
    *  teammate with no pane id is never hidden. */
   isHidden: boolean;
@@ -278,7 +278,7 @@ export interface TeammateStatus {
 }
 
 /**
- * Aggregate counts for a team, mirroring Claude Code's `TeamSummary`. The lead is
+ * Aggregate counts for a team, mirroring the reference's `TeamSummary`. The lead is
  * excluded from every count (membership-role boundary), so the figures describe
  * the worker roster only.
  */
@@ -290,7 +290,7 @@ export interface TeamSummary {
 }
 
 /**
- * A declarative team-wide allowed-path entry (mirrors Claude Code's
+ * A declarative team-wide allowed-path entry (mirrors the reference's
  * `teamAllowedPaths` element `{ path, toolName }`). On teammate startup each entry
  * is converted into a session allow-rule that grants `toolName` under `path`
  * (see {@link teamAllowedPathsToRules}). `toolName` defaults to `'*'` (every tool)
@@ -312,14 +312,14 @@ export interface TeamFile {
   leadSessionId?: string;
   leadAgentId: string;
   /** Declarative team-wide allowed paths inherited by every spawned teammate as
-   *  session allow-rules (parity: Claude Code's `teamAllowedPaths`). Stored on the
+   *  session allow-rules (parity: the reference's `teamAllowedPaths`). Stored on the
    *  team file so a teammate spawned into the team is scoped the same way. */
   teamAllowedPaths?: TeamAllowedPath[];
   /** Declarative team-wide tool allowlist inherited by every teammate (parity:
-   *  Claude Code's per-agent `tools` scoping knob). Stored on the team file so a
+   *  the reference's per-agent `tools` scoping knob). Stored on the team file so a
    *  teammate spawned into the team can be constrained the same way the lead is. */
   teamAllowedTools?: string[];
-  /** Pane ids the user has collapsed/hidden in the roster view (parity: Claude
+  /** Pane ids the user has collapsed/hidden in the roster view (parity: the reference
    *  Code's team-file `hiddenPaneIds` config knob). A member whose
    *  {@link TeamMember.tmuxPaneId} is in this set projects to `isHidden: true`
    *  ({@link getTeammateStatuses}). Validated to a string array on read; a member
@@ -352,7 +352,7 @@ export function flushTeamPersists(): Promise<void> {
 }
 
 /**
- * This process's runtime team-join context (parity: Claude Code's
+ * This process's runtime team-join context (parity: the reference's
  * `dynamicTeamContext` in utils/teammate.ts). It carries not just the bound
  * agentId + agentName but the richer per-session knobs a joined teammate needs:
  * the `teamName` it joined, its display `color`, whether `planModeRequired` is in
@@ -451,10 +451,10 @@ export function getSelfColor(): AgentColorName | undefined {
 }
 
 /**
- * This process's resolved plan-mode-required flag (parity: Claude Code's
+ * This process's resolved plan-mode-required flag (parity: the reference's
  * `isPlanModeRequired`), following the identity precedence chain in-process
  * {@link TeammateContext} (AsyncLocalStorage) > runtime {@link DynamicTeamContext} >
- * the `AMI_TEAMMATE_PLAN_MODE_REQUIRED` env var (parity: Claude's
+ * the `AMI_TEAMMATE_PLAN_MODE_REQUIRED` env var (parity: the reference's
  * `CLAUDE_CODE_PLAN_MODE_REQUIRED` fallback, so a spawned teammate process inherits
  * the gate). Defaults to false when nothing is bound — a standalone session is
  * never forced into plan mode.
@@ -467,7 +467,7 @@ export function getSelfPlanModeRequired(): boolean {
 }
 
 /**
- * This process's resolved parent (lead) session id (parity: Claude Code's
+ * This process's resolved parent (lead) session id (parity: the reference's
  * `getParentSessionId`), following ALS > dynamic > `CLAUDE_CODE_PARENT_SESSION_ID`
  * env var (Claude-Code compat for an out-of-process teammate) > the active team's
  * `leadSessionId`. The explicitly injected env value wins over the local team
@@ -501,7 +501,7 @@ export function clearSelfIdentity(): void {
 }
 
 /**
- * Whether THIS process is the team's lead (parity: Claude Code's `isTeamLead`).
+ * Whether THIS process is the team's lead (parity: the reference's `isTeamLead`).
  * A session is the lead when the team has a `leadAgentId` AND either our bound
  * self id matches it, OR no self id is bound (backwards compat: the original
  * session that created the team before an agent id was assigned). Returns false
@@ -516,7 +516,7 @@ export function isLeader(team: TeamFile | null = currentTeam): boolean {
 }
 
 /**
- * The team roles a session can hold (parity: Claude Code's leader-vs-teammate role
+ * The team roles a session can hold (parity: the reference's leader-vs-teammate role
  * distinction — `isTeamLead` / `isLeader = !agentId` in swarm/reconnection.ts and the
  * 'team-lead' vs teammate split surfaced in TeamStatus.tsx). Exposed as a named enum
  * (not just the separate {@link isLeader}/{@link isTeammate} booleans) so role-aware
@@ -527,7 +527,7 @@ export const TEAM_ROLES = ['lead', 'teammate'] as const;
 export type TeamRole = typeof TEAM_ROLES[number];
 
 /**
- * This session's single resolved team role (parity: Claude Code's leader-vs-teammate
+ * This session's single resolved team role (parity: the reference's leader-vs-teammate
  * role distinction). Consolidates {@link isLeader}/{@link isTeammate} into one named
  * value: `'lead'` when this session is the team lead, `'teammate'` when it is a
  * non-lead teammate, and `'none'` for a standalone session with no team lineage.
@@ -541,7 +541,7 @@ export function getSelfRole(): TeamRole | 'none' {
 }
 
 /**
- * A fully-resolved snapshot of THIS session's swarm identity (parity: Claude Code's
+ * A fully-resolved snapshot of THIS session's swarm identity (parity: the reference's
  * `getDynamicTeamContext` "for inspection/debugging" aggregate, combined with
  * `getAgentId`/`getAgentName`/`getTeamName`/`getTeammateColor`/`isTeammate`).
  * Unlike {@link getDynamicTeamContext} — which exposes ONLY the runtime dynamic
@@ -560,21 +560,21 @@ export interface SelfIdentity {
   parentSessionId?: string;
   isTeammate: boolean;
   isLeader: boolean;
-  /** This session's single team role (parity: Claude Code's leader-vs-teammate
+  /** This session's single team role (parity: the reference's leader-vs-teammate
    *  distinction), consolidating {@link isLeader}/{@link isTeammate}: `'lead'`,
    *  `'teammate'`, or `'none'` for a standalone session. */
   role: TeamRole | 'none';
   isInProcess: boolean;
   /** Whether this session may self-approve a permission request (true for a lead or
    *  solo session) or must escalate it to the team leader (false for a non-lead
-   *  worker) — parity: Claude Code's WorkerPendingPermission gate. Resolved via
+   *  worker) — parity: the reference's WorkerPendingPermission gate. Resolved via
    *  {@link canSelfApprovePermission}. */
   canSelfApprovePermission: boolean;
 }
 
 /**
  * Whether THIS session should see the persistent, shared task-list panel (parity:
- * Claude Code's `useTasksV2` visibility gate `!teamContext || isTeamLead(teamContext)`
+ * the reference's `useTasksV2` visibility gate `!teamContext || isTeamLead(teamContext)`
  * in hooks/useTasksV2.ts). Inside a team ONLY the LEAD's UI surfaces the shared
  * task list — the lead coordinates the list while a non-lead teammate acts on its
  * own assignments and should not have the whole roster's task panel pinned in its
@@ -592,7 +592,7 @@ export function isTaskListVisibleForSelf(): boolean {
 
 /**
  * Whether THIS session may SELF-APPROVE a permission request, or must escalate it to
- * the human-supervised team leader (parity: Claude Code's `WorkerPendingPermission` —
+ * the human-supervised team leader (parity: the reference's `WorkerPendingPermission` —
  * a worker cannot self-grant a tool; its request is withheld in a pending state and
  * routed to the lead, who decides). The privilege-separation rule is one line: a
  * non-lead teammate (worker) can NEVER self-approve, so this is true only for a
@@ -607,7 +607,7 @@ export function canSelfApprovePermission(): boolean {
 
 /**
  * Resolve this session's full swarm identity through the precedence chain — the
- * single cohesive introspection surface (parity: Claude Code's inspection aggregate).
+ * single cohesive introspection surface (parity: the reference's inspection aggregate).
  * Reuses the per-field accessors (no duplicated resolution logic) so it never drifts
  * from {@link getSelfAgentId} / {@link isTeammate} / {@link isLeader} et al.
  */
@@ -670,7 +670,7 @@ export const _teamHooks = {
 };
 
 /**
- * Remove a single teammate's git worktree (parity: Claude Code's
+ * Remove a single teammate's git worktree (parity: the reference's
  * cleanupTeamDirectories removes per-teammate worktrees). Mirrors the exit-worktree
  * teardown: `git worktree remove --force`, falling back to an fs removal + prune
  * when git's own removal fails. Best-effort — returns true when the worktree is
@@ -700,7 +700,7 @@ function teamFilePath(dir: string): string {
 /**
  * Absolute path of the workspace teams root (`<cwd>/.ami/teams`). The single place
  * the `.ami/teams` segment is spelled, so every team-path helper derives from it
- * (parity: Claude Code's `getTeamsDir()` in swarm/teamHelpers.ts).
+ * (parity: the reference's `getTeamsDir()` in swarm/teamHelpers.ts).
  */
 export function getTeamsRoot(cwd: string): string {
   return path.join(cwd, '.ami', 'teams');
@@ -712,7 +712,7 @@ export function getTeamsRoot(cwd: string): string {
  * team name becomes a path, so the {@link sanitizeTeamName} guard is enforced on
  * EVERY access — the write path (team_create) AND, crucially, the read/resume path
  * (a name rehydrated from a persisted transcript or team file). Returns null when
- * the name normalizes to empty / is over length (parity: Claude Code's
+ * the name normalizes to empty / is over length (parity: the reference's
  * `getTeamDir(teamName) = join(getTeamsDir(), sanitizeName(teamName))`, whose
  * `readTeamFile`/`getTeamFilePath` apply sanitizeName on every read). Routing all
  * read/resume/reconnect code through here is defense-in-depth: a traversal name
@@ -727,7 +727,7 @@ export function getTeamDir(cwd: string, name: string): string | null {
 /**
  * Absolute path of a team's on-disk `team.json`, derived through the canonical
  * {@link getTeamDir} (so the read boundary re-sanitizes the name). Returns null for
- * a name that does not normalize to a safe slug (parity: Claude Code's
+ * a name that does not normalize to a safe slug (parity: the reference's
  * `getTeamFilePath(teamName)`).
  */
 export function getTeamFilePath(cwd: string, name: string): string | null {
@@ -756,7 +756,7 @@ function persistTeam(): void {
 /**
  * Guarded reader for a persisted team file. Returns the parsed {@link TeamFile},
  * or null when the file is missing, unreadable, not valid JSON, or structurally
- * invalid (missing name / leadAgentId / members array). Mirrors Claude Code's
+ * invalid (missing name / leadAgentId / members array). Mirrors the reference's
  * swarm `readTeamFile` (null on ENOENT / parse failure) so a resumed session
  * degrades gracefully instead of throwing on a missing or corrupt team file.
  */
@@ -768,7 +768,7 @@ export function readTeamFile(dir: string): TeamFile | null {
   } catch (err) {
     // ENOENT is the clean "no team here yet" case — degrade to null silently.
     // Any OTHER read error (EACCES/permission, EISDIR, I/O) is an unexpected
-    // condition worth a diagnostic before degrading (parity: Claude's readTeamFile
+    // condition worth a diagnostic before degrading (parity: the reference's readTeamFile
     // treats ENOENT as a clean null and logs non-ENOENT errors). The team concept
     // still degrades to null so a resume never throws on an unreadable file.
     const code = (err as NodeJS.ErrnoException | undefined)?.code;
@@ -796,7 +796,7 @@ export function readTeamFile(dir: string): TeamFile | null {
     teamDebug(`readTeamFile: invalid team file shape in ${file} (missing name/leadAgentId/members) — degrading to null`);
     return null; // wrong shape
   }
-  // Boundary validation of persisted enum fields (parity: Claude validates
+  // Boundary validation of persisted enum fields (parity: the reference validates
   // backendType via isPaneBackend and coerces unknown values when deserializing).
   // A stale/foreign file may carry an invalid permissionMode or backendType; coerce
   // each bad value to undefined in place rather than trusting it downstream.
@@ -810,13 +810,13 @@ export function readTeamFile(dir: string): TeamFile | null {
     if (member.backendType !== undefined && !isBackendType(member.backendType)) {
       member.backendType = undefined;
     }
-    // A pane id must be a non-empty string (parity: Claude only honors a real
+    // A pane id must be a non-empty string (parity: the reference only honors a real
     // tmuxPaneId when deriving isHidden); coerce a non-string/empty to undefined.
     if (member.tmuxPaneId !== undefined && (!isStr(member.tmuxPaneId) || member.tmuxPaneId.length === 0)) {
       member.tmuxPaneId = undefined;
     }
     // Subscriptions must be an array of strings; drop a malformed value so routing
-    // never trusts a non-list (parity: Claude stores subscriptions as string[]).
+    // never trusts a non-list (parity: the reference stores subscriptions as string[]).
     if (member.subscriptions !== undefined && (!Array.isArray(member.subscriptions) || !member.subscriptions.every(isStr))) {
       member.subscriptions = undefined;
     }
@@ -832,7 +832,7 @@ export function readTeamFile(dir: string): TeamFile | null {
 /**
  * Recover a member record by its (case-sensitive) name. Returns null when the
  * member is absent — e.g. it was removed from the team between sessions. Mirrors
- * Claude Code's resume-time `members.find(m => m.name === agentName)` lookup with
+ * the reference's resume-time `members.find(m => m.name === agentName)` lookup with
  * its explicit removed-member branch (callers tolerate the null rather than throw).
  */
 export function findTeamMemberByName(team: TeamFile, name: string): TeamMember | null {
@@ -845,7 +845,7 @@ export function findTeamMemberByName(team: TeamFile, name: string): TeamMember |
  * by the resumed-session reconnection path so team state survives a restart.
  */
 export function loadTeamFromDisk(cwd: string, name: string): { team: TeamFile; dir: string } | null {
-  // Re-sanitize at the READ boundary (parity: Claude's readTeamFile/getTeamFilePath
+  // Re-sanitize at the READ boundary (parity: the reference's readTeamFile/getTeamFilePath
   // apply sanitizeName on every access). `name` may be an untrusted value rehydrated
   // from a persisted transcript/team file via loadTeamFromSession, so route it
   // through the canonical getTeamFilePath rather than joining it verbatim. A name
@@ -870,7 +870,7 @@ export function restoreTeam(team: TeamFile, dir: string): void {
 }
 
 /**
- * Rebuild this session's team context from a resumed session (parity: Claude
+ * Rebuild this session's team context from a resumed session (parity: the reference
  * Code's `initializeTeammateContextFromSession` / `computeInitialTeamContext` in
  * swarm/reconnection.ts). Given the `teamName` + `agentName` persisted in the
  * transcript, it reads the team file off disk, rehydrates the in-memory singleton
@@ -914,7 +914,7 @@ export function loadTeamFromSession(cwd: string, teamName: string, agentName: st
 }
 
 /**
- * Teams created THIS session that were not explicitly disbanded (parity: Claude
+ * Teams created THIS session that were not explicitly disbanded (parity: the reference
  * Code's `sessionCreatedTeams` Set + registerTeamForSessionCleanup). On an abnormal
  * exit (SIGINT/SIGTERM/crash) these are swept by {@link cleanupSessionTeams} so a
  * `.ami/teams/<name>/` directory is never orphaned. An explicit team_delete
@@ -940,7 +940,7 @@ export function getSessionCreatedTeams(): string[] {
 
 /**
  * Remove every team dir created this session that was never explicitly deleted
- * (parity: Claude Code's `cleanupSessionTeams`, registered with gracefulShutdown).
+ * (parity: the reference's `cleanupSessionTeams`, registered with gracefulShutdown).
  * For each tracked team it tears down per-member worktrees FIRST (so teammate
  * processes are not orphaned behind a deleted dir), then removes the team directory
  * and its 1:1 task list. Best-effort and idempotent: a per-team failure is logged
@@ -997,7 +997,7 @@ interface DeclaredMember {
 
 /**
  * Parse and validate the optional `members` roster supplied to team_create (parity:
- * Claude Code lets the caller name the agents that participate at creation). Each
+ * the reference lets the caller name the agents that participate at creation). Each
  * entry may be a bare name string or an object `{ name, agent_type?, model?,
  * permission_mode? }`. Names are sanitized with the canonical {@link sanitizeAgentName}
  * (shared helper — no duplicate reserved-char logic); the lead name and duplicates
@@ -1038,11 +1038,11 @@ function parseDeclaredMembers(raw: unknown): { members: DeclaredMember[]; error?
       }
       permissionMode = valid;
     }
-    // Explicit display color (parity: Claude's per-agent `color`). An unknown or
+    // Explicit display color (parity: the reference's per-agent `color`). An unknown or
     // 'automatic' value normalizes to undefined so the teammate falls back to the
     // round-robin palette assignment made on spawn.
     const color = parseAgentColor(colorRaw);
-    // Per-member subscriptions (parity: Claude's per-member `subscriptions: string[]`
+    // Per-member subscriptions (parity: the reference's per-member `subscriptions: string[]`
     // declaring which topics/channels a teammate receives). Only a clean array of
     // non-empty strings is kept; anything else is dropped so routing never trusts a
     // malformed list. An empty result normalizes to undefined.
@@ -1059,7 +1059,7 @@ function parseDeclaredMembers(raw: unknown): { members: DeclaredMember[]; error?
 
 /**
  * Parse and validate the optional `team_allowed_paths` roster supplied to
- * team_create (parity: Claude Code's `teamAllowedPaths` config knob). Each entry
+ * team_create (parity: the reference's `teamAllowedPaths` config knob). Each entry
  * is either a bare path string (grants ALL tools — `toolName: '*'` — under that
  * path) or an object `{ path, tool_name? }` to scope the grant to a single tool.
  * An entry without a non-empty `path` is a hard error (returned in `error`) so a
@@ -1088,7 +1088,7 @@ function parseTeamAllowedPaths(raw: unknown): { paths?: TeamAllowedPath[]; error
 
 /**
  * Convert a team's declarative {@link TeamAllowedPath} entries into session
- * allow-{@link PermissionRule}s (mirrors Claude Code's teammateInit path→rule
+ * allow-{@link PermissionRule}s (mirrors the reference's teammateInit path→rule
  * conversion). The subtle edge is the pattern shape: an ABSOLUTE path (leading
  * `/`) becomes `/<path>/**` (the characteristic double-slash — a `//abs/**`
  * pattern), while a RELATIVE path becomes `<path>/**`. Each rule grants the
@@ -1107,7 +1107,7 @@ export function teamAllowedPathsToRules(team: TeamFile | null = currentTeam): Pe
 
 /**
  * The subdirectory under a team's dir that holds durable, cross-worker SHARED
- * knowledge — the team scratchpad (parity: Claude Code's coordinator
+ * knowledge — the team scratchpad (parity: the reference's coordinator
  * `scratchpadDir`). {@link teamCreateTool} provisions it on create; teammates
  * read/write it WITHOUT a permission prompt via {@link teamScratchpadRules}. Kept
  * as the single canonical name for the dir so the create path, the path resolver,
@@ -1133,7 +1133,7 @@ export function getTeamScratchpadDir(cwd: string, team: TeamFile | null = curren
 
 /**
  * Session allow-{@link PermissionRule}s granting EVERY tool prompt-free access to
- * the team's shared scratchpad dir (parity: Claude Code's coordinator gated
+ * the team's shared scratchpad dir (parity: the reference's coordinator gated
  * "no permission prompt" `scratchpadDir` for durable cross-worker knowledge).
  * Applied to a teammate's engine on spawn ALONGSIDE {@link teamAllowedPathsToRules}
  * so workers can persist and share team state without interrupting the human for a
@@ -1152,13 +1152,13 @@ export const teamCreateTool: ToolDefinition = {
   isEnabled: () => isTeammatesEnabled(),
   // Concept synonyms for tool_search: neither "swarm" nor "multi-agent" appears in
   // the human name, so without this hint a tool_search for those terms could not
-  // surface team_create. Parity: Claude's `searchHint: 'create a multi-agent swarm team'`.
+  // surface team_create. Parity: the reference's `searchHint: 'create a multi-agent swarm team'`.
   searchHint: 'create a multi-agent swarm team collaborate parallel agents',
   // Self-declared deferral: keep team_create OUT of the default advertised set and
   // surface it on demand via tool_search (it is a specialized orchestration entry
   // point most turns never need; its schema is large). Honored by the engine's
   // per-tool deferral selection regardless of the global deferTools policy. Parity:
-  // Claude's `shouldDefer: true` on TeamCreateTool.
+  // the reference's `shouldDefer: true` on TeamCreateTool.
   shouldDefer: true,
   description:
     'Create a team of agents for collaborative work. A team has a 1:1 correspondence with a task list and ' +
@@ -1202,7 +1202,7 @@ export const teamCreateTool: ToolDefinition = {
           'allow-rules. Each item is either a path string (grants all tools under that path) or ' +
           'an object { path, tool_name } to scope the grant to a single tool.',
         items: {
-          // Union item (parity with Claude's teamAllowedPaths): a bare path string
+          // Union item (parity with the reference's teamAllowedPaths): a bare path string
           // OR an object { path, tool_name }.
           type: ['string', 'object'],
           properties: {
@@ -1222,7 +1222,7 @@ export const teamCreateTool: ToolDefinition = {
           'Optional roster of teammates to pre-declare at creation (added idle, awaiting spawn via task). ' +
           'Each item is either a teammate name or an object { name, agent_type?, model?, permission_mode? }.',
         items: {
-          // Union item (parity with Claude's union value params): a bare name
+          // Union item (parity with the reference's union value params): a bare name
           // string OR an object { name, agent_type?, model?, permission_mode? }.
           type: ['string', 'object'],
           properties: {
@@ -1241,7 +1241,7 @@ export const teamCreateTool: ToolDefinition = {
       },
     },
     required: ['team_name'],
-    // Strict schema (parity: Claude Code's team tools use z.strictObject): reject
+    // Strict schema (parity: the reference's team tools use z.strictObject): reject
     // unexpected keys so a typo'd/invented knob fails loudly instead of being
     // silently ignored.
     additionalProperties: false,
@@ -1259,7 +1259,7 @@ export const teamCreateTool: ToolDefinition = {
       return { output: `Error: description must be at most ${MAX_TEAM_DESCRIPTION_LEN} characters (got ${description.length}).`, isError: true };
     }
 
-    // Per-agent scoping knob: the lead's permission mode (parity: Claude's agent
+    // Per-agent scoping knob: the lead's permission mode (parity: the reference's agent
     // `permissionMode`). Validate up-front so an invalid value fails fast instead
     // of being persisted as a dead string.
     const rawPermMode = input.permission_mode as string | undefined;
@@ -1272,7 +1272,7 @@ export const teamCreateTool: ToolDefinition = {
       leadPermissionMode = valid;
     }
 
-    // Parse any pre-declared teammate roster (parity: Claude's team members input).
+    // Parse any pre-declared teammate roster (parity: the reference's team members input).
     // Each entry becomes an idle member record awaiting its task-spawn; spawning
     // later reconciles it by name via registerTeamMember. Invalid permission modes
     // abort the whole create so the caller fixes the input rather than getting a
@@ -1280,7 +1280,7 @@ export const teamCreateTool: ToolDefinition = {
     const parsedMembers = parseDeclaredMembers(input.members);
     if (parsedMembers.error) return { output: `Error: ${parsedMembers.error}`, isError: true };
 
-    // Parse the declarative team-wide allowed paths (parity: Claude's
+    // Parse the declarative team-wide allowed paths (parity: the reference's
     // teamAllowedPaths). A malformed entry aborts the create so the caller fixes
     // the knob rather than getting a silently-dropped permission grant.
     const parsedPaths = parseTeamAllowedPaths(input.team_allowed_paths);
@@ -1295,7 +1295,7 @@ export const teamCreateTool: ToolDefinition = {
     // exists AND its persisted team file belongs to THIS session (same
     // leadSessionId) with an intact lead member, rehydrate it in place instead of
     // forking a renamed duplicate. This lets team state survive a process restart
-    // (parity: Claude Code's swarm reconnection on a resumed session). A foreign or
+    // (parity: the reference's swarm reconnection on a resumed session). A foreign or
     // orphaned dir (different session, or a corrupt/partial file whose lead member
     // is unreadable) falls through to the unique-name fallback below.
     const existing = loadTeamFromDisk(context.cwd, base);
@@ -1363,7 +1363,7 @@ export const teamCreateTool: ToolDefinition = {
       createdAt: now,
     };
 
-    // Atomicity (parity: Claude's FileWriteTool orders the disk write to preserve
+    // Atomicity (parity: the reference's FileWriteTool orders the disk write to preserve
     // state consistency): persist team.json to disk FIRST, and only commit the
     // in-memory singleton after a successful write. A failed write (EACCES, ENOSPC,
     // read-only cwd) returns an error WITHOUT leaving a phantom in-memory team that
@@ -1400,12 +1400,12 @@ export const teamCreateTool: ToolDefinition = {
     // Surface this session's resolved swarm identity via the cohesive introspection
     // aggregate (consolidates the former ad-hoc isLeader()/getSelfAgentName() reads).
     const self = getSelfIdentity();
-    // Role-aware status wording driven by the single resolved role (parity: Claude's
+    // Role-aware status wording driven by the single resolved role (parity: the reference's
     // leader-vs-teammate wording) — reads self.role so the three states (lead,
     // teammate, solo) are surfaced from one canonical vocabulary.
     const roleLabel = self.role === 'lead' ? 'team lead' : self.role === 'teammate' ? 'teammate' : 'solo agent';
     const roleNote = ` You are the ${roleLabel} (self: ${self.agentName}).`;
-    // Advertise the shared scratchpad dir (parity: Claude's coordinator exposes the
+    // Advertise the shared scratchpad dir (parity: the reference's coordinator exposes the
     // scratchpadDir) so the lead knows where durable cross-teammate knowledge lives;
     // spawned teammates get prompt-free read/write there (teamScratchpadRules).
     const scratchpadDir = path.join(teamDir, TEAM_SCRATCHPAD_SUBDIR);
@@ -1431,12 +1431,12 @@ export const teamDeleteTool: ToolDefinition = {
     'IMPORTANT: it refuses while any teammate is still active — gracefully shut teammates down first (send a ' +
     'shutdown_request via send_message), then call team_delete once all have exited. Calling it with no active ' +
     'team is a no-op that reports there was nothing to clean up.',
-  // Strict, empty schema (parity: Claude's team_delete uses z.strictObject({})):
+  // Strict, empty schema (parity: the reference's team_delete uses z.strictObject({})):
   // it takes no arguments and rejects any supplied key.
   inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   isReadOnly: false,
   async execute(_input: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
-    // No active team: graceful non-error result (parity: Claude returns
+    // No active team: graceful non-error result (parity: the reference returns
     // success=true, "nothing to clean up") so an idempotent teardown is not an error.
     if (!currentTeam) return { output: 'No active team — nothing to clean up.' };
     const name = currentTeam.name;
@@ -1453,7 +1453,7 @@ export const teamDeleteTool: ToolDefinition = {
       };
     }
 
-    // Tear down each teammate's git worktree before the team dir (parity: Claude
+    // Tear down each teammate's git worktree before the team dir (parity: the reference
     // Code's cleanupTeamDirectories removes directories AND per-teammate worktrees).
     // Best-effort: a failed worktree removal must not block disbanding the team.
     let worktreesRemoved = 0;
@@ -1472,7 +1472,7 @@ export const teamDeleteTool: ToolDefinition = {
       const msg = err instanceof Error ? err.message : String(err);
       return { output: `Error: failed to remove team directory ${teamDir}: ${msg}`, isError: true };
     }
-    // Remove the team's 1:1 task list file last (parity: Claude Code's cleanup
+    // Remove the team's 1:1 task list file last (parity: the reference's cleanup
     // order is worktrees -> team dir -> tasks dir). Independent guard: a tasks-file
     // removal failure must not fail a team_delete that already removed the dir.
     const tasksRemoved = deleteTaskList(context.cwd, name);
@@ -1480,7 +1480,7 @@ export const teamDeleteTool: ToolDefinition = {
     // Fully tear down every team member's mailbox state so a future team that
     // reuses a name never inherits stale messages, a crashed teammate's undelivered
     // queue, a leaked receive() waiter, or a stale eager-delivery notifier (parity:
-    // Claude purges the inbox at the exit boundary). purgeMailbox is the superset of
+    // the reference purges the inbox at the exit boundary). purgeMailbox is the superset of
     // clearMailbox — it also reclaims waiters/notifier/revision/outbound-DM history.
     for (const m of currentTeam.members) {
       purgeMailbox(m.name);
@@ -1505,7 +1505,7 @@ export const teamDeleteTool: ToolDefinition = {
       ? ` and ${worktreesRemoved} worktree${worktreesRemoved === 1 ? '' : 's'}`
       : '';
     const tasksNote = tasksRemoved ? ', task list removed' : '';
-    // State exactly what was removed (parity: Claude's delete result names the
+    // State exactly what was removed (parity: the reference's delete result names the
     // cleaned-up team): include the removed team directory path.
     return { output: `Team "${name}" deleted: removed ${teamDir} (directories${wtNote} cleaned up${tasksNote}).` };
   },
@@ -1559,7 +1559,7 @@ export function registerTeamMember(member: Omit<TeamMember, 'joinedAt' | 'isActi
 
 /**
  * Register (or update) a teammate in a team identified BY NAME — the on-disk target
- * of a `task({ team_name })` spawn (parity: Claude Code's `team_name` Agent-tool
+ * of a `task({ team_name })` spawn (parity: the reference's `team_name` Agent-tool
  * parameter, which JOINs a spawned agent to a named team). When `teamName` is the
  * current in-memory team this delegates to {@link registerTeamMember} (in-memory +
  * persist); otherwise it loads that team's file off disk, appends/updates the
@@ -1602,7 +1602,7 @@ export function registerTeamMemberInto(
 /**
  * Mark a teammate active/idle by name or agentId. No-op when no team or member.
  * Skips the disk write when the value is unchanged (write-if-changed guard,
- * mirroring Claude Code's `setMemberActive`). Stamps `idleSince` when a member
+ * mirroring the reference's `setMemberActive`). Stamps `idleSince` when a member
  * transitions to idle and clears it when it becomes active again.
  */
 export function setTeamMemberActive(nameOrId: string, active: boolean): void {
@@ -1610,7 +1610,7 @@ export function setTeamMemberActive(nameOrId: string, active: boolean): void {
   const m = findMember(currentTeam, nameOrId);
   if (!m) return;
   // Write-if-changed: skip the persist entirely when the stored flag already
-  // matches (mirrors Claude's `if (member.isActive === isActive) return`).
+  // matches (mirrors the reference's `if (member.isActive === isActive) return`).
   if (m.isActive === active) return;
   m.isActive = active;
   m.idleSince = active ? undefined : new Date().toISOString();
@@ -1632,7 +1632,7 @@ export function setTeamMemberActive(nameOrId: string, active: boolean): void {
 }
 
 /**
- * The next permission mode in a fixed cycle (mirrors Claude Code's
+ * The next permission mode in a fixed cycle (mirrors the reference's
  * getNextPermissionMode, used to toggle a single teammate's mode). An unknown
  * current value starts the cycle at the first mode.
  */
@@ -1644,7 +1644,7 @@ export function getNextPermissionMode(current: string | undefined): PermissionMo
 
 /**
  * Set a single teammate's permission mode (by name or agentId), persisting the
- * change to the team file (mirrors Claude Code's setMemberMode). Returns the
+ * change to the team file (mirrors the reference's setMemberMode). Returns the
  * applied mode, or null when there is no active team, no such member, or the mode
  * string is invalid.
  */
@@ -1654,7 +1654,7 @@ export function setMemberMode(nameOrId: string, mode: string): PermissionMode | 
   if (!valid) return null;
   const m = findMember(currentTeam, nameOrId);
   if (!m) return null;
-  // Write-if-changed: a no-op mode set does not touch disk (mirrors Claude's
+  // Write-if-changed: a no-op mode set does not touch disk (mirrors the reference's
   // `if (member.mode === mode) return true`).
   if (m.permissionMode === valid) return valid;
   m.permissionMode = valid;
@@ -1665,7 +1665,7 @@ export function setMemberMode(nameOrId: string, mode: string): PermissionMode | 
 
 /**
  * Sync THIS teammate's own permission mode into the shared team file so the lead
- * sees it (parity: Claude Code's `syncTeammateMode`). A no-op unless this session
+ * sees it (parity: the reference's `syncTeammateMode`). A no-op unless this session
  * is running as a (non-lead) teammate with a resolvable self name and an active
  * team. Delegates to {@link setMemberMode} (write-if-changed + persist). Returns
  * the applied mode, or null when it was a no-op or the mode string was invalid.
@@ -1694,7 +1694,7 @@ export function cycleMemberMode(nameOrId: string): PermissionMode | null {
 
 /**
  * Apply many per-teammate permission-mode changes in ONE atomic read-modify-write
- * (mirrors Claude Code's `setMultipleMemberModes`). Updates are keyed by member
+ * (mirrors the reference's `setMultipleMemberModes`). Updates are keyed by member
  * name or agentId via a Map for O(1) lookup, and the team file is persisted only
  * once — and only if at least one member actually changed (the `anyChanged`
  * guard), avoiding the race of N separate read/write cycles clobbering each other.
@@ -1726,7 +1726,7 @@ export function setMultipleMemberModes(updates: Array<{ nameOrId: string; mode: 
 }
 
 /**
- * Cycle the permission mode of EVERY non-lead teammate in tandem (mirrors Claude
+ * Cycle the permission mode of EVERY non-lead teammate in tandem (mirrors the reference
  * Code's `cycleAllTeammateModes`). Default rule: when the teammates' current modes
  * DIVERGE, reset them all to the canonical default; when they already AGREE,
  * advance them all to the next mode in the cycle. The whole change is applied in a
@@ -1739,7 +1739,7 @@ export function cycleAllMemberModes(): PermissionMode | null {
   if (!currentTeam) return null;
   const teammates = currentTeam.members.filter(m => m.name !== TEAM_LEAD_NAME);
   if (teammates.length === 0) return null;
-  // 'default' is the Claude wire name; normalizePermissionMode maps it to AMI's
+  // 'default' is the reference wire name; normalizePermissionMode maps it to AMI's
   // canonical interactive default. Non-null because 'default' is a known alias.
   const resetMode = normalizePermissionMode('default')!;
   const modes = teammates.map(m => m.permissionMode ? normalizePermissionMode(m.permissionMode) : resetMode);
@@ -1750,7 +1750,7 @@ export function cycleAllMemberModes(): PermissionMode | null {
 }
 
 /**
- * Remove a teammate from the active team by name OR agentId (mirrors Claude Code's
+ * Remove a teammate from the active team by name OR agentId (mirrors the reference's
  * `removeTeammateFromTeamFile`, which filters by either identifier). Keying on the
  * stable per-member agentId disambiguates when several in-process teammates would
  * otherwise collide on a shared value. The lead is never removable. Returns the
@@ -1773,7 +1773,7 @@ export function removeTeamMember(nameOrId: string): TeamMember | null {
 /**
  * Drop a pane id from the active team's {@link TeamFile.hiddenPaneIds} set, so a
  * disband/remove of the member owning that pane never leaves a dangling hidden-pane
- * entry (parity: Claude Code's `removeMemberFromTeam` scrubs the pane from
+ * entry (parity: the reference's `removeMemberFromTeam` scrubs the pane from
  * hiddenPaneIds). In-memory mutation only — the caller persists. Returns true when
  * the set actually changed.
  */
@@ -1787,7 +1787,7 @@ function scrubHiddenPane(paneId: string): boolean {
 
 /**
  * Remove a teammate from the active team keyed by its terminal pane id (parity:
- * Claude Code's `removeMemberFromTeam(tmuxPaneId)`), ALSO scrubbing that pane from
+ * the reference's `removeMemberFromTeam(tmuxPaneId)`), ALSO scrubbing that pane from
  * the team's {@link TeamFile.hiddenPaneIds} set so no dangling hidden entry remains.
  * Unlike {@link removeTeamMember} (name/agentId keyed), this is the pane-keyed path
  * the roster uses when a user closes a pane. The lead is never removable. Returns
@@ -1808,7 +1808,7 @@ export function removeMemberByPaneId(paneId: string): TeamMember | null {
 
 /**
  * Set (or clear) the hidden state of a teammate's pane in the active team (parity:
- * Claude Code's team-file `hiddenPaneIds` toggle driven from the roster view).
+ * the reference's team-file `hiddenPaneIds` toggle driven from the roster view).
  * Adding is idempotent (a pane already hidden is not duplicated) and removing a pane
  * that is not hidden is a no-op. Persists only when the set actually changed.
  * Returns true when the hidden set changed, false otherwise (including no active
@@ -1833,7 +1833,7 @@ export function setMemberPaneHidden(paneId: string, hidden: boolean): boolean {
 
 /**
  * Remove every idle (non-lead) teammate from the active team in one atomic batch
- * (parity: Claude Code's TeamsDialog "p prune idle" action, which kills all
+ * (parity: the reference's TeamsDialog "p prune idle" action, which kills all
  * teammates whose status is `idle`). A member is idle when its run-state projects
  * to `'idle'` — i.e. `isActive === false` (same default-to-active rule as
  * {@link getTeammateStatuses}). The lead is never pruned. The team file is
@@ -1857,7 +1857,7 @@ export function pruneIdleMembers(): TeamMember[] {
 
 /**
  * Project each non-lead member of a team into a {@link TeammateStatus} record
- * (mirrors Claude Code's `getTeammateStatuses`). The lead is excluded. A member's
+ * (mirrors the reference's `getTeammateStatuses`). The lead is excluded. A member's
  * run-state is derived with the default-to-active rule: `isActive !== false` maps
  * to `'running'`, otherwise `'idle'`. Defaults to the active team when no team is
  * passed, so a disk-loaded team (via {@link readTeamFile}) can also be projected.
@@ -1865,7 +1865,7 @@ export function pruneIdleMembers(): TeamMember[] {
  */
 export function getTeammateStatuses(team: TeamFile | null = currentTeam): TeammateStatus[] {
   if (!team) return [];
-  // Build the hidden-pane set ONCE (parity: Claude's `new Set(hiddenPaneIds ?? [])`)
+  // Build the hidden-pane set ONCE (parity: the reference's `new Set(hiddenPaneIds ?? [])`)
   // so each member's isHidden is an O(1) membership test rather than a per-member scan.
   const hidden = new Set(team.hiddenPaneIds ?? []);
   const out: TeammateStatus[] = [];
@@ -1883,7 +1883,7 @@ export function getTeammateStatuses(team: TeamFile | null = currentTeam): Teamma
       // Prefer the persisted member color; fall back to any live round-robin
       // assignment keyed by the member's agentId.
       color: m.color ?? getTeammateColor(m.agentId),
-      // Surface a PANE backend only (parity: Claude builds status.backendType via
+      // Surface a PANE backend only (parity: the reference builds status.backendType via
       // isPaneBackend — an in-process/unknown backend projects to undefined).
       backendType: isPaneBackend(m.backendType) ? m.backendType : undefined,
       tmuxPaneId: m.tmuxPaneId,
@@ -1898,7 +1898,7 @@ export function getTeammateStatuses(team: TeamFile | null = currentTeam): Teamma
 }
 
 /**
- * Aggregate a team's worker roster into a {@link TeamSummary} (mirrors Claude
+ * Aggregate a team's worker roster into a {@link TeamSummary} (mirrors the reference
  * Code's team summary used by the footer UI): the lead is excluded from every
  * count, and running/idle are derived with the same default-to-active rule as
  * {@link getTeammateStatuses}. Returns null when there is no team.

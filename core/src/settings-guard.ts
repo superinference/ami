@@ -7,15 +7,15 @@ import { CUSTOMIZATION_SURFACES } from './plugin-only-policy';
 // by this array's index. Two tiers beyond the file/env/cli cascade:
 //   - `plugin` — the lowest-priority BASE layer: an installed plugin bundle may
 //     seed default config knobs (env/permissions/hooks defaults) that every other
-//     tier overrides. Parity: Claude's settingsCache plugin settings base.
+//     tier overrides. Parity: the reference's settingsCache plugin settings base.
 //   - `flag`   — an arbitrary settings file passed with `--settings <file>`,
-//     layered ABOVE local and BELOW managed policy. Parity: Claude's
+//     layered ABOVE local and BELOW managed policy. Parity: the reference's
 //     SETTING_SOURCES `flagSettings` layer.
 export const SETTINGS_TIERS = ['managed', 'plugin', 'global', 'project', 'local', 'flag', 'env', 'cli'] as const;
 export type SettingsTier = (typeof SETTINGS_TIERS)[number];
 
 // ---------------------------------------------------------------------------
-// Human-readable setting-source display names (parity: Claude's
+// Human-readable setting-source display names (parity: the reference's
 // utils/settings/constants.ts getSourceDisplayName / getSettingSourceName /
 // getSettingSourceDisplayNameLowercase / …Capitalized). A raw tier token
 // ('managed', 'local', …) is fine for machine logic but unreadable in a UI, a
@@ -76,7 +76,7 @@ export function getSettingsTierLabels(): Array<{
 }
 
 // ---------------------------------------------------------------------------
-// Dangerous-settings classifier (parity: Claude's ManagedSettingsSecurityDialog
+// Dangerous-settings classifier (parity: the reference's ManagedSettingsSecurityDialog
 // utils.ts + managedEnvConstants.ts). Managed / remote / untrusted settings can
 // carry knobs that execute arbitrary shell (statusLine, auth helpers), inject
 // dangerous env vars, or register hooks. Before such settings are trusted, the
@@ -210,7 +210,7 @@ export interface ManagedSettingsSource {
  * first). Drop-ins under `<managedBase>/config.d/*.json` layer OVER the base file
  * (last-wins in `loadManagedConfig`), so they outrank it. Paired with prose labels
  * so `/settings-guard` / `ami --introspect` can show the labeled, ordered cascade
- * instead of a single opaque "managed" tier. Parity: Claude's getMacOSPlistPaths()
+ * instead of a single opaque "managed" tier. Parity: the reference's getMacOSPlistPaths()
  * labeled, priority-ordered managed-source list (adapted to AMI's Linux layout).
  */
 export function getManagedSettingsSources(basePath: string, dropInDir: string): ManagedSettingsSource[] {
@@ -237,36 +237,36 @@ export const MANAGED_ONLY_KEYS = new Set([
   // ones only (user/project self-authorization is dropped and "always allow"
   // persistence is refused). Like its `allowManaged*Only` siblings this is an
   // admin policy, so it is managed-only — a project/local/env/cli file setting it
-  // would let the restricted tier grant itself the lockdown. Parity: Claude
+  // would let the restricted tier grant itself the lockdown. Parity: the reference
   // Code's `allowManagedPermissionRulesOnly` policy.
   'allowManagedPermissionRulesOnly',
   // Per-surface policy that locks customization (skills/agents/hooks/mcp) to
   // plugin-provided sources only, blocking user/project tiers. An admin lockdown,
   // so it is managed-only — a lower tier must not be able to declare (or opt out
-  // of) the restriction on itself. Parity: Claude Code's
+  // of) the restriction on itself. Parity: the reference's
   // `strictPluginOnlyCustomization` policy.
   'strictPluginOnlyCustomization',
   // Org opt-in gate for the MCP "channels" notification feature. Teams/enterprise
   // orgs must explicitly enable it via `channelsEnabled: true` in managed settings
   // — it is an admin trust/availability decision, so a project/local/env/cli file
-  // must not be able to self-enable the feature. Parity: Claude Code's
+  // must not be able to self-enable the feature. Parity: the reference's
   // `channelsEnabled` managed-settings policy gate.
   'channelsEnabled',
   // Org-owned allowlist of channel plugins that, when set in managed settings,
   // REPLACES the local trust ledger (the admin owns the trust decision). A lower
   // tier setting it would let the restricted scope grant itself trust, so it is
-  // managed-only. Parity: Claude Code's `allowedChannelPlugins` managed setting.
+  // managed-only. Parity: the reference's `allowedChannelPlugins` managed setting.
   'allowedChannelPlugins',
   // Admin lockdown that forces the container sandbox to permit ONLY managed/approved
   // network domains — a project/local/env/cli tier must not be able to relax the
-  // egress boundary on itself, so it is managed-only. Parity: Claude Code's
+  // egress boundary on itself, so it is managed-only. Parity: the reference's
   // `shouldAllowManagedSandboxDomainsOnly()` managed-policy knob.
   'allowManagedSandboxDomainsOnly',
   // Enterprise exclusive-control switch: when set, ONLY admin-provisioned
   // (`managedMcpServers`, enterprise scope) MCP servers may run — every user /
   // project / local / dynamic server is blocked. Like its `allowManaged*Only`
   // siblings this is an admin lockdown, so a lower tier must not be able to set it
-  // on itself. Parity: Claude Code's `allowManagedMcpServersOnly` policy.
+  // on itself. Parity: the reference's `allowManagedMcpServersOnly` policy.
   'allowManagedMcpServersOnly',
 ]);
 
@@ -276,7 +276,7 @@ export const MANAGED_ONLY_KEYS = new Set([
  * {@link MANAGED_ONLY_KEYS} entry, so by the time a config is merged (see
  * `mergeConfigs`, which copies it ONLY from the managed tier) a truthy value here
  * provably originated from admin/managed policy — a project/local/env/cli file
- * can never set it. Parity: Claude Code's `isBypassPermissionsModeDisabled()`.
+ * can never set it. Parity: the reference's `isBypassPermissionsModeDisabled()`.
  */
 export function isBypassPermissionsModeDisabled(
   config: { disableBypassPermissionsMode?: unknown } | null | undefined,
@@ -290,7 +290,7 @@ export function isBypassPermissionsModeDisabled(
  * sessionStart/… including status-line/file-suggestion hooks). The flag is a
  * {@link MANAGED_ONLY_KEYS} entry, so a truthy value in a merged config provably
  * originated from the managed tier (`mergeConfigs` copies it ONLY from managed) —
- * a project/local/env/cli file can never set it. Parity: Claude Code's
+ * a project/local/env/cli file can never set it. Parity: the reference's
  * `disableAllHooks` policy setting.
  */
 export function isAllHooksDisabled(
@@ -303,7 +303,7 @@ export function isAllHooksDisabled(
  * True when a merged config restricts hook execution to admin/managed-sourced
  * hooks only via the managed `allowManagedHooksOnly` policy (user/project/plugin
  * hooks blocked). A {@link MANAGED_ONLY_KEYS} entry, so by the time a config is
- * merged a truthy value here provably came from the managed tier. Parity: Claude
+ * merged a truthy value here provably came from the managed tier. Parity: the reference
  * Code's `allowManagedHooksOnly` policy setting.
  */
 export function isManagedHooksOnly(
@@ -338,8 +338,8 @@ export interface SandboxPolicyLockInput {
  * "overridden by a higher-priority configuration and cannot be changed locally",
  * because `mergeConfigs` makes managed sandbox settings authoritative and a local
  * edit would be silently ineffective. Pass the MANAGED config slice specifically
- * (the admin-sourced tier), mirroring Claude's check of the policy/flag sources.
- * Parity: Claude Code's `SandboxManager.areSandboxSettingsLockedByPolicy()`.
+ * (the admin-sourced tier), mirroring the reference's check of the policy/flag sources.
+ * Parity: the reference's `SandboxManager.areSandboxSettingsLockedByPolicy()`.
  */
 export function areSandboxSettingsLockedByPolicy(
   managedConfig: SandboxPolicyLockInput | null | undefined,
@@ -360,7 +360,7 @@ export function areSandboxSettingsLockedByPolicy(
  * that an admin/managed policy owns. A write to a policy-locked sandbox setting
  * would be silently ineffective (`mergeConfigs` makes managed sandbox settings
  * authoritative), so the frontend refuses it with this message + still shows the
- * effective value. Parity: Claude Code's SandboxOverridesTab locked-override text
+ * effective value. Parity: the reference's SandboxOverridesTab locked-override text
  * ("Override settings are managed by a higher-priority configuration and cannot be
  * changed locally.").
  */
@@ -370,7 +370,7 @@ export const SANDBOX_POLICY_LOCK_MESSAGE =
 /**
  * The status suffix an admin/managed-owned setting carries so a user reads WHY a
  * control is read-only (e.g. `Mode: container (managed)`). Empty when not locked.
- * Parity: Claude Code's `(managed)`/`(Managed)` status label on policy-locked
+ * Parity: the reference's `(managed)`/`(Managed)` status label on policy-locked
  * sandbox/toggle settings.
  */
 export function managedStatusSuffix(locked: boolean): string {
@@ -383,7 +383,7 @@ export function managedStatusSuffix(locked: boolean): string {
  * knob. A {@link MANAGED_ONLY_KEYS} entry, so by the time a config is merged a
  * truthy value here provably came from the managed tier (`mergeConfigs` copies it
  * ONLY from managed) — a project/local/env/cli file can never set it. Parity:
- * Claude Code's `shouldAllowManagedSandboxDomainsOnly()` policy knob.
+ * the reference's `shouldAllowManagedSandboxDomainsOnly()` policy knob.
  */
 export function shouldAllowManagedSandboxDomainsOnly(
   config: { allowManagedSandboxDomainsOnly?: unknown } | null | undefined,
@@ -413,7 +413,7 @@ export interface ManagedPolicyWarning {
  * naming surfaces this client does not recognize (or non-string entries) are
  * dropped forward-compat — in both cases an admin believes a lockdown is active
  * when part of it is not. Returns one {@link ManagedPolicyWarning} per problem
- * (empty when the policy file is clean or absent). Parity: Claude Code's doctor
+ * (empty when the policy file is clean or absent). Parity: the reference's doctor
  * managed-settings forward-compat diagnostic (`doctorDiagnostic.ts`).
  */
 export function validateManagedPolicyValues(
@@ -455,7 +455,7 @@ export const TIER_LOCKED_KEYS = new Set([
 ]);
 
 // ---------------------------------------------------------------------------
-// Nested-key (sub-key) granularity for governed settings (parity: Claude Code's
+// Nested-key (sub-key) granularity for governed settings (parity: the reference's
 // settings.ts validNestedKeys — permissions/sandbox/hooks are expanded ONE level
 // deep so a sub-path like `permissions.deny` or `sandbox.allowUnsandboxedCommands`
 // is governed INDEPENDENTLY of its siblings). AMI's flat {@link MANAGED_ONLY_KEYS}
@@ -472,7 +472,7 @@ export const TIER_LOCKED_KEYS = new Set([
  * container (`permissions`, `sandbox`) is itself overridable. Each weakens a
  * security boundary — the bypass-permissions escape hatch and the two sandbox
  * exemption toggles — so a project/local/env/cli tier must not be able to set it
- * on itself, mirroring the top-level {@link MANAGED_ONLY_KEYS}. Parity: Claude's
+ * on itself, mirroring the top-level {@link MANAGED_ONLY_KEYS}. Parity: the reference's
  * nested `permissions.disableBypassPermissionsMode` /
  * `sandbox.allowUnsandboxedCommands` managed sub-keys.
  */
@@ -487,7 +487,7 @@ export const MANAGED_ONLY_NESTED_KEYS = new Set<string>([
  * value a higher tier set, but (unlike {@link MANAGED_ONLY_NESTED_KEYS}) any tier
  * may be the authoritative one. `permissions.deny` is the canonical case — a
  * higher tier's deny-list must not be shadowable by a lower tier editing only the
- * `deny` sub-key. Parity: Claude's nested-key handling for `permissions.deny`.
+ * `deny` sub-key. Parity: the reference's nested-key handling for `permissions.deny`.
  */
 export const TIER_LOCKED_NESTED_KEYS = new Set<string>([
   'permissions.deny',
@@ -534,11 +534,11 @@ export function isTierLockedKey(key: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// JSON Schema generation for the settings file (parity: Claude Code's
+// JSON Schema generation for the settings file (parity: the reference's
 // utils/settings/schemaOutput.ts generateSettingsJSONSchema). A published JSON
 // Schema lets editors give autocomplete + live validation for settings.json (via
 // a `$schema` ref) and gives one canonical, machine-consumable description of the
-// policy keys AMI governs. Claude derives its schema from a Zod definition; AMI
+// policy keys AMI governs. the reference derives its schema from a Zod definition; AMI
 // has no Zod, so the schema is DERIVED from this module's own authoritative key
 // sets (MANAGED_ONLY_KEYS / TIER_LOCKED_KEYS / DANGEROUS_SHELL_SETTINGS) — it
 // therefore self-updates when those sets change and can never silently drop a
@@ -624,7 +624,7 @@ function managedKeyProperty(key: string): SettingsSchemaProperty {
   }
   // Union-typed or future keys (e.g. strictPluginOnlyCustomization: boolean | string[])
   // are left permissive (no `type`) so a valid value of either shape validates and a
-  // newly-added managed key never breaks the schema. Parity with Claude's
+  // newly-added managed key never breaks the schema. Parity with the reference's
   // `unrepresentable: 'any'` fallback.
   return { description: `Managed-only policy key "${key}" (set only in enterprise managed settings).`, managed: true };
 }
@@ -643,7 +643,7 @@ function tierLockedKeyProperty(key: string): SettingsSchemaProperty {
  * Managed-only keys are flagged `managed`, tier-locked keys `tierLocked`, dangerous
  * shell-executing settings are typed `string` with a danger note. Non-strict
  * (`additionalProperties: true`) — it describes the governed subset, not every
- * possible settings key. Parity: Claude Code's `generateSettingsJSONSchema()`.
+ * possible settings key. Parity: the reference's `generateSettingsJSONSchema()`.
  */
 export function getSettingsJSONSchema(): SettingsJSONSchema {
   const properties: Record<string, SettingsSchemaProperty> = {};
@@ -688,7 +688,7 @@ export function getSettingsJSONSchema(): SettingsJSONSchema {
 //     MORE authoritative (managed(0) can never be overridden). plugin(7) is the
 //     LEAST authoritative, so a plugin-seeded locked value yields to every tier
 //     and a plugin can never lock a key against a higher tier. `flag` is the most
-//     authoritative non-policy source (Claude: flagSettings sits just below policy).
+//     authoritative non-policy source (the reference: flagSettings sits just below policy).
 //
 // For the pre-existing tiers (managed/global/project/local/env/cli) the relative
 // order of BOTH scales is identical to the old single map, so prior behavior is
@@ -722,7 +722,7 @@ const LOCK_PRIORITY: Record<SettingsTier, number> = {
  * first, `cli` last), i.e. a later tier's ordinary value overrides an earlier
  * one's. This is the documented cascade ordering surfaced via `/settings-guard`
  * and `ami --introspect` so the precedence is machine- and human-readable rather
- * than implied by code. Parity: Claude's SETTING_SOURCES low→high ordering.
+ * than implied by code. Parity: the reference's SETTING_SOURCES low→high ordering.
  */
 export function getSettingsLayerOrder(): SettingsTier[] {
   return [...SETTINGS_TIERS].sort((a, b) => NORMAL_PRIORITY[a] - NORMAL_PRIORITY[b]);
@@ -775,12 +775,12 @@ export interface EffectiveAppliedSettings<E extends Record<string, unknown>, A e
 }
 
 /**
- * Split the two-phase settings resolution Claude's SDK `get_settings` exposes: the
+ * Split the two-phase settings resolution the reference's SDK `get_settings` exposes: the
  * disk-merged `effective` config versus the runtime-`applied` values actually sent
  * to the API after env overrides / session state / model-specific defaults are
  * layered on top. `effective` is returned untouched (not mutated); `applied` is a
  * shallow overlay of `runtime` over `effective` so a caller can show "configured
- * X, running with Y". Parity: Claude's effective≠applied distinction.
+ * X, running with Y". Parity: the reference's effective≠applied distinction.
  */
 export function resolveAppliedSettings<E extends Record<string, unknown>, A extends Record<string, unknown>>(
   effective: E,
@@ -801,7 +801,7 @@ export function filterManagedKeys(config: Record<string, unknown>, sourceTier: S
     // not itself managed-only, but may hold managed-only SUB-keys. From a non-managed
     // source, drop just those dotted sub-keys and keep the valid siblings, rather than
     // passing the whole object through (which would let a project self-set e.g.
-    // `sandbox.allowUnsandboxedCommands`). Parity: Claude's one-level nested-key
+    // `sandbox.allowUnsandboxedCommands`). Parity: the reference's one-level nested-key
     // expansion of permissions/sandbox/hooks.
     if (
       sourceTier !== 'managed' &&
@@ -824,7 +824,7 @@ export function filterManagedKeys(config: Record<string, unknown>, sourceTier: S
 /**
  * Drop the managed-only dotted sub-keys of a single container object, returning the
  * kept remainder and the dotted names rejected (e.g. `sandbox.allowUnsandboxedCommands`).
- * Only descends ONE level (parity with Claude's nested-key expansion); deeper
+ * Only descends ONE level (parity with the reference's nested-key expansion); deeper
  * structure is left intact.
  */
 function filterNestedManagedKeys(
@@ -854,7 +854,7 @@ export class SettingsGuard {
     // keys are org policy (remedy: contact the administrator); tier-locked keys name
     // the tier the write must target instead. The structured {key,source,reason}
     // shape is preserved so each UI can still render it however it likes. Parity:
-    // Claude Code's managed/policy-locked rule message ("configured by managed
+    // the reference's managed/policy-locked rule message ("configured by managed
     // settings and cannot be modified — contact your system administrator").
     const reason = isManagedOnlyKey(key)
       ? `"${key}" is managed by your organization and cannot be set here — contact your administrator.`

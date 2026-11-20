@@ -5,7 +5,7 @@
  * rendered — the branching logic a frontend needs, kept out of any UI layer so both
  * the CLI and any other frontend derive identical states from the same source.
  *
- * Parity targets (Claude Code):
+ * Parity targets (the reference):
  *  - `UserToolResultMessage` 4-way result discrimination (canceled/rejected/interrupted/error/success)
  *  - `AssistantToolUseMessage` queued (requested-but-not-started) tool-call state
  *  - `SystemTextMessage` severity-level styling + verbose-gated info suppression
@@ -28,14 +28,14 @@ export type ToolResultState = (typeof TOOL_RESULT_STATES)[number];
  * Discriminate a {@link ToolResult} into one of six mutually-exclusive render
  * states, instead of collapsing everything non-successful into a single `isError`.
  *
- * Precedence mirrors Claude's component order: an explicit `canceled` marker wins,
+ * Precedence mirrors the reference's component order: an explicit `canceled` marker wins,
  * then `rejected` (user denied at a permission prompt), then `interrupted`
  * (stop/abort with no real result — also inferred from the synthetic interrupt
  * placeholder content so a result that only carries the sentinel text is still
  * classified correctly), then `ask` (a RECOVERABLE validation failure the model is
  * expected to fix and retry — `behavior: 'ask'`, distinct from a fatal error so a
  * frontend can present an "ask and retry" affordance instead of a hard stop), then a
- * plain `isError`, else `success`. Parity: Claude's FileEditTool `behavior: 'ask'`
+ * plain `isError`, else `success`. Parity: the reference's FileEditTool `behavior: 'ask'`
  * vs `'error'` split surfaced through the tool-result message renderer.
  */
 export function classifyToolResultState(result: ToolResult): ToolResultState {
@@ -60,7 +60,7 @@ export function isUnsuccessfulToolResult(state: ToolResultState): boolean {
  * is noise once a batched shutdown summary reports the same thing). This is the single
  * canonical gate so every frontend suppresses identically instead of reading the flag
  * ad hoc. The model always keeps `output`; only the user-facing render is skipped.
- * Parity: Claude's `renderToolResultMessage` returning `null` to suppress a redundant
+ * Parity: the reference's `renderToolResultMessage` returning `null` to suppress a redundant
  * result (TeamDeleteTool/UI.tsx).
  */
 export function shouldRenderToolResult(result: ToolResult): boolean {
@@ -76,7 +76,7 @@ export function shouldRenderToolResult(result: ToolResult): boolean {
  * Compact one-line summary of a tool call's structured input fields, for the
  * tool-use header a frontend renders before a result arrives.
  *
- * Mirrors Claude's `SyntheticOutputTool.renderToolUseMessage`: with **≤ 3** keys it
+ * Mirrors the reference's `SyntheticOutputTool.renderToolUseMessage`: with **≤ 3** keys it
  * inlines them as `k: <value>, …` so the user sees exactly what is being produced;
  * with **> 3** keys it collapses to `<n> fields: a, b, c…` (first three key names,
  * ellipsis) to stay terse. Keys are taken in object order. A non-object / empty input
@@ -129,7 +129,7 @@ export type ToolCallDisplayState = (typeof TOOL_CALL_DISPLAY_STATES)[number];
 
 /**
  * Derive the per-block display state of a tool call from the two lookup sets a
- * frontend maintains, exactly as Claude does:
+ * frontend maintains, exactly as the reference does:
  *  - `resolved`  — the id is in `resolvedToolUseIds` (it has a result);
  *  - `running`   — not resolved, but in `inProgressToolUseIds` (executing now);
  *  - `queued`    — neither: requested in the assistant message but not yet started
@@ -175,7 +175,7 @@ export interface SystemMessageDisplayOptions {
 /**
  * Compute how a system message of a given severity `level` should render.
  *
- * Mirrors Claude's `SystemTextMessage`: info-level messages are suppressed unless
+ * Mirrors the reference's `SystemTextMessage`: info-level messages are suppressed unless
  * verbose (or it is a stop-hook summary); the dot shows for every level except info;
  * color is `'warning'` only for warnings; dimColor applies only to info. An absent
  * level is treated as `info` (AMI's default low-importance notice).
@@ -201,7 +201,7 @@ export function systemMessageDisplay(
 
 /** Dim-italic placeholder shown when the model produced an encrypted/redacted
  *  thinking block with no displayable plaintext, so the user still sees that
- *  reasoning happened. Parity: Claude's `✻ Thinking…` redacted-thinking affordance. */
+ *  reasoning happened. Parity: the reference's `✻ Thinking…` redacted-thinking affordance. */
 export const REDACTED_THINKING_PLACEHOLDER = '✻ Thinking…';
 
 /** A minimal structural view of a provider content block, enough to detect the
@@ -269,7 +269,7 @@ export function isInjectedUserMessage(m: Message): boolean {
  * every human-turn count / lookup so engine-injected framing (system-reminder
  * blocks, the SI retrieval prefix, meta nudges) never inflates the tally.
  *
- * Parity: Claude Code's `isHumanTurn` discriminant
+ * Parity: the reference's `isHumanTurn` discriminant
  * (references/claude/claude-code-main/src/utils/messagePredicates.ts:L6-8),
  * adapted to AMI's schema (tool results are `role:'tool'`, so the `toolUseResult`
  * half is structural; the `!isMeta` half plus injected-message exclusion is here).

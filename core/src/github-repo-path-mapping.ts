@@ -9,7 +9,7 @@ import { getRemoteOriginUrl } from './utils/git';
 /**
  * Persistent GitHub-repo -> local-clone-path registry with MRU ordering.
  *
- * Parity with Claude Code's `githubRepoPathMapping.ts`: AMI maintains a global-config
+ * Parity with the reference's `githubRepoPathMapping.ts`: AMI maintains a global-config
  * map (`githubRepoPaths`) keyed by the lowercased `owner/repo` -> a most-recently-used
  * list of that repo's known local clone roots. The clone a repo was most recently used
  * from is always first, so a repo-scoped feature can resolve "where on disk is a clone
@@ -17,12 +17,12 @@ import { getRemoteOriginUrl } from './utils/git';
  *
  * The stored path is canonicalized so the same clone always maps to one entry — reusing
  * AMI's established project-identity canonicalizer {@link canonicalGitRoot}, which already
- * performs the steps Claude's helper does inline (git-root resolution, symlink realpath,
+ * performs the steps the reference's helper does inline (git-root resolution, symlink realpath,
  * NFC Unicode normalization) PLUS AMI's superset of mapping every linked worktree of a
  * repo to its single canonical main-worktree root. The repo KEY is lowercased for
  * case-insensitive matching.
  *
- * Divergence from the reference (intentional, §0c): Claude wraps each helper in a
+ * Divergence from the reference (intentional, §0c): the reference wraps each helper in a
  * try/catch because its `findGitRoot`/`realpath`/`getRemoteUrlForDir` THROW. AMI's
  * dependencies are all total/fail-soft (they return null/defaults on any error), so no
  * redundant outer catch is needed — the fire-and-forget startup contract is upheld by
@@ -45,7 +45,7 @@ function readRegistry(): Record<string, string[]> {
  * fire-and-forget startup work: it detects the current github.com repository and stores
  * its canonical git root.
  *
- * Algorithm (parity with Claude Code's `updateGithubRepoPathMapping`):
+ * Algorithm (parity with the reference's `updateGithubRepoPathMapping`):
  *   - no github.com repo at `cwd` → no-op;
  *   - the canonical path is already at index 0 → short-circuit (no write);
  *   - otherwise remove any existing occurrence and prepend, so the most-recently-used
@@ -97,7 +97,7 @@ export function getKnownPathsForRepo(repo: string): string[] {
  * Filter `paths` to only those that currently exist on the filesystem, PRESERVING the
  * input order. Existence is checked in parallel (`Promise.all`), then the original array
  * is index-filtered against the results — so a stale clone path that was moved/deleted is
- * pruned without reordering the surviving MRU entries. Parity with Claude Code's
+ * pruned without reordering the surviving MRU entries. Parity with the reference's
  * `filterExistingPaths`.
  */
 export async function filterExistingPaths(paths: string[]): Promise<string[]> {
@@ -116,7 +116,7 @@ export async function filterExistingPaths(paths: string[]): Promise<string[]> {
  * Validate that `path` still hosts the `expectedRepo` (`owner/repo`) clone by reading its
  * git `origin` remote URL, parsing the GitHub `owner/repo` out of it, and comparing
  * case-insensitively. Returns `false` on any missing remote, unparseable URL, or mismatch.
- * Parity with Claude Code's `validateRepoAtPath` (AMI's remote reader is fail-soft, so no
+ * Parity with the reference's `validateRepoAtPath` (AMI's remote reader is fail-soft, so no
  * throwing path to guard).
  */
 export async function validateRepoAtPath(path: string, expectedRepo: string): Promise<boolean> {
@@ -131,7 +131,7 @@ export async function validateRepoAtPath(path: string, expectedRepo: string): Pr
 
 /**
  * Remove `pathToRemove` from `repo`'s tracked clone paths (used when a stored path is
- * found invalid during selection). Self-pruning, parity with Claude Code's
+ * found invalid during selection). Self-pruning, parity with the reference's
  * `removePathFromRepo`:
  *   - the path is not in the list → no-op (no write);
  *   - the list becomes empty → the whole repo KEY is deleted (the map stays compact)

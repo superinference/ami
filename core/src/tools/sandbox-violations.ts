@@ -2,7 +2,7 @@
  * Sandbox violation store — a recorded, queryable surface of operations the
  * sandbox boundary blocked.
  *
- * PARITY (Claude's `SandboxManager.getSandboxViolationStore()` /
+ * PARITY (the reference's `SandboxManager.getSandboxViolationStore()` /
  * `SandboxViolationStore` + `SandboxViolationExpandedView`): AMI's container
  * sandbox (see {@link import('./docker-sandbox')}) otherwise blocks operations
  * SILENTLY — a dropped network call or an unmounted-path access just fails with a
@@ -11,14 +11,14 @@
  * can see what was blocked (the `/sandbox` status surfaces the running total + the
  * last-N), satisfying AMI's introspection invariant.
  *
- * It also implements Claude's `sandbox.ignoreViolations` (a `Record<command,
+ * It also implements the reference's `sandbox.ignoreViolations` (a `Record<command,
  * string[]>` of per-command violation strings to tolerate): a recorded violation
  * whose detail matches an allowlisted entry for its command is suppressed, letting
  * operators whitelist known-benign denials without disabling the sandbox wholesale.
  */
 
 /**
- * PARITY (Claude's `<sandbox_violations>` envelope — `extractSandboxViolations` /
+ * PARITY (the reference's `<sandbox_violations>` envelope — `extractSandboxViolations` /
  * `removeSandboxViolationTags` in `BashToolResultMessage.tsx`): the tag name that
  * wraps sandbox-caused diagnostic notes in a command's stderr. The block is kept
  * in the MODEL-facing output (so the model can explain that a failure was the
@@ -51,7 +51,7 @@ export function wrapSandboxViolations(notes: readonly string[]): string {
 
 /**
  * Remove every `<sandbox_violations>…</sandbox_violations>` block from `text`
- * (model-only markup — the user display must not show it). Mirrors Claude's
+ * (model-only markup — the user display must not show it). Mirrors the reference's
  * `removeSandboxViolationTags`. Pure; returns `text` unchanged when no block is
  * present. Used by the CLI tool-error renderer so the emitter and stripper share
  * the one tag definition above.
@@ -88,7 +88,7 @@ export const _sandboxViolationHooks = { now: (): number => Date.now() };
 /**
  * In-memory store of sandbox violations with a running total, a bounded recent
  * buffer, a subscribe/unsubscribe feed (so a UI can react), and an
- * `ignoreViolations` suppression map (Claude parity). `getTotalCount()` counts
+ * `ignoreViolations` suppression map (the reference parity). `getTotalCount()` counts
  * every RECORDED (non-suppressed) violation even after old events age out of the
  * bounded buffer.
  */
@@ -105,7 +105,7 @@ export class SandboxViolationStore {
 
   /**
    * Install the per-command allowlist of violation substrings to tolerate
-   * (Claude's `sandbox.ignoreViolations`). A later {@link record} whose detail
+   * (the reference's `sandbox.ignoreViolations`). A later {@link record} whose detail
    * matches an allowlisted entry for its command (or for the `'*'` wildcard
    * command) is suppressed. Passing `undefined` clears the map.
    */

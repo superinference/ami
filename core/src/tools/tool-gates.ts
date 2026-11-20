@@ -3,7 +3,7 @@ import type { ToolRegistryGuardOptions } from './tool-registry-guard';
 
 /**
  * PARITY (additive): centralized capability gates for conditional tool
- * registration. Mirrors Claude Code's feature-flag pattern — `tasks.ts`
+ * registration. Mirrors the reference's feature-flag pattern — `tasks.ts`
  * conditionally registers task types behind `feature('WORKFLOW_SCRIPTS')` /
  * `feature('MONITOR_TOOL')`, `agentSwarmsEnabled.ts` exposes a single
  * `isAgentSwarmsEnabled()` gate checked everywhere teammates are referenced,
@@ -34,7 +34,7 @@ export function capabilityEnabled(raw: string | undefined): boolean {
 const FEATURE_FLAG_ENV_PREFIXES = ['SUPERINFERENCE', 'CLAUDE_CODE'] as const;
 
 /**
- * Build the generic feature-flag env-var name for a capability. Parity: Claude
+ * Build the generic feature-flag env-var name for a capability. Parity: the reference
  * Code's `feature(<NAME>)` reads a `CLAUDE_CODE_FEATURE_<NAME>` override; AMI
  * accepts its own `SUPERINFERENCE_FEATURE_<NAME>` spelling first. The NAME is
  * upper-cased and every non-alphanumeric run is collapsed to a single `_`
@@ -54,7 +54,7 @@ export function featureFlagEnvName(
 }
 
 /**
- * Generic named-capability gate (parity: Claude Code's `feature()` + its
+ * Generic named-capability gate (parity: the reference's `feature()` + its
  * `features` map). The ONE reader of the previously-inert
  * `ProjectConfig.features` map: `applyConfigFeatureFlags` (config.ts) bridges the
  * persisted map onto the `SUPERINFERENCE_FEATURE_<NAME>` env at startup, so this
@@ -96,7 +96,7 @@ export function subsystemEnabled(
 }
 
 /** Canonical feature-flag names for the default-ON subsystem gates (parity with
- *  Claude Code's `feature('WORKFLOW_SCRIPTS')`-style task-registry gating). */
+ *  the reference's `feature('WORKFLOW_SCRIPTS')`-style task-registry gating). */
 export const WORKFLOW_SCRIPTS_FEATURE = 'WORKFLOW_SCRIPTS';
 export const CRON_FEATURE = 'CRON';
 export const AGENT_TEAMS_FEATURE = 'AGENT_TEAMS';
@@ -104,7 +104,7 @@ export const LSP_FEATURE = 'LSP';
 
 /** Env var that toggles the multi-agent teammate subsystem (default ON). */
 export const AGENT_TEAMS_ENV = 'AMI_AGENT_TEAMS';
-/** CLI flag that force-enables the teammate subsystem (mirrors Claude's `--agent-teams`). */
+/** CLI flag that force-enables the teammate subsystem (mirrors the reference's `--agent-teams`). */
 export const AGENT_TEAMS_ON_FLAG = '--agent-teams';
 /** CLI flag that force-disables the teammate subsystem. */
 export const AGENT_TEAMS_OFF_FLAG = '--no-agent-teams';
@@ -132,7 +132,7 @@ export const LSP_ENV = 'AMI_LSP';
 
 /**
  * Gate for the LSP tools (`diagnostics`, `find_references`, `lsp`). Parity with
- * Claude's ENABLE_LSP_TOOL knob, but default ON (AMI ships LSP always-on) with
+ * the reference's ENABLE_LSP_TOOL knob, but default ON (AMI ships LSP always-on) with
  * {@link LSP_ENV} as the disable switch, with the generic `LSP` feature flag
  * (from `config.features`) as a fallback.
  */
@@ -146,7 +146,7 @@ export function isLspEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
  * schema, (b) drops the background guidance sentence from its description, and
  * (c) forces a `run_in_background: true` request to run in the foreground. Lets an
  * operator in a locked-down environment turn the capability fully off from one
- * place. Parity: Claude Code's `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS` (read via
+ * place. Parity: the reference's `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS` (read via
  * `isEnvTruthy`), whose spelling is accepted alongside the AMI-native name — same
  * dual-name convention analytics.ts uses for the DISABLE_NONESSENTIAL_TRAFFIC pair.
  */
@@ -168,7 +168,7 @@ export function isBackgroundTasksDisabled(env: NodeJS.ProcessEnv = process.env):
  * Env var that disables the git/commit guidance in the bash tool description
  * (default: ENABLED — the git sentence is shown). When truthy, the bash tool
  * drops the "Git: `git commit` via bash is blocked … never commit unless
- * explicitly asked" sentence from its model-facing description. Parity: Claude
+ * explicitly asked" sentence from its model-facing description. Parity: the reference
  * Code's `shouldIncludeGitInstructions()` / `getCommitAndPRInstructions()` gate
  * (prompt.ts), which omits the git/commit-PR section for deployments that steer
  * the model away from git entirely. This is a disable switch, so it uses truthy
@@ -189,7 +189,7 @@ export function isGitInstructionsDisabled(env: NodeJS.ProcessEnv = process.env):
  * Env var that globally disables the lightweight host (unshare) auto-sandbox
  * (default: ENABLED — the auto-wrap stays on). When truthy the bash tool never
  * wraps a command with the unshare backend in the non-container branch, even
- * when a SANDBOX_TRIGGER_PATTERN matches. Parity: Claude Code's
+ * when a SANDBOX_TRIGGER_PATTERN matches. Parity: the reference's
  * `SandboxManager.isSandboxingEnabled()` — a single off-switch for all
  * auto-sandboxing. Container mode (`sandbox.mode === 'container'`) is governed
  * separately and is NOT affected. Per-call `SandboxPolicy.enabled === false`
@@ -210,7 +210,7 @@ export function isHostSandboxDisabled(env: NodeJS.ProcessEnv = process.env): boo
  * (default: ALLOWED — the parameter is advertised and honored). When truthy the
  * bash tool (a) omits `dangerouslyDisableSandbox` from the model-facing input
  * schema and (b) ignores it at runtime, so a model can never run a command
- * outside the sandbox. Parity: Claude Code's
+ * outside the sandbox. Parity: the reference's
  * `SandboxManager.areUnsandboxedCommandsAllowed()` policy knob, whose prompt
  * states 'the `dangerouslyDisableSandbox` parameter is disabled by policy'. This
  * is the env-level analogue of the per-config
@@ -229,13 +229,13 @@ export function isSandboxEscapeDisabled(env: NodeJS.ProcessEnv = process.env): b
 
 /**
  * Env var that switches the host auto-sandbox from AMI's narrow trigger-pattern
- * allowlist to Claude Code's DEFAULT-DENY coverage model (default: OFF — the
+ * allowlist to the reference's DEFAULT-DENY coverage model (default: OFF — the
  * trigger allowlist is used). When truthy, {@link shouldUseSandbox} sandboxes
  * EVERY command that is not explicitly exempt, instead of only the ~11 hardcoded
  * trigger patterns (curl/wget/interpreters/eval/…). This closes the structural
  * coverage hole where a compiled/local binary (`./evil`), `nc`, `ssh`, `scp`,
  * `rsync`, `dd`, `socat`, a path-invoked shell script, or a bare `> /etc/…`
- * redirection runs with NO sandbox because it matches no trigger. Parity: Claude
+ * redirection runs with NO sandbox because it matches no trigger. Parity: the reference
  * Code's `shouldUseSandbox()` (tools/BashTool/shouldUseSandbox.ts), which returns
  * `true` for all commands once sandboxing is enabled and `false` only for
  * excluded commands. Disable switch semantics (default OFF → trigger allowlist),
@@ -256,7 +256,7 @@ export function isSandboxDefaultDeny(env: NodeJS.ProcessEnv = process.env): bool
 export const WORKFLOW_SCRIPTS_ENV = 'AMI_WORKFLOW_SCRIPTS';
 
 /**
- * Gate for the `workflow` tool. Parity with Claude's `feature('WORKFLOW_SCRIPTS')`
+ * Gate for the `workflow` tool. Parity with the reference's `feature('WORKFLOW_SCRIPTS')`
  * conditional task registration, so the capability can be flipped off from one
  * place without removing code. The dedicated {@link WORKFLOW_SCRIPTS_ENV} wins;
  * otherwise the generic `WORKFLOW_SCRIPTS` feature flag (from `config.features`)
@@ -271,7 +271,7 @@ export const CRON_ENV = 'AMI_CRON';
 
 /**
  * Gate for the cron / scheduling tools (`cron_create`, `cron_delete`,
- * `cron_list`, `schedule_wakeup`). Parity with Claude's `isKairosCronEnabled()`
+ * `cron_list`, `schedule_wakeup`). Parity with the reference's `isKairosCronEnabled()`
  * feature-flag check on its ScheduleCron tools, but default ON (AMI ships
  * scheduling always-on) with {@link CRON_ENV} as the single disable switch and
  * the generic `CRON` feature flag (from `config.features`) as a fallback.
@@ -286,8 +286,8 @@ export const TASK_TRACKER_ENV = 'AMI_TASK_TRACKER';
 export const TASK_TRACKER_FEATURE = 'ENABLE_TASKS';
 /**
  * Claude Code-compatible dedicated knob (parity: `CLAUDE_CODE_ENABLE_TASKS`, read by
- * Claude's `isTodoV2Enabled()`). Unlike the generic `CLAUDE_CODE_FEATURE_<NAME>`
- * alias, Claude spells this one WITHOUT the `FEATURE_` infix, so it needs a dedicated
+ * the reference's `isTodoV2Enabled()`). Unlike the generic `CLAUDE_CODE_FEATURE_<NAME>`
+ * alias, the reference spells this one WITHOUT the `FEATURE_` infix, so it needs a dedicated
  * reader to match the exact env surface SDK/headless users already set.
  */
 export const CLAUDE_ENABLE_TASKS_ENV = 'CLAUDE_CODE_ENABLE_TASKS';
@@ -295,10 +295,10 @@ export const CLAUDE_ENABLE_TASKS_ENV = 'CLAUDE_CODE_ENABLE_TASKS';
 /**
  * Gate for the richer `task_tracker` tool. AMI ships BOTH `task_tracker` (rich,
  * dependency-aware, multi-owner) AND `todo_write` (lightweight checklist) and keeps
- * both ON by default — a protected superset over Claude Code, which exposes only one
+ * both ON by default — a protected superset over the reference, which exposes only one
  * at a time behind `isTodoV2Enabled()`. This adds the MISSING capability: an opt-in/out
  * knob so an SDK/headless caller can drop the heavier task tooling and rely on
- * `todo_write` alone, exactly as `CLAUDE_CODE_ENABLE_TASKS` lets a Claude caller toggle
+ * `todo_write` alone, exactly as `CLAUDE_CODE_ENABLE_TASKS` lets a reference caller toggle
  * task mode. Resolution (first decisive signal wins): the Claude-compatible
  * {@link CLAUDE_ENABLE_TASKS_ENV} knob, then AMI's dedicated {@link TASK_TRACKER_ENV},
  * then the generic `ENABLE_TASKS` feature flag (so `config.features` can gate it).
@@ -312,7 +312,7 @@ export function isTaskTrackerEnabled(env: NodeJS.ProcessEnv = process.env): bool
 
 /**
  * Env var holding a comma-separated blanket DENY list for the advertised tool pool.
- * PARITY (additive): mirrors Claude Code's `filterToolsByDenyRules` (tools.ts) — a
+ * PARITY (additive): mirrors the reference's `filterToolsByDenyRules` (tools.ts) — a
  * config-driven blocklist that strips tools from the pool before the model sees them,
  * instead of AMI's previously fixed-at-compile-time reserved set. Each entry is one of:
  *   - an exact tool name (`web_search`),
@@ -389,13 +389,13 @@ export function isToolDenied(name: string, denied: ReadonlySet<string>): boolean
 
 /**
  * Default budget (ms) for a dynamic tool-list / tool-description enumeration.
- * PARITY (additive): mirrors Claude Code's `APP_ENUM_TIMEOUT_MS = 1000`
+ * PARITY (additive): mirrors the reference's `APP_ENUM_TIMEOUT_MS = 1000`
  * (utils/computerUse/mcpServer.ts), where the installed-app enumeration that
  * enriches a tool's description is raced against a fixed timeout and "fails
  * soft" — on timeout the description just omits the dynamic list, the model
  * still works. AMI has no computer-use subsystem, so the reusable *mechanism*
  * lands here and gates AMI's own dynamic enumeration (a server's advertised
- * tool list). The default is larger than Claude's app-enum 1s because a remote
+ * tool list). The default is larger than the reference's app-enum 1s because a remote
  * MCP `tools/list` legitimately takes longer than a local Spotlight query; an
  * operator can tighten it via {@link TOOL_ENUM_TIMEOUT_ENV}.
  */
@@ -421,7 +421,7 @@ export function getToolEnumerationTimeoutMs(env: NodeJS.ProcessEnv = process.env
 
 /**
  * Run `producer()` with a soft-fail timeout budget. PARITY (additive): the
- * reusable shape of Claude Code's `tryGetInstalledAppNames` — race the async
+ * reusable shape of the reference's `tryGetInstalledAppNames` — race the async
  * enumeration against a timer and, when it exceeds `timeoutMs` OR rejects OR
  * throws synchronously, return `fallback` instead of propagating. A late
  * resolution/rejection from the still-running producer is swallowed (no unhandled

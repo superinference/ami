@@ -4,7 +4,7 @@
  * layers.
  *
  * FUNCTIONAL: this is an LCS (longest-common-subsequence) line diff, matching
- * Claude Code's `diffLines`-based diff-stat computation — deletions are the
+ * the reference's `diffLines`-based diff-stat computation — deletions are the
  * original lines NOT on the LCS, insertions the current lines NOT on it. A
  * naive per-line frequency delta (multiset diff) is coarser: it cancels
  * reordered identical lines to 0/0 (an LCS diff correctly reports the moves as

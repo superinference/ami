@@ -12,13 +12,13 @@ import {
 } from './settings-guard';
 
 // ---------------------------------------------------------------------------
-// Managed-settings security guard (parity: Claude Code's
+// Managed-settings security guard (parity: the reference's
 // services/remoteManagedSettings/securityCheck.tsx + ManagedSettingsSecurityDialog).
 //
 // A managed / remote settings file (e.g. /etc/superinference/config.json or an
 // org drop-in) can silently introduce arbitrary-code-execution knobs: a
 // `statusLine` / auth-helper shell command, an unknown env var that redirects
-// the provider to an attacker host, or a hooks block. Claude Code gates these
+// the provider to an attacker host, or a hooks block. the reference gates these
 // behind a consent dialog that re-prompts ONLY when the DANGEROUS subset of the
 // config CHANGES — never nagging on an unchanged config.
 //
@@ -52,7 +52,7 @@ export interface ManagedSettingsReview {
 
 /**
  * Decide whether an incoming managed/remote config needs a fresh security review
- * versus the last-approved snapshot. Mirrors the branch order of Claude Code's
+ * versus the last-approved snapshot. Mirrors the branch order of the reference's
  * `checkManagedSettingsSecurity`:
  *   1. no dangerous settings in `next`            → `no-dangerous` (never prompt)
  *   2. dangerous subset unchanged vs `approved`   → `unchanged`    (don't nag)
@@ -128,7 +128,7 @@ export function saveManagedApproval(
 }
 
 // ---------------------------------------------------------------------------
-// Accept / exit approval knob (parity: Claude Code's ManagedSettingsSecurityDialog
+// Accept / exit approval knob (parity: the reference's ManagedSettingsSecurityDialog
 // — a two-option Select {accept, exit} wired to onAccept/onReject, so a dangerous
 // managed config is APPLIED only on explicit per-set approval and otherwise exits).
 //

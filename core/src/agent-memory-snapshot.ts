@@ -1,5 +1,5 @@
 /**
- * Per-agent memory snapshot staleness detection (parity: Claude Code's
+ * Per-agent memory snapshot staleness detection (parity: the reference's
  * `tools/AgentTool/agentMemorySnapshot.ts`).
  *
  * A project can commit a SNAPSHOT of a subagent's persistent memory
@@ -68,7 +68,7 @@ export function validateSyncedMeta(value: unknown): SyncedMeta | null {
  * Corruption-tolerant, schema-validated JSON read. Returns the validated value,
  * or `null` on ANY failure (missing file, malformed JSON, schema mismatch) — so
  * a partial / corrupt metadata file degrades gracefully instead of throwing.
- * Parity with Claude Code's `readJsonFile(path, schema)`.
+ * Parity with the reference's `readJsonFile(path, schema)`.
  */
 export function readJsonFile<T>(filePath: string, validate: (value: unknown) => T | null): T | null {
   try {
@@ -108,7 +108,7 @@ export interface SnapshotCheck {
 
 /**
  * Decide whether a committed agent-memory snapshot should be offered to this
- * clone. Mirrors Claude Code's `checkAgentMemorySnapshot` three-state algorithm:
+ * clone. Mirrors the reference's `checkAgentMemorySnapshot` three-state algorithm:
  *
  *  1. no `snapshot.json` (or corrupt)                    → `none`
  *  2. snapshot exists but no local `*.md` memory present → `initialize`
@@ -136,7 +136,7 @@ export function checkAgentMemorySnapshot(
   }
 
   if (!hasLocalMemory) {
-    // Lifecycle introspection (parity: Claude Code's `logForDebugging('Initializing
+    // Lifecycle introspection (parity: the reference's `logForDebugging('Initializing
     // agent memory for <agentType> from project snapshot')`, agentMemorySnapshot.ts):
     // surface the first-time-initialize decision so the snapshot sync lifecycle is
     // observable in the debug log.
@@ -153,7 +153,7 @@ export function checkAgentMemorySnapshot(
 
   const syncedMeta = readJsonFile(getSyncedJsonPath(agentType, scope, cwd, env), validateSyncedMeta);
   if (!syncedMeta || new Date(snapshotMeta.updatedAt) > new Date(syncedMeta.syncedFrom)) {
-    // Lifecycle introspection (parity: Claude Code's `logForDebugging('Replacing
+    // Lifecycle introspection (parity: the reference's `logForDebugging('Replacing
     // agent memory for <agentType> with project snapshot')`): surface that the
     // committed snapshot has advanced past what this clone last synced.
     coreLog(
@@ -182,7 +182,7 @@ export function writeAgentSnapshotMeta(agentType: string, cwd: string, updatedAt
 
 /**
  * Mirror the committed snapshot's CONTENT files into this clone's local
- * agent-memory dir. Parity with Claude Code's `copySnapshotToLocal`:
+ * agent-memory dir. Parity with the reference's `copySnapshotToLocal`:
  *
  *  - skips {@link SNAPSHOT_META_FILENAME} (metadata, not memory content);
  *  - skips any non-regular-file dirent, so a symlink planted in the snapshot
@@ -222,7 +222,7 @@ export function copySnapshotToLocal(
 /**
  * First-time seed of local agent memory from a committed snapshot: copy the
  * snapshot's content files in, then record the sync marker so a subsequent
- * {@link checkAgentMemorySnapshot} returns `none`. Parity with Claude Code's
+ * {@link checkAgentMemorySnapshot} returns `none`. Parity with the reference's
  * `initializeFromSnapshot`. Use this for the `initialize` action.
  */
 export function initializeFromSnapshot(
@@ -246,7 +246,7 @@ export function initializeFromSnapshot(
  * Full replace of local agent memory with a committed snapshot: FIRST delete the
  * clone's existing `*.md` memory files (so entries removed from the snapshot do
  * not linger as orphans), THEN copy the snapshot in and record the sync marker.
- * Parity with Claude Code's `replaceFromSnapshot`. Use this for the
+ * Parity with the reference's `replaceFromSnapshot`. Use this for the
  * `prompt-update` action once the user accepts the update.
  *
  * Destructive deletion is scoped strictly to `*.md` files (any other local file
@@ -297,7 +297,7 @@ export function saveAgentSyncedMeta(
   fs.mkdirSync(dir, { recursive: true });
   const meta: SyncedMeta = { syncedFrom };
   fs.writeFileSync(path.join(dir, SYNCED_META_FILENAME), JSON.stringify(meta));
-  // Lifecycle introspection (parity: Claude Code's snapshot-sync `logForDebugging`
+  // Lifecycle introspection (parity: the reference's snapshot-sync `logForDebugging`
   // lines, agentMemorySnapshot.ts): record that this clone has committed a sync
   // marker so the "synced to <timestamp>" transition is visible in the debug log.
   coreLog(
@@ -310,7 +310,7 @@ export function saveAgentSyncedMeta(
 
 /**
  * The three user-facing outcomes of an agent-memory snapshot-update prompt
- * (parity: Claude Code's `SnapshotUpdateDialog`, which resolves to
+ * (parity: the reference's `SnapshotUpdateDialog`, which resolves to
  * `'merge' | 'keep' | 'replace'`, `dialogLaunchers.tsx` L33):
  *
  *  - `keep`    → keep the clone's local memory; just record the sync so the
@@ -330,7 +330,7 @@ export const SNAPSHOT_UPDATE_RESOLUTIONS: readonly SnapshotUpdateResolution[] = 
 ] as const;
 
 /**
- * Safe default chosen when the update prompt is CANCELLED (parity: Claude Code's
+ * Safe default chosen when the update prompt is CANCELLED (parity: the reference's
  * `onCancel={() => done('keep')}`, `dialogLaunchers.tsx` L37). Cancelling never
  * mutates local memory — it degrades to the no-op `keep`.
  */
@@ -341,7 +341,7 @@ export const DEFAULT_SNAPSHOT_UPDATE_RESOLUTION: SnapshotUpdateResolution = 'kee
  * {@link SnapshotUpdateResolution}, degrading anything that is not one of the
  * three known outcomes (including a cancel `null`/`undefined`) to the safe
  * {@link DEFAULT_SNAPSHOT_UPDATE_RESOLUTION} (`keep`). Mirrors the cancel
- * semantics of Claude Code's SnapshotUpdateDialog so an aborted/garbage choice
+ * semantics of the reference's SnapshotUpdateDialog so an aborted/garbage choice
  * can never silently replace or lose local agent memory.
  */
 export function resolveSnapshotUpdateChoice(value: unknown): SnapshotUpdateResolution {
@@ -352,7 +352,7 @@ export function resolveSnapshotUpdateChoice(value: unknown): SnapshotUpdateResol
 
 /**
  * Build the merge prompt injected into the agent's input when the user chooses
- * `merge` on a snapshot-update prompt (parity: Claude Code's `buildMergePrompt`,
+ * `merge` on a snapshot-update prompt (parity: the reference's `buildMergePrompt`,
  * imported in `main.tsx` L2268 and prepended to `inputPrompt`). The prompt tells
  * the agent to reconcile its newer committed project snapshot with its local
  * persistent memory rather than silently discarding either side.
@@ -378,7 +378,7 @@ export interface SnapshotUpdateOutcome {
 
 /**
  * Apply a user's three-way snapshot-update choice, dispatching to the matching
- * sync operation (parity: Claude Code's `main.tsx` L2260-2273 handling of the
+ * sync operation (parity: the reference's `main.tsx` L2260-2273 handling of the
  * `SnapshotUpdateDialog` result). The raw `choice` is first normalized through
  * {@link resolveSnapshotUpdateChoice}, so a cancel (`null`/`undefined`) or any
  * unexpected value degrades to the safe `keep`:

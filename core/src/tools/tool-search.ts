@@ -11,7 +11,7 @@ export function setSearchableTools(tools: ToolDefinition[]): void {
 /**
  * Resolve a tool by name for the `select:`/bare fast-path loaders. Tries an
  * exact match first, then a case-insensitive fallback. The fallback is a
- * cross-framework parity superset: models trained on Claude Code conventions
+ * cross-framework parity superset: models trained on the reference conventions
  * emit PascalCase names (`select:Bash`, bare `Read`) while AMI registers tools
  * in snake_case (`bash`, `file_read`) — resolving them case-insensitively lets
  * those loads succeed instead of erroring as "not found". Callers MUST use the
@@ -74,9 +74,9 @@ function skillPayload(skill: SkillDefinition): Record<string, unknown> {
 /**
  * Render ONE deferred tool as a line for the `<available-deferred-tools>` roster
  * the engine shows the model, so it knows the exact name to pass to
- * `tool_search select:<name>`. Mirrors Claude Code's `formatDeferredToolLine`
+ * `tool_search select:<name>`. Mirrors the reference's `formatDeferredToolLine`
  * (tools/ToolSearchTool/prompt.ts L115) — just the bare tool name; search hints
- * are deliberately not rendered (Claude's hint A/B showed no benefit). Centralized
+ * are deliberately not rendered (the reference's hint A/B showed no benefit). Centralized
  * here so every announcement site renders a deferred tool identically.
  */
 export function formatDeferredToolLine(tool: ToolDefinition): string {
@@ -84,14 +84,14 @@ export function formatDeferredToolLine(tool: ToolDefinition): string {
 }
 
 /** Hard cap (chars) on a tool_search result before it is truncated, mirroring
- *  Claude's `ToolSearchTool.maxResultSizeChars` (100k). A `select:` multi-load
+ *  the reference's `ToolSearchTool.maxResultSizeChars` (100k). A `select:` multi-load
  *  can emit many full JSON schemas and a keyword hit can list pathologically
  *  long (MCP) tool names, so the output is bounded so a single search can never
  *  blow up the model's context. Enforced uniformly at the tool's single exit. */
 export const TOOL_SEARCH_MAX_RESULT_CHARS = 100_000;
 
 /** Clamp any tool_search result output to {@link TOOL_SEARCH_MAX_RESULT_CHARS}
- *  with an explicit truncation marker (parity with Claude's result-size bound). */
+ *  with an explicit truncation marker (parity with the reference's result-size bound). */
 function boundResult(result: ToolResult): ToolResult {
   if (result.output.length <= TOOL_SEARCH_MAX_RESULT_CHARS) return result;
   const kept = result.output.slice(0, TOOL_SEARCH_MAX_RESULT_CHARS);
@@ -106,7 +106,7 @@ function boundResult(result: ToolResult): ToolResult {
  * sorted and de-duplicated. MCP servers connect asynchronously, so a tool the
  * model expected may not be searchable yet — surfacing the specific server
  * names tells the model exactly which integration to retry once it is ready
- * (parity with Claude's `pending_mcp_servers`). Returns `[]` when there is no
+ * (parity with the reference's `pending_mcp_servers`). Returns `[]` when there is no
  * MCP manager, it lacks `listAllServers`, or the call throws.
  */
 function getPendingMcpServers(context: ToolContext): string[] {
@@ -150,7 +150,7 @@ function notFoundMessage(
 }
 
 /** Metadata attached to a not-found/no-match result, including the pending MCP
- *  servers when any are connecting (parity with Claude's output schema). */
+ *  servers when any are connecting (parity with the reference's output schema). */
 function missMetadata(query: string, pending: string[]): Record<string, unknown> {
   return {
     query,
@@ -162,7 +162,7 @@ function missMetadata(query: string, pending: string[]): Record<string, unknown>
 
 /** Whole-word match of a single term against text, bounded on BOTH edges so
  *  "read" matches "read file" but not "already" (leading) OR "ready"/"reader"
- *  (trailing), and "cat" never matches "category". Mirrors Claude's compiled
+ *  (trailing), and "cat" never matches "category". Mirrors the reference's compiled
  *  `\bterm\b` description/hint matcher (prefix-only boundaries let a term
  *  spuriously match any longer word it merely starts, inflating scores). */
 function matchesTerm(text: string, term: string): boolean {
@@ -176,7 +176,7 @@ function matchesTerm(text: string, term: string): boolean {
  * stripped and the remainder split on `__`/`_` — so a query like "slack"
  * matches `mcp__slack__send_message` by its server/action parts without the
  * literal "mcp" prefix becoming a spurious token. Regular names split on the
- * usual separators. Parity with Claude's `parseToolName`.
+ * usual separators. Parity with the reference's `parseToolName`.
  */
 function parseName(name: string): { parts: string[]; full: string; isMcp: boolean } {
   if (name.startsWith('mcp__')) {
@@ -189,7 +189,7 @@ function parseName(name: string): { parts: string[]; full: string; isMcp: boolea
 }
 
 /**
- * Does a required `+term` match an item? Parity with Claude's required-term
+ * Does a required `+term` match an item? Parity with the reference's required-term
  * pre-filter, which accepts a term appearing in the NAME parts OR the
  * description OR the curated searchHint/whenToUse — not the name alone. Name is
  * matched as a substring (so `+file` gates `file_read`); description/hint are
@@ -205,16 +205,16 @@ function requiredTermMatches(term: string, name: string, ...hints: string[]): bo
  *  optional curated hint, using part-based tokenization (exact part > partial
  *  part > full-name fallback). MCP tool-name parts score higher than regular
  *  ones (an MCP server/action name is a strong intent signal), mirroring
- *  Claude's MCP weighting. A term that matches the curated `hint` scores higher
+ *  the reference's MCP weighting. A term that matches the curated `hint` scores higher
  *  than one that only matches the description — the hint is a deliberately
- *  authored capability phrase, a stronger signal than prose (parity: Claude
+ *  authored capability phrase, a stronger signal than prose (parity: the reference
  *  weights searchHint +4 vs description +2). */
 function gradedScore(name: string, description: string, hint: string, rankTerms: string[]): number {
   const { parts, full, isMcp } = parseName(name);
   // MCP server/action name parts are a strong intent signal, so they outrank an
   // equivalent regular tool. The MCP margin is +2 (not +1) over the regular
   // tiers so it is not cancelled by the +1 word-boundary text bonus a regular
-  // tool earns when its name part sits at a word boundary. Parity with Claude's
+  // tool earns when its name part sits at a word boundary. Parity with the reference's
   // MCP weighting (12 vs 10 exact / 6 vs 5 partial).
   const exactWeight = isMcp ? 5 : 3;
   const partialWeight = isMcp ? 4 : 2;
@@ -281,7 +281,7 @@ async function runToolSearch(
         output: notFoundMessage([name], skills, context, pending),
         // A select-miss while MCP servers are still connecting is NOT fatal — the
         // requested tool may simply not be registered yet, so the model should
-        // retry rather than treat it as a hard error. Parity with Claude's
+        // retry rather than treat it as a hard error. Parity with the reference's
         // buildSearchResult, which returns data (not an error) for a select-miss.
         isError: pending.length === 0,
         metadata: missMetadata(query, pending),
@@ -356,13 +356,13 @@ async function runToolSearch(
   const scoredTools = _allTools.map(tool => {
     const hint = tool.searchHint ?? '';
     // A +term must appear in the NAME, the description, OR the curated
-    // searchHint — matching Claude's required-term pre-filter scope (a tool
+    // searchHint — matching the reference's required-term pre-filter scope (a tool
     // whose intent lives in its description/hint is still gateable).
     if (!requiredTerms.every(rt => requiredTermMatches(rt, tool.name, tool.description, hint))) {
       return { tool, score: 0 };
     }
     // Weigh the terse searchHint (synonyms NOT in the name/description) above the
-    // description so a deferred tool is findable by intent. Parity: Claude's
+    // description so a deferred tool is findable by intent. Parity: the reference's
     // Tool.searchHint discovery surface.
     const score = requiredTerms.length * 2 + gradedScore(tool.name, tool.description, hint, rankTerms);
     return { tool, score };
@@ -422,7 +422,7 @@ async function runToolSearch(
 
   sections.push('Use tool_search with "select:name" to get details for a specific tool or skill.');
 
-  // Group the MATCHED MCP tools by their contributing server (parity: Claude's
+  // Group the MATCHED MCP tools by their contributing server (parity: the reference's
   // per-server MCP bucketing) so a model discovering several MCP tools sees which
   // integration each belongs to — additive metadata, no change to the human-readable
   // ranking. Omitted entirely when no MCP tool matched.
@@ -486,7 +486,7 @@ export const toolSearchTool: ToolDefinition = {
     input: Record<string, unknown>,
     context: ToolContext,
   ): Promise<ToolResult> {
-    // Single exit: bound every result to the max size (parity with Claude's
+    // Single exit: bound every result to the max size (parity with the reference's
     // maxResultSizeChars) so no search can overflow the model's context.
     return boundResult(await runToolSearch(input, context));
   },

@@ -38,7 +38,7 @@ export const MAX_SESSION_READ_BYTES = 100 * 1024 * 1024; // 100 MiB
  * Size of the bounded head/tail buffer used by {@link SessionManager.readSessionMetaLite}
  * when deriving a session-list row's metadata WITHOUT a full `JSON.parse` of the
  * whole file. Only this many bytes are read from each end of the file, so a 50 MB
- * transcript costs the same lite-metadata read as a 5 KB one. Parity: Claude's
+ * transcript costs the same lite-metadata read as a 5 KB one. Parity: the reference's
  * `LITE_READ_BUF_SIZE` (sessionStoragePortable) bounded head/tail metadata read.
  */
 export const LITE_READ_BUF_SIZE = 64 * 1024; // 65536
@@ -48,7 +48,7 @@ export const LITE_READ_BUF_SIZE = 64 * 1024; // 65536
  * (real first/last-prompt preview + message count) before the rest fall back to the
  * cheap {@link SessionManager.readSessionMetaLite} path. The picker shows the top N
  * fully, and older rows get a lite (title/date-only) entry until opened — so a store
- * with thousands of sessions parses ~N files instead of all of them. Parity: Claude's
+ * with thousands of sessions parses ~N files instead of all of them. Parity: the reference's
  * `INITIAL_ENRICH_COUNT` resume-picker enrichment default.
  */
 export const INITIAL_ENRICH_COUNT = 50;
@@ -57,7 +57,7 @@ export const INITIAL_ENRICH_COUNT = 50;
  * A session file at or above this size is ALWAYS read via the bounded lite path for
  * a listing row (never fully parsed just to render a picker line), even when it falls
  * inside the {@link INITIAL_ENRICH_COUNT} enrichment window — parsing a multi-megabyte
- * transcript to show one row is never worth it. Parity: Claude's
+ * transcript to show one row is never worth it. Parity: the reference's
  * `SKIP_PRECOMPACT_THRESHOLD` resume-read size guard.
  */
 export const SKIP_PRECOMPACT_THRESHOLD = 5 * 1024 * 1024; // 5 MiB
@@ -68,7 +68,7 @@ export const SKIP_PRECOMPACT_THRESHOLD = 5 * 1024 * 1024; // 5 MiB
  * number of read syscalls against buffer growth — instead of slurping the whole
  * file with a single `readFileSync`, so peak memory tracks the SURVIVING
  * (post-last-compact-boundary) output rather than the raw on-disk file size. Parity:
- * Claude's `TRANSCRIPT_READ_CHUNK_SIZE` (sessionStoragePortable) forward reader.
+ * the reference's `TRANSCRIPT_READ_CHUNK_SIZE` (sessionStoragePortable) forward reader.
  */
 export const TRANSCRIPT_READ_CHUNK_SIZE = 1024 * 1024; // 1 MiB
 
@@ -89,7 +89,7 @@ export function isSessionPersistenceDisabled(env: NodeJS.ProcessEnv = process.en
  * / {@link SessionManager.loadAcrossProjects}) — instead of only the current cwd.
  * Opt in via `AMI_RESUME_ALL_PROJECTS` (Claude-compat: `CLAUDE_CODE_SHOW_ALL_PROJECTS`).
  *
- * Parity: Claude Code's resume picker `showAllProjects` scope toggle — the default
+ * Parity: the reference's resume picker `showAllProjects` scope toggle — the default
  * (unset/falsy) keeps `/sessions` + `/resume` scoped to the current project; truthy
  * flips them to the cross-project aggregation so a session recorded under another
  * directory is browsable/resumable without first `cd`-ing there. A per-invocation
@@ -103,9 +103,9 @@ export function isResumeAllProjectsEnabled(env: NodeJS.ProcessEnv = process.env)
 /**
  * Env var that opts IN to persisting hook-produced additional-context messages into
  * the saved transcript (so they survive `--resume`) instead of filtering them out on
- * save. Honored alongside Claude's `CLAUDE_CODE_SAVE_HOOK_ADDITIONAL_CONTEXT` (AMI
+ * save. Honored alongside the reference's `CLAUDE_CODE_SAVE_HOOK_ADDITIONAL_CONTEXT` (AMI
  * value first), matching the dual-env convention used by {@link isSessionPersistenceDisabled}
- * / {@link isResumeAllProjectsEnabled}. Parity: Claude's
+ * / {@link isResumeAllProjectsEnabled}. Parity: the reference's
  * `CLAUDE_CODE_SAVE_HOOK_ADDITIONAL_CONTEXT` gate in `isLoggableMessage`.
  */
 export const SAVE_HOOK_ADDITIONAL_CONTEXT_ENV = 'AMI_SAVE_HOOK_ADDITIONAL_CONTEXT';
@@ -115,7 +115,7 @@ export const SAVE_HOOK_ADDITIONAL_CONTEXT_ENV = 'AMI_SAVE_HOOK_ADDITIONAL_CONTEX
  * are PERSISTED into the saved transcript rather than dropped on save. Off by default
  * — AMI re-runs the SessionStart/Setup hooks on resume, so fresh context is derived
  * each run and the stale copy is not needed; the operator opts in when they want the
- * exact hook output preserved verbatim across `--resume`. Parity: Claude's
+ * exact hook output preserved verbatim across `--resume`. Parity: the reference's
  * {@link SAVE_HOOK_ADDITIONAL_CONTEXT_ENV} knob consulted by `isLoggableMessage`.
  */
 export function isSaveHookAdditionalContextEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -124,19 +124,19 @@ export function isSaveHookAdditionalContextEnabled(env: NodeJS.ProcessEnv = proc
 
 /** True when a message carries hook-produced additional context (a SessionStart/
  *  Setup `additionalContexts[]` aggregation — {@link UserMessage.hookAdditionalContext}).
- *  Parity: Claude's `attachment.type === 'hook_additional_context'` check. */
+ *  Parity: the reference's `attachment.type === 'hook_additional_context'` check. */
 export function isHookAdditionalContextMessage(msg: Message): boolean {
   return msg.role === 'user' && (msg as UserMessage).hookAdditionalContext === true;
 }
 
 /**
  * The single canonical predicate deciding whether a message is PERSISTED into the
- * saved transcript ({@link SessionManager.save}). Mirrors Claude's `isLoggableMessage`:
+ * saved transcript ({@link SessionManager.save}). Mirrors the reference's `isLoggableMessage`:
  *  - engine-injected turn-local control nudges (`isMeta`) never persist;
  *  - hook-produced additional-context messages are dropped UNLESS the operator opts
  *    in via {@link isSaveHookAdditionalContextEnabled} (so they survive `--resume`);
  *  - everything else is loggable.
- * Reads load everything (this gates only writes), exactly like Claude.
+ * Reads load everything (this gates only writes), exactly like the reference.
  */
 export function isLoggableMessage(msg: Message, env: NodeJS.ProcessEnv = process.env): boolean {
   if ((msg as { isMeta?: boolean }).isMeta) return false;
@@ -194,7 +194,7 @@ function applyRehydratedBlob(msg: Message, stored: SessionBlobRef, bytes: string
  * user message: `[{type:'text',text},{type:'image',…}]`) yields the FIRST text
  * block's text; anything else (undefined/null/non-text-only array) yields `''`.
  *
- * Parity: Claude's deriveFirstPrompt content handling — without this, an array
+ * Parity: the reference's deriveFirstPrompt content handling — without this, an array
  * (multimodal) first message produced an empty title/preview, so a fork or the
  * /resume picker showed a generic placeholder instead of the user's actual text.
  */
@@ -230,7 +230,7 @@ export function contentToText(raw: unknown): string {
 // title, dates, branch, tag) cheaply and without OOM. Tolerant of a slice that
 // was cut mid-string/mid-escape by the bounded read (a lone trailing `\` or an
 // unterminated final string yields the best-effort partial, never a throw).
-// Parity: Claude's extractJsonStringField / extractLastJsonStringField /
+// Parity: the reference's extractJsonStringField / extractLastJsonStringField /
 // unescapeJsonString (sessionStoragePortable).
 // ---------------------------------------------------------------------------
 
@@ -242,7 +242,7 @@ function isJsonWs(ch: string | undefined): boolean {
  * Decode JSON string-escape sequences in an already quote-stripped slice. Handles
  * `\n \t \r \b \f \" \\ \/` and `\uXXXX`; an invalid/truncated `\u` or a lone
  * trailing backslash is dropped rather than throwing (a bounded read can cut mid
- * escape). Parity: Claude's `unescapeJsonString`.
+ * escape). Parity: the reference's `unescapeJsonString`.
  */
 export function unescapeJsonString(s: string): string {
   if (s.indexOf('\\') === -1) return s; // fast path: nothing to decode
@@ -323,7 +323,7 @@ function locateStringField(text: string, field: string, from: number): { openIdx
 /**
  * Extract the FIRST top-level string value for `field` from a raw JSON text slice,
  * or `undefined` when the key is absent or its value is not a string. Parity:
- * Claude's `extractJsonStringField`.
+ * the reference's `extractJsonStringField`.
  */
 export function extractJsonStringField(text: string, field: string): string | undefined {
   const hit = locateStringField(text, field, 0);
@@ -334,7 +334,7 @@ export function extractJsonStringField(text: string, field: string): string | un
 /**
  * Extract the LAST string value for `field` from a raw JSON text slice — used on a
  * bounded TAIL read where the newest-wins value (e.g. `updatedAt`) sits near the end.
- * Returns `undefined` when no string-valued occurrence exists. Parity: Claude's
+ * Returns `undefined` when no string-valued occurrence exists. Parity: the reference's
  * `extractLastJsonStringField`.
  */
 export function extractLastJsonStringField(text: string, field: string): string | undefined {
@@ -353,7 +353,7 @@ export function extractLastJsonStringField(text: string, field: string): string 
  * deriving the picker preview: anything that STARTS with a lowercase XML-like
  * tag (IDE context `<ide_opened_file>`/`<ide_selection>`, hook output, task
  * notifications, channel messages) or a synthetic `[Request interrupted by
- * user]` marker. Parity: Claude's SKIP_FIRST_PROMPT_PATTERN
+ * user]` marker. Parity: the reference's SKIP_FIRST_PROMPT_PATTERN
  * (sessionStoragePortable.extractFirstPromptFromHead /
  * sessionStorage.getFirstMeaningfulUserMessageTextContent). */
 const SKIP_FIRST_PROMPT_PATTERN =
@@ -368,7 +368,7 @@ const COMPACTION_SUMMARY_PREFIX = '[Previous conversation summary]';
  * Derive a clean, meaningful one-line preview from a transcript's messages for
  * the /resume + /sessions picker — the single canonical first-prompt extractor.
  *
- * Walks user turns in order and, per Claude's getFirstMeaningfulUserMessageText-
+ * Walks user turns in order and, per the reference's getFirstMeaningfulUserMessageText-
  * Content / extractFirstPromptFromHead, skips noise so the label shows what the
  * user actually asked, not framing:
  *  - synthetic/ephemeral turns (`isMeta`, transcript-only) and subagent sidechains;
@@ -442,7 +442,7 @@ export function extractMeaningfulPreview(messages: Message[]): string {
  * The most-recent meaningful user instruction (the LAST prompt), as opposed to
  * {@link extractMeaningfulPreview}'s FIRST. Shares {@link collectMeaningfulPrompts}
  * so the skip/normalization rules are identical. Returns `'(no messages)'` when no
- * meaningful user turn exists. Parity: Claude's lastPrompt (distinct from
+ * meaningful user turn exists. Parity: the reference's lastPrompt (distinct from
  * firstPrompt) so the resume list can show what a session was last asked to do.
  */
 export function extractLastPrompt(messages: Message[]): string {
@@ -454,7 +454,7 @@ export function extractLastPrompt(messages: Message[]): string {
 
 /**
  * Derive a single-line title base from a transcript's first user message
- * (parity: Claude's `deriveFirstPrompt`). Finds the first non-sidechain `user`
+ * (parity: the reference's `deriveFirstPrompt`). Finds the first non-sidechain `user`
  * turn, resolves its content to text ({@link contentToText} — handles a string,
  * an offloaded blob preview, or a multimodal array's first text block), then
  * COLLAPSES all whitespace to single spaces and caps at 100 chars. Collapsing is
@@ -478,7 +478,7 @@ export function deriveFirstPrompt(messages: Message[]): string {
  * Resolve a session's display summary by the precedence chain customTitle >
  * aiTitle > lastPrompt > firstPrompt, returning `undefined` when none exist (a
  * metadata-only session). The `'(no messages)'` sentinel is treated as absent so
- * an empty session never masquerades as having a real summary. Parity: Claude's
+ * an empty session never masquerades as having a real summary. Parity: the reference's
  * listSessionsImpl summary precedence (which drops metadata-only sessions).
  */
 export function resolveSessionSummary(
@@ -496,7 +496,7 @@ export function resolveSessionSummary(
 /**
  * Classification of how a session is being run, persisted so the resume/picker
  * paths can discriminate a plain interactive session from a backgrounded or
- * daemon-owned one (parity: Claude's `SessionKind` in concurrentSessions.ts):
+ * daemon-owned one (parity: the reference's `SessionKind` in concurrentSessions.ts):
  *  - `'interactive'` — a normal foreground TUI / `--prompt` run (the default);
  *  - `'bg'` — a user-backgrounded session that should keep running when its
  *    frontend detaches (and must NOT be auto-picked as "the most recent" by a
@@ -515,10 +515,10 @@ export const SESSION_KINDS: readonly SessionKind[] = ['interactive', 'bg', 'daem
 /**
  * Read the session-kind override from the environment, if any. Honors the AMI
  * knob `AMI_SESSION_KIND` and — consistent with the dual-env convention used
- * elsewhere in this file ({@link isSessionPersistenceDisabled}) — Claude's
+ * elsewhere in this file ({@link isSessionPersistenceDisabled}) — the reference's
  * `CLAUDE_CODE_SESSION_KIND`, taking the AMI value first. Returns `undefined`
  * when unset or not one of {@link SESSION_KINDS}, so a bad value falls back to
- * the caller's default instead of persisting garbage. Parity: Claude's
+ * the caller's default instead of persisting garbage. Parity: the reference's
  * `envSessionKind`.
  */
 export function envSessionKind(env: NodeJS.ProcessEnv = process.env): SessionKind | undefined {
@@ -531,7 +531,7 @@ export function envSessionKind(env: NodeJS.ProcessEnv = process.env): SessionKin
 /**
  * True when a session is a background/daemon kind — one that keeps running on
  * frontend detach and must be skipped when a no-arg `--continue` auto-picks the
- * most-recent resumable session (parity: Claude's `isBgSession`, which flips exit
+ * most-recent resumable session (parity: the reference's `isBgSession`, which flips exit
  * semantics for `--bg`/daemon sessions). An absent `kind` is treated as the
  * foreground default (`false`), so legacy sessions written before this field are
  * still resumable.
@@ -544,18 +544,18 @@ export function isBgSession(session: { kind?: SessionKind }): boolean {
  * Sentinel {@link SessionAgentIdentity.model} value meaning "do NOT override the
  * main-loop model — use whatever model the resumed run is otherwise configured
  * with". Distinct from an absent model (also no override) only in intent: an agent
- * can be authored to explicitly inherit. Parity: Claude's `resumedAgent.model !==
+ * can be authored to explicitly inherit. Parity: the reference's `resumedAgent.model !==
  * 'inherit'` guard in `restoreAgentFromSession`.
  */
 export const AGENT_MODEL_INHERIT = 'inherit';
 
 /**
  * Agent/persona identity a session ran under, persisted so `--resume` can restore
- * it (parity: Claude's conversationRecovery session metadata
+ * it (parity: the reference's conversationRecovery session metadata
  * `agentName`/`agentColor`/`agentSetting` + the resumed agent's model override).
  *  - `name` / `color` — display identity for the picker and status line;
  *  - `setting` — the agent TYPE identifier used to re-resolve the live agent
- *    definition on resume (Claude's `agentSetting`);
+ *    definition on resume (the reference's `agentSetting`);
  *  - `model` — the agent's model override, or the {@link AGENT_MODEL_INHERIT}
  *    sentinel. Applied on resume via {@link resolveAgentModelOverride}.
  */
@@ -568,7 +568,7 @@ export interface SessionAgentIdentity {
 
 /**
  * Decide the model override to apply when resuming a session whose saved agent had
- * a model (parity: Claude's `restoreAgentFromSession` model-apply branch). Returns
+ * a model (parity: the reference's `restoreAgentFromSession` model-apply branch). Returns
  * the model id to set as the main-loop override, or `null` when NO override should
  * be applied, in precedence order:
  *  1. the user passed `--agent` on the CLI → keep the CLI agent, apply nothing
@@ -636,41 +636,41 @@ export interface Session {
    *  session (toggle/replace/remove via {@link SessionManager.toggleTag}). */
   tag?: string;
   /** Session mode persisted so /resume can restore the posture the user left the
-   *  session in (parity: Claude's per-session `mode`). */
+   *  session in (parity: the reference's per-session `mode`). */
   mode?: 'coordinator' | 'normal';
   /** GitHub PR this session is linked to, for list navigation / tracking
-   *  (parity: Claude's prNumber/prUrl/prRepository PR-link fields). `repository`
+   *  (parity: the reference's prNumber/prUrl/prRepository PR-link fields). `repository`
    *  is an `owner/repo` slug. */
   pr?: { number: number; url: string; repository?: string };
   /** Worktree the session was last inside, persisted so --resume can restore the
-   *  correct cwd (parity: Claude's WorktreeStateEntry / PersistedWorktreeSession).
+   *  correct cwd (parity: the reference's WorktreeStateEntry / PersistedWorktreeSession).
    *  `null` = the session explicitly EXITED its worktree; `undefined`/absent =
    *  it was never inside one. */
   worktreeState?: { originalCwd: string; worktreePath: string; branch?: string } | null;
   /** Invocation surface that created / last wrote the session — e.g. `'cli'`
    *  (interactive TUI), `'detached'` (`--prompt`), or an SDK surface. Lets later
-   *  filtering/analytics discriminate how a session was launched (parity: Claude's
+   *  filtering/analytics discriminate how a session was launched (parity: the reference's
    *  CLAUDE_CODE_ENTRYPOINT `entrypoint` discriminator). */
   entrypoint?: string;
   /** How the session is being run ({@link SessionKind}): a foreground
    *  `'interactive'` session vs a `'bg'`/`'daemon'`(-worker) one that keeps
    *  running on detach and is skipped by a no-arg `--continue`. Stamped on save()
    *  from the caller-supplied value, else {@link envSessionKind}, else
-   *  `'interactive'`. Parity: Claude's persisted `SessionKind`. */
+   *  `'interactive'`. Parity: the reference's persisted `SessionKind`. */
   kind?: SessionKind;
   /** Subagent/sidechain transcript marker: when true this session is a task
    *  sub-engine's conversation and is excluded from the resume picker by default
-   *  (parity: Claude filters `isSidechain` logs out of the resumable list). */
+   *  (parity: the reference filters `isSidechain` logs out of the resumable list). */
   isSidechain?: boolean;
   /** The session this one was forked/regenerated from — e.g. the pre-`/clear`
    *  session recorded as the fresh session's parent for lineage tracking (parity:
-   *  Claude's `regenerateSessionId({ setCurrentAsParent })` + `STATE.parentSessionId`).
+   *  the reference's `regenerateSessionId({ setCurrentAsParent })` + `STATE.parentSessionId`).
    *  Lets analytics/resume walk the chain of related sessions a user cleared through. */
   parentSessionId?: SessionId;
   /** Agent/persona identity the session ran under ({@link SessionAgentIdentity}),
    *  persisted so --resume can restore the agent's name/color/display setting and
    *  re-apply its model override via {@link resolveAgentModelOverride} (parity:
-   *  Claude's agentName/agentColor/agentSetting + 'inherit' model sentinel). Absent
+   *  the reference's agentName/agentColor/agentSetting + 'inherit' model sentinel). Absent
    *  on a plain (default-agent) session. */
   agent?: SessionAgentIdentity;
   /** Content-replacement decisions ({@link ContentReplacementEntry}) persisted for
@@ -678,7 +678,7 @@ export interface Session {
    *  by a per-message budget pass, so `--resume` reconstructs the same stubs and the
    *  prompt cache stays warm (a lost record re-sends the full content → cache miss +
    *  permanent overage). Carried across {@link SessionManager.fork} by
-   *  {@link forkContentReplacements}. Parity: Claude's `ContentReplacementEntry` +
+   *  {@link forkContentReplacements}. Parity: the reference's `ContentReplacementEntry` +
    *  `createFork` content-replacement preservation. Absent when nothing was ever
    *  replaced. */
   contentReplacements?: ContentReplacementEntry[];
@@ -690,20 +690,20 @@ export interface Session {
     goal?: string;
     /** Permission mode the user left the session in (e.g. `'ask'`, `'auto-allow'`,
      *  `'deny-all'`), persisted so --resume restores the permission posture
-     *  instead of silently reverting to the flag-derived default (parity: Claude's
+     *  instead of silently reverting to the flag-derived default (parity: the reference's
      *  SessionIndexEntry.permissionMode). */
     permissionMode?: string;
     /** Active plan state when the session was saved: the on-disk plan file path and
      *  whether plan mode was engaged. Persisted so `--resume` restores the active
      *  plan (re-entering plan mode + re-pointing at the plan file), recovering from
-     *  the transcript if the file is missing. Parity: Claude's copyPlanForResume
+     *  the transcript if the file is missing. Parity: the reference's copyPlanForResume
      *  plan-slug restoration. Absent when the session was never in plan mode. */
     plan?: { filePath: string; active: boolean };
     /** Operating mode (`'normal'` | `'coordinator'`) the session ran under when saved,
      *  persisted so `--resume` can reconcile a resumed session against the live
      *  environment (flip into/out of coordinator mode to match) instead of silently
      *  running under whatever the current env dictates. Absent on sessions saved before
-     *  mode tracking existed → reconciliation is a no-op (back-compat). Parity: Claude
+     *  mode tracking existed → reconciliation is a no-op (back-compat). Parity: the reference
      *  Code's `matchSessionMode` / persisted session mode. */
     operatingMode?: SessionOperatingMode;
     /** Serialized cost state (cumulative cost + input/output tokens + request count,
@@ -711,13 +711,13 @@ export interface Session {
      *  re-seed the live CostTracker and continue its `/cost` totals instead of showing
      *  `$0` while the on-disk journal holds the prior spend. Absent on sessions saved
      *  before cost persistence existed → resume keeps the fresh ($0) tracker. Parity:
-     *  Claude's lastCost/lastModelUsage restored via restoreCostStateForSession. */
+     *  the reference's lastCost/lastModelUsage restored via restoreCostStateForSession. */
     costState?: string;
     /** Serialized {@link AttributionSnapshot} (full-state dump: per-file agent
      *  contributions + effort counters) at save time, so `--resume` of the SAME
      *  session restores the attribution store instead of losing the running
      *  per-file/char and "N-shotted" accounting on restart. A restore reads ONLY
-     *  this most-recent snapshot (never sums deltas). Parity: Claude's
+     *  this most-recent snapshot (never sums deltas). Parity: the reference's
      *  stateToSnapshotMessage persisted + restoreAttributionStateFromSnapshots. */
     attributionSnapshot?: string;
   };
@@ -744,7 +744,7 @@ export function resolveSessionTitle(session: {
  *   4. the first 8 chars of the session id (lite entries with no metadata).
  * Returns `''` only for a session with no summary, no defaultTitle, not detached,
  * and no id. Consolidates with {@link resolveSessionSummary} (no duplicated
- * precedence logic). Parity: Claude's getLogDisplayTitle (defaultTitle param,
+ * precedence logic). Parity: the reference's getLogDisplayTitle (defaultTitle param,
  * autonomous-session special-case, sessionId.slice(0,8) fallback).
  */
 export function getSessionDisplayTitle(
@@ -778,10 +778,10 @@ export interface SessionListEntry {
   title?: string;
   /** The most-recent meaningful user instruction, distinct from {@link preview}
    *  (which is the FIRST prompt) — lets the picker surface "what was this session
-   *  last asked to do" (parity: Claude's lastPrompt log entry). */
+   *  last asked to do" (parity: the reference's lastPrompt log entry). */
   lastPrompt?: string;
   /** Display summary via the precedence chain customTitle > aiTitle > lastPrompt >
-   *  firstPrompt (parity: Claude's listSessionsImpl summary). `undefined` for a
+   *  firstPrompt (parity: the reference's listSessionsImpl summary). `undefined` for a
    *  metadata-only session with no title and no prompts. */
   summary?: string;
   /** User-set searchable tag, when recorded. */
@@ -794,7 +794,7 @@ export interface SessionListEntry {
   worktree?: string;
   /** The originating project directory (cwd) the session belongs to, when
    *  recorded — lets a cross-project/worktree-spanning listing show WHICH directory
-   *  each session came from (parity: Claude's SessionInfo.cwd, falling back to the
+   *  each session came from (parity: the reference's SessionInfo.cwd, falling back to the
    *  project path). Populated from {@link Session.projectPath}. */
   projectPath?: string;
   /** Invocation surface that last wrote the session, when recorded. */
@@ -812,14 +812,14 @@ export interface SessionListEntry {
   parentSessionId?: SessionId;
   /** Agent/persona identity (name/color/setting) the session ran under, when
    *  recorded — lets the picker/status line show which agent a session used
-   *  (parity: Claude's agentName/agentColor list metadata). The model override is
+   *  (parity: the reference's agentName/agentColor list metadata). The model override is
    *  intentionally NOT surfaced here (it is a resume-time concern via
    *  {@link resolveAgentModelOverride}, not a picker label). */
   agent?: { name?: string; color?: string; setting?: string };
   /** True when this entry was built from a bounded lite metadata read
    *  ({@link SessionManager.readSessionMetaLite}) rather than a full parse: its
    *  {@link preview}/{@link lastPrompt}/{@link summary} come from the title only and
-   *  {@link messageCount} is 0 until the session is opened (parity: Claude's
+   *  {@link messageCount} is 0 until the session is opened (parity: the reference's
    *  not-yet-enriched resume-picker rows). A full parse is done on open. */
   lite?: boolean;
 }
@@ -827,7 +827,7 @@ export interface SessionListEntry {
 /**
  * Introspection counts for a {@link SessionManager.list} / {@link SessionManager.listWithDiagnostics}
  * pass — the data that answers "why didn't my session show up in /resume?". Mirrors
- * Claude Code's resume-discovery debug lines (sessionStorage.ts `found N session files`
+ * the reference's resume-discovery debug lines (sessionStorage.ts `found N session files`
  * / `enriched N, M filtered out, K visible` + per-session filter reasons): instead of
  * silently dropping an unreadable/filtered row, the listing tallies how many files were
  * found, how many are visible, and how many were skipped broken down by reason, so a
@@ -860,7 +860,7 @@ export type SessionSkipReason = (typeof SESSION_SKIP_REASONS)[number];
  * `JSON.parse` of its transcript ({@link SessionManager.readSessionMetaLite}). Only
  * top-level scalar fields are extractable this way (the first-prompt preview and the
  * message count need the full messages array, so they are left to enrichment on
- * open). Parity: Claude's lite session-list metadata.
+ * open). Parity: the reference's lite session-list metadata.
  */
 export interface SessionMetaLite {
   id: string;
@@ -884,7 +884,7 @@ export interface SessionMetaLite {
  * either a bare positive integer (`"42"`) or a GitHub pull-request URL
  * (`https://github.com/owner/repo/pull/42`), returning the numeric PR number, or
  * `null` when the input is neither. A non-positive or non-numeric direct value
- * falls through to the URL probe; an unmatched URL yields `null`. Parity: Claude's
+ * falls through to the URL probe; an unmatched URL yields `null`. Parity: the reference's
  * `parsePrIdentifier` in the resume screen — the single acceptance boundary behind
  * {@link filterSessionsByPr} so a `--pr <n|url>` resume filter and any picker share
  * one parser (no duplicated regex).
@@ -914,7 +914,7 @@ export function parsePrIdentifier(value: string): number | null {
 export type PrFilter = boolean | number | string;
 
 /**
- * Filter a list of session entries by their linked PR (parity: Claude's
+ * Filter a list of session entries by their linked PR (parity: the reference's
  * `filteredLogs` PR filter in the resume screen). Shared by
  * {@link SessionManager.list} and any caller that already holds entries, so the
  * `true`/number/string semantics live in ONE place. An entry matches by its
@@ -965,7 +965,7 @@ function shellSingleQuote(s: string): string {
 
 /**
  * Three-way classification of resuming a session that lives in a DIFFERENT project
- * directory than the current cwd (parity: Claude's `checkCrossProjectResume`):
+ * directory than the current cwd (parity: the reference's `checkCrossProjectResume`):
  *  - not cross-project (scope off, no recorded path, or same cwd) → resume in place;
  *  - cross-project but a sibling git worktree of the SAME repo → resume directly
  *    (no `cd` needed, the worktree shares the repo);
@@ -987,8 +987,8 @@ export type CrossProjectResumeResult =
  * different project).
  *
  * FUNCTIONAL (intentional parity divergence): AMI does NOT gate worktree detection
- * behind Claude's internal `USER_TYPE === 'ant'` staged-rollout flag — the same-repo
- * worktree shortcut is always available. Parity: Claude's `checkCrossProjectResume`
+ * behind the reference's internal `USER_TYPE === 'ant'` staged-rollout flag — the same-repo
+ * worktree shortcut is always available. Parity: the reference's `checkCrossProjectResume`
  * (same discriminated result + longest-literal `startsWith(wt + sep)` containment).
  */
 export function checkCrossProjectResume(
@@ -1028,7 +1028,7 @@ export type WorktreeResumeResolution =
 /**
  * Resolve how to restore a session's worktree binding on `--resume`, applying the
  * disk-existence fallback that distinguishes a live worktree from a stale one
- * (parity: Claude's `restoreWorktreeForResume`, which re-enters the worktree ONLY
+ * (parity: the reference's `restoreWorktreeForResume`, which re-enters the worktree ONLY
  * if its path still exists — "the /exit dialog may have removed it"). Pure: the
  * existence probe is injected (defaults to {@link fs.existsSync}) so the tri-state
  * boundary (`undefined` never-entered / `null` exited / present-but-gone) is
@@ -1075,7 +1075,7 @@ const UNSAFE_SESSION_ID_RE = /[/\\\u0000-\u001f\u007f-\u009f]/;
  * over-long (>255) id, `.`/`..` or anything containing `..`, or any
  * separator/control byte ({@link UNSAFE_SESSION_ID_RE}).
  *
- * Parity: Claude's `validateUuid` boundary guard, adapted to AMI's id contract
+ * Parity: the reference's `validateUuid` boundary guard, adapted to AMI's id contract
  * (AMI ids are `session-…`/user `--session-id` segments, NOT UUIDs). This is the
  * stronger up-front check the old denylist {@link sanitizeSessionId} lacked, while
  * staying consistent with the `isSafeSegment` contract used for `--session-id`
@@ -1092,7 +1092,7 @@ export function isValidSessionId(id: unknown): id is string {
 }
 
 /**
- * Classification of a `--resume`/`--continue` argument (parity: Claude's
+ * Classification of a `--resume`/`--continue` argument (parity: the reference's
  * `parseSessionIdentifier`): a value the user passes can be a transcript FILE
  * path, a managed session ID, or a cloud-ingress URL.
  *  - `'jsonl'` — a path ending in `.jsonl` → resume from that transcript file and
@@ -1117,7 +1117,7 @@ export type ParsedSessionIdentifier =
  * second, divergent id grammar (§0b.6).
  *
  * FUNCTIONAL (intentional parity divergence): the URL branch is restricted to
- * `http:`/`https:` schemes (Claude accepts any `new URL()`), so a transport-smuggling
+ * `http:`/`https:` schemes (the reference accepts any `new URL()`), so a transport-smuggling
  * scheme (`ext::`, `file:`, `ssh:`) can never be classified as a resumable session
  * URL — the same hardening posture AMI applies to other untrusted URL inputs.
  */
@@ -1171,7 +1171,7 @@ function isValidMessageRecord(value: unknown): value is Message {
  * to any consumer. The on-disk JSON is UNTRUSTED (it may have been written by a
  * different build, hand-edited, or synced from another machine), so it is structurally
  * validated — not cast-trusted — mirroring the safeParse-before-apply posture AMI
- * already uses for other persisted configs (frito/provision `safeParse`) and Claude's
+ * already uses for other persisted configs (frito/provision `safeParse`) and the reference's
  * zod-validated resume state (sessionRestore):
  *  - the blob MUST be a plain object with a non-empty string `id`; a shapeless /
  *    top-level-array / id-less payload is REJECTED (returns `null` → the caller
@@ -1214,7 +1214,7 @@ function sanitizeLoadedSession(parsed: unknown): Session | null {
  * (incl. DEL) and invisible/bidirectional Unicode (zero-width, BOM, LRM/RLM, bidi
  * embeddings/overrides/isolates) that could carry a hidden-character attack, then
  * collapse whitespace and trim. Returns `''` when nothing meaningful remains.
- * Parity: Claude's `recursivelySanitizeUnicode(tag).trim()` before `saveTag` — a
+ * Parity: the reference's `recursivelySanitizeUnicode(tag).trim()` before `saveTag` — a
  * tag-specific normalizer (does NOT strip markdown the way the title sanitizer
  * does, so a tag token is preserved verbatim).
  */
@@ -1297,7 +1297,7 @@ export const HOUSEKEEPING_LOCK_SUBDIR = '.housekeeping';
 /**
  * True when session retention cleanup is enabled for `cleanupPeriodDays`: a finite,
  * strictly-positive day count. A missing / non-finite / non-positive value DISABLES
- * cleanup (parity: Claude's `cleanupPeriodDays === 0` keeps everything). The ONE
+ * cleanup (parity: the reference's `cleanupPeriodDays === 0` keeps everything). The ONE
  * acceptance boundary shared by {@link SessionManager.cleanupOldSessions} and the
  * throttled housekeeping runner so the "is cleanup on?" rule lives in one place.
  */
@@ -1323,7 +1323,7 @@ export const BLOBS_SUBDIR = 'blobs';
  * {@link SessionManager.cleanupOrphanedBlobs}, so the "which dirs are stale?" rule is
  * unit-testable without touching the filesystem.
  *
- * Parity: Claude's `cleanupOldImageCaches` sweep (which drops every session dir that
+ * Parity: the reference's `cleanupOldImageCaches` sweep (which drops every session dir that
  * is not the CURRENT one). AMI diverges intentionally — its per-session dir is a
  * content-addressed BLOB store backing a RESUMABLE transcript, not an ephemeral
  * pasted-image cache — so EVERY live session's dir is kept (deleting a non-current
@@ -1452,7 +1452,7 @@ export class SessionManager {
   private _ownership?: { fence: number; release: () => void };
 
   constructor(cwd: string, sessionDirOverride?: string) {
-    // Resume blobs live GLOBALLY under ~/.ami/projects/<slug>/sessions (like Claude Code's
+    // Resume blobs live GLOBALLY under ~/.ami/projects/<slug>/sessions (like the reference's
     // ~/.claude/projects/<slug>/), not inside the repo. The slug is keyed on the CANONICAL
     // git root so every worktree/subdirectory of one repo shares a single session store
     // (resume a session started in any worktree of the repo), not a fragment per directory.
@@ -1567,7 +1567,7 @@ export class SessionManager {
     this.ensureDir();
     const safeId = sanitizeSessionId(session.id);
     const blobDir = this.blobDirFor(safeId);
-    // Canonical save-persistence filter (parity: Claude's isLoggableMessage): drop
+    // Canonical save-persistence filter (parity: the reference's isLoggableMessage): drop
     // engine-injected turn-local nudges (isMeta) and hook-produced additional-context
     // messages (unless the operator opted in to persist them across --resume) BEFORE
     // offloading, so the saved transcript carries only loggable messages.
@@ -1691,7 +1691,7 @@ export class SessionManager {
     // interleave two engines onto the same transcript/blob dir and corrupt it.
     // `checkSessionLock` returns `'blocked'` ONLY for a live, verified OTHER holder
     // (a dead / reused / cross-host-stale lock is reclaimed in-place and reads as
-    // free), so a crashed session never wedges --continue (parity: Claude's
+    // free), so a crashed session never wedges --continue (parity: the reference's
     // --continue skip of a session another live process is writing).
     if (opts.skipLocked && checkSessionLock(this.sessionDir, opts.lockDeps).kind === 'blocked') {
       return null;
@@ -1713,7 +1713,7 @@ export class SessionManager {
     // intact older sessions are not hidden by a single unreadable file. With
     // `skipBackground` (the no-arg `--continue` path) a `'bg'`/`'daemon'` session
     // is passed over so auto-resume picks the most-recent FOREGROUND session, not
-    // a still-running backgrounded one (parity: Claude's --continue bg skip).
+    // a still-running backgrounded one (parity: the reference's --continue bg skip).
     for (const file of files) {
       const session = this.readSessionFile(file);
       if (!session) continue;
@@ -1746,7 +1746,7 @@ export class SessionManager {
    * missing, oversized (> {@link MAX_SESSION_READ_BYTES}), or corrupt file —
    * exactly like {@link load}, just non-blocking.
    *
-   * Parity: Claude's async `loadFullLog` — a picker shows the cheap lite entry
+   * Parity: the reference's async `loadFullLog` — a picker shows the cheap lite entry
    * ({@link SessionListEntry} from {@link list}) immediately and only awaits the
    * full message load when a session is actually opened, enabling a
    * "Loading session…" affordance in front of a potentially slow read.
@@ -1778,19 +1778,19 @@ export class SessionManager {
     dropEmpty?: boolean;
     /** Drop a specific session id from the listing — used to exclude the LIVE
      *  current session from its own resume picker so a user can't "resume" the
-     *  session they're already in (parity: Claude excludes the current log). */
+     *  session they're already in (parity: the reference excludes the current log). */
     excludeId?: string;
     /** Keep only sessions linked to a PR, per {@link PrFilter} (true = any PR, a
      *  number = that PR, a string = parsed via {@link parsePrIdentifier}). */
     filterByPr?: PrFilter;
     /** Keep only sessions whose recorded {@link Session.gitBranch} equals this
      *  branch — the data-model side of the resume picker's branch-scope toggle
-     *  (parity: Claude's LogSelector Ctrl+B `branchFilterEnabled`
+     *  (parity: the reference's LogSelector Ctrl+B `branchFilterEnabled`
      *  `log.gitBranch === currentBranch`). A session with no recorded branch never
      *  matches an active branch filter. */
     filterByBranch?: string;
     /** Keep only sessions whose recorded {@link Session.tag} equals this tag — the
-     *  data-model side of the resume picker's per-#tag tab (parity: Claude's TagTabs
+     *  data-model side of the resume picker's per-#tag tab (parity: the reference's TagTabs
      *  per-tag filtering). An empty/whitespace value is ignored (no constraint). */
     filterByTag?: string;
     /** How many of the most-recent rows are ENRICHED with a full parse (real
@@ -1798,7 +1798,7 @@ export class SessionManager {
      *  file at/above {@link SKIP_PRECOMPACT_THRESHOLD} regardless of position — are
      *  built from the cheap bounded {@link readSessionMetaLite} path instead. Defaults
      *  to {@link INITIAL_ENRICH_COUNT}. Pass `Infinity` to force a full parse of every
-     *  row (the pre-enrichment behaviour). Parity: Claude's progressive enrichment. */
+     *  row (the pre-enrichment behaviour). Parity: the reference's progressive enrichment. */
     enrichCount?: number;
     /** Optional diagnostics sink: when supplied, {@link list} populates it with the
      *  found/listed/skipped-by-reason counts for this pass (the introspection surface
@@ -1807,7 +1807,7 @@ export class SessionManager {
     diagnostics?: SessionListDiagnostics;
   } = {}): SessionListEntry[] {
     const files = this.listFiles();
-    // Diagnostics sink (parity: Claude's resume-discovery debug counts). `found` is
+    // Diagnostics sink (parity: the reference's resume-discovery debug counts). `found` is
     // every discovered file; `skip`/`skipN` tally dropped rows by reason as the pass
     // runs; `listed` is stamped with the final visible count before returning.
     const diag = opts.diagnostics;
@@ -1851,7 +1851,7 @@ export class SessionManager {
     // `candidates` is mtime-descending, the FIRST successful read of an id is the
     // newest valid copy; a later/staler file carrying the same id is dropped. The
     // dedup is POST-read (an id is not dropped by an unreadable newer copy), parity
-    // with Claude's applySortAndLimit `seen` set. (AMI stores one id per filename,
+    // with the reference's applySortAndLimit `seen` set. (AMI stores one id per filename,
     // so this reconciles a manually-copied/stale duplicate rather than being the
     // common path.)
     const seenIds = new Set<string>();
@@ -1882,7 +1882,7 @@ export class SessionManager {
       if (!session) { skip('unreadable'); continue; }
 
       // Subagent sidechain transcripts never pollute the resume picker unless the
-      // caller explicitly opts in (parity: Claude filters `isSidechain` logs out).
+      // caller explicitly opts in (parity: the reference filters `isSidechain` logs out).
       if (session.isSidechain && !opts.includeSidechain) { skip('sidechain'); continue; }
 
       const idKey = String(session.id);
@@ -1896,7 +1896,7 @@ export class SessionManager {
       const lastPrompt = extractLastPrompt(session.messages);
       const summary = resolveSessionSummary(session, { lastPrompt, firstPrompt: preview });
       // Optionally drop a metadata-only session (no title and no real prompts),
-      // matching Claude's listSessionsImpl which returns null for such logs.
+      // matching the reference's listSessionsImpl which returns null for such logs.
       if (opts.dropEmpty && summary === undefined) { skip('empty'); continue; }
 
       // messageCount / gitBranch / metadata come at ~zero extra cost from the
@@ -1925,7 +1925,7 @@ export class SessionManager {
       });
     }
 
-    // Branch / tag scope filters (parity: Claude's LogSelector Ctrl+B branch filter
+    // Branch / tag scope filters (parity: the reference's LogSelector Ctrl+B branch filter
     // and TagTabs per-#tag filtering) — applied over the parsed entries before the
     // PR filter. An entry with no recorded branch/tag never matches an active filter.
     let scoped = entries;
@@ -1942,7 +1942,7 @@ export class SessionManager {
       skipN('tag-filter', before - scoped.length);
     }
 
-    // PR scope filter (parity: Claude's filteredLogs PR filter) — applied after the
+    // PR scope filter (parity: the reference's filteredLogs PR filter) — applied after the
     // read pass so the single {@link filterSessionsByPr} acceptance boundary is reused.
     const filtered = opts.filterByPr !== undefined
       ? filterSessionsByPr(scoped, opts.filterByPr)
@@ -1960,7 +1960,7 @@ export class SessionManager {
   /**
    * {@link list} plus the resume-discovery {@link SessionListDiagnostics} for the
    * same pass — the introspection surface that answers "why didn't my session show up
-   * in /resume?" (parity: Claude's `/resume: enriched N, M filtered out, K visible`
+   * in /resume?" (parity: the reference's `/resume: enriched N, M filtered out, K visible`
    * debug counts). Returns the visible entries AND a found/listed/skipped-by-reason
    * tally, so `/sessions` can report how many files were on disk and why each hidden
    * one was dropped, instead of silently omitting it. The entries are byte-for-byte
@@ -1978,7 +1978,7 @@ export class SessionManager {
   /**
    * Enumerate the distinct {@link Session.tag}s in this store with a per-tag count,
    * most-used first (ties broken alphabetically). Backs the resume picker's tab
-   * strip — an `All` tab plus one `#tag` tab per tag (parity: Claude's TagTabs tab
+   * strip — an `All` tab plus one `#tag` tab per tag (parity: the reference's TagTabs tab
    * model). Reads inline JSON only (no blob rehydration) via the same cheap read
    * {@link list} uses, so building the tab set over a large store stays cheap; a
    * session with no tag is ignored. The returned `tag` values can be passed back as
@@ -2025,7 +2025,7 @@ export class SessionManager {
    * crash-safe {@link save}/resume write) instead of parsing each file, skips a
    * file that vanishes mid-sweep (concurrent delete race), and routes each
    * removal through {@link delete} so the content-addressed blob sidecar is
-   * cleaned up alongside the JSON. Parity: Claude's cleanupPeriodDays retention.
+   * cleaned up alongside the JSON. Parity: the reference's cleanupPeriodDays retention.
    */
   cleanupOldSessions(cleanupPeriodDays?: number): number {
     if (!isSessionCleanupEnabled(cleanupPeriodDays)) {
@@ -2042,7 +2042,7 @@ export class SessionManager {
       }
       if (mtimeMs >= cutoff) continue; // still within the retention window
       const safeId = path.basename(file).replace(/\.json$/, '');
-      // Strict content guard before deleting (parity: Claude's `/^\d+\.json$/`
+      // Strict content guard before deleting (parity: the reference's `/^\d+\.json$/`
       // filename check before its parseInt stale sweep — adapted to AMI's non-numeric
       // ids): only remove a file whose stem is a valid session id AND whose contents
       // actually parse as a session (an `id` + `messages` array). This guarantees a
@@ -2066,7 +2066,7 @@ export class SessionManager {
    * skipping immediately when another process is already sweeping. Without this,
    * every engine start (and every one of N concurrent processes) ran a full sweep;
    * now a day-marker + lock in the store dir throttle it to once per day per store
-   * with no concurrent pile-up (parity: Claude's backgroundHousekeeping marker +
+   * with no concurrent pile-up (parity: the reference's backgroundHousekeeping marker +
    * lock-skip boundary). Returns `{ ran, removed }`: `ran` is false when the sweep
    * was throttled or another process held the lock (in which case `removed` is 0).
    * Retention still DISABLED (no `cleanupPeriodDays`) short-circuits before touching
@@ -2096,7 +2096,7 @@ export class SessionManager {
    * is removed, and the blob base dir itself is `rmdir`'d when it ends up empty.
    * Returns the number of blob dirs swept.
    *
-   * This is the AMI-faithful analog of Claude Code's cross-session cache GC
+   * This is the AMI-faithful analog of the reference's cross-session cache GC
    * (`cleanupOldImageCaches`, which deletes every NON-current session's image-cache
    * dir then rmdir's the base when empty). AMI diverges intentionally: its per-session
    * dir is a content-addressed BLOB store backing a RESUMABLE transcript, not an
@@ -2139,7 +2139,7 @@ export class SessionManager {
   }
 
   /**
-   * Toggle the session's single searchable {@link Session.tag} (parity: Claude's
+   * Toggle the session's single searchable {@link Session.tag} (parity: the reference's
    * `/tag` toggle/replace/remove state machine). Normalizes the input with
    * {@link normalizeSessionTag}, then:
    *  - no loadable session → `{ ok:false, error:'No active session to tag.' }`;
@@ -2166,7 +2166,7 @@ export class SessionManager {
   }
 
   /**
-   * Branch a conversation into a NEW session (parity: Claude's forkSession).
+   * Branch a conversation into a NEW session (parity: the reference's forkSession).
    *
    * Every message uuid is remapped to a fresh id while the `parentUuid` threading
    * chain is preserved under the remap, so the fork is an independent transcript
@@ -2178,21 +2178,21 @@ export class SessionManager {
    * returned.
    *
    * Subagent sidechain messages are excluded so the fork carries only the main
-   * conversation (parity: Claude's createFork filters `isSidechain` entries). The
+   * conversation (parity: the reference's createFork filters `isSidechain` entries). The
    * fork is given a unique `"<base> (Branch)"` title — deduped with a numbered
    * suffix on collision (`(Branch 2)`, `(Branch 3)`, …) — from `opts.title`, else
    * the source title, else its first user prompt (parity: getUniqueForkName).
    *
-   * Boundary guards (parity: Claude's createFork `No conversation to branch` /
+   * Boundary guards (parity: the reference's createFork `No conversation to branch` /
    * `No messages to branch`): forking a brand-new / empty / message-less source is
    * a clean error, never a zero-message fork. A source with no transcript at all
-   * (missing/non-array/empty `messages` — the analog of Claude's unreadable or
+   * (missing/non-array/empty `messages` — the analog of the reference's unreadable or
    * zero-length transcript file) throws `'No conversation to branch'`; a source
    * that HAS entries but none that survive the main-conversation filter (every
    * entry is a subagent sidechain) throws `'No messages to branch'`.
    */
   fork(source: Session, opts: { upToMessageId?: string; title?: string } = {}): Session {
-    // No transcript at all — the analog of Claude's unreadable / zero-length
+    // No transcript at all — the analog of the reference's unreadable / zero-length
     // transcript file (createFork L79-87). Caught before any work so a brand-new
     // session can never be branched into a 0-message fork.
     if (!Array.isArray(source.messages) || source.messages.length === 0) {
@@ -2245,7 +2245,7 @@ export class SessionManager {
     // to the fork's id (the `...source` spread copied them verbatim under the OLD
     // sessionId, which the resume reader would never match). Without this the fork
     // reconstructs with an empty replacements set → previously-stubbed tool_results
-    // are re-sent in full (prompt-cache miss + permanent overage). Parity: Claude's
+    // are re-sent in full (prompt-cache miss + permanent overage). Parity: the reference's
     // createFork content-replacement preservation.
     const forkedReplacements = forkContentReplacements(source.contentReplacements, source.id, forked.id);
     if (forkedReplacements.length > 0) forked.contentReplacements = forkedReplacements;
@@ -2285,7 +2285,7 @@ export class SessionManager {
    * Generate a unique fork title: `"<base> (Branch)"`, or `"<base> (Branch N)"`
    * when that collides — the smallest N≥2 not already taken by an existing fork of
    * the same base. Exact + prefix search over persisted customTitles with a
-   * regex-escaped base (parity: Claude's getUniqueForkName).
+   * regex-escaped base (parity: the reference's getUniqueForkName).
    */
   getUniqueBranchName(baseName: string): string {
     const candidate = `${baseName} (Branch)`;
@@ -2328,7 +2328,7 @@ export class SessionManager {
    * recording the outgoing session as the new one's parent for lineage tracking.
    * With `setCurrentAsParent` + `currentId`, the returned descriptor carries
    * `parentSessionId` so the caller can stamp it onto the new {@link Session} and
-   * the cleared-through chain stays walkable. Parity: Claude's
+   * the cleared-through chain stays walkable. Parity: the reference's
    * `regenerateSessionId({ setCurrentAsParent })` which sets `STATE.parentSessionId`.
    */
   static regenerateSessionId(
@@ -2377,7 +2377,7 @@ export class SessionManager {
 
   /** The GLOBAL projects root — `<configDir>/projects` — holding one per-cwd-slug
    *  subdir of project state. Static so cross-project listing can enumerate every
-   *  project's session store without a cwd-bound manager (parity: Claude's
+   *  project's session store without a cwd-bound manager (parity: the reference's
    *  getProjectsDir). */
   static projectsRoot(env: NodeJS.ProcessEnv = process.env): string {
     return path.join(resolveConfigDir(env), 'projects');
@@ -2385,7 +2385,7 @@ export class SessionManager {
 
   /**
    * Enumerate every project's `sessions` directory under the global projects root
-   * (parity: Claude's gatherAllCandidates — the set scanned when a listing's `dir`
+   * (parity: the reference's gatherAllCandidates — the set scanned when a listing's `dir`
    * is omitted). Each returned path backs a dir-scoped {@link SessionManager}. A
    * missing/unreadable projects root yields `[]`; a project slug with no `sessions`
    * subdir is skipped.
@@ -2409,7 +2409,7 @@ export class SessionManager {
   }
 
   /**
-   * The session-store dirs for a set of worktree/project cwds (parity: Claude's
+   * The session-store dirs for a set of worktree/project cwds (parity: the reference's
    * worktree-aware gathering): reads the global projects root and returns the
    * `sessions` dir of every slug subdir that matches one of `worktreeCwds` via
    * {@link matchWorktreeForProjectDir} (longest-prefix, truncation-aware). The
@@ -2447,13 +2447,13 @@ export class SessionManager {
   }
 
   /**
-   * List sessions across MULTIPLE project session stores (parity: Claude's
+   * List sessions across MULTIPLE project session stores (parity: the reference's
    * all-projects / cross-project resume listing — `listSessionsImpl` with `dir`
    * omitted, and the picker's `showAllProjects` scope).
    *
    * With `dirs` omitted every project's sessions dir under the global projects root
    * is scanned ({@link listProjectSessionDirs}); pass an explicit set to scope the
-   * aggregation (e.g. Claude's `dir` option). Each store is read via a dir-scoped
+   * aggregation (e.g. the reference's `dir` option). Each store is read via a dir-scoped
    * manager so every entry carries its own {@link SessionListEntry.projectPath}
    * (which directory it belongs to). The per-store filters (`includeSidechain`,
    * `dropEmpty`, `excludeId`, `filterByPr`, `filterByBranch`, `filterByTag`) are
@@ -2467,7 +2467,7 @@ export class SessionManager {
     /** Scope the aggregation to the session stores of these worktree/project cwds
      *  (via {@link listWorktreeSessionDirs}) instead of EVERY project under the
      *  global root. Ignored when an explicit `dirs` set is passed; when both are
-     *  omitted every project is scanned (unchanged behaviour). Parity: Claude's
+     *  omitted every project is scanned (unchanged behaviour). Parity: the reference's
      *  `--continue` worktree fan-out. */
     worktreePaths?: string[];
     env?: NodeJS.ProcessEnv;
@@ -2526,7 +2526,7 @@ export class SessionManager {
    * zero-byte/corrupt copy is skipped via {@link readSessionFile}'s guards, so a
    * crash-truncated copy in one project never shadows a good copy in another).
    * Returns `null` for a malformed id ({@link isValidSessionId}) or when no project
-   * holds it. This is the all-projects branch of Claude's `resolveSessionFilePath`
+   * holds it. This is the all-projects branch of the reference's `resolveSessionFilePath`
    * (and the sibling-worktree fallback, since every worktree of one repo shares a
    * single canonical-git-root slug store) — reused by a cross-project `--resume <id>`
    * so a session recorded under another directory is still resumable.
@@ -2569,7 +2569,7 @@ export class SessionManager {
       // (a corrupt/hostile file must not crash --resume). Skip it as unreadable.
       // A zero-byte file (a crash-truncated/empty copy) is likewise treated as
       // NOT-found so it never shadows a valid sibling/cross-project copy (parity:
-      // Claude's resolveSessionFilePath `if (s.size > 0)` guard).
+      // the reference's resolveSessionFilePath `if (s.size > 0)` guard).
       const size = fs.statSync(filePath).size;
       if (size === 0 || size > MAX_SESSION_READ_BYTES) return null;
       const raw = fs.readFileSync(filePath, 'utf-8');
@@ -2733,7 +2733,7 @@ export class SessionManager {
 // ---------------------------------------------------------------------------
 
 /** Result of scanning a loaded transcript for a turn that was cut off mid-flight
- *  (parity: Claude's conversationRecovery). `interrupted` is true when the model
+ *  (parity: the reference's conversationRecovery). `interrupted` is true when the model
  *  requested tool calls that were never answered — i.e. the process died between
  *  the assistant's tool_use and the tool_result — so the resume path can inject a
  *  synthetic continuation instead of resuming into an inconsistent state. */
@@ -2775,7 +2775,7 @@ export function detectTurnInterruption(messages: Message[]): TurnInterruption {
  * The single-glyph assistant sentinel appended after a trailing user turn on
  * resume, so a transcript that ends on an unanswered user prompt is still a
  * valid request/response conversation if --resume takes no action. Parity:
- * Claude's `NO_RESPONSE_REQUESTED` (createAssistantMessage sentinel in
+ * the reference's `NO_RESPONSE_REQUESTED` (createAssistantMessage sentinel in
  * conversationRecovery.deserializeMessages).
  */
 export const NO_RESPONSE_REQUESTED = '[No response requested]';
@@ -2784,7 +2784,7 @@ export const NO_RESPONSE_REQUESTED = '[No response requested]';
  * Select the newest resumable LEAF of a transcript's parentUuid DAG: the latest
  * (last-in-order) non-sidechain message that is not referenced as any message's
  * `parentUuid` (i.e. has no child). A sidechain leaf is skipped so resume follows
- * the MAIN conversation, not a subagent branch (parity: Claude's newest
+ * the MAIN conversation, not a subagent branch (parity: the reference's newest
  * non-sidechain leaf selection in the --resume chain walk). Returns `undefined`
  * for an empty list or one with only sidechain messages.
  */
@@ -2807,7 +2807,7 @@ export function selectNewestLeaf(messages: Message[]): Message | undefined {
  * back to its root, then returning it in chronological order (root → leaf). The
  * walk is cycle-safe: a `parentUuid` cycle (corrupt transcript) terminates the
  * walk at the repeat and returns the partial chain instead of looping forever
- * (parity: Claude's `buildConversationChain` cycle guard). When `leafUuid` is
+ * (parity: the reference's `buildConversationChain` cycle guard). When `leafUuid` is
  * omitted the {@link selectNewestLeaf newest non-sidechain leaf} is used, so a
  * loaded transcript resolves to its main-thread conversation. Branch/sidechain
  * aware: only messages on the chosen leaf's ancestor chain are returned, so a
@@ -2835,7 +2835,7 @@ export function buildConversationChain(messages: Message[], leafUuid?: string): 
     // Session-break continuation: when `parentUuid` was deliberately nullified (or
     // points outside the loaded set) to mark a session break, fall back to
     // `logicalParentUuid` so lineage spanning the break is still reconstructed into
-    // one thread instead of fragmenting into two roots (parity: Claude's
+    // one thread instead of fragmenting into two roots (parity: the reference's
     // TranscriptMessage.logicalParentUuid preservation across session-break
     // nullification). The `seen` cycle guard above bounds this just like the
     // parentUuid walk, so a logical-link loop returns a partial chain, never spins.
@@ -2859,7 +2859,7 @@ export function buildConversationChain(messages: Message[], leafUuid?: string): 
  * valid message rows, yields `[]`. An explicit `leafUuid` resumes a specific
  * branch; otherwise the newest non-sidechain leaf is chosen.
  *
- * This is the core primitive behind `--resume <path.jsonl>` (parity: Claude's
+ * This is the core primitive behind `--resume <path.jsonl>` (parity: the reference's
  * `loadMessagesFromJsonlPath` / `loadConversationForResume(sourceJsonlFile)` for
  * resuming a session whose transcript lives OUTSIDE the current project dir). It
  * reuses the existing DAG walk rather than re-implementing leaf selection (§0b.6).
@@ -2880,7 +2880,7 @@ export function loadMessagesFromTranscriptPath(
   // size. Precompact truncation is only applied for large transcripts
   // ({@link SKIP_PRECOMPACT_THRESHOLD}) — a big file almost always got big because
   // auto-compact ran, so dropping its pre-compaction prefix is both safe and the
-  // whole point (parity: Claude's size-gated readTranscriptForLoad).
+  // whole point (parity: the reference's size-gated readTranscriptForLoad).
   const { lines } = readTranscriptForLoad(jsonlPath, {
     fileSize: size,
     applyBoundaryTruncation: size >= SKIP_PRECOMPACT_THRESHOLD,
@@ -2914,10 +2914,10 @@ export interface TranscriptLoadResult {
    *  a raw JSONL string with no trailing newline. */
   lines: string[];
   /** File byte offset where the surviving segment begins (`0` when nothing was
-   *  truncated). Parity: Claude's `boundaryStartOffset`. */
+   *  truncated). Parity: the reference's `boundaryStartOffset`. */
   boundaryStartOffset: number;
   /** `true` when the truncating boundary carried a `preservedSegment`, so messages
-   *  before it were intentionally kept rather than dropped. Parity: Claude's
+   *  before it were intentionally kept rather than dropped. Parity: the reference's
    *  `hasPreservedSegment`. */
   hasPreservedSegment: boolean;
 }
@@ -2926,7 +2926,7 @@ export interface TranscriptLoadResult {
  * Determine whether a transcript line is a genuine `compact_boundary` system entry
  * (the marker string can appear inside ordinary user content, so a real JSON parse
  * — not a substring test — is required), returning whether it preserves a segment,
- * or `null` when the line is not a boundary. Parity: Claude's `parseBoundaryLine`.
+ * or `null` when the line is not a boundary. Parity: the reference's `parseBoundaryLine`.
  */
 function parseCompactBoundaryLine(line: string): { hasPreservedSegment: boolean } | null {
   let parsed: unknown;
@@ -2972,7 +2972,7 @@ function isAttributionSnapshotLine(line: string): boolean {
  * the surviving output rather than the whole file — the point of the chunked read
  * for multi-megabyte sessions. A boundaryless file yields every line (identical to
  * the previous whole-file read, no behaviour change). A missing / oversized /
- * unreadable path yields an empty result. Parity: Claude's `readTranscriptForLoad`.
+ * unreadable path yields an empty result. Parity: the reference's `readTranscriptForLoad`.
  */
 export function readTranscriptForLoad(
   jsonlPath: string,
@@ -3066,7 +3066,7 @@ export function readTranscriptForLoad(
   return { lines, boundaryStartOffset, hasPreservedSegment };
 }
 
-/** Options for {@link getSessionMessages} (parity: Claude's
+/** Options for {@link getSessionMessages} (parity: the reference's
  *  `GetSessionMessagesOptions` — `includeSystemMessages`, `limit`, `offset`). */
 export interface GetSessionMessagesOptions {
   /** Include `system` messages in the result. Default `false` — only the
@@ -3077,14 +3077,14 @@ export interface GetSessionMessagesOptions {
   /** Number of messages to skip from the start (for pagination). */
   offset?: number;
   /** Drop subagent sidechain messages (`isSidechain`), so only the main-thread
-   *  conversation is returned. Default `false`. Parity: Claude's `getSessionMessages`
+   *  conversation is returned. Default `false`. Parity: the reference's `getSessionMessages`
    *  excluding sidechain (sub-agent) sessions from the reconstructed transcript. */
   excludeSidechain?: boolean;
   /** Reconstruct the conversation by walking the `parentUuid` links to the newest
    *  non-sidechain leaf (via {@link buildConversationChain}) before filtering, so a
    *  branched/forked transcript linearizes to its main thread in chronological
    *  order instead of being read as a flat array. Default `false` (the stored order
-   *  is used as-is). Parity: Claude's "builds the conversation chain via parentUuid
+   *  is used as-is). Parity: the reference's "builds the conversation chain via parentUuid
    *  links" in `getSessionMessages`. */
   buildChain?: boolean;
 }
@@ -3094,7 +3094,7 @@ export interface GetSessionMessagesOptions {
  * drops `system` messages unless `includeSystemMessages`, then applies
  * `offset`/`limit`. Pure over an already-ordered message array (AMI persists the
  * transcript in chronological order), so a caller can page a long session without
- * materializing the whole thing downstream. Parity: Claude's `getSessionMessages`
+ * materializing the whole thing downstream. Parity: the reference's `getSessionMessages`
  * (includeSystemMessages / limit / offset).
  */
 export function getSessionMessages(messages: Message[], opts: GetSessionMessagesOptions = {}): Message[] {
@@ -3120,7 +3120,7 @@ export function getSessionMessages(messages: Message[], opts: GetSessionMessages
  * turn or a `[Previous conversation summary]` compaction turn is NOT a real
  * prompt and is left as-is. Returns a NEW array (input untouched); a transcript
  * already ending on an assistant/tool message is returned unchanged. Parity:
- * Claude's deserializeMessages synthetic-sentinel insertion.
+ * the reference's deserializeMessages synthetic-sentinel insertion.
  */
 export function appendResumeSentinel(messages: Message[]): Message[] {
   const out = messages.slice();
@@ -3150,7 +3150,7 @@ export function appendResumeSentinel(messages: Message[]): Message[] {
  * representation was swapped for a smaller `replacement` stub by a per-message
  * budget pass (the full output lives elsewhere — a blob / the un-stubbed history).
  * Replayed on resume so the reconstructed context is byte-identical and the prompt
- * cache stays warm. Parity: Claude's `ContentReplacementRecord`
+ * cache stays warm. Parity: the reference's `ContentReplacementRecord`
  * (`utils/toolResultStorage.ts` — `kind: 'tool-result'`, `toolUseId`, `replacement`).
  */
 export interface ContentReplacementRecord {
@@ -3166,7 +3166,7 @@ export interface ContentReplacementRecord {
  * One enforcement pass's worth of {@link ContentReplacementRecord}s, keyed by the
  * owning `sessionId` and discriminated by `agentId`: when `agentId` is set the
  * record belongs to a subagent sidechain (AgentTool resume reads these); when it is
- * absent the record is main-thread (`/resume` reads these). Parity: Claude's
+ * absent the record is main-thread (`/resume` reads these). Parity: the reference's
  * `ContentReplacementEntry` (`types/logs.ts`) — the `agentId` main-thread-vs-sidechain
  * discriminator and the keyed-lookup `sessionId`.
  */
@@ -3191,12 +3191,12 @@ function isContentReplacementRecord(v: unknown): v is ContentReplacementRecord {
 /**
  * Collect the flat list of {@link ContentReplacementRecord}s to replay for a
  * resume, applying the two selectors the reference's keyed lookup uses:
- *  - `sessionId` (optional) — keep only entries for that session (how Claude's
+ *  - `sessionId` (optional) — keep only entries for that session (how the reference's
  *    `loadTranscriptFile` keys the lookup by the session's messages' sessionId);
  *  - `agentId` discriminator — `undefined` selects ONLY main-thread entries (no
  *    `agentId`); a set value selects ONLY the matching subagent sidechain's entries.
  * Malformed records in a tampered/foreign transcript are dropped (never replayed).
- * Parity: Claude's content-replacement reconstruction read (main-thread `/resume`
+ * Parity: the reference's content-replacement reconstruction read (main-thread `/resume`
  * vs AgentTool sidechain resume).
  */
 export function collectContentReplacements(
@@ -3229,7 +3229,7 @@ export function collectContentReplacements(
  * entries), then re-emit them as a SINGLE {@link ContentReplacementEntry} under the
  * FORK's `sessionId` so the resume reader's keyed lookup finds them for the fork.
  * Returns `[]` when there is nothing to carry (so a fork of a session that never had
- * a replacement stays `contentReplacements`-free). Parity: Claude's `createFork`
+ * a replacement stays `contentReplacements`-free). Parity: the reference's `createFork`
  * content-replacement preservation (`commands/branch/branch.ts` L98-158).
  */
 export function forkContentReplacements(
@@ -3256,7 +3256,7 @@ export function sha256Hex(content: string): string {
 
 /**
  * Per-file record of how much of a file's CURRENT content the agent authored
- * (parity: Claude's FileAttributionState). `contentHash` pins the content the
+ * (parity: the reference's FileAttributionState). `contentHash` pins the content the
  * contribution was measured against (so a later external edit is detectable by a
  * hash mismatch), `agentContribution` is the running count of characters the agent
  * authored across edits, and `mtime` is the file's modification time at snapshot.
@@ -3275,7 +3275,7 @@ export interface FileAttributionState {
 /**
  * A transcript entry capturing per-file agent attribution plus session-level
  * prompt / permission-prompt / escape counters, persisted so commit attribution
- * can report how much of a diff the agent authored (parity: Claude's
+ * can report how much of a diff the agent authored (parity: the reference's
  * AttributionSnapshotMessage). Each `*AtLastCommit` counter snapshots the matching
  * total AS OF the previous commit, so a "since last commit" delta is derivable.
  */
@@ -3309,7 +3309,7 @@ export interface AttributionSnapshot {
  * content so a later external edit (different hash) is detectable. A non-positive
  * `contributedChars` still refreshes the hash/mtime without inflating the count
  * (an edit that only deletes text contributes no authored characters). Parity:
- * Claude's per-edit FileAttributionState update.
+ * the reference's per-edit FileAttributionState update.
  */
 export function recordFileContribution(
   states: Record<string, FileAttributionState>,
@@ -3332,7 +3332,7 @@ export function recordFileContribution(
  * import('./tools/attribution-store').recordBulkAgentFileContributions}) copies
  * the map ONCE then calls this per file, avoiding the O(n²) blow-up of copying
  * per file across a diff that touches hundreds of thousands of paths. Parity:
- * Claude Code's `trackBulkFileChanges` single-Map-copy mutation (commitAttribution
+ * the reference's `trackBulkFileChanges` single-Map-copy mutation (commitAttribution
  * L489-L542). A non-positive `contributedChars` still refreshes hash/mtime without
  * inflating the running count.
  */
@@ -3463,7 +3463,7 @@ export const LOCK_RETRY_DEFAULT_DELAY_MS = 50;
  * and every probe reports the dir unlocked. Escape hatch for environments where
  * the cross-process lock is counter-productive — a read-only / single-tenant FS,
  * a networked store whose PID probes are meaningless, or a test harness that wants
- * concurrent engines on one dir (parity: Claude's pidLock force-enable/disable env
+ * concurrent engines on one dir (parity: the reference's pidLock force-enable/disable env
  * override, `ENABLE_PID_BASED_VERSION_LOCKING`). Default (unset) = locking ON.
  */
 export function isSessionLockingDisabled(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -3669,7 +3669,7 @@ function lockHolderActive(
     // Reclaiming on liveness alone would evict a live cross-OS holder, so under
     // WSL we fall through to the time-based fallback: the lock is treated as held
     // until it ages past {@link LOCK_FALLBACK_STALE_MS} (bounded self-heal), never
-    // reclaimed purely because an un-probeable PID "looks dead" (parity: Claude's
+    // reclaimed purely because an un-probeable PID "looks dead" (parity: the reference's
     // `getPlatform() !== 'wsl'` guard before a stale-session sweep).
     if (deps.isWsl()) return deps.now() - payload.startedAt <= staleMs;
     return false;                                // dead / sentinel → stale
@@ -3711,13 +3711,13 @@ function nextFenceAfter(priorFence: number | undefined): number {
 
 // Release handlers for locks held by THIS process, run on graceful exit so a
 // lock is freed even if the caller never invokes release() (signal / crash /
-// forgotten cleanup). Mirrors Claude's registerCleanup-at-acquire.
+// forgotten cleanup). Mirrors the reference's registerCleanup-at-acquire.
 const activeLockReleases = new Set<() => void>();
 
 // Zero-syscall ownership map: the lock paths this process currently holds a fresh
 // (un-released) handle for. Added when a fresh acquire wins, removed on release —
 // so {@link isSessionLockHeldLocally} can answer "do I hold this?" with no disk I/O
-// (parity: Claude's `isLockHeldLocally`, used to gate a per-turn release so a
+// (parity: the reference's `isLockHeldLocally`, used to gate a per-turn release so a
 // non-holding turn never touches disk).
 const locallyHeldLockPaths = new Set<string>();
 
@@ -3725,7 +3725,7 @@ const locallyHeldLockPaths = new Set<string>();
  * Zero-syscall check: does THIS process currently believe it holds the session
  * lock for `sessionDir`? True iff a fresh {@link acquireSessionLock} won the lock
  * here and its `release()` has not run yet. No filesystem access — purely the
- * in-process ownership map. Parity: Claude's `isLockHeldLocally()`.
+ * in-process ownership map. Parity: the reference's `isLockHeldLocally()`.
  */
 export function isSessionLockHeldLocally(sessionDir: string): boolean {
   return locallyHeldLockPaths.has(path.join(sessionDir, SESSION_LOCK_FILE));
@@ -3788,7 +3788,7 @@ function makeAcquiredHandle(
  * (resume the session there, or wait for / terminate that PID) instead of an
  * opaque "could not start" failure. This is the single canonical wording so every
  * surface (acquire result, a `/doctor`-style diagnostic, the resume flow) reads
- * identically. Mirrors Claude Code's pidLock conflict log — `Cannot acquire lock
+ * identically. Mirrors the reference's pidLock conflict log — `Cannot acquire lock
  * for <name> - held by PID <pid>` (utils/nativeInstaller/pidLock.ts L248-254) —
  * adapted to a session (the lock "name" is the session directory's basename).
  */
@@ -3859,7 +3859,7 @@ export function acquireSessionLock(
         // acquired, NON-fresh result with a no-op release (the original fresh handle
         // still owns the on-disk lock and is the one that unlinks it) — so a caller
         // can fire an "entered" side effect only on `fresh` and never double-unlink
-        // (parity: Claude's AcquireResult `{kind:'acquired',fresh:false}` reentrant).
+        // (parity: the reference's AcquireResult `{kind:'acquired',fresh:false}` reentrant).
         if (payload && payload.pid === process.pid) {
           return { result: { acquired: true, fresh: false, pid: payload.pid, release: () => {} }, blockedByLiveHolder: false };
         }
@@ -3913,7 +3913,7 @@ export function isSessionLocked(
 
 /** Tri-state result of {@link checkSessionLock} — a check-without-acquire probe:
  *  `free` (no live holder — reclaimable), `held_by_self` (this process owns it), or
- *  `blocked` (another live process owns it). Parity: Claude's computer-use lock
+ *  `blocked` (another live process owns it). Parity: the reference's computer-use lock
  *  `CheckResult` (`free` / `held_by_self` / `blocked`). */
 export type SessionLockCheck =
   | { kind: 'free' }
@@ -3930,7 +3930,7 @@ export type SessionLockCheck =
  *  - `{kind:'held_by_self',pid}` — this process already holds it (zero-syscall
  *    local ownership first, else the on-disk pid matches);
  *  - `{kind:'blocked',pid}` — a live, verified other holder owns it.
- * Parity: Claude's `checkComputerUseLock` (the `defersLockAcquire` contract).
+ * Parity: the reference's `checkComputerUseLock` (the `defersLockAcquire` contract).
  */
 export function checkSessionLock(
   sessionDir: string,
@@ -4059,7 +4059,7 @@ export function evaluateSessionAcquisition(args: {
 
 /** Introspection snapshot of one session lock, for diagnostics / a `/doctor`-style
  *  surface. `active` reflects {@link lockHolderActive} (a dead/sentinel/reused/
- *  cross-host-stale holder reads as inactive, i.e. reclaimable). Parity: Claude's
+ *  cross-host-stale holder reads as inactive, i.e. reclaimable). Parity: the reference's
  *  pidLock `LockInfo` + `getAllLockInfo` diagnostics. */
 export interface LockInfo {
   /** Absolute path of the lock file. */
@@ -4078,7 +4078,7 @@ export interface LockInfo {
 /**
  * Diagnostics for the session lock in `sessionDir`: returns a {@link LockInfo}
  * snapshot, or `null` when no lock file exists or it is corrupt/unparseable.
- * Read-only — never acquires, reclaims, or deletes. Parity: Claude's per-lock
+ * Read-only — never acquires, reclaims, or deletes. Parity: the reference's per-lock
  * diagnostics read.
  */
 export function getSessionLockInfo(
@@ -4105,7 +4105,7 @@ export function getSessionLockInfo(
  * Bulk lock introspection across several session directories: returns a
  * {@link LockInfo} for every dir that currently holds a (parseable) lock, skipping
  * dirs with no/corrupt lock. Per-dir errors are isolated so one unreadable dir
- * never aborts the sweep. Parity: Claude's `getAllLockInfo` bulk diagnostics.
+ * never aborts the sweep. Parity: the reference's `getAllLockInfo` bulk diagnostics.
  */
 export function getAllLockInfo(
   sessionDirs: string[],
@@ -4132,7 +4132,7 @@ export function getAllLockInfo(
  *
  * This is the proactive counterpart to the lazy reclaim in {@link acquireSessionLock}
  * (which only reclaims when a NEW acquire hits the same dir): it garbage-collects
- * orphaned locks in dirs that are never re-acquired. Parity: Claude's
+ * orphaned locks in dirs that are never re-acquired. Parity: the reference's
  * `cleanupStaleLocks(locksDir)` directory sweep, adapted to AMI's one-lock-per-
  * session-dir model (callers pass {@link SessionManager.listProjectSessionDirs}).
  */
@@ -4173,7 +4173,7 @@ export const RESUME_POINTER_FILE = '.resume-pointer.json';
 /** A resume pointer older than this (measured by the file MTIME — NOT an embedded
  *  timestamp — so a periodic no-content-change re-write serves as a liveness
  *  refresh) is treated as stale and GC'd on read, so a crash-recovery offer never
- *  keeps re-firing after a session is long abandoned (parity: Claude's bridge
+ *  keeps re-firing after a session is long abandoned (parity: the reference's bridge
  *  pointer 4h rolling TTL). */
 export const RESUME_POINTER_TTL_MS = 4 * 60 * 60 * 1000; // 4h
 
@@ -4194,7 +4194,7 @@ function resumePointerPath(sessionDir: string): string {
  * on session start and periodically during a run: re-writing with the same
  * sessionId is a cheap no-content-change write whose only job is to bump the file
  * MTIME — the rolling-staleness clock {@link readResumePointer} checks (parity:
- * Claude's writeBridgePointer mtime-refresh idiom). A malformed sessionId is
+ * the reference's writeBridgePointer mtime-refresh idiom). A malformed sessionId is
  * rejected (never persist garbage). Best-effort: a crash-recovery aid must never
  * itself crash the session, so a write failure is swallowed.
  */
@@ -4212,7 +4212,7 @@ export function writeResumePointer(sessionDir: string, pointer: ResumePointer): 
 
 /**
  * Clear the crash-recovery resume pointer (clean shutdown, or GC of a stale/corrupt
- * pointer during a read). Best-effort — a missing file is a no-op. Parity: Claude's
+ * pointer during a read). Best-effort — a missing file is a no-op. Parity: the reference's
  * clearBridgePointer on clean exit.
  */
 export function clearResumePointer(sessionDir: string): void {
@@ -4225,7 +4225,7 @@ export function clearResumePointer(sessionDir: string): void {
  * staleness anchor) or `null`. A missing / unreadable / schema-invalid / STALE
  * (older than {@link RESUME_POINTER_TTL_MS}) pointer yields `null`; an invalid or
  * stale pointer is additionally DELETED on read so a crashed session's offer
- * self-heals and never re-fires forever (parity: Claude's readBridgePointer
+ * self-heals and never re-fires forever (parity: the reference's readBridgePointer
  * read-time GC). `now` is injectable for deterministic TTL tests.
  */
 export function readResumePointer(
@@ -4420,7 +4420,7 @@ export function safeAppendTranscript(
     // code — NFS-like filesystems surface unexpected codes for a vanished parent
     // dir — recreate the parent dir and RETRY the append once, so a transient /
     // racing-rmdir failure still lands the entry instead of silently dropping it
-    // (parity: Claude's appendToFile mkdir-and-retry). Only if the retry also
+    // (parity: the reference's appendToFile mkdir-and-retry). Only if the retry also
     // throws do we give up (transcript loss is preferable to crashing).
     try {
       secureMkdirSync(path.dirname(filePath));

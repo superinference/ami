@@ -9,7 +9,7 @@ import { findProjectRoot, gitignoreToIgnoreGlobs } from '../workspace-indexer';
 // expected "parent does not exist" case and is swallowed quietly. Any OTHER
 // failure (EACCES permission-denied, ENOTDIR, EMFILE, …) is unexpected and was
 // previously discarded silently, making path-suggestion gaps undiagnosable.
-// Mirrors Claude Code's findSimilarFile (`if (!isENOENT(error)) logError(...)`).
+// Mirrors the reference's findSimilarFile (`if (!isENOENT(error)) logError(...)`).
 function isENOENT(err: unknown): boolean {
   return (
     typeof err === 'object' &&
@@ -60,7 +60,7 @@ function clampCount(n: number): number {
 }
 
 // PARITY (secret-leak hardening): a directory-entry predicate that answers "may
-// this entry be surfaced as a 'did you mean' suggestion?". Claude Code's
+// this entry be surfaced as a 'did you mean' suggestion?". the reference's
 // suggestion pipeline filters ignored files out of results so secret/ignored
 // filenames are never disclosed (hooks/fileSuggestions.ts:289-295); AMI's
 // readdir-and-score loop previously scored EVERY entry verbatim, so a near-miss
@@ -133,7 +133,7 @@ export function suggestSimilarPaths(
   // PARITY (workspace-boundary containment): never enumerate a directory that
   // lives OUTSIDE the caller's workspace (cwd). An out-of-tree target would
   // otherwise disclose sibling-filesystem contents via the suggestion list.
-  // Mirrors Claude Code's cwd-scoped suggestion enumeration
+  // Mirrors the reference's cwd-scoped suggestion enumeration
   // (hooks/fileSuggestions.ts:243-316). Reuses the single canonical containment
   // helper so the check matches the rest of the tool layer exactly.
   if (!isWithinWorkspaceRoots(dir, cwd)) return [];
@@ -372,7 +372,7 @@ export function suggestByBasename(
 // ---------------------------------------------------------------------------
 // PARITY (suggestPathUnderCwd): recover from the common "dropped repo folder"
 // model error where an absolute path is built as a SIBLING of the project root
-// rather than inside it. Mirrors Claude Code's suggestPathUnderCwd
+// rather than inside it. Mirrors the reference's suggestPathUnderCwd
 // (references/.../utils/file.ts:L228-267) but synchronous — matching this
 // module's fs usage — and takes `cwd` explicitly for testability.
 // ---------------------------------------------------------------------------

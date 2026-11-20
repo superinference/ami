@@ -41,7 +41,7 @@ export const indexerHooks: {
 };
 
 /**
- * Tunable knobs for the chunked async index build (mirrors Claude Code's
+ * Tunable knobs for the chunked async index build (mirrors the reference's
  * file-index `CHUNK_MS`). The build parses files in a tight await-loop but
  * yields to the event loop on a WALL-CLOCK time budget — not a fixed file
  * count — because a count that is ~2ms on fast hardware can be 15ms+ on older
@@ -58,7 +58,7 @@ export const indexBuildConfig: { chunkMs: number; chunkCheckInterval: number } =
 // ---------------------------------------------------------------------------
 // Fuzzy (subsequence) symbol-name scoring
 //
-// Mirrors Claude Code's nucleo/fzf-v2-style scorer (references
+// Mirrors the reference's nucleo/fzf-v2-style scorer (references
 // native-ts/file-index/index.ts) so symbol search ranks by MATCH QUALITY
 // (boundary / camelCase / consecutive bonuses minus gap penalties) and can
 // match non-contiguous queries (e.g. 'wspidx' → 'WorkspaceIndexer'), instead
@@ -79,14 +79,14 @@ const BONUS_PREFIX = 10_000;
 /**
  * Query-length cap for fuzzy symbol search. Bounds the per-symbol scan so a
  * pathological / oversized query cannot blow up scoring cost (DoS / resource
- * guard). Mirrors Claude Code's MAX_QUERY_LEN=64.
+ * guard). Mirrors the reference's MAX_QUERY_LEN=64.
  */
 export const MAX_SYMBOL_QUERY_LEN = FUZZY_MAX_QUERY_LEN;
 
 /**
  * Deliberate down-rank of test / spec / fixture paths so a test file's symbol
  * does not outrank the real implementation on an otherwise-equal match. Mirrors
- * Claude Code's 1.05× test-path penalty, applied here as a small score nudge
+ * the reference's 1.05× test-path penalty, applied here as a small score nudge
  * (ties only — never overrides a genuinely better match).
  */
 const TEST_PATH_PENALTY = 2;
@@ -96,14 +96,14 @@ const TEST_PATH_RE =
 /**
  * Score how well `needle` (already length-clamped) fuzzy-matches `name`.
  * Returns null when `needle` is not a subsequence of `name`. Higher is better.
- * Boundary/camel/consecutive bonuses + gap penalties mirror Claude Code's
+ * Boundary/camel/consecutive bonuses + gap penalties mirror the reference's
  * file-index scorer; a shorter-name bonus favors tighter matches among
  * equal-quality candidates.
  *
  * Smart case: when `caseSensitive` is false (the default), `needle` must be
  * lowercased by the caller and the match is case-insensitive (the haystack is
  * lowercased here). When `caseSensitive` is true, `needle` keeps its original
- * casing and the match is exact-case — mirroring Claude Code's
+ * casing and the match is exact-case — mirroring the reference's
  * `caseSensitive = query !== query.toLowerCase()` per-query derivation. The
  * lowercase transform preserves character positions, so boundary/camel bonuses
  * are always computed against the original-case `name`.
@@ -175,7 +175,7 @@ export interface ImportEdge {
  * carries stage-level introspection (which discovery path ran, per-stage wall
  * time, whether the MAX_FILES cap bit) and a `cached` flag set when a
  * change-detection fast path skipped a redundant full rebuild — mirroring the
- * granular diagnostics Claude Code logs around its context-gathering path.
+ * granular diagnostics the reference logs around its context-gathering path.
  */
 export interface BuildIndexResult {
   fileCount: number;
@@ -296,7 +296,7 @@ export function findProjectRoot(startDir: string): string | null {
 // misconfigured remote, a stalled network/overlay filesystem, an enormous repo)
 // cannot block index build — and every awaiting search_symbols/find_references
 // call — indefinitely. On timeout/error we return null so buildIndex degrades
-// gracefully to the glob fallback. Mirrors Claude Code's 5s git-subprocess cap.
+// gracefully to the glob fallback. Mirrors the reference's 5s git-subprocess cap.
 const GIT_LS_FILES_TIMEOUT_MS = 5_000;
 
 /**
@@ -305,7 +305,7 @@ const GIT_LS_FILES_TIMEOUT_MS = 5_000;
  * tracked changed and a rebuild can be skipped WITHOUT spawning `git ls-files`.
  * Returns null for worktrees/submodules (`.git` is a file → ENOTDIR), fresh
  * repos with no index yet (ENOENT), and non-git dirs; the caller then falls back
- * to a path-list signature. Mirrors Claude Code's getGitIndexMtime.
+ * to a path-list signature. Mirrors the reference's getGitIndexMtime.
  */
 function gitIndexMtime(projectRoot: string): number | null {
   try {
@@ -319,7 +319,7 @@ function gitIndexMtime(projectRoot: string): number | null {
 /**
  * Order-sensitive content signature of a discovered path list (count + FNV-1a
  * hash). Used to skip the full re-parse when a rebuild discovers a byte-identical
- * file set — analogous to Claude Code's sampled `pathListSignature`.
+ * file set — analogous to the reference's sampled `pathListSignature`.
  */
 function fileListSignature(paths: string[]): string {
   let h = 0x811c9dc5;
@@ -461,7 +461,7 @@ export async function collectGitignoreGlobs(cwd: string, skipGlobs: string[]): P
 
 // ---------------------------------------------------------------------------
 // getSummary presentation knobs — the summary is injected verbatim into the
-// system prompt, so it carries two affordances Claude Code attaches to its own
+// system prompt, so it carries two affordances the reference attaches to its own
 // injected context (references src/context.ts):
 //   1. a snapshot/staleness caveat so the model does not over-trust counts that
 //      go stale as it edits (mirrors context.ts:96-97);
@@ -520,7 +520,7 @@ export class WorkspaceIndexer {
    *   - `queryable` resolves as soon as the FIRST chunk is indexed, so
    *     {@link searchSymbols} / {@link getSummary} can serve partial results
    *     against the already-indexed prefix while the build continues (graceful
-   *     degradation on a huge repo — mirrors Claude Code's
+   *     degradation on a huge repo — mirrors the reference's
    *     `loadFromFileListAsync` { queryable, done } contract);
    *   - `done` resolves with the full {@link BuildIndexResult} when the entire
    *     index is built.
@@ -632,7 +632,7 @@ export class WorkspaceIndexer {
     // *.bundle.js, protobuf/gRPC/swagger output, build/vendor dirs, …). On the
     // git path these are tracked and so survive discovery; on the glob path
     // SKIP_DIRS/.gitignore only cover directories. Classifying by the
-    // workspace-RELATIVE path (never the absolute prefix) mirrors Claude Code's
+    // workspace-RELATIVE path (never the absolute prefix) mirrors the reference's
     // Linguist-style classifier and keeps machine-generated symbols out of both
     // the index and the summary injected into the system prompt.
     filePaths = filePaths.filter(fp => !isGeneratedFile(path.relative(this.cwd, fp)));
@@ -840,7 +840,7 @@ export class WorkspaceIndexer {
   //
   // Scans EVERY indexed symbol (no insertion-order early-break) and keeps the
   // globally highest-scoring `limit` entries, so results are the best matches,
-  // not merely the earliest-indexed ones. Scoring mirrors Claude Code's
+  // not merely the earliest-indexed ones. Scoring mirrors the reference's
   // file-index scorer (boundary/camel/consecutive bonuses + gap penalties),
   // layered with exact/prefix tier bonuses (to preserve the historical
   // exact > starts-with > contains ordering) and a small test-path penalty.
@@ -851,7 +851,7 @@ export class WorkspaceIndexer {
     if (limit <= 0) return [];
     // Clamp an oversized query to bound per-symbol scan cost (DoS guard).
     const clamped = query.slice(0, MAX_SYMBOL_QUERY_LEN);
-    // Smart case (mirrors Claude Code's file-index): an all-lowercase query
+    // Smart case (mirrors the reference's file-index): an all-lowercase query
     // matches case-insensitively; any uppercase char in the query makes the
     // match case-sensitive. This lets a precise `WorkspaceIndexer` query avoid
     // lowercase noise while a casual `workspaceindexer` still matches broadly.

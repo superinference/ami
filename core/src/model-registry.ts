@@ -24,7 +24,7 @@ import { parseRetryAfterHeader } from './rate-limit-parser';
  * an outbound HTTP request header. A secret or base URL that carries a stray
  * `\r\n` (e.g. a mis-pasted `OPENAI_API_KEY="sk-...\r\nX-Evil: 1"`) would
  * otherwise let an attacker smuggle an extra header line into the model-list
- * request. Mirrors Claude Code's sanitizeHeaderValue (utils/hooks/execHttpHook.ts):
+ * request. Mirrors the reference's sanitizeHeaderValue (utils/hooks/execHttpHook.ts):
  * the single canonical header-value cleaner for every auth header this module
  * builds (Authorization / x-goog-api-key / x-api-key). Returns '' for a nullish
  * value so an absent key never becomes the literal string "undefined".
@@ -36,7 +36,7 @@ export function sanitizeHeaderValue(value: string | undefined): string {
 
 /**
  * Pull a human-readable message out of an API error-response body: checks
- * `data.message` first, then `data.error.message`. Mirrors Claude Code's
+ * `data.message` first, then `data.error.message`. Mirrors the reference's
  * extractErrorDetail (bridge/debugUtils.ts) so an HTTP failure can surface the
  * server's own reason (e.g. "model X not found, available: ...") instead of a
  * bare status code. The single canonical body-detail extractor for every reject
@@ -98,7 +98,7 @@ function makeAbortError(): Error {
  * the in-flight request is torn down the instant the signal fires (and an already
  * -aborted signal rejects synchronously before any socket is opened) so a cancelled
  * `/model` listing / `/doctor connectivity` probe stops immediately instead of
- * running to the 10s timeout. Mirrors Claude Code's signal-threaded network waits
+ * running to the 10s timeout. Mirrors the reference's signal-threaded network waits
  * (services/api/withRetry.ts). A single `settled` latch + listener teardown ensures
  * the promise never double-settles when abort races the response/timeout.
  */
@@ -141,7 +141,7 @@ function httpGetJSON(
           if (detail) httpErr.detail = detail;
           // Capture a server-provided Retry-After so the discovery retry loop can
           // honor the advertised cool-down instead of blind backoff (parity with
-          // Claude Code's withRetry Retry-After handling). Header names are
+          // the reference's withRetry Retry-After handling). Header names are
           // case-insensitive; Node lower-cases them.
           const retryAfterRaw = res.headers['retry-after'];
           const retryAfterMs = parseRetryAfterHeader(
@@ -178,7 +178,7 @@ function httpGetJSON(
 // around httpGetJSON so a momentary rate-limit (HTTP 429), a provider restart
 // (HTTP 503), or a dropped/half-open socket (ECONNRESET / ETIMEDOUT) does not
 // make listModels fall straight through to the static fallback list on the first
-// blip. Mirrors Claude Code's withRetry (services/api/withRetry.ts): retry only
+// blip. Mirrors the reference's withRetry (services/api/withRetry.ts): retry only
 // genuinely transient conditions, honor a server Retry-After when present, and
 // otherwise back off exponentially with equal jitter. Scoped to the discovery
 // fetch path (listOpenAIModels / listGeminiModels); the point-in-time
@@ -253,7 +253,7 @@ export function detectProvider(config: ProviderConfig): string {
   const key = config.apiKey || '';
   const url = config.baseUrl || '';
 
-  // Explicit cloud-routing opt-in toggle for Bedrock (parity with Claude Code's
+  // Explicit cloud-routing opt-in toggle for Bedrock (parity with the reference's
   // getAPIProvider, utils/model/providers.ts:L6-L14): route to the managed cloud
   // provider purely from the env toggle, independent of whether an AWS credential
   // happens to be exported — so a user who runs via Bedrock is never mis-detected
@@ -265,7 +265,7 @@ export function detectProvider(config: ProviderConfig): string {
   // Env-based detection for vertex
   if (process.env.ANTHROPIC_VERTEX_PROJECT_ID || process.env.CLAUDE_CODE_USE_VERTEX) return 'anthropic-vertex';
 
-  // Explicit opt-in toggle for the Azure/Microsoft Foundry route (parity with Claude
+  // Explicit opt-in toggle for the Azure/Microsoft Foundry route (parity with the reference
   // Code's getAPIProvider CLAUDE_CODE_USE_FOUNDRY, utils/model/providers.ts:L11-L12).
   // AMI represents Foundry as the `azure-openai` provider — model-capabilities'
   // getApiProviderClass maps azure-openai → the 'foundry' provider class. engine-factory
@@ -328,7 +328,7 @@ export async function listModels(config: ProviderConfig, signal?: AbortSignal): 
   if (STATIC_MODEL_PROVIDERS.has(provider)) {
     // Bedrock: await the model-string init barrier so the region/profile-correct
     // strings are resolved before the option list is built/returned, instead of
-    // interim defaults (parity: Claude's ensureModelStringsInitialized before
+    // interim defaults (parity: the reference's ensureModelStringsInitialized before
     // generating model options). A no-op await for every other static provider.
     if (toApiProviderClass(provider) === 'bedrock') await ensureModelStringsInitialized(config);
     return staticModelList(provider);
@@ -336,7 +336,7 @@ export async function listModels(config: ProviderConfig, signal?: AbortSignal): 
 
   // Respect the essential-traffic-only privacy opt-out: a live model-list
   // discovery request is nonessential background traffic, so fall back to the
-  // built-in static list instead of reaching the network. Mirrors Claude Code's
+  // built-in static list instead of reaching the network. Mirrors the reference's
   // modelCapabilities honoring *_DISABLE_NONESSENTIAL_TRAFFIC before discovery.
   if (isEssentialTrafficOnly()) {
     log('modelCapabilities', '[modelCapabilities] model-list discovery skipped (essential-traffic-only)');
@@ -434,7 +434,7 @@ export async function listModelsDiagnostic(
 
   if (STATIC_MODEL_PROVIDERS.has(provider)) {
     // Bedrock: ensure region/profile-correct model strings are resolved before the
-    // option list is built (parity: Claude's ensureModelStringsInitialized).
+    // option list is built (parity: the reference's ensureModelStringsInitialized).
     if (toApiProviderClass(provider) === 'bedrock') await ensureModelStringsInitialized(config);
     const models = staticModelList(provider);
     return {
@@ -501,7 +501,7 @@ async function listOpenAIModels(config: ProviderConfig, signal?: AbortSignal): P
       // writeModelCapabilitiesCache returns false when the freshly-advertised set
       // is byte-identical to what is already on disk (no mtime churn). Report that
       // skip so operators can see the cache was reused unchanged — the third of
-      // Claude Code's model-capability debug lines ('cache unchanged, skipping
+      // the reference's model-capability debug lines ('cache unchanged, skipping
       // write'), alongside 'cached N models' and 'fetch failed' below/above.
       const wrote = writeModelCapabilitiesCache(cacheDir, entries);
       if (!wrote) log('modelCapabilities', '[modelCapabilities] cache unchanged, skipping write');
@@ -509,7 +509,7 @@ async function listOpenAIModels(config: ProviderConfig, signal?: AbortSignal): P
   }
   // Debug/introspection: report the outcome of capability discovery (how many
   // models the endpoint returned and how many advertised a context window), so
-  // operators can see which models/windows were learned. Mirrors Claude Code's
+  // operators can see which models/windows were learned. Mirrors the reference's
   // `[modelCapabilities] cached N models` debug line. Gated by log level.
   log('modelCapabilities',
     `[modelCapabilities] cached ${models.length} models`,
@@ -533,7 +533,7 @@ async function listGeminiModels(config: ProviderConfig, signal?: AbortSignal): P
 }
 
 // ---------------------------------------------------------------------------
-// In-flight listing coalescing — mirrors Claude Code's `sequential()`-guarded,
+// In-flight listing coalescing — mirrors the reference's `sequential()`-guarded,
 // null-rechecked background model-string init (utils/model/modelStrings.ts:
 // L102-L134): multiple concurrent callers (a startup preconnect AND a `/model`
 // invocation, say) must not each fire a provider `/models` request. A fetch that
@@ -564,7 +564,7 @@ function fetchProviderModels(provider: string, config: ProviderConfig, signal?: 
 }
 
 // Models that have already validated (provider+baseUrl+id) are never re-probed.
-// Mirrors Claude's module-level validModelCache.
+// Mirrors the reference's module-level validModelCache.
 const validModelCache = new Set<string>();
 
 export interface ValidateModelResult {
@@ -592,7 +592,7 @@ function classifyDiscoveryDiagnostic(diagnostic: string | null): 'auth' | 'netwo
 // the provider's model-list endpoint and classifies the outcome, so a diagnostic
 // surface (/doctor connectivity) can tell the user the endpoint is unreachable,
 // the credentials are rejected, or the base URL path is wrong — instead of only
-// echoing the configured provider/model string. Mirrors Claude Code's
+// echoing the configured provider/model string. Mirrors the reference's
 // checkEndpoints() preflight (utils/preflightChecks.tsx:L17-L74): it reaches the
 // endpoint, picks the concrete failure, and distinguishes a connectivity error
 // (the whole probe threw / timed out / DNS / refused) from a reachable endpoint
@@ -707,7 +707,7 @@ export async function probeProviderConnectivity(
     const errorKind = classifyDiscoveryDiagnostic(diagnostic);
     // An auth/path (api) error proves the endpoint answered → the network path is
     // reachable; only a timeout / DNS / connection-refused is a true connectivity
-    // failure. Mirrors Claude's connectivity-vs-config distinction.
+    // failure. Mirrors the reference's connectivity-vs-config distinction.
     const reachable = errorKind === 'auth' || errorKind === 'api';
     return {
       provider,
@@ -722,7 +722,7 @@ export async function probeProviderConnectivity(
 
 /**
  * User-declared trusted model ids (comma-separated SI_CUSTOM_MODEL) that bypass
- * provider listing entirely. Mirrors Claude's ANTHROPIC_CUSTOM_MODEL_OPTION: a
+ * provider listing entirely. Mirrors the reference's ANTHROPIC_CUSTOM_MODEL_OPTION: a
  * self-hosted / private model id that a live /models listing will never return
  * can still be force-accepted so validateModel does not reject it. Read at call
  * time so an override set after import takes effect.
@@ -738,7 +738,7 @@ function customModelIds(): string[] {
  * Deprecated / renamed model-id patterns mapped to a currently-recommended
  * successor. Advisory only: feeds `suggestion` when a requested id has NO
  * substring overlap with any live model (e.g. a fully removed id), so the user
- * still gets a concrete "try this instead" target. Mirrors Claude's
+ * still gets a concrete "try this instead" target. Mirrors the reference's
  * get3PFallbackSuggestion replacement chain.
  */
 const DEPRECATED_REPLACEMENTS: ReadonlyArray<{ pattern: RegExp; replacement: string }> = [
@@ -760,7 +760,7 @@ const DEPRECATED_REPLACEMENTS: ReadonlyArray<{ pattern: RegExp; replacement: str
  */
 export function suggestDeprecatedReplacement(modelId: string, available: string[]): string | undefined {
   // Opt-out: CLAUDE_CODE_DISABLE_LEGACY_MODEL_REMAP=1 suppresses the
-  // deprecated→successor remap entirely (parity with Claude Code's
+  // deprecated→successor remap entirely (parity with the reference's
   // useModelMigrationNotifications opt-out env, hooks/notifs/
   // useModelMigrationNotifications.tsx:L24-L29). With it set, a user who pins a
   // legacy id is neither auto-migrated (reference-journal's startup migration) nor
@@ -779,7 +779,7 @@ export function suggestDeprecatedReplacement(modelId: string, available: string[
 
 /**
  * The SINGLE canonical name of the env var that opts out of the deprecated→successor
- * model remap (parity with Claude Code's useModelMigrationNotifications.tsx:L24-L29
+ * model remap (parity with the reference's useModelMigrationNotifications.tsx:L24-L29
  * opt-out). Exported so every consumer — the remap decision ({@link
  * isLegacyModelRemapDisabled}) AND the one-time startup-migration notice that
  * advertises how to disable the auto-remap — references ONE literal instead of
@@ -789,7 +789,7 @@ export const LEGACY_MODEL_REMAP_OPT_OUT_ENV = 'CLAUDE_CODE_DISABLE_LEGACY_MODEL_
 
 /**
  * True when the legacy-model remap is opted out via
- * {@link LEGACY_MODEL_REMAP_OPT_OUT_ENV} (parity with Claude Code's env opt-out,
+ * {@link LEGACY_MODEL_REMAP_OPT_OUT_ENV} (parity with the reference's env opt-out,
  * useModelMigrationNotifications.tsx:L24-L29). Accepts the usual truthy spellings
  * (1/true/yes/on, case-insensitive, trimmed). The SINGLE source of the opt-out
  * decision, consumed by both the advisory {@link suggestDeprecatedReplacement}
@@ -805,7 +805,7 @@ export function isLegacyModelRemapDisabled(): boolean {
 /**
  * Family-version fallback: map a FAILING too-new model id DOWN to the previous
  * generation in its own family (e.g. opus-4-6 → opus-4-1, sonnet-4-6 → sonnet-4-5,
- * sonnet-4-5 → sonnet-4, haiku-4-5 → claude-3-5-haiku). Mirrors Claude Code's
+ * sonnet-4-5 → sonnet-4, haiku-4-5 → claude-3-5-haiku). Mirrors the reference's
  * get3PModelFallbackSuggestion (services/api/errors.ts:L936-L959): when a
  * third-party / self-hosted provider does not (yet) carry the newest generation,
  * the model-id error names the prior sibling it is likely to have — a concrete
@@ -834,7 +834,7 @@ export function suggestFamilyVersionFallback(modelId: string, available: string[
 
 // ---------------------------------------------------------------------------
 // Model aliases — short, memorable family names accepted anywhere a model id is
-// expected. Mirrors Claude Code's canonical MODEL_ALIASES set
+// expected. Mirrors the reference's canonical MODEL_ALIASES set
 // (utils/model/aliases.ts): a user can type a family name (`opus`) instead of a
 // full provider id. The set, the membership guard, and the alias→canonical
 // resolver live here so EVERY consumer (the subagent `model` override in
@@ -875,7 +875,7 @@ const MODEL_ALIAS_TARGETS: Record<ModelAlias, string> = {
 /**
  * Version-specific SHORT MODEL KEYS — stable, typeable selectors that name a
  * concrete model generation without the dated, provider-prefixed literal (e.g.
- * `opus45` → `claude-opus-4-5`). Mirrors Claude Code's ALL_MODEL_CONFIGS /
+ * `opus45` → `claude-opus-4-5`). Mirrors the reference's ALL_MODEL_CONFIGS /
  * ModelKey set (utils/model/configs.ts:L86-L101) so a user can pin an exact
  * version with a memorable key anywhere a model id is accepted (`--model`,
  * `/model`, the subagent `model` override). This is DISTINCT from the bare
@@ -912,7 +912,7 @@ export const MODEL_ENV_TOGGLES = [
   {
     env: 'CLAUDE_CODE_USE_BEDROCK',
     affects: 'provider-routing',
-    description: 'Route to the amazon-bedrock provider from the explicit toggle, independent of credential sniffing (parity with Claude Code getAPIProvider).',
+    description: 'Route to the amazon-bedrock provider from the explicit toggle, independent of credential sniffing (parity with the reference getAPIProvider).',
   },
   {
     env: 'SUPERINFERENCE_USE_BEDROCK',
@@ -922,7 +922,7 @@ export const MODEL_ENV_TOGGLES = [
   {
     env: 'CLAUDE_CODE_USE_FOUNDRY',
     affects: 'provider-routing',
-    description: 'Route to the Azure/Microsoft Foundry endpoint (AMI azure-openai provider) from the explicit toggle, independent of credential sniffing (parity with Claude Code getAPIProvider).',
+    description: 'Route to the Azure/Microsoft Foundry endpoint (AMI azure-openai provider) from the explicit toggle, independent of credential sniffing (parity with the reference getAPIProvider).',
   },
   {
     env: 'SUPERINFERENCE_USE_FOUNDRY',
@@ -932,7 +932,7 @@ export const MODEL_ENV_TOGGLES = [
   {
     env: 'CLAUDE_CODE_DISABLE_LEGACY_MODEL_REMAP',
     affects: 'model-remap',
-    description: 'Opt out of the deprecated→successor model remap — suppresses both the startup settings migration and the /model "did you mean" suggestion (parity with Claude Code useModelMigrationNotifications).',
+    description: 'Opt out of the deprecated→successor model remap — suppresses both the startup settings migration and the /model "did you mean" suggestion (parity with the reference useModelMigrationNotifications).',
   },
 ] as const;
 
@@ -974,7 +974,7 @@ export function resolveModelAlias(input: string): string | undefined {
 }
 
 /**
- * Request shape for {@link getRuntimeMainLoopModel} (parity: Claude Code's
+ * Request shape for {@link getRuntimeMainLoopModel} (parity: the reference's
  * `getRuntimeMainLoopModel({ permissionMode, mainLoopModel, exceeds200kTokens })`,
  * utils/model/agent.ts:L80-88).
  */
@@ -987,7 +987,7 @@ export interface RuntimeMainLoopModelRequest {
 
 /**
  * Re-resolve a main-loop / inherited model the same way the running main loop would
- * at spawn time, instead of copying the configured string verbatim (parity: Claude
+ * at spawn time, instead of copying the configured string verbatim (parity: the reference
  * Code's `getRuntimeMainLoopModel`, which the agent-inherit path runs the parent
  * model through — utils/model/agent.ts:L80-88). The behavioral difference AMI needs
  * is the DEFERRED `opusplan` alias: it resolves to Opus while the agent is in plan
@@ -995,7 +995,7 @@ export interface RuntimeMainLoopModelRequest {
  * Every concrete model id — and every other alias — passes through unchanged, so a
  * subagent that INHERITS the parent model gets mode-conditional switching at spawn
  * without ever downgrading an explicitly-pinned model. (AMI governs the long-context
- * 1M window through model-capabilities, not a distinct model id, so unlike Claude
+ * 1M window through model-capabilities, not a distinct model id, so unlike the reference
  * there is no separate context-size re-route here — the window is a capability of the
  * resolved model, not a different model.)
  */
@@ -1013,11 +1013,11 @@ export function getRuntimeMainLoopModel(req: RuntimeMainLoopModelRequest): strin
 // ---------------------------------------------------------------------------
 // Provider-aware default subagent model — the fast family default a brand-new
 // subagent/teammate runs on when NO model is resolvable from any higher-priority
-// source. Mirrors Claude Code's provider-aware getHardcodedTeammateModelFallback
+// source. Mirrors the reference's provider-aware getHardcodedTeammateModelFallback
 // (utils/swarm/teammateModel.ts): a teammate the user never configured still gets
 // a concrete, PROVIDER-CORRECT model id (Bedrock/Vertex/Foundry), never an empty
 // string. AMI keeps ONE central send-path remap (provider.ts → resolveBedrockModelId)
-// instead of Claude's N hardcoded per-provider config tables, so the per-provider
+// instead of the reference's N hardcoded per-provider config tables, so the per-provider
 // mapping here REUSES that same canonical Bedrock resolver — no parallel id table.
 // ---------------------------------------------------------------------------
 
@@ -1057,7 +1057,7 @@ function toProviderModelId(
  * no agent-definition model, no SUPERINFERENCE_SUBAGENT_MODEL override, and no
  * inheritable parent model), so a Bedrock run gets a provisioned region-scoped
  * profile id and a first-party run gets the canonical id — never an empty model
- * string. Mirrors Claude Code's provider-aware getHardcodedTeammateModelFallback.
+ * string. Mirrors the reference's provider-aware getHardcodedTeammateModelFallback.
  */
 export function getDefaultSubagentModel(config: ProviderConfig): string {
   return toProviderModelId(DEFAULT_SUBAGENT_MODEL, config);
@@ -1082,7 +1082,7 @@ export interface ProviderModelString {
 /**
  * Per-provider canonical model-id table: for every logical short key in
  * {@link MODEL_SHORT_KEYS}, the canonical first-party id AND the concrete wire id
- * to invoke on the provider `config` detects. Mirrors Claude Code's
+ * to invoke on the provider `config` detects. Mirrors the reference's
  * ALL_MODEL_CONFIGS / getBuiltinModelStrings(provider) — one logical ModelKey
  * mapped to a provider-specific id string — so the same logical model (`opus46`)
  * resolves to the right per-provider id without the user retyping it when they
@@ -1116,17 +1116,17 @@ function buildModelStrings(config: ProviderConfig, bedrockProfiles: string[]): P
 }
 
 // ---------------------------------------------------------------------------
-// Model-string initialization barrier — parity with Claude Code's
+// Model-string initialization barrier — parity with the reference's
 // ensureModelStringsInitialized / getModelStrings pair (utils/model/modelStrings.ts
 // L136-L166). Building a model-option list for a Bedrock account should reflect the
-// region-scoped inference-profile strings rather than interim defaults; Claude awaits
+// region-scoped inference-profile strings rather than interim defaults; the reference awaits
 // its profile fetch before generating options. AMI sources Bedrock profiles through
 // the single canonical resolver (bedrock.ts getBedrockInferenceProfiles) behind an
 // injectable async seam, caches the resolved snapshot ONCE per provider+region+
 // profile signature (sequential-guarded so a concurrent burst shares one resolution),
 // and serves subsequent builds from that snapshot. getBuiltinModelStrings returns the
 // cached snapshot when initialized and otherwise computes the interim default inline
-// (mirrors Claude's getModelStrings falling through to built-in strings while the
+// (mirrors the reference's getModelStrings falling through to built-in strings while the
 // fetch is pending). The SINGLE model-string init path — no parallel state module.
 // ---------------------------------------------------------------------------
 
@@ -1159,7 +1159,7 @@ const modelStringsInFlight = new Map<string, Promise<ProviderModelString[]>>();
  * {@link modelStringsInitHooks} seam) and caches the resulting per-provider
  * model-string snapshot before it is used to build a model-option list — so a Bedrock
  * selection UI shows region/profile-correct strings rather than interim defaults
- * (parity: Claude Code's ensureModelStringsInitialized). A snapshot already cached for
+ * (parity: the reference's ensureModelStringsInitialized). A snapshot already cached for
  * the current signature returns immediately WITHOUT re-resolving (the idempotent fast
  * path), and concurrent callers for the same signature share a single in-flight
  * resolution (sequential-guarded). For a non-Bedrock provider the resolver returns an
@@ -1189,7 +1189,7 @@ export async function ensureModelStringsInitialized(config: ProviderConfig): Pro
 export function getBuiltinModelStrings(config: ProviderConfig): ProviderModelString[] {
   // Serve the initialized snapshot when the barrier has run for this signature;
   // otherwise compute the interim default inline from the current env (parity with
-  // Claude's getModelStrings falling through to built-in strings pre-init).
+  // the reference's getModelStrings falling through to built-in strings pre-init).
   const cached = modelStringsCache.get(modelStringsSignature(config));
   if (cached) return cached;
   return buildModelStrings(config, getBedrockInferenceProfiles());
@@ -1198,7 +1198,7 @@ export function getBuiltinModelStrings(config: ProviderConfig): ProviderModelStr
 /**
  * True when `modelName` begins with `prefix` at a SEGMENT BOUNDARY — the match
  * must reach the end of the name or a '-' separator. So "claude-opus-4-5"
- * matches "claude-opus-4-5-20251101" but NOT "claude-opus-4-50". Mirrors Claude
+ * matches "claude-opus-4-5-20251101" but NOT "claude-opus-4-50". Mirrors the reference
  * Code's prefixMatchesModel (utils/model/modelAllowlist.ts).
  */
 function prefixMatchesModel(modelName: string, prefix: string): boolean {
@@ -1210,7 +1210,7 @@ function prefixMatchesModel(modelName: string, prefix: string): boolean {
  * True when `model` matches a version-prefix `entry` with segment-boundary
  * safety and 'claude-' shorthand: an entry like "opus-4-5" is auto-expanded to
  * "claude-opus-4-5" so it matches "claude-opus-4-5-20251101" while refusing
- * "claude-opus-4-50". Case-insensitive. Mirrors Claude Code's
+ * "claude-opus-4-50". Case-insensitive. Mirrors the reference's
  * modelMatchesVersionPrefix — the single boundary-aware matcher reused by the
  * validateModel suggestion path (and available to the engine allowlist check so
  * admins can pin a version family without accidentally matching a sibling).
@@ -1260,7 +1260,7 @@ export async function validateModel(
   // A recognized short alias (opus/sonnet/haiku/best/opusplan/[1m]) resolves to
   // its canonical family id, so the rest of this function matches/suggests as if
   // the user had typed that id. AMI resolves the alias to a concrete id rather
-  // than blindly accepting the bare alias (Claude passes it through verbatim),
+  // than blindly accepting the bare alias (the reference passes it through verbatim),
   // because AMI's providers require a concrete model id — resolving here avoids
   // validating-then-persisting an unusable bare alias like "opus".
   const effective = resolveModelAlias(normalized) ?? normalized;
@@ -1319,7 +1319,7 @@ export async function validateModel(
   //  1. a boundary/substring partial (handled above),
   //  2. a RETIRED-id successor (suggestDeprecatedReplacement maps old → new),
   //  3. a too-new family id stepped DOWN to the prior generation the endpoint is
-  //     likelier to carry (suggestFamilyVersionFallback — parity with Claude's
+  //     likelier to carry (suggestFamilyVersionFallback — parity with the reference's
   //     get3PModelFallbackSuggestion for third-party/self-hosted providers). This
   //     step-down is INTENTIONALLY third-party-only (mirrors get3PModelFallbackSuggestion,
   //     which self-gates on isFirstPartyProvider): on a first-party endpoint a
@@ -1335,7 +1335,7 @@ export async function validateModel(
 
 // ---------------------------------------------------------------------------
 // Human-readable model metadata — friendly display names + one-line
-// descriptions for the /model picker and status line. Mirrors Claude Code's
+// descriptions for the /model picker and status line. Mirrors the reference's
 // getPublicModelDisplayName (utils/model/model.ts:L344-L415) + the per-option
 // label/description copy in utils/model/modelOptions.ts (L96-L209, L431-L459).
 // AMI resolves these from the RAW provider model id with pattern matching (no
@@ -1343,11 +1343,11 @@ export async function validateModel(
 // ("claude-sonnet-4-5-20251022"), a gateway-prefixed id
 // ("openrouter/anthropic/claude-sonnet-4.6"), the `[1m]` long-context suffix, or
 // a bare family id all resolve to the SAME friendly label. Unknown ids fall back
-// to the raw id itself — Claude's renderModelName default branch (a marketing
+// to the raw id itself — the reference's renderModelName default branch (a marketing
 // label for a raw model id that is always a usable string).
 // ---------------------------------------------------------------------------
 
-/** Family tier → one-line picker description (Claude's modelOptions copy). */
+/** Family tier → one-line picker description (the reference's modelOptions copy). */
 const MODEL_FAMILY_DESCRIPTION = {
   opus: 'Most capable — best for complex, multi-step work',
   sonnet: 'Balanced — best for everyday coding tasks',
@@ -1364,7 +1364,7 @@ type ModelFamily = keyof typeof MODEL_FAMILY_DESCRIPTION;
  * a subagent / Task). DISTINCT from {@link MODEL_FAMILY_DESCRIPTION}, which is the
  * terse one-line copy shown to the HUMAN in the picker — this copy names the
  * capability/cost trade-off explicitly so the model can reason over it when selecting
- * a model for a sub-task. Mirrors Claude Code's dual-audience
+ * a model for a sub-task. Mirrors the reference's dual-audience
  * `ModelOption.descriptionForModel` (utils/model/modelOptions.ts:L38-L43).
  */
 const MODEL_FAMILY_DESCRIPTION_FOR_MODEL: Record<ModelFamily, string> = {
@@ -1381,21 +1381,21 @@ const MODEL_FAMILY_DESCRIPTION_FOR_MODEL: Record<ModelFamily, string> = {
  * description comes from.
  */
 const MODEL_DISPLAY_PATTERNS: ReadonlyArray<{ pattern: RegExp; name: string; family: ModelFamily }> = [
-  // Claude — Opus
+  // the reference — Opus
   { pattern: /opus-?4[._-]?6/i, name: 'Opus 4.6', family: 'opus' },
   { pattern: /opus-?4[._-]?5/i, name: 'Opus 4.5', family: 'opus' },
   { pattern: /opus-?4[._-]?1/i, name: 'Opus 4.1', family: 'opus' },
   { pattern: /claude-?3[._-]?opus/i, name: 'Claude 3 Opus', family: 'opus' },
   { pattern: /opus-?4/i, name: 'Opus 4', family: 'opus' },
   { pattern: /\bopus\b/i, name: 'Opus', family: 'opus' },
-  // Claude — Sonnet
+  // the reference — Sonnet
   { pattern: /sonnet-?4[._-]?6/i, name: 'Sonnet 4.6', family: 'sonnet' },
   { pattern: /sonnet-?4[._-]?5/i, name: 'Sonnet 4.5', family: 'sonnet' },
   { pattern: /3[._-]?7[._-]?sonnet/i, name: 'Sonnet 3.7', family: 'sonnet' },
   { pattern: /3[._-]?5[._-]?sonnet/i, name: 'Sonnet 3.5', family: 'sonnet' },
   { pattern: /sonnet-?4/i, name: 'Sonnet 4', family: 'sonnet' },
   { pattern: /\bsonnet\b/i, name: 'Sonnet', family: 'sonnet' },
-  // Claude — Haiku
+  // the reference — Haiku
   { pattern: /haiku-?4[._-]?5/i, name: 'Haiku 4.5', family: 'haiku' },
   { pattern: /3[._-]?5[._-]?haiku/i, name: 'Haiku 3.5', family: 'haiku' },
   { pattern: /\bhaiku\b/i, name: 'Haiku', family: 'haiku' },
@@ -1429,7 +1429,7 @@ function matchModelPattern(id: string): { name: string; family: ModelFamily } | 
  * the UI can display the clean "claude-opus-4-6" instead of the raw ARN the
  * engine actually sends. Scans the override VALUES (not keys) for an exact match
  * and returns the matching canonical key; returns the input unchanged when there
- * is no override map or no value matches. Mirrors Claude Code's
+ * is no override map or no value matches. Mirrors the reference's
  * resolveOverriddenModel (utils/model/modelStrings.ts:L78-L100) — the single
  * inverse of the forward apply, so the display path and the send path stay in
  * lockstep (no parallel ARN→name table).
@@ -1467,7 +1467,7 @@ export function getModelDisplayName(modelId: string, overrides?: Record<string, 
 /**
  * One-line, human-readable description for the /model picker, or undefined when
  * the model id is not recognized as a known family (an unknown/custom id has no
- * canned marketing copy). Mirrors Claude's per-option `description` field.
+ * canned marketing copy). Mirrors the reference's per-option `description` field.
  */
 export function getModelDescription(modelId: string): string | undefined {
   const { base } = splitOneMillionSuffix((modelId ?? '').trim());
@@ -1481,7 +1481,7 @@ export function getModelDescription(modelId: string): string | undefined {
  * subagent / Task), as opposed to the terse human picker copy from
  * {@link getModelDescription}. Resolves the family the SAME way (through the `[1m]`
  * suffix, gateway prefixes, and dated snapshots), and returns undefined for an
- * unknown/custom id (no canned copy). Mirrors Claude Code's dual-audience
+ * unknown/custom id (no canned copy). Mirrors the reference's dual-audience
  * `ModelOption.descriptionForModel` (utils/model/modelOptions.ts:L38-L43).
  */
 export function getModelDescriptionForModel(modelId: string): string | undefined {
@@ -1491,9 +1491,9 @@ export function getModelDescriptionForModel(modelId: string): string | undefined
 }
 
 /**
- * The current (newest) concrete model id per Claude family. A pinned model whose
+ * The current (newest) concrete model id per the reference family. A pinned model whose
  * display name differs from its family's current model is an OLDER version, so the
- * picker can surface a "newer version available" upgrade affordance. Mirrors Claude
+ * picker can surface a "newer version available" upgrade affordance. Mirrors the reference
  * Code's getDefault{Opus,Sonnet,Haiku}Model used by getModelFamilyInfo
  * (utils/model/modelOptions.ts:L385-L459); kept in sync with the newest entries of
  * {@link MODEL_SHORT_KEYS}.
@@ -1511,11 +1511,11 @@ const FAMILY_ALIAS_LABEL: Record<'opus' | 'sonnet' | 'haiku', string> = {
 
 /**
  * Upgrade affordance for a PINNED OLDER model: when `modelId` resolves to a known
- * Claude family (opus/sonnet/haiku) whose current version is a DIFFERENT (newer)
+ * the reference family (opus/sonnet/haiku) whose current version is a DIFFERENT (newer)
  * build than the pinned one, returns
  * `Newer version available · select <Alias> for <CurrentVersionName>` — otherwise
- * undefined (unknown id, non-Claude family, or already the current version).
- * Mirrors Claude Code's getKnownModelOption upgrade-hint description
+ * undefined (unknown id, non-the reference family, or already the current version).
+ * Mirrors the reference's getKnownModelOption upgrade-hint description
  * (utils/model/modelOptions.ts:L431-L459). Surfaced by the /model picker via
  * {@link getModelMetadata}.
  */
@@ -1535,7 +1535,7 @@ export function getNewerVersionHint(modelId: string): string | undefined {
 /**
  * Combined picker annotation for a model id: a friendly `displayName` (always a
  * usable string), an optional `description`, and an optional `upgrade` hint when a
- * newer version of the pinned model's family is available. Mirrors Claude's
+ * newer version of the pinned model's family is available. Mirrors the reference's
  * ModelOption `{ label, description }` so a picker row can show a human label + a
  * sub-line (and an upgrade nudge) instead of a bare id.
  */
@@ -1564,7 +1564,7 @@ export interface AgentModelOption {
   description?: string;
   /** Optional longer, MODEL-FACING description (capability/cost guidance) an agent
    *  reads when it programmatically picks a model for a sub-task. Distinct from the
-   *  human `description`. Mirrors Claude's ModelOption.descriptionForModel. */
+   *  human `description`. Mirrors the reference's ModelOption.descriptionForModel. */
   descriptionForModel?: string;
 }
 
@@ -1575,7 +1575,7 @@ export interface AgentModelOption {
  * (no parallel label table). When `currentModel` is a concrete id that is NOT one
  * of the alias values — a custom or pinned full model id — it is injected at the
  * HEAD of the list labeled "Current model (custom ID)", so an edit flow round-trips
- * that custom id instead of silently overwriting it with an alias. Mirrors Claude
+ * that custom id instead of silently overwriting it with an alias. Mirrors the reference
  * Code's getAgentModelOptions + ModelSelector custom-id injection
  * (components/agents/ModelSelector.tsx:L21-L38). The SINGLE source of the agent
  * model-choice catalog — consumed by the config tool's model section so the model
@@ -1611,7 +1611,7 @@ export function getAgentModelOptions(currentModel?: string): AgentModelOption[] 
  * Canonical display string for an agent / subagent model CHOICE, so every agent
  * surface (the `/agents` list + detail renderers, any model picker) formats a
  * stored `model` value the SAME way instead of printing the raw token. Mirrors
- * Claude Code's `getAgentModelDisplay` (utils/model/agent.ts:L124-L131): an absent
+ * the reference's `getAgentModelDisplay` (utils/model/agent.ts:L124-L131): an absent
  * value is the inherit-by-default case ("Inherit from parent (default)"), the
  * explicit "inherit" sentinel is "Inherit from parent", and a concrete alias / id
  * is resolved through {@link resolveModelAlias} + {@link getModelDisplayName} to its
@@ -1649,7 +1649,7 @@ export interface ModelOverridesAffordance {
 
 /**
  * Canonical introspection descriptor for the settings-driven `modelOverrides`
- * affordance (parity: Claude Code's applyModelOverrides, utils/model/
+ * affordance (parity: the reference's applyModelOverrides, utils/model/
  * modelStrings.ts:L57-L76). The resolution/display path for `modelOverrides`
  * already exists end to end — the `modelOverrides` settings key
  * ({@link ProviderConfig}), its config-waterfall loader + forward apply

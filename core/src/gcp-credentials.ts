@@ -2,7 +2,7 @@
  * gcp-credentials.ts — a timeout-guarded probe for GCP Application-Default
  * Credentials (ADC), the chain the Vertex SDK (`@ai-sdk/google-vertex`) uses.
  *
- * Parity: Claude Code's `checkGcpCredentialsValid` (utils/auth.ts). The subtle
+ * Parity: the reference's `checkGcpCredentialsValid` (utils/auth.ts). The subtle
  * special-case this exists for: when NO local credential source is configured (no
  * ADC file, no `CLOUDSDK_AUTH_ACCESS_TOKEN`), `google-auth-library` falls through
  * to the GCE metadata server, which HANGS for ~12s when AMI runs OUTSIDE GCP. A
@@ -21,7 +21,7 @@ import { withTimeout } from './utils/sleep';
 /**
  * Short timeout for the GCP ADC credentials probe. Without it, with no local
  * credential source, `google-auth-library` falls through to the GCE metadata
- * server which hangs ~12s outside GCP. Parity: Claude Code's
+ * server which hangs ~12s outside GCP. Parity: the reference's
  * `GCP_CREDENTIALS_CHECK_TIMEOUT_MS`.
  */
 export const GCP_CREDENTIALS_CHECK_TIMEOUT_MS = 5_000;

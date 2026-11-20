@@ -192,7 +192,7 @@ export interface PluginBundle {
   commandsDir?: string;
   hooksFile?: string;
   /**
-   * ADDITIONAL hook files declared by the manifest `hooks` field (Claude parity:
+   * ADDITIONAL hook files declared by the manifest `hooks` field (the reference parity:
    * pluginLoader's `manifest.hooks` string / string[] forms, L1652-1755) — loaded
    * and merged ON TOP of the standard {@link hooksFile}. Each entry is a resolved,
    * existing, path-traversal-hardened file, DEDUPED by realpath against the standard
@@ -203,14 +203,14 @@ export interface PluginBundle {
    */
   hookFiles?: string[];
   /**
-   * INLINE hook objects declared directly in the manifest `hooks` field (Claude
+   * INLINE hook objects declared directly in the manifest `hooks` field (the reference
    * parity: pluginLoader's `manifest.hooks` inline-object form — an entry that is an
    * object rather than a file-path string is merged verbatim). Contributed alongside
    * {@link hooksFile}/{@link hookFiles}. `undefined` when the manifest declares none.
    */
   inlineHooks?: Record<string, unknown>[];
   /**
-   * Bundled MCP server config file (Claude parity). A plugin may ship an
+   * Bundled MCP server config file (the reference parity). A plugin may ship an
    * `.mcp.json` at its root (or a manifest-declared `mcpServers` path) declaring
    * MCP servers it contributes. Path-traversal/symlink hardened like every other
    * component path; `undefined` when the plugin ships none.
@@ -218,7 +218,7 @@ export interface PluginBundle {
   mcpServersFile?: string;
   /**
    * Additional command directories/files declared by the manifest `commandsPaths`
-   * (Claude parity: loadPluginCommands's `plugin.commandsPaths`), resolved relative
+   * (the reference parity: loadPluginCommands's `plugin.commandsPaths`), resolved relative
    * to the plugin root and hardened against `..`/symlink escape. Each entry may be a
    * directory (recursively walked) or a single command file. `undefined` when the
    * manifest declares none.
@@ -226,13 +226,13 @@ export interface PluginBundle {
   commandsPaths?: string[];
   /**
    * Additional skill directories/files declared by the manifest `skillsPaths`
-   * (Claude parity: loadPluginCommands's `plugin.skillsPaths`), resolved + hardened
+   * (the reference parity: loadPluginCommands's `plugin.skillsPaths`), resolved + hardened
    * exactly like {@link commandsPaths}. `undefined` when the manifest declares none.
    */
   skillsPaths?: string[];
   /**
    * Additional agent directories/files declared by the manifest `agentsPaths`
-   * (Claude parity: loadPluginAgents's `plugin.agentsPaths`, L275-335 — each entry a
+   * (the reference parity: loadPluginAgents's `plugin.agentsPaths`, L275-335 — each entry a
    * directory OR a single `.md` file), resolved + hardened exactly like
    * {@link commandsPaths}/{@link skillsPaths}. Loaded ALONGSIDE the primary
    * `agents/` dir. `undefined` when the manifest declares none or none survive.
@@ -240,7 +240,7 @@ export interface PluginBundle {
   agentsPaths?: string[];
   /**
    * Per-command metadata declared by the manifest `commandsMetadata` object-mapping
-   * (Claude parity: PluginManifestCommandsSchema's object form). Maps a command key
+   * (the reference parity: PluginManifestCommandsSchema's object form). Maps a command key
    * to either a `source` file-path override (with description/argumentHint/model/
    * allowedTools overrides applied to the discovered command) OR inline `content`
    * that IS the command (no source file). `undefined` when the manifest declares
@@ -248,20 +248,20 @@ export interface PluginBundle {
    */
   commandsMetadata?: Record<string, CommandMetadata>;
   /**
-   * Manifest `defaultEnabled` (Claude parity: a plugin may ship disabled-by-default).
+   * Manifest `defaultEnabled` (the reference parity: a plugin may ship disabled-by-default).
    * Drives the tri-state enablement fallback (managed policy > explicit user marker >
    * `defaultEnabled` > true). `undefined` when the manifest omits it (treated as true).
    */
   defaultEnabled?: boolean;
   /**
-   * Manifest `description` surfaced on the loaded bundle (Claude parity: the
+   * Manifest `description` surfaced on the loaded bundle (the reference parity: the
    * plugin manifest's human-readable description) so a `/plugin` listing can show
    * what a bundle provides without re-reading its manifest. `undefined` when the
    * manifest omits it or it is not a non-empty string.
    */
   description?: string;
   /**
-   * Manifest author display name, normalized to a string (Claude parity: a
+   * Manifest author display name, normalized to a string (the reference parity: a
    * manifest `author` may be a bare string or a `{ name, … }` object — both reduce
    * to the display name here). `undefined` when absent/blank. Feeds
    * {@link generatePluginId} for the deterministic bundle {@link PluginBundle.id}.
@@ -269,14 +269,14 @@ export interface PluginBundle {
   author?: string;
   /**
    * Deterministic plugin id derived from `author` + `name` via
-   * {@link generatePluginId} (Claude parity: generateExtensionId). Present only
+   * {@link generatePluginId} (the reference parity: generateExtensionId). Present only
    * when the manifest carries an author, so distinct bundles get a stable,
    * collision-resistant identifier. `undefined` when no author is declared.
    */
   id?: string;
   /**
    * Runtime availability requirements declared by the manifest `requires`
-   * (Claude parity: BuiltinPluginDefinition.isAvailable, builtinPlugins.ts
+   * (the reference parity: BuiltinPluginDefinition.isAvailable, builtinPlugins.ts
    * L64-68 — a plugin whose environment prerequisites aren't met is omitted
    * ENTIRELY). AMI's bundles come from JSON manifests (no code predicate), so
    * availability is expressed declaratively: a `platform`/`env`/`bin` gate
@@ -287,14 +287,14 @@ export interface PluginBundle {
   requires?: PluginRequirements;
   /**
    * Inline MCP servers declared directly in the manifest `mcpServers` record
-   * (Claude parity: PluginManifestMcpServerSchema's inline-record / array-mix
+   * (the reference parity: PluginManifestMcpServerSchema's inline-record / array-mix
    * forms — schemas.ts L543-572), keyed by server name. These are contributed IN
    * ADDITION to any {@link mcpServersFile} the plugin ships. `undefined` when the
    * manifest declares no inline servers (or only a file path).
    */
   mcpServers?: Record<string, PluginMcpServer>;
   /**
-   * Bundled LSP server config file (Claude parity: lspPluginIntegration — a
+   * Bundled LSP server config file (the reference parity: lspPluginIntegration — a
    * plugin may ship a `.lsp.json` at its root, or declare the path via a manifest
    * `lspServers` string). Path-traversal/symlink hardened. `undefined` when the
    * plugin ships none. Consumed via core's {@link loadLspServersFromFile}.
@@ -302,14 +302,14 @@ export interface PluginBundle {
   lspServersFile?: string;
   /**
    * Inline LSP servers declared directly in the manifest `lspServers` record
-   * (Claude parity: PluginManifestLspServerSchema's inline-record / array-mix
+   * (the reference parity: PluginManifestLspServerSchema's inline-record / array-mix
    * forms — schemas.ts L738-767), validated against the canonical
    * {@link LspServerConfig} schema. Contributed alongside {@link lspServersFile}.
    * `undefined` when the manifest declares no inline LSP servers.
    */
   lspServers?: Record<string, LspServerConfig>;
   /**
-   * Output-styles directory a plugin contributes (Claude parity:
+   * Output-styles directory a plugin contributes (the reference parity:
    * loadPluginOutputStyles's `plugin.outputStylesPath`): the `<root>/output-styles`
    * dir, or a manifest-declared `outputStyles` relative override. Path-traversal/
    * symlink hardened. `undefined` when the plugin ships none.
@@ -317,13 +317,13 @@ export interface PluginBundle {
   outputStylesDir?: string;
   /**
    * Additional output-style directories/files declared by the manifest
-   * `outputStylesPaths` (Claude parity: loadPluginOutputStyles's
+   * `outputStylesPaths` (the reference parity: loadPluginOutputStyles's
    * `plugin.outputStylesPaths`), resolved + hardened exactly like
    * {@link commandsPaths}. `undefined` when the manifest declares none.
    */
   outputStylesPaths?: string[];
   /**
-   * Allowlisted plugin-contributed settings (Claude parity:
+   * Allowlisted plugin-contributed settings (the reference parity:
    * PluginSettingsSchema.pick({agent}).strip() — pluginLoader.ts L1776-1849). A
    * plugin may contribute a default `agent` via `settings.json` (preferred) or a
    * manifest `settings` object; every other key is stripped. `undefined` when the
@@ -331,7 +331,7 @@ export interface PluginBundle {
    */
   settings?: PluginSettings;
   /**
-   * Message channels a plugin declares (Claude parity:
+   * Message channels a plugin declares (the reference parity:
    * PluginManifestChannelsSchema — schemas.ts L656-703). Each channel binds one
    * MCP server (by `server` name, matching a key in {@link mcpServers}) that
    * emits `notifications/.../channel` messages to inject into the conversation
@@ -345,7 +345,7 @@ export interface PluginBundle {
 }
 
 /**
- * One message-channel declaration from a plugin manifest (Claude parity:
+ * One message-channel declaration from a plugin manifest (the reference parity:
  * PluginManifestChannelsSchema entry). `server` names the MCP server this channel
  * binds to (must match a key in the plugin's {@link PluginBundle.mcpServers});
  * `displayName` is the human-readable name shown in the config dialog (defaults to
@@ -359,7 +359,7 @@ export interface PluginChannel {
 }
 
 /**
- * Declarative runtime-availability gate for a plugin bundle (Claude parity:
+ * Declarative runtime-availability gate for a plugin bundle (the reference parity:
  * BuiltinPluginDefinition.isAvailable). AMI bundles are described by JSON, so the
  * predicate is expressed as data a manifest can carry and {@link isPluginAvailable}
  * evaluates: the current OS must be in `platform` (when listed), every name in
@@ -376,7 +376,7 @@ export interface PluginRequirements {
 }
 
 /**
- * The allowlisted subset of settings a plugin may contribute (Claude parity:
+ * The allowlisted subset of settings a plugin may contribute (the reference parity:
  * PluginSettingsSchema.pick({ agent: true }).strip()). Only `agent` (a default
  * agent name) is honored; any other key an author writes is dropped at parse time.
  */
@@ -386,7 +386,7 @@ export interface PluginSettings {
 }
 
 /**
- * A command's declaration that it recommends installing a plugin (Claude parity:
+ * A command's declaration that it recommends installing a plugin (the reference parity:
  * PluginHintMenu's Props — a `<sourceCommand>` command suggests installing
  * `<pluginName>` from `<marketplaceName>`). A command/skill file declares
  * `recommend-plugin`/`recommend-marketplace` (+ optional `recommend-plugin-description`)
@@ -403,7 +403,7 @@ export interface PluginRecommendation {
 }
 
 /**
- * A fully-resolved plugin recommendation with its PROVENANCE (Claude parity:
+ * A fully-resolved plugin recommendation with its PROVENANCE (the reference parity:
  * PluginHintMenu's full `Props`, incl. `sourceCommand`). {@link buildPluginRecommendation}
  * stamps the originating command's user-facing name onto a command's
  * {@link PluginRecommendation} so the frontend can render
@@ -417,7 +417,7 @@ export interface PluginRecommendationHint extends PluginRecommendation {
 /**
  * A slash-command definition loaded from a TOML file in a plugin's commands/ dir.
  * Beyond the required name/description/prompt, a command may declare the same
- * behavioral knobs as a Claude Code command (all optional).
+ * behavioral knobs as a reference command (all optional).
  */
 export interface CommandDefinition {
   name: string;
@@ -427,7 +427,7 @@ export interface CommandDefinition {
   /**
    * Whether {@link description} was EXPLICITLY authored (TOML `description` /
    * markdown-frontmatter `description`) versus auto-derived from the prompt/body's
-   * first line via {@link deriveCommandDescription} (Claude parity:
+   * first line via {@link deriveCommandDescription} (the reference parity:
    * Command.hasUserSpecifiedDescription). A derived description is a usable
    * affordance for the USER, but the model-facing listing of plugin/MCP commands
    * requires an author-specified one (see {@link isCommandModelListable}) so an
@@ -451,12 +451,12 @@ export interface CommandDefinition {
   disableModelInvocation?: boolean;
   /** If false, the user may not invoke it via /name (default true). */
   userInvocable?: boolean;
-  /** User-facing display name (Claude's `name` frontmatter → `userFacingName()`),
+  /** User-facing display name (the reference's `name` frontmatter → `userFacingName()`),
    *  distinct from the namespaced lookup `name`. Omitted when unset. */
   displayName?: string;
   /**
    * Subdirectory path (relative to the commands root) this command was discovered
-   * under, with each path segment as an element (Claude parity:
+   * under, with each path segment as an element (the reference parity:
    * walkPluginMarkdown's `namespace` array). Empty for a top-level command.
    * Carried alongside `name` so a UI can group commands by their folder without
    * re-parsing the `:`-joined name — and distinct from `name` so the plugin-name
@@ -464,35 +464,35 @@ export interface CommandDefinition {
    */
   namespace?: string[];
   /**
-   * User-facing in-progress hint shown while a prompt/skill command runs (Claude
+   * User-facing in-progress hint shown while a prompt/skill command runs (the reference
    * parity: Command.progressMessage, e.g. "committing changes"). Purely an
    * affordance — omitted when the command file declares none.
    */
   progressMessage?: string;
   /**
-   * Named positional arguments this command accepts (Claude parity:
+   * Named positional arguments this command accepts (the reference parity:
    * Command.argNames). Surfaced in suggestion descriptions and mutually
    * exclusive with a single free-form {@link argumentHint}.
    */
   argNames?: string[];
   /**
-   * Command kind tag (Claude parity: Command.kind, e.g. `'workflow'`). Drives the
+   * Command kind tag (the reference parity: Command.kind, e.g. `'workflow'`). Drives the
    * suggestion `workflow` affordance; omitted for an ordinary command.
    */
   kind?: string;
   /**
-   * Alternate invocation names for this command (Claude parity:
+   * Alternate invocation names for this command (the reference parity:
    * CommandBase.aliases) — each resolves to the same command as the primary name.
    */
   aliases?: string[];
   /**
-   * Provenance of the command definition (Claude parity: Command.source). A
+   * Provenance of the command definition (the reference parity: Command.source). A
    * plugin-discovered command defaults to `'plugin'`; a bare-directory load leaves
    * it unset unless the file declares one.
    */
   source?: CommandSource;
   /**
-   * The NAME of the plugin bundle this command was discovered in (Claude parity:
+   * The NAME of the plugin bundle this command was discovered in (the reference parity:
    * Command.pluginInfo.pluginManifest.name, consumed by formatDescriptionWithSource
    * to render `(<pluginName>) <description>` rather than a generic `(plugin)` tag).
    * Stamped during a bundle walk (when {@link loadCommands} is called with a plugin
@@ -502,19 +502,19 @@ export interface CommandDefinition {
    */
   pluginName?: string;
   /**
-   * Command behavior discriminator (Claude parity: Command.type). Plugin/user
+   * Command behavior discriminator (the reference parity: Command.type). Plugin/user
    * command FILES are always `'prompt'` commands (the body/`prompt` is injected);
    * the field is set so a consumer can branch without re-deriving it.
    */
   type?: CommandType;
   /**
    * Whether this command is usable from the non-interactive/detached runner
-   * (Claude parity: Command.supportsNonInteractive). Omitted (treated as allowed)
+   * (the reference parity: Command.supportsNonInteractive). Omitted (treated as allowed)
    * unless the file opts out with `supports-non-interactive = false`.
    */
   supportsNonInteractive?: boolean;
   /**
-   * Declarative enablement gate (Claude parity: CommandBase.isEnabled, a
+   * Declarative enablement gate (the reference parity: CommandBase.isEnabled, a
    * `() => boolean` defaulting to true — set ONLY for conditional enablement such
    * as feature flags / env checks). AMI commands are data, so the dynamic predicate
    * reduces to a declared boolean: a command file sets `enabled = false` (or
@@ -525,21 +525,21 @@ export interface CommandDefinition {
   isEnabled?: boolean;
   /**
    * Hide this command from the typeahead/help catalog while keeping it invocable by
-   * exact name (Claude parity: CommandBase.isHidden, defaults to false). A command
+   * exact name (the reference parity: CommandBase.isHidden, defaults to false). A command
    * file opts in with `hidden = true` (or `is-hidden = true`). Evaluated via
    * {@link isCommandHidden}; omitted (treated as visible) otherwise.
    */
   isHidden?: boolean;
   /**
    * When true, this command's invocation ARGUMENTS are redacted from the persisted
-   * conversation history (Claude parity: CommandBase.isSensitive — "args are
+   * conversation history (the reference parity: CommandBase.isSensitive — "args are
    * redacted from the conversation history"). A command file opts in with
    * `sensitive = true` (or `is-sensitive = true`). Applied via
    * {@link redactSensitiveCommandArgs}; omitted (treated as non-sensitive) otherwise.
    */
   isSensitive?: boolean;
   /**
-   * A plugin this command recommends installing (Claude parity: PluginHintMenu). A
+   * A plugin this command recommends installing (the reference parity: PluginHintMenu). A
    * command file declares `recommend-plugin` + `recommend-marketplace` (and an
    * optional `recommend-plugin-description`); both the plugin name and marketplace
    * are required, so a command declaring only one yields no recommendation.
@@ -548,20 +548,20 @@ export interface CommandDefinition {
    */
   recommendsPlugin?: PluginRecommendation;
   /**
-   * The shell a command's embedded `!`-block execution runs in (Claude parity:
+   * The shell a command's embedded `!`-block execution runs in (the reference parity:
    * parseShellFrontmatter / loadPluginCommands's `shell` passed to
    * executeShellCommandsInPrompt). A command file declares `shell = "bash"` /
    * `shell: powershell`; the value is validated to {@link COMMAND_SHELLS} via
    * {@link parseCommandShell} so an unrecognized value DEGRADES to undefined (the
    * in-prompt executor then defaults to bash — same graceful-degradation contract
    * as {@link effort}). The embedded shell runs scoped to this command's
-   * {@link allowedTools} (Claude's `alwaysAllowRules.command` injection). Omitted
+   * {@link allowedTools} (the reference's `alwaysAllowRules.command` injection). Omitted
    * when the file declares none or an invalid value.
    */
   shell?: CommandShell;
   /**
    * Whether this command executes IMMEDIATELY rather than through the normal
-   * deferred/confirm dispatch path (Claude parity: Command.immediate, e.g.
+   * deferred/confirm dispatch path (the reference parity: Command.immediate, e.g.
    * commands/bridge/index.ts's `immediate: true`). A command file opts in with
    * `immediate = true` (or `is-immediate = true`). Evaluated via
    * {@link isImmediateCommand}; omitted (treated as deferred) otherwise.
@@ -570,7 +570,7 @@ export interface CommandDefinition {
 }
 
 /**
- * The shells a command's embedded `!`-block execution may declare (Claude parity:
+ * The shells a command's embedded `!`-block execution may declare (the reference parity:
  * FrontmatterShell). `bash` is the default a caller falls back to when a command
  * declares none or an unrecognized value.
  */
@@ -578,7 +578,7 @@ export const COMMAND_SHELLS = ['bash', 'powershell'] as const;
 export type CommandShell = (typeof COMMAND_SHELLS)[number];
 
 /**
- * Validate a declared `shell` value to a {@link CommandShell} (Claude parity:
+ * Validate a declared `shell` value to a {@link CommandShell} (the reference parity:
  * parseShellFrontmatter, frontmatterParser.ts L351-370). Returns the normalized
  * shell for a recognized value (trimmed + lower-cased so `"PowerShell"` is
  * accepted), or undefined for an absent / blank / non-string / unrecognized value —
@@ -596,7 +596,7 @@ export function parseCommandShell(value: unknown): CommandShell | undefined {
 
 /**
  * Whether a command runs immediately rather than through the deferred/confirm
- * dispatch path (Claude parity: Command.immediate, defaulting to false). A command
+ * dispatch path (the reference parity: Command.immediate, defaulting to false). A command
  * is deferred unless its file explicitly declared `immediate = true`.
  */
 export function isImmediateCommand(cmd: Pick<CommandDefinition, 'immediate'>): boolean {
@@ -607,7 +607,7 @@ export function isImmediateCommand(cmd: Pick<CommandDefinition, 'immediate'>): b
  * Decide whether an embedded prompt-shell command — a `` !`cmd` `` / ` ```! block``` `
  * placeholder expanded in a plugin/slash command's prompt BEFORE it reaches the
  * model — is auto-permitted by the command's OWN declared {@link
- * CommandDefinition.allowedTools} (Claude parity: loadPluginCommands injects the
+ * CommandDefinition.allowedTools} (the reference parity: loadPluginCommands injects the
  * command's parsed allowed-tools into `toolPermissionContext.alwaysAllowRules.command`
  * before `executeShellCommandsInPrompt` runs, so only the command-declared shell is
  * auto-run — loadPluginCommands.ts L378-398 + promptShellExecution.ts's
@@ -641,7 +641,7 @@ export function isEmbeddedShellCommandAllowed(
 }
 
 /**
- * Resolve a command's plugin recommendation WITH provenance (Claude parity:
+ * Resolve a command's plugin recommendation WITH provenance (the reference parity:
  * assembling PluginHintMenu's `Props`). Returns the command's
  * {@link CommandDefinition.recommendsPlugin} stamped with `sourceCommand` (the
  * command's user-facing name via {@link getCommandDisplayName}), or undefined when
@@ -662,7 +662,7 @@ export function buildPluginRecommendation(
 }
 
 /**
- * The INPUT hint schema (Claude parity: `ClaudeCodeHint`, utils/plugins/
+ * The INPUT hint schema (the reference parity: `ClaudeCodeHint`, utils/plugins/
  * hintRecommendation.ts L41-47) a CLI/SDK emits on a tool's **stderr** inside an
  * `<ami-hint type="plugin" value="name@marketplace" sourceCommand="…" />` tag.
  * The Bash tool detects the tag, strips it from the model-visible output, and
@@ -689,7 +689,7 @@ const AMI_HINT_ATTR_RE = /([A-Za-z][\w-]*)\s*=\s*"([^"]*)"/g;
 
 /**
  * Parse every `<ami-hint type="plugin" value="…" sourceCommand="…" />` tag out of
- * a tool's stderr into {@link AmiPluginHint}s (Claude parity: the Bash/PowerShell
+ * a tool's stderr into {@link AmiPluginHint}s (the reference parity: the Bash/PowerShell
  * tool's `<claude-code-hint>` stderr detection). A tag missing `type` or `value`
  * is skipped. The raw tag text is NOT modified here — use {@link stripPluginHintTags}
  * to remove it from model-visible output.
@@ -716,7 +716,7 @@ export function parsePluginHintTags(stderr: string): AmiPluginHint[] {
 
 /**
  * Remove every `<ami-hint …/>` tag from a tool's stderr so the internal plugin-hint
- * protocol never leaks into the model-visible output (parity: Claude's Bash tool
+ * protocol never leaks into the model-visible output (parity: the reference's Bash tool
  * strips the `<claude-code-hint>` tag before surfacing stderr). Also collapses the
  * blank gap a stripped standalone-line tag leaves behind.
  */
@@ -730,7 +730,7 @@ export function stripPluginHintTags(stderr: string): string {
 }
 
 /**
- * Split a `name@marketplace` plugin identifier (Claude parity: hintRecommendation's
+ * Split a `name@marketplace` plugin identifier (the reference parity: hintRecommendation's
  * identifier parse) into its parts, or return `null` when it is malformed (no `@`,
  * empty name, or empty marketplace). `@` may appear in the name (e.g. a scoped
  * `@org/pkg@market`) — the LAST `@` separates the marketplace suffix.
@@ -744,24 +744,24 @@ export function parsePluginIdentifier(value: string): { pluginName: string; mark
   return { pluginName, marketplaceName };
 }
 
-/** Sync-gate inputs for {@link evaluatePluginHint} (Claude parity: maybeRecordPluginHint's cheap pre-store checks). */
+/** Sync-gate inputs for {@link evaluatePluginHint} (the reference parity: maybeRecordPluginHint's cheap pre-store checks). */
 export interface PluginHintGateOptions {
   /**
-   * When provided, ONLY hints whose marketplace is in this set pass (Claude's
+   * When provided, ONLY hints whose marketplace is in this set pass (the reference's
    * official-marketplace filter). Omitted = no marketplace restriction.
    */
   officialMarketplaces?: ReadonlySet<string>;
-  /** Already-installed plugin identifiers (`name@marketplace`) to skip (Claude's already-installed check). */
+  /** Already-installed plugin identifiers (`name@marketplace`) to skip (the reference's already-installed check). */
   installedPlugins?: ReadonlySet<string>;
   /**
-   * Per-session identifiers already surfaced (Claude's per-session dedup /
+   * Per-session identifiers already surfaced (the reference's per-session dedup /
    * show-once). MUTATED: a hint that passes is added so it won't surface twice.
    */
   seen?: Set<string>;
 }
 
 /**
- * The cheap SYNCHRONOUS gate (Claude parity: `maybeRecordPluginHint` L65-135) that
+ * The cheap SYNCHRONOUS gate (the reference parity: `maybeRecordPluginHint` L65-135) that
  * turns a raw {@link AmiPluginHint} into a resolved {@link PluginRecommendationHint},
  * or `null` when it fails any pre-store check: wrong type, unparseable
  * `name@marketplace` identifier, non-official marketplace, already installed, or
@@ -792,7 +792,7 @@ export function evaluatePluginHint(
 
 /**
  * Render a resolved {@link PluginRecommendationHint} as the one-line install
- * suggestion surfaced in a tool's output (Claude parity: PluginHintMenu wording
+ * suggestion surfaced in a tool's output (the reference parity: PluginHintMenu wording
  * "the <sourceCommand> command suggests installing <pluginName> from
  * <marketplaceName>"). The `sourceCommand` clause is omitted when unknown.
  */
@@ -806,7 +806,7 @@ export function formatPluginHintNote(rec: PluginRecommendationHint): string {
 
 /**
  * Per-command metadata an author may declare in a plugin manifest's
- * `commandsMetadata` object-mapping (Claude parity: CommandMetadataSchema,
+ * `commandsMetadata` object-mapping (the reference parity: CommandMetadataSchema,
  * utils/plugins/schemas.ts L385-416). An entry either points at a command file via
  * `source` OR carries inline markdown `content` — EXACTLY ONE (the schema `.refine`
  * rejects both/neither) — and may override the command's user-facing description /
@@ -837,15 +837,15 @@ export interface PluginCommandsMetadataContext {
   entries: Record<string, CommandMetadata>;
 }
 
-/** Provenance of a command definition (Claude parity: Command.source). */
+/** Provenance of a command definition (the reference parity: Command.source). */
 export const COMMAND_SOURCES = ['builtin', 'plugin', 'user', 'project'] as const;
 export type CommandSource = (typeof COMMAND_SOURCES)[number];
-/** Behavior discriminator of a command (Claude parity: Command.type). */
+/** Behavior discriminator of a command (the reference parity: Command.type). */
 export const COMMAND_TYPES = ['prompt', 'local', 'local-jsx'] as const;
 export type CommandType = (typeof COMMAND_TYPES)[number];
 
 /**
- * Whether a command is enabled (Claude parity: isCommandEnabled, types/command.ts
+ * Whether a command is enabled (the reference parity: isCommandEnabled, types/command.ts
  * L213-216 — `cmd.isEnabled?.() ?? true`). AMI's declarative analogue: a command is
  * enabled unless its file explicitly declared `enabled = false`. Disabled commands
  * are dropped from the user-facing command list and never dispatched.
@@ -855,7 +855,7 @@ export function isCommandEnabled(cmd: Pick<CommandDefinition, 'isEnabled'>): boo
 }
 
 /**
- * Whether a command is hidden from the typeahead/help catalog (Claude parity:
+ * Whether a command is hidden from the typeahead/help catalog (the reference parity:
  * CommandBase.isHidden, defaults to false). A hidden command stays invocable by
  * exact name but is omitted from suggestion/help listings.
  */
@@ -865,7 +865,7 @@ export function isCommandHidden(cmd: Pick<CommandDefinition, 'isHidden'>): boole
 
 /**
  * Whether a plugin/MCP-contributed command should surface in the MODEL-facing
- * command listing (Claude parity: getSkillToolCommands, commands.ts L563-581 — the
+ * command listing (the reference parity: getSkillToolCommands, commands.ts L563-581 — the
  * `hasUserSpecifiedDescription || whenToUse` gate). Skills / bundled / legacy
  * commands always list because an auto-derived first-line description is acceptable
  * for them; a plugin- or MCP-sourced command instead requires an EXPLICIT,
@@ -885,7 +885,7 @@ export function isCommandModelListable(
 }
 
 /**
- * Resolve a command's user-facing display name (Claude parity: getCommandName /
+ * Resolve a command's user-facing display name (the reference parity: getCommandName /
  * userFacingName, types/command.ts L208-211 — `cmd.userFacingName?.() ?? cmd.name`).
  * AMI carries the override as the declared {@link CommandDefinition.displayName};
  * falls back to the (possibly namespaced) lookup `name`.
@@ -900,7 +900,7 @@ export const REDACTED_COMMAND_ARGS = '[redacted]';
 
 /**
  * Redact a sensitive command's invocation arguments before they are persisted to
- * conversation history (Claude parity: CommandBase.isSensitive — "args are redacted
+ * conversation history (the reference parity: CommandBase.isSensitive — "args are redacted
  * from the conversation history"). Returns `argString` unchanged for a
  * non-sensitive command (or when there are no args to redact); otherwise replaces
  * the whole argument payload with {@link REDACTED_COMMAND_ARGS} so a secret passed
@@ -914,7 +914,7 @@ export function redactSensitiveCommandArgs(cmd: Pick<CommandDefinition, 'isSensi
 
 /**
  * Register a command's declared {@link CommandDefinition.aliases} into `index`
- * with COLLISION AVOIDANCE (Claude parity: the conditional-alias pattern in
+ * with COLLISION AVOIDANCE (the reference parity: the conditional-alias pattern in
  * commands/branch/index.ts — an alias like `fork` is registered only when it would
  * not shadow an existing name). An alias is added only when it is a non-empty
  * string that does NOT already resolve to a primary command name or a previously
@@ -949,7 +949,7 @@ function hardenedResolve(root: string, rel: string, onViolation?: (rel: string) 
     const realRoot = fs.realpathSync(root);
     if (realTarget === realRoot || realTarget.startsWith(realRoot + path.sep)) return target;
     // Escapes the plugin root — reject AND, when a reporter is supplied, surface
-    // it as a security warning instead of a silent drop (Claude parity:
+    // it as a security warning instead of a silent drop (the reference parity:
     // lspPluginIntegration's path-traversal warning).
     onViolation?.(rel);
     return undefined;
@@ -960,7 +960,7 @@ function hardenedResolve(root: string, rel: string, onViolation?: (rel: string) 
 
 /**
  * A plugin's hooks file is at <root>/hooks.json (AMI's original layout) or
- * <root>/hooks/hooks.json (the Claude Code convention — used by the impeccable
+ * <root>/hooks/hooks.json (the reference convention — used by the impeccable
  * plugin). Prefer the root file, fall back to the subdir. hardenedResolve returns
  * undefined for a nonexistent/escaping path, so this naturally yields the first
  * one that actually exists (or undefined).
@@ -982,7 +982,7 @@ function manifestPathOverride(manifest: Record<string, unknown>, field: string):
 
 /**
  * Resolve a plugin component directory, honoring a manifest-declared relative
- * override (Claude parity) and otherwise auto-detecting the fixed default dir.
+ * override (the reference parity) and otherwise auto-detecting the fixed default dir.
  * Either path is hardened against `..`/symlink escape by {@link hardenedResolve},
  * which yields undefined for a nonexistent or escaping path.
  */
@@ -1007,7 +1007,7 @@ function resolvePluginHooksFromManifest(root: string, manifest: Record<string, u
 }
 
 /** Options for {@link resolvePluginManifestHooks}. `strict` turns a duplicate hook
- *  file into a {@link PluginError} (Claude parity: the `strict` flag the marketplace/
+ *  file into a {@link PluginError} (the reference parity: the `strict` flag the marketplace/
  *  install context passes into the loader); `standardHooksFile` is the automatically-
  *  loaded `hooks.json`/`hooks/hooks.json` whose realpath seeds the dedup set so a
  *  manifest entry pointing back at it is never double-loaded. */
@@ -1020,7 +1020,7 @@ export interface ManifestHooksOptions {
 
 /** The canonical realpath of `file`, falling back to the raw path when it cannot be
  *  resolved (ENOENT / broken symlink) — the SINGLE spelling used for hook-file dedup
- *  (Claude parity: loadedHookPaths keyed by realpath). */
+ *  (the reference parity: loadedHookPaths keyed by realpath). */
 function canonicalPath(file: string): string {
   try {
     return fs.realpathSync(file);
@@ -1030,7 +1030,7 @@ function canonicalPath(file: string): string {
 }
 
 /**
- * Resolve a manifest's `hooks` field across EVERY form Claude Code accepts (parity:
+ * Resolve a manifest's `hooks` field across EVERY form the reference accepts (parity:
  * pluginLoader L1652-1755): a single value, or an array mixing additional-hooks-file
  * path STRINGS with INLINE hook objects. The standard `hooks.json`/`hooks/hooks.json`
  * is loaded automatically (passed as `standardHooksFile`), so `manifest.hooks` only
@@ -1039,7 +1039,7 @@ function canonicalPath(file: string): string {
  *    hardened under `root`; a missing/escaping path yields a `path-not-found`
  *    {@link PluginError}; a file whose realpath duplicates the standard file (or an
  *    earlier entry) is dropped, and under `strict` that duplicate becomes a
- *    `hook-load-failed` error (Claude parity).
+ *    `hook-load-failed` error (the reference parity).
  *  - an object → inline hooks, collected verbatim to be merged.
  * Returns the ordered, deduped `hookFiles`, the `inlineHooks`, and any `errors`.
  */
@@ -1122,7 +1122,7 @@ function unescapeTomlBasic(value: string, stopAtQuote: boolean): string {
 /**
  * Minimal TOML string parser for the `key = "value"` format used by command
  * definition files. Beyond the original single-line basic string it is an
- * ADDITIVE SUPERSET that matches real TOML / Claude-Code command files:
+ * ADDITIVE SUPERSET that matches real TOML / the reference command files:
  *  - the key must start the line (after optional indentation) so a value is never
  *    picked up from inside another line;
  *  - full-line `#` comments are ignored (a commented-out `key = "…"` no longer
@@ -1173,7 +1173,7 @@ function parseTomlString(content: string, key: string): string | undefined {
 
 /**
  * Labelled fallback description for a command whose TOML omits `description`.
- * Claude parity: a command is identified by its (required) prompt body; the
+ * the reference parity: a command is identified by its (required) prompt body; the
  * description is a user-facing affordance only, so a missing one falls back to a
  * generic label rather than silently dropping the whole command.
  */
@@ -1181,7 +1181,7 @@ export const DEFAULT_COMMAND_DESCRIPTION = 'Plugin command';
 
 /**
  * Derive a user-facing command description from its markdown body / TOML prompt
- * when no explicit `description` is declared (Claude parity:
+ * when no explicit `description` is declared (the reference parity:
  * `extractDescriptionFromMarkdown`, utils/markdownConfigLoader.ts). Returns the
  * first non-empty line with any leading markdown header prefix (`#`, `##`, …)
  * stripped, truncated to 100 characters (`...` suffix past 97). Falls back to
@@ -1200,7 +1200,7 @@ export function deriveCommandDescription(content: string, fallback: string = DEF
 }
 
 /**
- * Apply the optional behavioral knobs (Claude-parity) onto `cmd`, reading each
+ * Apply the optional behavioral knobs (the reference-parity) onto `cmd`, reading each
  * from whichever format the command file is in. `getStr` returns a string knob by
  * key (TOML quoted value or markdown-frontmatter value); `getBool` a boolean;
  * `getList` a string array. Each knob is omitted from `cmd` when absent. A single
@@ -1240,16 +1240,16 @@ function applyCommandKnobs(
   if (aliases) cmd.aliases = aliases;
   const supportsNonInteractive = getBool('supports-non-interactive') ?? getBool('supportsNonInteractive');
   if (supportsNonInteractive !== undefined) cmd.supportsNonInteractive = supportsNonInteractive;
-  // Embedded-shell selector (Claude parity: parseShellFrontmatter) — the shell a
+  // Embedded-shell selector (the reference parity: parseShellFrontmatter) — the shell a
   // command's `!`-block execution runs in. Validated to COMMAND_SHELLS; an
   // unrecognized value degrades to undefined (caller defaults to bash).
   const shell = parseCommandShell(getStr('shell'));
   if (shell) cmd.shell = shell;
-  // Immediate dispatch (Claude parity: Command.immediate) — run without the
+  // Immediate dispatch (the reference parity: Command.immediate) — run without the
   // deferred/confirm path. Declarative boolean, read via isImmediateCommand.
   const immediate = getBool('immediate') ?? getBool('is-immediate');
   if (immediate !== undefined) cmd.immediate = immediate;
-  // Enablement / visibility / sensitivity gates (Claude parity: CommandBase
+  // Enablement / visibility / sensitivity gates (the reference parity: CommandBase
   // isEnabled/isHidden/isSensitive). Declarative booleans an author sets to ship a
   // command disabled, hidden from the catalog, or with its args redacted from history.
   const isEnabled = getBool('enabled') ?? getBool('is-enabled');
@@ -1258,7 +1258,7 @@ function applyCommandKnobs(
   if (isHidden !== undefined) cmd.isHidden = isHidden;
   const isSensitive = getBool('sensitive') ?? getBool('is-sensitive');
   if (isSensitive !== undefined) cmd.isSensitive = isSensitive;
-  // Plugin recommendation (Claude parity: PluginHintMenu) — a command may suggest
+  // Plugin recommendation (the reference parity: PluginHintMenu) — a command may suggest
   // installing a plugin. Both the plugin name AND the marketplace are required; a
   // command declaring only one of them produces no recommendation.
   const recPlugin = getStr('recommend-plugin') ?? getStr('recommend_plugin');
@@ -1291,12 +1291,12 @@ function parseTomlCommandFile(content: string, filePath: string, name: string): 
   const prompt = parseTomlString(content, 'prompt');
   // A command needs a prompt to do anything; the description is user-facing
   // only, so a prompt-only command loads with a description DERIVED from its
-  // prompt (Claude parity) instead of being silently discarded or labelled
+  // prompt (the reference parity) instead of being silently discarded or labelled
   // generically.
   if (!prompt) return undefined;
-  // A command FILE injects its body/prompt, so it is a `'prompt'` command (Claude
+  // A command FILE injects its body/prompt, so it is a `'prompt'` command (the reference
   // parity: Command.type) unless the file explicitly declares another type. Record
-  // whether the description was author-specified (Claude parity:
+  // whether the description was author-specified (the reference parity:
   // hasUserSpecifiedDescription) so the model-facing listing can require an explicit
   // one for plugin/MCP commands (see {@link isCommandModelListable}).
   const cmd: CommandDefinition = { name, description: desc || deriveCommandDescription(prompt), prompt, filePath, type: 'prompt' };
@@ -1311,12 +1311,12 @@ function parseTomlCommandFile(content: string, filePath: string, name: string): 
 }
 
 /**
- * Parse a single markdown command file (Claude Code's native command format:
+ * Parse a single markdown command file (the reference's native command format:
  * YAML frontmatter + a markdown body that IS the prompt) into a
  * {@link CommandDefinition}, or undefined when the body is empty / unreadable.
  * `allowed-tools` accepts the comma-separated or single-value frontmatter form;
  * booleans accept `true`/`false`. A missing description is DERIVED from the body's
- * first line via {@link deriveCommandDescription} (Claude parity).
+ * first line via {@link deriveCommandDescription} (the reference parity).
  */
 function parseMarkdownCommandFile(content: string, filePath: string, name: string): CommandDefinition | undefined {
   const { frontmatter, body } = parseFrontmatter(content);
@@ -1324,7 +1324,7 @@ function parseMarkdownCommandFile(content: string, filePath: string, name: strin
   if (!prompt) return undefined; // a command with no body does nothing — skip
   const desc = frontmatter.description?.trim();
   const cmd: CommandDefinition = { name, description: desc || deriveCommandDescription(prompt), prompt, filePath, type: 'prompt' };
-  if (desc) cmd.hasUserSpecifiedDescription = true; // explicit vs derived (Claude parity)
+  if (desc) cmd.hasUserSpecifiedDescription = true; // explicit vs derived (the reference parity)
   applyCommandKnobs(
     cmd,
     key => { const v = frontmatter[key]; return typeof v === 'string' && v.trim() !== '' ? v.trim() : undefined; },
@@ -1345,7 +1345,7 @@ function parseMarkdownCommandFile(content: string, filePath: string, name: strin
 /**
  * Parse a single command file into a {@link CommandDefinition} with the given
  * (already namespaced) `name`, dispatching on extension: `.toml` uses the TOML
- * `key = "value"` format; `.md` uses Claude Code's YAML-frontmatter + body format
+ * `key = "value"` format; `.md` uses the reference's YAML-frontmatter + body format
  * (the body is the prompt). Returns undefined for an unreadable file or one with
  * no usable prompt.
  */
@@ -1361,10 +1361,10 @@ function parseCommandFile(filePath: string, name: string): CommandDefinition | u
     : parseTomlCommandFile(content, filePath, name);
 }
 
-/** Command file extensions AMI loads: TOML (AMI's original) and Claude's `.md`. */
+/** Command file extensions AMI loads: TOML (AMI's original) and the reference's `.md`. */
 const COMMAND_FILE_EXTS = ['.toml', '.md'] as const;
 
-/** Case-insensitive `.md`/SKILL.md matching (Claude parity: walkPluginMarkdown
+/** Case-insensitive `.md`/SKILL.md matching (the reference parity: walkPluginMarkdown
  *  uses `.toLowerCase().endsWith('.md')` and `/^skill\.md$/i`), so a `Deploy.TOML`
  *  / `Review.MD` / `skill.md` is discovered the same as its canonical casing. */
 const SKILL_MD_RE = /^skill\.md$/i;
@@ -1384,14 +1384,14 @@ function commandBaseName(fileName: string): string | null {
 }
 
 /**
- * Diagnostics for a command-directory scan (Claude parity: walkPluginMarkdown's
+ * Diagnostics for a command-directory scan (the reference parity: walkPluginMarkdown's
  * `logLabel` option + swallowed-with-a-debug-log readdir failure). Lets a caller
  * trace a bad/unreadable plugin directory instead of the load silently contributing
  * zero commands — core stays logger-free by surfacing the failure through a
  * callback the consumer (skill-manager / plugin-installer) wires to its logger.
  */
 export interface CommandScanDiagnostics {
-  /** Context label for scan-failure messages (Claude parity: logLabel, default `'plugin'`). */
+  /** Context label for scan-failure messages (the reference parity: logLabel, default `'plugin'`). */
   logLabel?: string;
   /**
    * Invoked once per directory that cannot be scanned (readdir/stat failure).
@@ -1403,7 +1403,7 @@ export interface CommandScanDiagnostics {
 
 /**
  * Surface a command-directory scan failure through the caller's
- * {@link CommandScanDiagnostics} (Claude parity: the `Failed to scan ${label}
+ * {@link CommandScanDiagnostics} (the reference parity: the `Failed to scan ${label}
  * directory ${dir}` debug log). A no-op when no `onScanError` sink is wired, so the
  * default (diagnostics-less) load stays silent exactly as before.
  */
@@ -1416,7 +1416,7 @@ function reportScanError(dir: string, error: unknown, diag: CommandScanDiagnosti
 /**
  * Recursively walk a commands directory, collecting every `.toml` or `.md`
  * command file. The `namespace` accumulates the sub-path from the commands root
- * to the file (Claude parity: `getCommandNameFromFile`), and `pluginName` — when
+ * to the file (the reference parity: `getCommandNameFromFile`), and `pluginName` — when
  * the walk was started for a named plugin bundle — is prepended as the top
  * namespace segment so command names are globally unique ACROSS plugins
  * (`${pluginName}:${namespace}:${base}`). Two bundles each shipping `deploy.toml`
@@ -1430,7 +1430,7 @@ function reportScanError(dir: string, error: unknown, diag: CommandScanDiagnosti
  */
 /**
  * Canonical-path dedup for a command/skill file already collected during a load
- * (Claude parity: fsOperations `isDuplicatePath`/`safeResolvePath` used by
+ * (the reference parity: fsOperations `isDuplicatePath`/`safeResolvePath` used by
  * loadPluginCommands). Resolves `filePath` to its realpath (falling back to the
  * raw path when it can't be resolved — ENOENT/broken symlink) and records it;
  * returns true when that canonical path was ALREADY loaded, so a file reachable
@@ -1455,7 +1455,7 @@ function walkCommandDir(dir: string, subPath: string[], pluginName: string | und
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
   } catch (err) {
-    // Missing/unreadable dir — nothing to add. Emit a diagnostic (Claude parity:
+    // Missing/unreadable dir — nothing to add. Emit a diagnostic (the reference parity:
     // walkPluginMarkdown's debug log) so one bad directory is traceable instead of
     // a silent no-op, then continue the load.
     reportScanError(dir, err, diag);
@@ -1471,11 +1471,11 @@ function walkCommandDir(dir: string, subPath: string[], pluginName: string | und
     const base = commandBaseName(entry.name);
     if (base === null) continue;
     // Realpath dedup: skip a file already loaded via another source/symlink
-    // (Claude parity: isDuplicatePath) so it never yields a duplicate command.
+    // (the reference parity: isDuplicatePath) so it never yields a duplicate command.
     if (isDuplicateComponentPath(full, loaded)) continue;
     // The looked-up `name` keeps its original composition: optional plugin-name
     // segment, then the sub-path, then the base. The `namespace` field tracks ONLY
-    // the on-disk sub-path (Claude parity: walkPluginMarkdown), so the plugin-name
+    // the on-disk sub-path (the reference parity: walkPluginMarkdown), so the plugin-name
     // prefix is not conflated with the folder structure.
     const nameSegs = [...(pluginName ? [pluginName] : []), ...subPath, base];
     const name = nameSegs.join(':');
@@ -1484,7 +1484,7 @@ function walkCommandDir(dir: string, subPath: string[], pluginName: string | und
       cmd.namespace = subPath;
       // Provenance defaults to 'plugin' for a bundle walk (a pluginName was given)
       // unless the file already declared an explicit source. The human bundle name
-      // is stamped separately (Claude parity: pluginInfo.pluginManifest.name) so a
+      // is stamped separately (the reference parity: pluginInfo.pluginManifest.name) so a
       // UI can annotate the command's origin with the actual plugin name.
       if (pluginName) {
         cmd.pluginName = pluginName;
@@ -1497,7 +1497,7 @@ function walkCommandDir(dir: string, subPath: string[], pluginName: string | und
 
 /**
  * Load command definitions from a plugin's commands/ directory, recursing into
- * nested subdirectories (Claude parity). Each `.toml` or `.md` file defines a
+ * nested subdirectories (the reference parity). Each `.toml` or `.md` file defines a
  * slash command; a prompt is required (it is what the command runs — the TOML
  * `prompt` key or the markdown body), while `description` is optional and falls
  * back to {@link DEFAULT_COMMAND_DESCRIPTION}. A command in a subdirectory is
@@ -1505,13 +1505,13 @@ function walkCommandDir(dir: string, subPath: string[], pluginName: string | und
  * → `git:commit`). When `pluginName` is given, it is prepended as the first
  * segment so command names are unique across plugins (`pluginName:git:commit`).
  *
- * `extraPaths` (Claude parity: a manifest's `commandsPaths`) are ADDITIONAL command
+ * `extraPaths` (the reference parity: a manifest's `commandsPaths`) are ADDITIONAL command
  * locations outside the primary `commands/` dir — each entry may be a directory
  * (walked recursively) or a single command file (`.toml`/`.md`), discovered under
  * the same namespacing rules. They are loaded AFTER `dir` so a duplicate name from
  * an extra path does not shadow the canonical command (callers dedup by name).
  *
- * `diagnostics` (Claude parity: walkPluginMarkdown's `logLabel` + swallowed-with-a-
+ * `diagnostics` (the reference parity: walkPluginMarkdown's `logLabel` + swallowed-with-a-
  * debug-log scan failure) lets a caller trace a bad/unreadable command directory —
  * a readdir/stat failure is reported through `onScanError` (labelled by `logLabel`,
  * default `'plugin'`) instead of silently contributing zero commands.
@@ -1521,7 +1521,7 @@ export function loadCommands(dir: string, pluginName?: string, extraPaths?: stri
   const plugin = pluginName && pluginName.trim() !== '' ? pluginName.trim() : undefined;
   // Tracks the canonical realpath of every file loaded across ALL sources (the
   // primary dir + every extra path) so a file reachable through more than one
-  // source is loaded exactly once (Claude parity: loadPluginCommands' loadedPaths).
+  // source is loaded exactly once (the reference parity: loadPluginCommands' loadedPaths).
   const loaded = new Set<string>();
   walkCommandDir(dir, [], plugin, commands, loaded, diagnostics);
   for (const extra of extraPaths ?? []) {
@@ -1529,7 +1529,7 @@ export function loadCommands(dir: string, pluginName?: string, extraPaths?: stri
     try {
       stat = fs.statSync(extra);
     } catch (err) {
-      reportScanError(extra, err, diagnostics); // missing/unreadable extra path — trace + skip (Claude parity)
+      reportScanError(extra, err, diagnostics); // missing/unreadable extra path — trace + skip (the reference parity)
       continue;
     }
     if (stat.isDirectory()) {
@@ -1554,12 +1554,12 @@ export function loadCommands(dir: string, pluginName?: string, extraPaths?: stri
 
 /**
  * Copy the overridable fields of a {@link CommandMetadata} entry onto `cmd`
- * (Claude parity: the metadata-override frontmatter merge in loadPluginCommands).
+ * (the reference parity: the metadata-override frontmatter merge in loadPluginCommands).
  * Each override is applied only when it is a non-empty string / non-empty array so
  * a blank override never blanks out the command's own value.
  */
 function applyCommandMetadataOverride(cmd: CommandDefinition, meta: CommandMetadata): void {
-  // A manifest-declared `description` is author-specified (Claude parity:
+  // A manifest-declared `description` is author-specified (the reference parity:
   // hasUserSpecifiedDescription), so it also flips the explicit-description flag the
   // model-listing gate consults.
   if (typeof meta.description === 'string' && meta.description.trim() !== '') {
@@ -1573,7 +1573,7 @@ function applyCommandMetadataOverride(cmd: CommandDefinition, meta: CommandMetad
 
 /**
  * Apply a plugin manifest's `commandsMetadata` object-mapping to an already-walked
- * command list (Claude parity: loadPluginCommands L516-668). Each entry is keyed by
+ * command list (the reference parity: loadPluginCommands L516-668). Each entry is keyed by
  * the command name it defines and carries EXACTLY ONE of `source`/`content`:
  *  - `source`: resolve the file path (relative to the plugin root, hardened against
  *    `..`/symlink escape), match the discovered command loaded from it, rename that
@@ -1598,7 +1598,7 @@ function applyCommandsMetadata(commands: CommandDefinition[], ctx: PluginCommand
         applyCommandMetadataOverride(match, meta);
       }
     } else {
-      // Inline-content command: the markdown IS the command (Claude parity). A
+      // Inline-content command: the markdown IS the command (the reference parity). A
       // virtual filePath marks it as having no on-disk source.
       const cmd = parseMarkdownCommandFile(meta.content!, `<inline:${key}>`, key);
       if (cmd) {
@@ -1637,7 +1637,7 @@ function parseTomlStringArray(content: string, key: string): string[] | undefine
 // ---------------------------------------------------------------------------
 
 /**
- * Installable plugin scopes, in Claude-Code order. `user` installs into the
+ * Installable plugin scopes, in the reference order. `user` installs into the
  * cross-project global plugins dir; `project` into the project's committed
  * `.ami/plugins`; `local` into the project dir but intended to stay un-committed
  * (local-only). Default is `user`.
@@ -1652,7 +1652,7 @@ export function isInstallScope(scope: string): scope is InstallScope {
 
 /**
  * The settings sources that can OWN an enabled plugin, lowest precedence first
- * (Claude parity: pluginStartupCheck's `scopeSources`). `managed` (policy) is
+ * (the reference parity: pluginStartupCheck's `scopeSources`). `managed` (policy) is
  * not user-editable; `flag` is an `--add-dir`/session-only enablement with no
  * write-back. A later source overrides an earlier one for the same plugin, so
  * the resolved owner is the HIGHEST-precedence source that enables it.
@@ -1660,11 +1660,11 @@ export function isInstallScope(scope: string): scope is InstallScope {
 export const PLUGIN_EDITABLE_SCOPES = ['managed', 'user', 'project', 'local', 'flag'] as const;
 export type ExtendedPluginScope = (typeof PLUGIN_EDITABLE_SCOPES)[number];
 /** A scope whose enablement is persisted (everything except the session-only
- *  `flag` scope) — Claude parity: PersistablePluginScope. */
+ *  `flag` scope) — the reference parity: PersistablePluginScope. */
 export type PersistablePluginScope = Exclude<ExtendedPluginScope, 'flag'>;
 
 /**
- * Whether an owning scope's enablement should be written back to disk (Claude
+ * Whether an owning scope's enablement should be written back to disk (the reference
  * parity: pluginStartupCheck `isPersistableScope`). The `flag` scope is
  * session-only (`--add-dir`), so it is NOT persistable; every other scope is.
  */
@@ -1673,7 +1673,7 @@ export function isPersistablePluginScope(scope: ExtendedPluginScope): scope is P
 }
 
 /** One settings source's `enabledPlugins` map, in precedence order lowest→highest
- *  (Claude parity: the policy>local>project>user>flag resolution, expressed here
+ *  (the reference parity: the policy>local>project>user>flag resolution, expressed here
  *  as the write-back-ownership order managed<user<project<local<flag). A value of
  *  `true` enables the plugin at that scope, `false` disables it. */
 export interface PluginScopeSource {
@@ -1683,7 +1683,7 @@ export interface PluginScopeSource {
 
 /**
  * Resolve the user-editable scope that OWNS each enabled plugin — i.e. where a
- * toggle should be written back (Claude parity: pluginStartupCheck
+ * toggle should be written back (the reference parity: pluginStartupCheck
  * `getPluginEditableScopes`). Sources are applied in `PluginScopeSource` order
  * (lowest precedence first); for each plugin, a `true` sets the owning scope to
  * that source and a `false` removes it, so the final owner is the highest
@@ -1718,14 +1718,14 @@ export interface PluginValidationResult {
 const MARKETPLACE_ONLY_MANIFEST_FIELDS = ['category', 'source', 'tags', 'strict', 'id'];
 /** Optional component-path fields a manifest may declare. The single-path forms
  *  (skills/agents/commands/hooks/outputStyles) plus the multi-path `agentsPaths`/
- *  `outputStylesPaths` list forms (Claude parity: loadPluginAgents /
+ *  `outputStylesPaths` list forms (the reference parity: loadPluginAgents /
  *  loadPluginOutputStyles) are all traversal-validated. The server-declaration
  *  fields (mcpServers/lspServers) accept inline-record forms too and are validated
  *  separately via {@link validateServerDeclarations}. */
 const COMPONENT_PATH_FIELDS = ['skills', 'agents', 'commands', 'agentsPaths', 'outputStyles', 'outputStylesPaths'];
 
 /** Manifest fields that declare servers either by FILE PATH (traversal-checked) or
- *  by INLINE RECORD (structurally opaque here): mcpServers (Claude parity:
+ *  by INLINE RECORD (structurally opaque here): mcpServers (the reference parity:
  *  PluginManifestMcpServerSchema) and lspServers (PluginManifestLspServerSchema). */
 const SERVER_DECLARATION_FIELDS = ['mcpServers', 'lspServers'];
 
@@ -1744,7 +1744,7 @@ function validateComponentPathString(label: string, val: string, errors: PluginV
 
 /**
  * Validate a manifest component-path field (skills/agents/commands/hooks/mcpServers)
- * across ALL the forms Claude accepts (schemas.ts L429-497): a single relative-path
+ * across ALL the forms the reference accepts (schemas.ts L429-497): a single relative-path
  * string, an array of relative-path strings, or (commands) an object mapping a
  * command name → { source, ... } metadata. Every path is traversal-checked via
  * {@link validateComponentPathString}; a non-string array entry is flagged. AMI
@@ -1763,7 +1763,7 @@ function validateComponentPathField(field: string, val: unknown, errors: PluginV
       }
     });
   } else if (val && typeof val === 'object') {
-    // Object-mapping form (Claude parity: commands record name → { source, ... }).
+    // Object-mapping form (the reference parity: commands record name → { source, ... }).
     // Each entry's `source` is a relative command-file path; validate it when present.
     for (const [key, meta] of Object.entries(val as Record<string, unknown>)) {
       if (meta && typeof meta === 'object' && !Array.isArray(meta)) {
@@ -1776,7 +1776,7 @@ function validateComponentPathField(field: string, val: unknown, errors: PluginV
 
 /**
  * Validate a server-declaration field (`mcpServers`/`lspServers`) across the forms
- * Claude accepts (schemas.ts L543-572 / L738-767): a FILE-PATH string, an INLINE
+ * the reference accepts (schemas.ts L543-572 / L738-767): a FILE-PATH string, an INLINE
  * RECORD, or an ARRAY mixing file-path strings and inline records. Path strings are
  * traversal-checked via {@link validateComponentPathString} (so a `..`/absolute
  * override is still a hard error for the discovery gate); inline records are opaque
@@ -1789,7 +1789,7 @@ function validateServerDeclarations(field: string, val: unknown, errors: PluginV
   } else if (Array.isArray(val)) {
     val.forEach((el, i) => {
       if (typeof el === 'string') validateComponentPathString(`${field}[${i}]`, el, errors);
-      // An inline-record ARRAY entry is a `name → config` map (Claude parity: the
+      // An inline-record ARRAY entry is a `name → config` map (the reference parity: the
       // array form mixes file-path strings with inline records). Its structural
       // shape is opaque for MCP, but an inline LSP record is validated with the
       // canonical LSP schema so a bad command/extension surfaces here too.
@@ -1797,7 +1797,7 @@ function validateServerDeclarations(field: string, val: unknown, errors: PluginV
     });
   } else if (field === 'lspServers' && isPlainObject(val)) {
     // A bare inline LSP record (`name → config`) imposes no path to traverse, but
-    // each server config IS validated (Claude parity: PluginManifestLspServerSchema's
+    // each server config IS validated (the reference parity: PluginManifestLspServerSchema's
     // inline-record form uses LspServerConfigSchema) so corrective, example-bearing
     // messages (command-spaces / file-extension dot) reach `/plugin validate`.
     validateInlineLspServers(field, val, errors);
@@ -1826,7 +1826,7 @@ function validateInlineLspServers(label: string, rec: Record<string, unknown>, e
 }
 
 /**
- * Validate a manifest's optional `hooks` field across EVERY form Claude accepts
+ * Validate a manifest's optional `hooks` field across EVERY form the reference accepts
  * (parity: pluginLoader's `manifest.hooks` — a single additional-hooks-file path
  * STRING, an ARRAY mixing such path strings with INLINE hook objects, or a single
  * inline hook OBJECT). A path string is traversal-checked via
@@ -1854,7 +1854,7 @@ function validateManifestHooks(val: unknown, errors: PluginValidationIssue[]): v
 
 /**
  * Validate a manifest's optional `requires` availability gate (AMI's declarative
- * analogue of Claude's BuiltinPluginDefinition.isAvailable). Each of `platform`/
+ * analogue of the reference's BuiltinPluginDefinition.isAvailable). Each of `platform`/
  * `env`/`bin`, when present, must be an array of strings; a malformed constraint is
  * flagged with a corrective example so an author can self-correct.
  */
@@ -1874,7 +1874,7 @@ function validatePluginRequirements(val: unknown, errors: PluginValidationIssue[
 }
 
 /**
- * Validate a manifest's optional `settings` object (Claude parity:
+ * Validate a manifest's optional `settings` object (the reference parity:
  * PluginSettingsSchema — only `agent` is allowlisted, everything else is stripped).
  * `settings` must be an object; a present `agent` must be a string. Non-allowlisted
  * keys are surfaced as warnings (they are silently dropped at load time) so an
@@ -1897,7 +1897,7 @@ function validatePluginSettings(val: unknown, errors: PluginValidationIssue[], w
   }
 }
 
-/** True when `value` parses as an absolute URL (parity with Claude's zod `.url()`
+/** True when `value` parses as an absolute URL (parity with the reference's zod `.url()`
  *  refinement for homepage: a scheme-less `example.com` is rejected). */
 function isValidUrl(value: string): boolean {
   try {
@@ -1909,7 +1909,7 @@ function isValidUrl(value: string): boolean {
 }
 
 /**
- * Validate a manifest's structured `author` (Claude parity: PluginAuthorSchema).
+ * Validate a manifest's structured `author` (the reference parity: PluginAuthorSchema).
  * Accepts either a non-empty display-name string or an object `{ name, email?,
  * url? }` whose `name` is a non-empty string and whose optional `email`/`url` are
  * strings. Pushes labelled, actionable errors for every other shape.
@@ -1939,7 +1939,7 @@ function validatePluginAuthor(author: unknown, errors: PluginValidationIssue[]):
 }
 
 /**
- * Validate the OPTIONAL metadata fields of a plugin manifest (Claude parity:
+ * Validate the OPTIONAL metadata fields of a plugin manifest (the reference parity:
  * PluginManifestMetadataSchema, utils/plugins/schemas.ts L251-L320). Every field
  * is optional, but when present must have the right shape; each message carries a
  * concrete example so an author can self-correct. Component-path and name/version
@@ -1968,7 +1968,7 @@ function validateManifestMetadata(obj: Record<string, unknown>, errors: PluginVa
 
 /**
  * Validate a manifest's optional `dependencies` — the plugins that must be enabled
- * first (Claude parity: DependencyRefSchema, utils/plugins/schemas.ts L1367). Each
+ * first (the reference parity: DependencyRefSchema, utils/plugins/schemas.ts L1367). Each
  * entry is either a non-empty ref string (`name` or `name@marketplace`) or an
  * object carrying a non-empty string `name` (AMI also accepts `plugin` as the ref
  * key, matching its resolver) with an optional string `marketplace`. The common
@@ -2004,7 +2004,7 @@ function validateManifestDependencies(deps: unknown, errors: PluginValidationIss
 }
 
 /**
- * Validate a manifest's optional `commandsMetadata` object-mapping (Claude parity:
+ * Validate a manifest's optional `commandsMetadata` object-mapping (the reference parity:
  * CommandMetadataSchema, utils/plugins/schemas.ts L385-416). Each value must be an
  * object carrying EXACTLY ONE of `source` (a relative, non-escaping command-file
  * path) or `content` (inline markdown) — the schema `.refine` rejects both/neither —
@@ -2043,7 +2043,7 @@ function validateCommandsMetadata(val: unknown, errors: PluginValidationIssue[])
 }
 
 /**
- * The value types a plugin `userConfig` option may declare (Claude parity:
+ * The value types a plugin `userConfig` option may declare (the reference parity:
  * PluginUserConfigOptionSchema, utils/plugins/schemas.ts L589 — matches
  * `@anthropic-ai/mcpb`'s McpbUserConfigurationOption). A `directory`/`file` option
  * prompts for a path; `string`/`number`/`boolean` for the obvious scalars.
@@ -2051,12 +2051,12 @@ function validateCommandsMetadata(val: unknown, errors: PluginValidationIssue[])
 export const USER_CONFIG_OPTION_TYPES = ['string', 'number', 'boolean', 'directory', 'file'] as const;
 export type UserConfigOptionType = (typeof USER_CONFIG_OPTION_TYPES)[number];
 /** An option KEY must be a valid identifier — it becomes an env var name at hook
- *  time (Claude parity: CLAUDE_PLUGIN_OPTION_<KEY>). */
+ *  time (the reference parity: CLAUDE_PLUGIN_OPTION_<KEY>). */
 const USER_CONFIG_KEY_RE = /^[A-Za-z_]\w*$/;
 
 /**
  * Validate a manifest's optional `userConfig` — the user-prompted configuration
- * options a plugin needs at enable time (Claude parity: PluginManifestUserConfigSchema
+ * options a plugin needs at enable time (the reference parity: PluginManifestUserConfigSchema
  * + PluginUserConfigOptionSchema, utils/plugins/schemas.ts L575-654). Each entry is
  * keyed by an identifier-safe option key and declares a `type` (one of
  * {@link USER_CONFIG_OPTION_TYPES}), required `title`/`description` strings, and the
@@ -2105,18 +2105,18 @@ function validateUserConfig(val: unknown, errors: PluginValidationIssue[], label
 }
 
 /** A userConfig `default` may be a scalar (string/number/boolean) or, for a
- *  `multiple` string option, an array of strings (Claude parity). */
+ *  `multiple` string option, an array of strings (the reference parity). */
 function isValidUserConfigDefault(val: unknown): boolean {
   if (typeof val === 'string' || typeof val === 'number' || typeof val === 'boolean') return true;
   return Array.isArray(val) && val.every(v => typeof v === 'string');
 }
 
 /**
- * The set of inline MCP server names a manifest declares (Claude parity: a
+ * The set of inline MCP server names a manifest declares (the reference parity: a
  * channel's `server` must match a key in `mcpServers`). Only the INLINE record /
  * array-of-records forms contribute names here; when `mcpServers` is just a FILE
  * PATH string the names are unknown until the file is read, so this returns
- * `undefined` to signal "defer the cross-check to load time" (matching Claude's
+ * `undefined` to signal "defer the cross-check to load time" (matching the reference's
  * schema comment that the server↔mcpServers check lives in mcpPluginIntegration).
  */
 function inlineMcpServerNames(manifest: Record<string, unknown>): Set<string> | undefined {
@@ -2141,13 +2141,13 @@ function inlineMcpServerNames(manifest: Record<string, unknown>): Set<string> | 
 
 /**
  * Validate a manifest's optional `channels` — the message-channel declarations a
- * plugin ships (Claude parity: PluginManifestChannelsSchema, utils/plugins/schemas.ts
+ * plugin ships (the reference parity: PluginManifestChannelsSchema, utils/plugins/schemas.ts
  * L656-703). `channels` must be an array; each entry is an object with a non-empty
  * `server` string, an optional string `displayName`, and an optional `userConfig`
  * validated exactly like the top-level manifest `userConfig`. When the manifest
  * declares its MCP servers INLINE (so the names are known), each channel's `server`
  * is cross-checked against those keys; when `mcpServers` is only a file path, that
- * cross-check is deferred (Claude parity — resolved at load time, not parse time).
+ * cross-check is deferred (the reference parity — resolved at load time, not parse time).
  */
 function validatePluginChannels(val: unknown, manifest: Record<string, unknown>, errors: PluginValidationIssue[]): void {
   if (val === undefined) return;
@@ -2176,7 +2176,7 @@ function validatePluginChannels(val: unknown, manifest: Record<string, unknown>,
 }
 
 // ---------------------------------------------------------------------------
-// Plugin option VALUES — the runtime side of `userConfig` (Claude parity:
+// Plugin option VALUES — the runtime side of `userConfig` (the reference parity:
 // utils/plugins/pluginOptionsStorage.ts + commands/plugin/PluginOptionsDialog
 // /PluginOptionsFlow). The validators above gate the manifest SHAPE; the
 // functions below coerce/validate/prefill the user-entered VALUES against a
@@ -2186,7 +2186,7 @@ function validatePluginChannels(val: unknown, manifest: Record<string, unknown>,
 
 /**
  * A single plugin `userConfig` option declaration, as the config dialog and
- * option storage consume it (Claude parity: PluginUserConfigOptionSchema). `type`
+ * option storage consume it (the reference parity: PluginUserConfigOptionSchema). `type`
  * is one of {@link USER_CONFIG_OPTION_TYPES}; `title`/`description` are shown in
  * the prompt; the knobs mirror the manifest schema validated by
  * {@link validatePluginContents}.
@@ -2203,17 +2203,17 @@ export interface PluginUserConfigOption {
   max?: number;
 }
 
-/** A declared option schema: option key → its declaration (Claude parity:
+/** A declared option schema: option key → its declaration (the reference parity:
  *  PluginOptionSchema / UserConfigSchema). */
 export type PluginOptionSchema = Record<string, PluginUserConfigOption>;
-/** A resolved option value (Claude parity: a `directory`/`file`/`string`
+/** A resolved option value (the reference parity: a `directory`/`file`/`string`
  *  scalar, a coerced `number`/`boolean`, or a `multiple` string array). */
 export type PluginOptionValue = string | number | boolean | string[];
-/** Saved/collected option values keyed by option key (Claude parity:
+/** Saved/collected option values keyed by option key (the reference parity:
  *  PluginOptionValues / UserConfigValues). */
 export type PluginOptionValues = Record<string, PluginOptionValue>;
 
-/** Tokens a plugin `boolean` option value coerces to `true` (Claude parity:
+/** Tokens a plugin `boolean` option value coerces to `true` (the reference parity:
  *  isEnvTruthy's allow-list). NOTE: this is a DIFFERENT contract from core's
  *  env-flag {@link isEnvTruthy} (a deny-list) — a plugin boolean option is
  *  truthy ONLY for an explicit affirmative token, so an unrecognized value is
@@ -2221,7 +2221,7 @@ export type PluginOptionValues = Record<string, PluginOptionValue>;
 const PLUGIN_OPTION_TRUTHY = new Set(['1', 'true', 'yes', 'on']);
 
 /**
- * Coerce a plugin `boolean` option's string input to a boolean (Claude parity:
+ * Coerce a plugin `boolean` option's string input to a boolean (the reference parity:
  * isEnvTruthy applied in buildFinalValues). Truthy only for an explicit
  * affirmative token ({@link PLUGIN_OPTION_TRUTHY}); every other value — including
  * blank and unrecognized text — is `false`.
@@ -2231,7 +2231,7 @@ export function coercePluginOptionBool(value: string): boolean {
 }
 
 /** Canonical filename of a plugin's saved `userConfig` VALUES sidecar, co-located
- *  with the plugin bundle root (Claude parity: pluginOptionsStorage's per-plugin
+ *  with the plugin bundle root (the reference parity: pluginOptionsStorage's per-plugin
  *  options file). The sole source of truth for the marker — both the installer's
  *  option persistence and the hook-env plugin-option injection resolve it here so
  *  the name is never re-declared. */
@@ -2245,7 +2245,7 @@ export const PLUGIN_OPTIONS_FILE = '.options.json';
  * Reads THROUGH a regular-file guard (`statSync().isFile()` before opening) so a
  * hostile bundle that plants a FIFO, directory, socket, or device at the sidecar
  * path can neither block the reader on a pipe nor smuggle a non-object. Canonical
- * reader (Claude parity: loadPluginOptions / pluginOptionsStorage) — the plugin
+ * reader (the reference parity: loadPluginOptions / pluginOptionsStorage) — the plugin
  * installer and the hook-env plugin-option injection both call this; never
  * re-implement the parse/guard per site.
  */
@@ -2285,7 +2285,7 @@ export function readPluginOptionValues(dir: string): Record<string, string | num
  * Substitute `${user_config.<key>}` placeholders in a plugin command-hook string
  * (command or an arg) with the plugin's saved `userConfig` values. An unknown or
  * absent key resolves to the empty string so a stale placeholder never leaks the
- * literal `${user_config.x}` onto a command line (Claude parity:
+ * literal `${user_config.x}` onto a command line (the reference parity:
  * substituteUserConfigVariables). Returns the string unchanged when there are no
  * values. Only the `user_config.` namespace is touched — every other `${...}`
  * reference (CLAUDE_PLUGIN_ROOT/DATA, shell env) is left for its own substitution
@@ -2306,7 +2306,7 @@ export function substituteUserConfigValues(
  * Build the `CLAUDE_PLUGIN_OPTION_<KEY>` (plus the AMI-native `AMI_PLUGIN_OPTION_<KEY>`
  * alias) environment variables that expose a plugin's saved `userConfig` values to
  * its command hooks, so a hook can read configuration from the environment without a
- * `${user_config.X}` placeholder (Claude parity: CLAUDE_PLUGIN_OPTION_<KEY>, utils/hooks.ts).
+ * `${user_config.X}` placeholder (the reference parity: CLAUDE_PLUGIN_OPTION_<KEY>, utils/hooks.ts).
  * Each key is upper-cased with non-identifier characters replaced by `_` so the value
  * is always shell-referenceable (`$CLAUDE_PLUGIN_OPTION_API_KEY`). Values are stringified.
  * Returns `{}` when there are no values. Sensitive values ARE included — a command hook
@@ -2328,7 +2328,7 @@ export function buildPluginOptionEnv(
 
 /**
  * Build the save payload from the raw string inputs the config dialog collected,
- * coercing each by its declared type (Claude parity: PluginOptionsDialog
+ * coercing each by its declared type (the reference parity: PluginOptionsDialog
  * `buildFinalValues`). The behavior-defining edge cases, matched exactly:
  *
  *   - A `sensitive` field left blank on RECONFIGURE (a value already exists in
@@ -2370,7 +2370,7 @@ export function coercePluginOptionValues(
 
 /**
  * Compute the per-field initial string the config dialog should pre-fill when
- * RECONFIGURING (Claude parity: PluginOptionsDialog's `initialFor`). A
+ * RECONFIGURING (the reference parity: PluginOptionsDialog's `initialFor`). A
  * `sensitive` field is NEVER pre-filled (the stored secret is not echoed into
  * the input buffer); any other field is pre-filled with the stringified saved
  * value, or `''` when nothing is saved. The returned map is keyed by every
@@ -2393,7 +2393,7 @@ export function buildPluginOptionPrefill(
 }
 
 /**
- * Validate resolved option VALUES against a declared schema (Claude parity: the
+ * Validate resolved option VALUES against a declared schema (the reference parity: the
  * required/type checks `validateUserConfig` applies to saved values). Reports a
  * human-readable error per offending field:
  *   - a `required` option that is absent / blank / an empty array;
@@ -2445,7 +2445,7 @@ export function validatePluginOptionValues(
 
 /**
  * Return the subset of a plugin's option schema whose SAVED values are still
- * missing/invalid (Claude parity: pluginOptionsStorage `getUnconfiguredOptions`).
+ * missing/invalid (the reference parity: pluginOptionsStorage `getUnconfiguredOptions`).
  * Used to decide, after enabling a plugin, whether the user must be prompted —
  * already-configured fields are skipped so a reconfigure never re-asks for a
  * value that already validates. Returns an empty schema when everything is
@@ -2490,7 +2490,7 @@ export function validatePluginManifest(raw: unknown): PluginValidationResult {
   } else if (!isSafeSegment(obj.name)) {
     errors.push({ path: 'name', message: `Unsafe plugin name "${obj.name}" (no slashes, "..", or NUL).` });
   } else if (obj.name.includes(' ')) {
-    // Claude parity (PluginManifestMetadataSchema name refine): a name is used for
+    // the reference parity (PluginManifestMetadataSchema name refine): a name is used for
     // namespacing, so a space would break the `plugin:command` lookup — reject it
     // with a corrective kebab-case example rather than silently namespacing on it.
     errors.push({ path: 'name', message: 'Plugin name cannot contain spaces. Use kebab-case (e.g., "my-plugin").' });
@@ -2525,13 +2525,13 @@ export function validatePluginManifest(raw: unknown): PluginValidationResult {
   return { valid: errors.length === 0, errors, warnings };
 }
 
-/** The action `type` a plugin hook entry may declare (Claude parity: HookConfigType
+/** The action `type` a plugin hook entry may declare (the reference parity: HookConfigType
  *  — mirrors core/core/src/hooks.ts HOOK_CONFIG_TYPES without importing the heavy
  *  HookManager graph into this building-block module). */
 const PLUGIN_HOOK_ACTION_TYPES = ['command', 'prompt', 'http', 'agent'] as const;
 
 /**
- * Structurally validate one hook entry, recursing into the Claude matcher form
+ * Structurally validate one hook entry, recursing into the reference matcher form
  * `{ matcher?, hooks: [ { type, command } ] }`. A declared `type` must be a known
  * action type and a `command`-type action must carry a non-empty `command` string
  * (the security hardening of the command itself runs at hook LOAD time via
@@ -2556,15 +2556,15 @@ function validateHookAction(obj: unknown, label: string, errors: PluginValidatio
 }
 
 /**
- * Validate the STRUCTURE of a parsed plugin `hooks.json` (Claude parity:
- * PluginHooksSchema, utils/plugins/validatePlugin.ts L640-711). Claude's loader
+ * Validate the STRUCTURE of a parsed plugin `hooks.json` (the reference parity:
+ * PluginHooksSchema, utils/plugins/validatePlugin.ts L640-711). the reference's loader
  * HARD-parses hooks.json (`.parse()`, not `.safeParse()`) so a malformed file breaks
  * the whole plugin load — surfacing the structural errors here (instead of only
  * catching a JSON syntax error) lets an author fix it before it ships. Accepts both
- * the AMI flat-array form (`[ { event, type, command } ]`) and the Claude map-keyed
+ * the AMI flat-array form (`[ { event, type, command } ]`) and the reference map-keyed
  * form (`{ EventName: [ { matcher?, hooks: [...] } ] }`, optionally wrapped in a top
  * `hooks` key). Event-NAME membership is intentionally NOT checked — AMI translates
- * Claude's PascalCase event names via normalizeMapKeyedHooks, so a cross-framework
+ * the reference's PascalCase event names via normalizeMapKeyedHooks, so a cross-framework
  * manifest must validate. Returns the issues (empty when structurally sound).
  */
 export function validatePluginHooks(parsed: unknown): PluginValidationIssue[] {
@@ -2578,7 +2578,7 @@ export function validatePluginHooks(parsed: unknown): PluginValidationIssue[] {
     return errors;
   }
   const raw = parsed as Record<string, unknown>;
-  // Claude map-keyed form may wrap the event map in a top-level `hooks` key.
+  // the reference map-keyed form may wrap the event map in a top-level `hooks` key.
   const map = raw.hooks && typeof raw.hooks === 'object' && !Array.isArray(raw.hooks)
     ? (raw.hooks as Record<string, unknown>)
     : raw;
@@ -2595,7 +2595,7 @@ export function validatePluginHooks(parsed: unknown): PluginValidationIssue[] {
 /**
  * Validate a plugin's CONTENT files (skills/, agents/, commands/, hooks.json)
  * under `pluginDir`, complementing {@link validatePluginManifest} (which only
- * checks plugin.json). Mirrors Claude Code's `validatePluginContents`: every
+ * checks plugin.json). Mirrors the reference's `validatePluginContents`: every
  * declared component is structurally checked and any component path that escapes
  * the plugin root (via `..` or a symlink) is flagged. Returns aggregated
  * errors/warnings labelled by the offending relative path. Missing component dirs
@@ -2615,7 +2615,7 @@ export function validatePluginContents(pluginDir: string): PluginValidationResul
       let isDir = false;
       try { isDir = fs.statSync(entryPath).isDirectory(); } catch { continue; }
       if (isDir) {
-        // SKILL.md is matched case-insensitively (Claude parity), so a subdir
+        // SKILL.md is matched case-insensitively (the reference parity), so a subdir
         // shipping `skill.md`/`Skill.md` on a case-sensitive filesystem is not
         // spuriously reported as missing its manifest.
         const skillMdName = safeReaddir(entryPath).find(f => SKILL_MD_RE.test(f));
@@ -2656,7 +2656,7 @@ export function validatePluginContents(pluginDir: string): PluginValidationResul
         continue;
       }
       if (isMd) {
-        // Markdown command: the body IS the prompt (Claude format), so a non-empty
+        // Markdown command: the body IS the prompt (the reference format), so a non-empty
         // body is what makes the command runnable; description is optional.
         if (!parseFrontmatter(content).body.trim()) {
           errors.push({ path: `commands/${entry}`, message: 'markdown command must have a non-empty body (the prompt).' });
@@ -2665,7 +2665,7 @@ export function validatePluginContents(pluginDir: string): PluginValidationResul
         errors.push({ path: `commands/${entry}`, message: 'command TOML must define both "description" and "prompt".' });
       }
     }
-    // Affordance warning (Claude parity: loadPluginCommands warns when a commands
+    // Affordance warning (the reference parity: loadPluginCommands warns when a commands
     // directory yields nothing) — a commands/ dir that loads no runnable command
     // (recursively) is almost always an author mistake, so name the expected
     // format instead of silently contributing zero commands.
@@ -2674,8 +2674,8 @@ export function validatePluginContents(pluginDir: string): PluginValidationResul
     }
   }
 
-  // hooks.json (root) OR hooks/hooks.json (Claude Code) — must be valid JSON AND
-  // structurally sound (Claude parity: PluginHooksSchema). A bad hooks.json hard-breaks
+  // hooks.json (root) OR hooks/hooks.json (the reference) — must be valid JSON AND
+  // structurally sound (the reference parity: PluginHooksSchema). A bad hooks.json hard-breaks
   // the plugin at load time, so both the JSON syntax and the schema are linted here.
   const hooksFile = resolvePluginHooksFile(pluginDir);
   if (hooksFile) {
@@ -2694,7 +2694,7 @@ export function validatePluginContents(pluginDir: string): PluginValidationResul
     }
   }
 
-  // .mcp.json (Claude Code) — bundled MCP servers must be valid JSON; a symlink/..
+  // .mcp.json (the reference) — bundled MCP servers must be valid JSON; a symlink/..
   // escape is flagged exactly like the other component paths.
   const mcpFile = hardenedResolve(pluginDir, '.mcp.json');
   if (mcpFile === undefined && fs.existsSync(path.join(pluginDir, '.mcp.json'))) {
@@ -2735,7 +2735,7 @@ function validateMarkdownComponent(
   }
   if (isSkill) {
     // A subdir SKILL.md can fall back to the dir name, so a missing name is only a
-    // warning (SKILL.md matched case-insensitively, Claude parity).
+    // warning (SKILL.md matched case-insensitively, the reference parity).
     if (!frontmatter.name && !SKILL_MD_RE.test(path.basename(file))) {
       warnings.push({ path: label, message: 'skill has no "name" frontmatter; the file name will be used.' });
     }
@@ -2746,8 +2746,8 @@ function validateMarkdownComponent(
 
 /**
  * Locate a plugin's `plugin.json` under `root`, in priority order: AMI's
- * `.ami-plugin/`, then Claude Code's `.claude-plugin/`, then a legacy root-level
- * `plugin.json` (Claude parity: pluginLoader's `legacyManifestPath`). Returns the
+ * `.ami-plugin/`, then the reference's `.claude-plugin/`, then a legacy root-level
+ * `plugin.json` (the reference parity: pluginLoader's `legacyManifestPath`). Returns the
  * first existing path, or undefined when the directory ships no manifest. SINGLE
  * source for the lookup order used by both discovery and validation.
  */
@@ -2787,14 +2787,14 @@ export function validatePlugin(pluginDir: string): PluginValidationResult {
 }
 
 /**
- * The kinds of component a plugin can contribute (Claude parity: PluginComponent,
+ * The kinds of component a plugin can contribute (the reference parity: PluginComponent,
  * types/plugin.ts). Used to tag a {@link PluginError} with the component it concerns.
  */
 export const PLUGIN_COMPONENTS = ['commands', 'agents', 'skills', 'hooks', 'output-styles'] as const;
 export type PluginComponent = (typeof PLUGIN_COMPONENTS)[number];
 
 /**
- * Typed, discriminated plugin error (Claude parity: types/plugin.ts `PluginError`).
+ * Typed, discriminated plugin error (the reference parity: types/plugin.ts `PluginError`).
  * Each variant carries the CONTEXTUAL data its kind needs so a consumer can render
  * precise, actionable guidance WITHOUT string-matching an opaque message (which
  * breaks the instant the wording changes). Every variant carries `source` (the
@@ -2814,7 +2814,7 @@ export type PluginError =
   | { type: 'generic-error'; source: string; plugin?: string; error: string };
 
 /**
- * Render a {@link PluginError} to a single display string (Claude parity:
+ * Render a {@link PluginError} to a single display string (the reference parity:
  * getPluginErrorMessage). Exhaustive over the union — adding a variant without a
  * case is a compile error — so the message set can never drift out of sync with the
  * type. The SINGLE canonical formatter for every plugin-error surface (installer,
@@ -2851,7 +2851,7 @@ export function getPluginErrorMessage(error: PluginError): string {
 
 /**
  * The user-facing warning for a plugin-contributed path that escapes its own
- * root (Claude parity: lspPluginIntegration's "Security: Path traversal attempt
+ * root (the reference parity: lspPluginIntegration's "Security: Path traversal attempt
  * blocked in plugin …" message). Emitted whenever {@link hardenedResolve} rejects
  * a declared component path because its realpath leaves the plugin dir (a `..`
  * segment that survived manifest validation, or a symlink pointing outside) —
@@ -2864,7 +2864,7 @@ export function formatPluginPathTraversalWarning(plugin: string, declaredPath: s
 }
 
 /**
- * Stable dedup key for a {@link PluginError} (Claude parity: refresh.ts
+ * Stable dedup key for a {@link PluginError} (the reference parity: refresh.ts
  * `errorKey`). A `generic-error` is keyed by its source AND message (two generic
  * errors from the same source but different messages are distinct); every typed
  * variant is keyed by `type:source` (the same kind from the same source is one
@@ -2878,7 +2878,7 @@ export function pluginErrorKey(e: PluginError): string {
 
 /**
  * Merge a freshly-recomputed plugin-error set into the existing one on reload,
- * preserving errors that a plain reload would otherwise strand (Claude parity:
+ * preserving errors that a plain reload would otherwise strand (the reference parity:
  * refresh.ts `mergePluginErrors`). Errors sourced from the LSP manager
  * (`lsp-manager`) or from an individual plugin (`plugin:<name>`) are PRESERVED
  * across the reload — they are recomputed asynchronously/elsewhere, not by the
@@ -2898,7 +2898,7 @@ export function mergePluginErrors(existing: PluginError[], fresh: PluginError[])
 
 /**
  * A plugin directory that failed to load, with an actionable reason. `error`
- * carries the TYPED {@link PluginError} (Claude parity) so a consumer can branch on
+ * carries the TYPED {@link PluginError} (the reference parity) so a consumer can branch on
  * the failure kind instead of string-matching `reason`; `reason` is its
  * human-readable rendering (via {@link getPluginErrorMessage} for typed failures)
  * and remains the display fallback.
@@ -2911,13 +2911,13 @@ export interface PluginLoadFailure {
 
 /** Matches any non-ASCII (potential homograph) character — a plugin name used for
  *  `plugin:command` namespacing must stay ASCII to avoid lookalike impersonation
- *  (Claude parity: NON_ASCII_PATTERN, utils/plugins/schemas.ts). */
+ *  (the reference parity: NON_ASCII_PATTERN, utils/plugins/schemas.ts). */
 const NON_ASCII_NAME_RE = /[^ -~]/;
 
 /**
  * True when `name` is safe to use verbatim as a plugin's namespace segment: it
  * passes the path-safety segment check (no slashes, `..`, or NUL), contains no
- * whitespace, and is ASCII-only (Claude parity: the plugin-name schema refinement
+ * whitespace, and is ASCII-only (the reference parity: the plugin-name schema refinement
  * rejects spaces/path separators, and the homograph guard rejects non-ASCII).
  * A manifest name that fails this is not fatal — discovery falls back to the
  * directory name so the bundle still loads under a usable, namespacing-safe id.
@@ -2928,7 +2928,7 @@ export function isNamespaceSafeName(name: string): boolean {
 
 /**
  * True when `err` is a filesystem "no such file or directory" error (errno code
- * `ENOENT`), matching Claude Code's `isENOENT` guard (utils/errors.ts). Used to
+ * `ENOENT`), matching the reference's `isENOENT` guard (utils/errors.ts). Used to
  * distinguish an EXPECTED-absent path (a plugin that simply ships none of an
  * optional component — swallow it) from a REAL I/O error (EACCES/ENOTDIR/… —
  * surface it) so a genuine misconfiguration is not silently discarded.
@@ -2943,7 +2943,7 @@ function errMessage(err: unknown): string {
 }
 
 /**
- * Sanitize one segment of a plugin/extension id (Claude parity: the `sanitize`
+ * Sanitize one segment of a plugin/extension id (the reference parity: the `sanitize`
  * pipeline in utils/dxt/helpers.ts `generateExtensionId`), applied IN ORDER:
  * lower-case → collapse whitespace runs to `-` → drop any char outside
  * `[a-z0-9-_.]` → collapse `-` runs → trim leading/trailing `-`. Deterministic:
@@ -2958,13 +2958,13 @@ export function sanitizePluginIdSegment(str: string): string {
     .replace(/^-+|-+$/g, '');
 }
 
-/** Prefixes a deterministic plugin id may carry (Claude parity: local unpacked vs
+/** Prefixes a deterministic plugin id may carry (the reference parity: local unpacked vs
  *  packaged `.dxt`/`.mcpb` bundle). */
 export type PluginIdPrefix = 'local.unpacked' | 'local.dxt';
 
 /**
  * Generate a deterministic plugin/extension id from an author name and a plugin
- * name (Claude parity: generateExtensionId, utils/dxt/helpers.ts). Each part is
+ * name (the reference parity: generateExtensionId, utils/dxt/helpers.ts). Each part is
  * run through {@link sanitizePluginIdSegment}; an optional `prefix` is prepended.
  * The result is `${author}.${name}` (or `${prefix}.${author}.${name}`) — stable
  * across runs so the same plugin always resolves to the same id.
@@ -2976,8 +2976,8 @@ export function generatePluginId(authorName: string, name: string, prefix?: Plug
 }
 
 /**
- * Normalize a plugin's git-subdir path EXACTLY as Claude Code's version/cache-key
- * encoder does (Claude parity: calculatePluginVersion's git-subdir branch,
+ * Normalize a plugin's git-subdir path EXACTLY as the reference's version/cache-key
+ * encoder does (the reference parity: calculatePluginVersion's git-subdir branch,
  * pluginVersioning.ts L63-88), byte-for-byte: (1) backslash → forward slash, (2)
  * strip ONE leading `./`, (3) strip ALL trailing `/`. The result is what gets
  * hashed into a git-subdir plugin's version, so the normalization must stay
@@ -2991,8 +2991,8 @@ export function normalizePluginSubdirPath(subdirPath: string): string {
 }
 
 /**
- * Hash a plugin's git-subdir path into the short digest Claude Code folds into a
- * git-subdir plugin's version/cache key (Claude parity: calculatePluginVersion
+ * Hash a plugin's git-subdir path into the short digest the reference folds into a
+ * git-subdir plugin's version/cache key (the reference parity: calculatePluginVersion
  * L63-88 — `createHash('sha256').update(normPath).digest('hex').substring(0, 8)`).
  * Two plugins living at different subdirs of the SAME monorepo commit share a
  * SHA, so without this suffix they collide at `cache/<m>/<p>/<sha>/` and serve
@@ -3006,7 +3006,7 @@ export function hashPluginSubdirPath(subdirPath: string): string {
 }
 
 /**
- * Normalize a manifest `author` (string or `{ name, … }` object — Claude parity)
+ * Normalize a manifest `author` (string or `{ name, … }` object — the reference parity)
  * to a non-empty display-name string, or undefined when absent/blank/malformed.
  */
 function manifestAuthorName(author: unknown): string | undefined {
@@ -3043,7 +3043,7 @@ function mcpServerKey(server: PluginMcpServer): string {
 
 /**
  * Merge plugin-contributed MCP servers across bundles, SUPPRESSING duplicates by
- * launch target (Claude parity: types/plugin.ts `mcp-server-suppressed-duplicate`).
+ * launch target (the reference parity: types/plugin.ts `mcp-server-suppressed-duplicate`).
  * `existing` names already-configured servers (name → config) that a plugin server
  * must not shadow. Entries are merged in order; the first occurrence of a given
  * {@link mcpServerKey} wins and every later same-target server is dropped with a
@@ -3077,7 +3077,7 @@ export function mergePluginMcpServers(
 }
 
 /**
- * Resolve a manifest field declaring ADDITIONAL component locations (Claude parity:
+ * Resolve a manifest field declaring ADDITIONAL component locations (the reference parity:
  * `commandsPaths` / `skillsPaths`): a string, or an array of strings, each a
  * relative path hardened against `..`/symlink escape. Returns the existing,
  * contained absolute paths, or undefined when none are declared/survive.
@@ -3096,9 +3096,9 @@ function resolveManifestPathList(root: string, manifest: Record<string, unknown>
 
 /**
  * Parse a manifest's `commandsMetadata` object-mapping into a normalized
- * {@link CommandMetadata} record, keeping only well-formed entries (Claude parity).
+ * {@link CommandMetadata} record, keeping only well-formed entries (the reference parity).
  * An entry is kept when it is an object carrying EXACTLY ONE of `source`/`content`;
- * `argument-hint` is accepted as an alias for `argumentHint` (TOML/Claude frontmatter
+ * `argument-hint` is accepted as an alias for `argumentHint` (TOML/the reference frontmatter
  * spelling). Returns undefined when the field is absent or no entry survives, so the
  * bundle carries a value only when it actually contributes command metadata.
  */
@@ -3160,7 +3160,7 @@ function binOnPath(name: string, env: Record<string, string | undefined>): boole
 }
 
 /**
- * Evaluate a bundle's declarative {@link PluginRequirements} (Claude parity:
+ * Evaluate a bundle's declarative {@link PluginRequirements} (the reference parity:
  * BuiltinPluginDefinition.isAvailable — a plugin whose environment prerequisites
  * aren't met is omitted entirely). Returns true when EVERY declared constraint is
  * satisfied: the current `platform` is allowed (when the list is non-empty), every
@@ -3217,7 +3217,7 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 
 /**
  * Parse inline MCP server declarations from the manifest `mcpServers` field
- * (Claude parity: PluginManifestMcpServerSchema). The field may be a record of
+ * (the reference parity: PluginManifestMcpServerSchema). The field may be a record of
  * `name → config`, or an ARRAY mixing file-path strings (handled separately via
  * {@link PluginBundle.mcpServersFile}) with inline records. Only the inline
  * record entries are collected here; later records override earlier same-named
@@ -3270,7 +3270,7 @@ function parseChannelUserConfig(raw: unknown): PluginOptionSchema | undefined {
 
 /**
  * Parse the manifest `channels` array into normalized {@link PluginChannel}s,
- * keeping only well-formed entries (Claude parity: PluginManifestChannelsSchema).
+ * keeping only well-formed entries (the reference parity: PluginManifestChannelsSchema).
  * An entry survives when it is an object with a non-empty `server` string; its
  * optional `displayName` (string) and `userConfig` (parsed via
  * {@link parseChannelUserConfig}) are carried when well-formed. Returns undefined
@@ -3296,7 +3296,7 @@ function parsePluginChannels(manifest: Record<string, unknown>): PluginChannel[]
 }
 
 /**
- * Parse LSP server declarations from the manifest `lspServers` field (Claude
+ * Parse LSP server declarations from the manifest `lspServers` field (the reference
  * parity: PluginManifestLspServerSchema — string path, inline record, or an array
  * mixing both). A string/array-string entry is resolved to a hardened `.lsp.json`
  * FILE path; record entries become inline {@link LspServerConfig}s validated via
@@ -3343,7 +3343,7 @@ function parseManifestLspServers(
 }
 
 /**
- * Parse a raw settings object through the plugin allowlist (Claude parity:
+ * Parse a raw settings object through the plugin allowlist (the reference parity:
  * parsePluginSettings / PluginSettingsSchema.pick({agent}).strip()): only the
  * `agent` key (a non-empty string) survives; every other key is stripped. Returns
  * undefined when nothing allowlisted remains, so a plugin records settings only
@@ -3357,7 +3357,7 @@ export function parsePluginSettings(raw: unknown): PluginSettings | undefined {
 }
 
 /**
- * Load a plugin's allowlisted settings (Claude parity: loadPluginSettings): a
+ * Load a plugin's allowlisted settings (the reference parity: loadPluginSettings): a
  * `<root>/settings.json` file takes priority over a manifest `settings` object;
  * only allowlisted keys survive {@link parsePluginSettings}. Returns undefined
  * when neither source yields an allowlisted setting.
@@ -3385,7 +3385,7 @@ function loadPluginSettings(root: string, manifest: Record<string, unknown>): Pl
  * The top-level directory read distinguishes ENOENT (the plugins dir simply does
  * not exist yet — not a failure) from a real I/O error (e.g. ENOTDIR/EACCES),
  * which is surfaced as a {@link PluginLoadFailure} rather than silently yielding
- * an empty list (Claude parity: isENOENT discrimination).
+ * an empty list (the reference parity: isENOENT discrimination).
  */
 export function discoverPluginsDetailed(dir: string): { bundles: PluginBundle[]; failures: PluginLoadFailure[] } {
   let entries: string[];
@@ -3406,8 +3406,8 @@ export function discoverPluginsDetailed(dir: string): { bundles: PluginBundle[];
       continue;
     }
     if (!isDir) continue;
-    // Manifest lookup order: AMI's `.ami-plugin/`, then Claude Code's
-    // `.claude-plugin/`, then a legacy root-level `plugin.json` (Claude parity:
+    // Manifest lookup order: AMI's `.ami-plugin/`, then the reference's
+    // `.claude-plugin/`, then a legacy root-level `plugin.json` (the reference parity:
     // pluginLoader's `legacyManifestPath` fallback) so older bundles that ship the
     // manifest at their root still load.
     const manifestPath = resolveManifestPath(root);
@@ -3446,22 +3446,22 @@ export function discoverPluginsDetailed(dir: string): { bundles: PluginBundle[];
     const name = typeof manifestName === 'string' && isNamespaceSafeName(manifestName) ? manifestName : entry;
     const description = typeof manifest.description === 'string' && manifest.description.trim() !== '' ? manifest.description.trim() : undefined;
     const author = manifestAuthorName(manifest.author);
-    // Availability gate (Claude parity: BuiltinPluginDefinition.isAvailable). A
+    // Availability gate (the reference parity: BuiltinPluginDefinition.isAvailable). A
     // bundle whose declarative `requires` (platform/env/bin) are not met by the
     // current environment is OMITTED ENTIRELY — not surfaced as a failure, exactly
-    // like Claude's getBuiltinPlugins `continue`.
+    // like the reference's getBuiltinPlugins `continue`.
     const requires = parsePluginRequirements(manifest);
     if (!isPluginAvailable(requires)) continue;
     const lsp = parseManifestLspServers(root, manifest);
     // Surface a plugin-contributed component path that escapes the plugin root
     // (a symlink/`..` that survived manifest validation) as a security warning
-    // instead of silently dropping it (Claude parity: lspPluginIntegration's
+    // instead of silently dropping it (the reference parity: lspPluginIntegration's
     // path-traversal warning). The bundle still loads without that component.
     const reportViolation = (component: PluginComponent) => (rel: string) => {
       const err: PluginError = { type: 'path-traversal-blocked', source: root, plugin: name, declaredPath: rel, component };
       failures.push({ root, reason: getPluginErrorMessage(err), error: err });
     };
-    // Additional/inline hooks declared by the manifest `hooks` field (Claude parity:
+    // Additional/inline hooks declared by the manifest `hooks` field (the reference parity:
     // pluginLoader's string/array/inline forms) merged ON TOP of the standard
     // hooks.json. The standard file seeds the realpath dedup so a manifest entry
     // re-pointing at it is dropped. `strict` is a marketplace/install-context input
@@ -3476,12 +3476,12 @@ export function discoverPluginsDetailed(dir: string): { bundles: PluginBundle[];
       root,
       description,
       author,
-      // Deterministic, collision-resistant id derived from author + name (Claude
+      // Deterministic, collision-resistant id derived from author + name (the reference
       // parity: generateExtensionId). Only set when an author is declared, since
       // the id is anchored on it.
       id: author !== undefined ? generatePluginId(author, name) : undefined,
       defaultEnabled: typeof manifest.defaultEnabled === 'boolean' ? manifest.defaultEnabled : undefined,
-      // Component paths: honor a manifest-declared relative override (Claude parity)
+      // Component paths: honor a manifest-declared relative override (the reference parity)
       // and fall back to the fixed default directory when none is declared. The
       // override was already vetted against `..`/absolute by the hardErrors gate
       // above; resolveComponentDir additionally hardens it against symlink escape.
@@ -3489,44 +3489,44 @@ export function discoverPluginsDetailed(dir: string): { bundles: PluginBundle[];
       agentsDir: resolveComponentDir(root, manifest, 'agents', 'agents', reportViolation('agents')),
       commandsDir: resolveComponentDir(root, manifest, 'commands', 'commands', reportViolation('commands')),
       // Hooks: a manifest-declared `hooks` file path overrides the convention of
-      // <root>/hooks.json OR <root>/hooks/hooks.json (the Claude Code layout).
+      // <root>/hooks.json OR <root>/hooks/hooks.json (the reference layout).
       hooksFile: standardHooks,
-      // Additional/inline hooks from the manifest `hooks` array/object form (Claude
+      // Additional/inline hooks from the manifest `hooks` array/object form (the reference
       // parity), merged on top of the standard hooks file. Kept only when non-empty.
       hookFiles: manifestHooks.hookFiles.length > 0 ? manifestHooks.hookFiles : undefined,
       inlineHooks: manifestHooks.inlineHooks.length > 0 ? manifestHooks.inlineHooks : undefined,
       // MCP servers: a manifest-declared `mcpServers` file path overrides the
-      // <root>/.mcp.json convention (Claude Code layout). Hardened like the rest.
+      // <root>/.mcp.json convention (the reference layout). Hardened like the rest.
       mcpServersFile: resolveComponentDir(root, manifest, 'mcpServers', '.mcp.json'),
       // Additional command/skill directories declared by the manifest, resolved +
-      // hardened (Claude parity: commandsPaths / skillsPaths).
+      // hardened (the reference parity: commandsPaths / skillsPaths).
       commandsPaths: resolveManifestPathList(root, manifest, 'commandsPaths'),
       skillsPaths: resolveManifestPathList(root, manifest, 'skillsPaths'),
-      // Additional agent directories/files (Claude parity: loadPluginAgents's
+      // Additional agent directories/files (the reference parity: loadPluginAgents's
       // agentsPaths), resolved + hardened; loaded alongside the primary agents/ dir.
       agentsPaths: resolveManifestPathList(root, manifest, 'agentsPaths'),
-      // Per-command metadata object-mapping (Claude parity: commandsMetadata) — kept
+      // Per-command metadata object-mapping (the reference parity: commandsMetadata) — kept
       // only when it carries at least one well-formed entry.
       commandsMetadata: parseCommandsMetadata(manifest),
       // Declarative availability requirements this bundle satisfied (see gate above).
       requires,
-      // Inline MCP servers declared directly in the manifest (Claude parity:
+      // Inline MCP servers declared directly in the manifest (the reference parity:
       // PluginManifestMcpServerSchema inline-record form) — contributed alongside
       // any `.mcp.json` file at mcpServersFile.
       mcpServers: parseInlineMcpServers(manifest),
-      // Plugin-contributed LSP servers (Claude parity: lspPluginIntegration): a
+      // Plugin-contributed LSP servers (the reference parity: lspPluginIntegration): a
       // .lsp.json file path and/or inline manifest records, validated against the
       // canonical LspServerConfig schema.
       lspServersFile: lsp.file,
       lspServers: lsp.servers,
-      // Output styles a plugin contributes (Claude parity: loadPluginOutputStyles):
+      // Output styles a plugin contributes (the reference parity: loadPluginOutputStyles):
       // the output-styles dir (+ manifest override) and extra outputStylesPaths.
       outputStylesDir: resolveComponentDir(root, manifest, 'outputStyles', 'output-styles', reportViolation('output-styles')),
       outputStylesPaths: resolveManifestPathList(root, manifest, 'outputStylesPaths'),
-      // Allowlisted plugin-contributed settings (Claude parity: loadPluginSettings):
+      // Allowlisted plugin-contributed settings (the reference parity: loadPluginSettings):
       // settings.json over manifest.settings, only the `agent` key survives.
       settings: loadPluginSettings(root, manifest),
-      // Message channels the plugin declares (Claude parity: channels) — each binds
+      // Message channels the plugin declares (the reference parity: channels) — each binds
       // one of the plugin's MCP servers as a notification channel; kept only when at
       // least one entry carries a non-empty `server`.
       channels: parsePluginChannels(manifest),

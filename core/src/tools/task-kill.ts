@@ -7,7 +7,7 @@ const ALLOWED_KEYS = new Set(['task_id', 'cleanup', 'interrupt', 'graceful', 're
 
 /**
  * Bounded window (ms) a `graceful` stop waits event-driven for the agent to finish
- * its current turn and go idle/terminal before reporting. Parity with Claude Code's
+ * its current turn and go idle/terminal before reporting. Parity with the reference's
  * leader-wait on `onIdleCallbacks`: we wake the instant the agent goes idle (no
  * polling), but cap the wait so the tool can never hang if the turn runs long — on
  * timeout we report the shutdown was requested and the agent is still finishing.
@@ -16,7 +16,7 @@ export const GRACEFUL_SHUTDOWN_WAIT_MS = 10_000;
 
 /**
  * PARITY (additive): machine-readable discriminator for a stop/kill outcome,
- * carried on `ToolResult.metadata.reason`. Mirrors Claude Code's StopTaskError
+ * carried on `ToolResult.metadata.reason`. Mirrors the reference's StopTaskError
  * code taxonomy (`not_found` / `not_running` / `kill_failed`) plus AMI's extra
  * states, so a non-LLM caller can branch on the result instead of parsing the
  * human-readable message string.
@@ -44,13 +44,13 @@ export type TaskKillReason =
 export interface TaskKillMetadata {
   reason: TaskKillReason;
   taskId?: string;
-  /** 'agent' | 'bash' when known — parity with Claude's `task_type`. */
+  /** 'agent' | 'bash' when known — parity with the reference's `task_type`. */
   taskType?: 'agent' | 'bash';
   /**
    * The full task-KIND discriminator ('bash' | 'monitor' | 'agent') when the
    * manager exposes it. Richer than {@link taskType} (which collapses a monitor to
    * undefined): lets a programmatic caller distinguish a stopped internal monitor
-   * from a stopped shell. Mirrors Claude Code's per-task-type kill taxonomy.
+   * from a stopped shell. Mirrors the reference's per-task-type kill taxonomy.
    */
   kind?: TaskKind;
   /** FULL (untruncated) command/description of the stopped task. */
@@ -66,7 +66,7 @@ export interface TaskKillMetadata {
 
 /**
  * FUNCTIONAL (parity): optionally reap a stopped task after killing it, mirroring
- * Claude Code cleaning up a terminated background shell. When `cleanup` is true we
+ * the reference cleaning up a terminated background shell. When `cleanup` is true we
  * ask the ProcessManager to remove the task from its table and delete its on-disk
  * output file, returning a human-readable suffix describing the outcome.
  *
@@ -87,14 +87,14 @@ function maybeCleanup(pm: ProcessManager, taskId: string, cleanup: boolean): str
 export const taskKillTool: ToolDefinition = {
   name: 'task_kill',
   // PARITY (additive): dedicated tool-search hint + back-compat alias so a model or
-  // an old transcript/SDK caller using Claude's deprecated `KillShell` name still
+  // an old transcript/SDK caller using the reference's deprecated `KillShell` name still
   // resolves to this tool.
   searchHint: 'kill a running background task',
   aliases: ['KillShell'],
   description:
     'Stop a running background task by its ID. Kills the process and its children. ' +
     // PARITY (additive): explicit when-to-use + parameter/result contract guidance,
-    // mirroring Claude Code's TaskStop prompt.ts so the model picks this tool at the
+    // mirroring the reference's TaskStop prompt.ts so the model picks this tool at the
     // right moment. States when to reach for it, the single required parameter, and
     // that it returns a success or failure status.
     'Use this tool when you need to terminate a long-running background task. ' +
@@ -117,7 +117,7 @@ export const taskKillTool: ToolDefinition = {
         description: 'The task ID to stop.',
       },
       // PARITY (additive): deprecated backward-compat alias for `task_id`, mirroring
-      // Claude Code's KillShell `shell_id` parameter so an old transcript/SDK call
+      // the reference's KillShell `shell_id` parameter so an old transcript/SDK call
       // using the former name still resolves (id = task_id ?? shell_id).
       shell_id: {
         type: 'string',
@@ -164,7 +164,7 @@ export const taskKillTool: ToolDefinition = {
           'with the remaining agents, WITHOUT aborting the whole run. Only valid for a ' +
           'running workflow agent; mutually exclusive with interrupt/graceful/retry. Defaults to false.',
       },
-      // PARITY (additive): bulk prune-idle (Claude Code TeamsDialog 'p' handler) —
+      // PARITY (additive): bulk prune-idle (the reference TeamsDialog 'p' handler) —
       // stop EVERY idle teammate at once to reclaim concurrency slots held by agents
       // that have gone quiet, leaving busy teammates untouched. When true, task_id is
       // not required (the target is "all idle agents", not one task).
@@ -185,7 +185,7 @@ export const taskKillTool: ToolDefinition = {
   },
   // PARITY (additive): structured-result schema describing the machine-readable
   // stop outcome AMI carries on `ToolResult.metadata` ({@link TaskKillMetadata}).
-  // Mirrors Claude Code's TaskStopTool `outputSchema` (message / task_id /
+  // Mirrors the reference's TaskStopTool `outputSchema` (message / task_id /
   // task_type / command) so a resume/SDK/non-LLM caller can branch on the fields
   // without parsing the human message string. Object-rooted so it passes the
   // provider's object-root-only exposure guard (toolDefinitionsToOpenAI).
@@ -201,7 +201,7 @@ export const taskKillTool: ToolDefinition = {
           'retried | retry_unsupported | skipped | skip_unsupported.',
       },
       taskId: { type: 'string', description: 'The task ID the stop targeted, when known.' },
-      taskType: { type: 'string', description: "'agent' or 'bash' when the manager classifies it (parity: Claude's task_type)." },
+      taskType: { type: 'string', description: "'agent' or 'bash' when the manager classifies it (parity: the reference's task_type)." },
       kind: { type: 'string', description: "Full task-kind discriminator ('bash' | 'monitor' | 'agent') when the manager exposes it." },
       command: { type: 'string', description: 'The FULL (untruncated) command/description of the stopped task.' },
       status: { type: 'string', description: 'Terminal status of the task (e.g. completed/failed/killed) when it was not running.' },
@@ -215,7 +215,7 @@ export const taskKillTool: ToolDefinition = {
   isReadOnly: false,
   // PARITY (additive): stopping a task never mutates shared state the way a file
   // edit does, so it may run alongside other concurrency-safe tools. Mirrors
-  // Claude Code's `TaskStop.isConcurrencySafe() => true`.
+  // the reference's `TaskStop.isConcurrencySafe() => true`.
   isConcurrencySafe: true,
 
   async execute(input: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
@@ -231,7 +231,7 @@ export const taskKillTool: ToolDefinition = {
       return { output: 'Error: Background process manager is not available. [code: manager_unavailable]', isError: true, metadata: meta({ reason: 'manager_unavailable' }) };
     }
 
-    // BULK PRUNE-IDLE (parity: Claude Code's TeamsDialog 'p' handler,
+    // BULK PRUNE-IDLE (parity: the reference's TeamsDialog 'p' handler,
     // TeamsDialog.tsx:L207-217). Stop every idle teammate at once; the target is "all
     // idle agents", so task_id is neither read nor required here. Validated + handled
     // before the single-task path so a bare `{ prune_idle: true }` never trips the
@@ -257,12 +257,12 @@ export const taskKillTool: ToolDefinition = {
     // FUNCTIONAL (parity): validate argument types up front instead of blindly
     // casting. An empty/whitespace or non-string task_id can never match a real
     // task; surfacing a clean [code: invalid_input] is clearer than a spurious
-    // not_found and mirrors Claude Code rejecting a malformed kill request.
+    // not_found and mirrors the reference rejecting a malformed kill request.
     //
     // PARITY (additive): coalesce `id = task_id ?? shell_id` — `shell_id` is the
-    // deprecated Claude Code KillShell alias, accepted so an old transcript/SDK call
+    // deprecated the reference KillShell alias, accepted so an old transcript/SDK call
     // still resolves. `??` only falls back when task_id is null/undefined, so an
-    // explicit (even malformed) task_id still takes precedence, matching Claude.
+    // explicit (even malformed) task_id still takes precedence, matching the reference.
     if (input.shell_id !== undefined && typeof input.shell_id !== 'string') {
       return { output: 'Error: "shell_id" must be a string. [code: invalid_input]', isError: true, metadata: meta({ reason: 'invalid_input' }) };
     }
@@ -310,7 +310,7 @@ export const taskKillTool: ToolDefinition = {
       return { output: `Error: No background task found with ID "${taskId}". Use task_list to see all tasks. [code: not_found]`, isError: true, metadata: meta({ reason: 'not_found', taskId }) };
     }
 
-    // GRACEFUL COOPERATIVE SHUTDOWN (parity: Claude Code's requestTeammateShutdown +
+    // GRACEFUL COOPERATIVE SHUTDOWN (parity: the reference's requestTeammateShutdown +
     // leader-wait on onIdleCallbacks). Request the agent stop AFTER its current turn
     // (never truncating mid-thought), then wait — event-driven, bounded — for it to go
     // idle/terminal before reporting. Only a running in-process AGENT has turns; a
@@ -347,7 +347,7 @@ export const taskKillTool: ToolDefinition = {
       };
     }
 
-    // SOFT-INTERRUPT (parity: Claude Code's two-tier teammate abort — stop the
+    // SOFT-INTERRUPT (parity: the reference's two-tier teammate abort — stop the
     // current turn but keep the agent alive). Only a running in-process AGENT has a
     // turn to interrupt; a shell/monitor (or a terminal task) has none, so we refuse
     // with a clear code instead of silently falling through to a hard kill.
@@ -431,7 +431,7 @@ export const taskKillTool: ToolDefinition = {
 
     // PARITY (additive): the task-type discriminator (agent/bash) surfaced in the
     // structured result, when the manager exposes it (real ProcessManager; mock
-    // stubs may omit it). Mirrors Claude's `task_type`.
+    // stubs may omit it). Mirrors the reference's `task_type`.
     const taskType = typeof pm.taskType === 'function' ? pm.taskType(taskId) : undefined;
     // The full task-KIND discriminator (bash/monitor/agent) when available, so a
     // programmatic caller can tell a stopped monitor from a stopped shell.
@@ -457,7 +457,7 @@ export const taskKillTool: ToolDefinition = {
     // suppressCompletion: this is an EXPLICIT model-initiated stop, so a bash
     // task's subsequent "exit code 137" completion is redundant noise (the model
     // learns the outcome from this very tool result). Latch it notified so the
-    // engine's completion-drain doesn't re-announce it — parity with Claude Code's
+    // engine's completion-drain doesn't re-announce it — parity with the reference's
     // stopTask. Agent tasks are unaffected (their abort completion carries the
     // partial result and still surfaces).
     const killed = pm.kill(taskId, { suppressCompletion: true });
