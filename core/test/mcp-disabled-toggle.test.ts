@@ -3,7 +3,7 @@ import * as assert from 'node:assert/strict';
 import { resolveDisabledMcpServers, McpManager } from '../src/mcp/manager';
 import { mergeConfigs, KNOWN_CONFIG_KEYS, findUnknownConfigKeys } from '../src/config';
 
-// Parity: Claude Code's disabledMcpServers / enabledMcpServers per-server user
+// Parity: the reference's disabledMcpServers / enabledMcpServers per-server user
 // toggles (disable a configured server without removing it; re-enable by name).
 describe('resolveDisabledMcpServers', () => {
   it('returns the disabled names when nothing is re-enabled', () => {

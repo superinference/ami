@@ -167,7 +167,7 @@ describe('worktree tools – lifecycle', () => {
   });
 
   it('resumes an existing worktree name instead of erroring (idempotent by name)', async () => {
-    // Behavior change (U066 fast-resume, parity with Claude's getOrCreateWorktree
+    // Behavior change (U066 fast-resume, parity with the reference's getOrCreateWorktree
     // existed-path): re-entering an existing named worktree now RESUMES it rather than
     // hard-erroring, so enter_worktree is idempotent by name.
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'si-wt-'));

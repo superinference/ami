@@ -1,5 +1,5 @@
 /**
- * InteractiveAuthStatus schema (parity: Claude Code's AwsAuthStatus — the LIVE
+ * InteractiveAuthStatus schema (parity: the reference's AwsAuthStatus — the LIVE
  * isAuthenticating/error/output half of AwsAuthStatusManager). Verifies the neutral
  * factory and the three-field shape AMI uses to represent an in-flight provider login.
  */

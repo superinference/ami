@@ -5,7 +5,7 @@ import { PermissionManager } from '../src/permissions';
 // ---------------------------------------------------------------------------
 // U003 / w109 - NFC Unicode normalization of granted read roots.
 //
-// Parity: Claude Code canonicalizes every allowlist/project-root path with
+// Parity: the reference canonicalizes every allowlist/project-root path with
 // `realpathSync(path).normalize('NFC')` (bootstrap/state.ts setOriginalCwd /
 // setProjectRoot / setCwdState). AMI already NFC-normalizes the CANDIDATE path
 // under check (resolveForCheck -> realpathNFC, expandPath), but the granted read

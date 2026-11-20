@@ -14,7 +14,7 @@
  *     isDisguisedBareGitRepo() detects a cwd manipulated to look like a bare repo
  *     so that any git command would make git treat the cwd as the git dir and run
  *     attacker-planted hooks. check() forces an explicit prompt for git commands
- *     from such a cwd, even under auto-allow/bypass. Mirrors Claude's
+ *     from such a cwd, even under auto-allow/bypass. Mirrors the reference's
  *     isCurrentDirectoryBareGitRepo (utils/git.ts).
  */
 import { test } from 'node:test';

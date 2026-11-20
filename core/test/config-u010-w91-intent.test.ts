@@ -1,6 +1,6 @@
 // U010 (w91) — raw-key intent detection on invalid config files.
 //
-// Parity: Claude Code's `rawSettingsContainsKey` (utils/settings/settings.ts) +
+// Parity: the reference's `rawSettingsContainsKey` (utils/settings/settings.ts) +
 // the InvalidSettingsDialog fail-safe surfacing. When a config file fails to parse
 // (or is a non-object), AMI previously returned a diagnostic that said the file was
 // skipped but NOT which security/behaviour-bearing keys the user had tried to set —

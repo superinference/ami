@@ -1,6 +1,6 @@
 /**
  * Unit tests for core/core/src/utils/ansi-parse — the defensive inbound ANSI /
- * SGR parser. Covers parity with Claude Code's parseAnsi/get256Color plus the
+ * SGR parser. Covers parity with the reference's parseAnsi/get256Color plus the
  * graceful-degradation token model (unknown-sequence fallback, bell, reset) and
  * the malformed/partial/out-of-range edge cases that must never throw.
  */

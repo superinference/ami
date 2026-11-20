@@ -2,7 +2,7 @@
  * Unit + integration tests for the versioned startup migration-set runner
  * (runStartupMigrations / CURRENT_MIGRATION_VERSION / formatStartupMigrationNotices) —
  * the ordered, run-once, idempotent framework that replaces the previous single ad-hoc
- * migrateLegacyDataDir() call (parity: Claude Code's runMigrations()/CURRENT_MIGRATION_VERSION).
+ * migrateLegacyDataDir() call (parity: the reference's runMigrations()/CURRENT_MIGRATION_VERSION).
  *
  * RED-GREEN discriminators:
  *  - "runs the ordered set …" fails if the runner stops invoking the deprecated-model

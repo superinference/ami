@@ -13,7 +13,7 @@ import {
 import { registerLspServers, resetLspServers } from '../src/lsp/config';
 
 /**
- * U027 — user-facing LSP failure notification (parity with Claude Code's
+ * U027 — user-facing LSP failure notification (parity with the reference's
  * useLspInitializationNotification toast). Covers:
  *   1. `formatLspHealthError`: the "LSP for <displayName> failed" message with the
  *      `plugin:` prefix stripped and the `/doctor` affordance hint.

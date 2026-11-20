@@ -8,7 +8,7 @@ import {
 // ===========================================================================
 // UNIT U015 — compound-command TOCTOU detectors in bash-security.ts
 //
-// Parity with Claude Code's GIT_SAFETY_ARCHIVE_EXTRACTORS + hasSymlinkCreate
+// Parity with the reference's GIT_SAFETY_ARCHIVE_EXTRACTORS + hasSymlinkCreate
 // gates (PowerShellTool/gitSafety.ts, powershellPermissions.ts). Both detectors
 // are pure string classifiers; they return { escalate } so the permission layer
 // can force an `ask` (even under a matching allow rule) for a shape whose

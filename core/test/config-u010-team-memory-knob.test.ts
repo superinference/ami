@@ -15,7 +15,7 @@ import {
 import { MemoryManager } from '../src/memory';
 
 // ---------------------------------------------------------------------------
-// U010 — ProjectConfig.teamMemoryEnabled (parity: Claude Code's TEAMMEM enable
+// U010 — ProjectConfig.teamMemoryEnabled (parity: the reference's TEAMMEM enable
 // gate). An additive off-switch for LOADING the shared `.ami/memory/team/` store
 // into the system prompt. Default ON (load when present); an explicit `false` in
 // any config tier (project/global/local/managed) turns the shared-store read OFF.

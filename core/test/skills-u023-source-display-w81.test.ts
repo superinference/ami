@@ -1,5 +1,5 @@
 // Unit coverage for getAgentSourceDisplayName (U023 w81) — the ONE canonical
-// agent-source → human-readable label mapper (parity with Claude Code's
+// agent-source → human-readable label mapper (parity with the reference's
 // getAgentSourceDisplayName, components/agents/utils.ts). Every AGENT_SOURCES
 // member plus the aggregate 'all' must map to a stable label, and an
 // unknown/absent token must degrade to 'Unknown' rather than a blank heading.

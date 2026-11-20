@@ -1,8 +1,8 @@
 // U023 (w77) — additive skill/agent building blocks in core/core/src/skills.ts:
 //   1. `requiredEnv` declarative env/feature-flag gate on SkillDefinition, honored
-//      by isSkillEnabled (parity with Claude's env-gated bundled skills).
+//      by isSkillEnabled (parity with the reference's env-gated bundled skills).
 //   2. `fileName` provenance on AgentDefinition + agentFileNameMismatch() detector
-//      (parity with Claude's agentFileUtils filename-vs-agentType handling).
+//      (parity with the reference's agentFileUtils filename-vs-agentType handling).
 // Pure-function tests; the SkillManager wiring is covered in common/test.
 
 import { describe, it } from 'node:test';

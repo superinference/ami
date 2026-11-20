@@ -10,7 +10,7 @@ import { MemoryManager } from '../src/memory';
 
 // ---------------------------------------------------------------------------
 // Gap U016/groupBy — one shared, index-aware, prototype-safe grouping helper
-// (parity: Claude Code utils/objectGroupBy.ts). Replaces the ad-hoc Map grouping
+// (parity: the reference utils/objectGroupBy.ts). Replaces the ad-hoc Map grouping
 // re-implemented in memory.ts (session facts) and tools/lsp.ts.
 // ---------------------------------------------------------------------------
 
@@ -63,7 +63,7 @@ describe('groupBy — shared grouping helper', () => {
 
 // ---------------------------------------------------------------------------
 // Gap U016/git-root LRU — canonicalGitRoot memoization MUST be BOUNDED (LRU)
-// not an unbounded Map (parity: Claude Code findGitRoot memoizeWithLRU(…, 50)).
+// not an unbounded Map (parity: the reference findGitRoot memoizeWithLRU(…, 50)).
 // ---------------------------------------------------------------------------
 
 describe('canonicalGitRoot — bounded LRU memoization', () => {

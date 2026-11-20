@@ -10,7 +10,7 @@ import {
 // ---------------------------------------------------------------------------
 // detectShadowedRules — rich UnreachableRule output (shadowType + reason + fix),
 // source attribution, sandbox-auto-allow carve-out, single-finding-per-rule.
-// Parity: Claude's utils/permissions/shadowedRuleDetection.ts.
+// Parity: the reference's utils/permissions/shadowedRuleDetection.ts.
 // ---------------------------------------------------------------------------
 
 test('isSharedSettingSource: shared tiers (project/policy/command) vs personal', () => {

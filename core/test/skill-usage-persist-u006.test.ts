@@ -15,7 +15,7 @@ import {
 } from '../src/config';
 
 /**
- * U006 — persisted skill-usage frecency (parity: Claude Code's global-config
+ * U006 — persisted skill-usage frecency (parity: the reference's global-config
  * `skillUsage`). Exercises the core disk layer: the skillUsage config field is a
  * recognized, type-validated key, and persistSkillUsageStat / loadPersistedSkillUsage
  * round-trip through the real global config file under a temp HOME.

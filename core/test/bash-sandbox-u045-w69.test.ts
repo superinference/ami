@@ -9,7 +9,7 @@ import { bashTool, _bashHooks } from '../src/tools/bash';
 import type { SandboxPolicy, ToolContext } from '../src/types';
 
 // ---------------------------------------------------------------------------
-// UNIT U045 (w69) — default-deny sandbox coverage (parity with Claude Code's
+// UNIT U045 (w69) — default-deny sandbox coverage (parity with the reference's
 //   shouldUseSandbox(): sandbox EVERY command once sandboxing is enabled, and
 //   only exempt explicitly-excluded commands — tools/BashTool/shouldUseSandbox.ts
 //   L130-153). AMI's trigger-pattern allowlist left non-trigger commands

@@ -136,7 +136,7 @@ describe('enter_worktree — U066 w71 git-hardening parity', () => {
 
   // ======================================================================
   // GAP (medium): Resolve to canonical main-repo root before creating a
-  //   worktree (parity with Claude's findCanonicalGitRoot).
+  //   worktree (parity with the reference's findCanonicalGitRoot).
   //   RED (revert `const repoRoot = resolveMainRepoRoot(...)` and the
   //   context.cwd->repoRoot swaps): a worktree created while cwd is a
   //   SUBDIRECTORY of the repo lands under the subdirectory, not the repo root.

@@ -1,4 +1,4 @@
-// U089 — column-aware tab expansion in core (parity: Claude Code ink/tabstops.ts
+// U089 — column-aware tab expansion in core (parity: the reference ink/tabstops.ts
 // `expandTabs`, DEFAULT_TAB_INTERVAL = 8). The canonical implementation lives in
 // core/tools/input-sanitizer.ts and is reused by the CLI renderer and the
 // permission-prompt command normalizer (No-Duplication Rule).

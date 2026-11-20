@@ -6,7 +6,7 @@ import {
   findCredentials,
 } from '../src/credential-guard';
 
-// Parity: Claude's secretScanner SECRET_RULES carries ~35 high-confidence,
+// Parity: the reference's secretScanner SECRET_RULES carries ~35 high-confidence,
 // gitleaks-derived provider rules. These are the provider families AMI's
 // credential-guard previously MISSED, so a leaked token of these kinds passed
 // through redactCredentials / containsCredential / findCredentials unredacted on

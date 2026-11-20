@@ -7,7 +7,7 @@
  *    {@link shellHooks.onShellDebug} surface each time a `where.exe` candidate is
  *    rejected because it resolves inside the current working directory (a planted
  *    git.exe/.bat), so a user debugging why their git/shell was skipped can see
- *    the security filter firing — parity with Claude's
+ *    the security filter firing — parity with the reference's
  *    `logForDebugging('Skipping potentially malicious executable …')`
  *    (windowsPaths.ts:L64-68).
  *  - findGitBashPath distinguishes "you set AMI_GIT_BASH_PATH/CLAUDE_CODE_GIT_BASH_PATH

@@ -9,7 +9,7 @@ import { getScheduler, resetScheduler } from '../src/cron';
 import type { ToolContext } from '../src/types';
 
 // U232 — cron_get: fetch a single scheduled job's FULL, untruncated detail by id
-// (parity with Claude's RemoteTrigger `get` action). cron_list clips each prompt;
+// (parity with the reference's RemoteTrigger `get` action). cron_list clips each prompt;
 // cron_get returns the whole thing + a machine-readable outputSchema.
 const tmpDirs: string[] = [];
 function freshCtx(agentId?: string): ToolContext {

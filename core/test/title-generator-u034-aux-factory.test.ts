@@ -11,7 +11,7 @@ import type { ProviderConfig } from '../src/types';
 import type { streamChatCompletion } from '../src/provider';
 
 // ---------------------------------------------------------------------------
-// U034 — generic declarative auxiliary-query factory (parity: Claude Code's
+// U034 — generic declarative auxiliary-query factory (parity: the reference's
 // createApiQueryHook<TResult> + ApiQueryHookConfig, utils/hooks/apiQueryHookHelper.ts).
 // A single reusable factory drives ANY non-streaming side-query from a data
 // structure (source tag, parseResponse, resultText, timeoutMs) over the shared

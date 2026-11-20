@@ -16,7 +16,7 @@ import type { ProviderConfig, Message, StreamChunk } from '../src/types';
 // `providerMetadata.anthropic.redactedData` and emits NO `reasoning-delta` text.
 // Previously AMI's stream switch ignored `reasoning-start` entirely (default
 // branch), so a redacted block surfaced nothing — the user saw a silent gap where
-// the model actually reasoned. Parity with Claude Code's
+// the model actually reasoned. Parity with the reference's
 // AssistantRedactedThinkingMessage ("✻ Thinking…"): emit a placeholder once per
 // redacted block through the already-wired `thinking_delta` render path.
 // ---------------------------------------------------------------------------

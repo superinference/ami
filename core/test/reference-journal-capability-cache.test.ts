@@ -3,7 +3,7 @@
  *  - persistPositiveCapability: write ONLY a positive machine-local capability
  *    detection into the shared global config; a negative is a deliberate no-op so a
  *    machine that lacks the capability can never poison a shared `config.json`
- *    (parity: Claude Code's isChromeExtensionInstalled_CACHED_MAY_BE_STALE, which
+ *    (parity: the reference's isChromeExtensionInstalled_CACHED_MAY_BE_STALE, which
  *    persists only a positive `cachedChromeExtensionInstalled`).
  *  - readCachedCapability: pure read of a previously-cached detection, so a
  *    startup-critical path can consult a prior positive without re-probing.

@@ -1,7 +1,7 @@
 /**
  * U016 (w79) — memory / transcript file-access classifier.
  *
- * Gap (parity: Claude Code utils/memoryFileDetection.ts +
+ * Gap (parity: the reference utils/memoryFileDetection.ts +
  * sessionFileAccessHooks.ts): given (toolName, toolInput), tell whether a tool
  * is touching a memory/session file so a consumer can re-label generic
  * file_read/grep/glob/file_edit activity as a memory operation. AMI had no such

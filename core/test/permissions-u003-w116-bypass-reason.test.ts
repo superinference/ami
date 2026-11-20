@@ -7,7 +7,7 @@ import { PermissionManager } from '../src/permissions';
 // blocked. setDisableBypass now carries a human reason, exposed via
 // disableBypassReason() and folded into autoModeUnavailableReason() so
 // /permissions and the Shift+Tab message can explain the block instead of
-// surfacing a bare boolean. Parity: Claude's getAutoModeUnavailableReason /
+// surfacing a bare boolean. Parity: the reference's getAutoModeUnavailableReason /
 // getAutoModeUnavailableNotification.
 // ---------------------------------------------------------------------------
 

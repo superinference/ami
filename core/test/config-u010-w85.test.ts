@@ -8,7 +8,7 @@
 //     promise is returned, so fire-and-forget callers are unaffected.
 //
 //  2. statusLine `{ type: 'command', command }` Claude-Code drop-in shape: a settings.json
-//     copied verbatim from Claude Code (which ALWAYS writes the `type` discriminator) must
+//     copied verbatim from the reference (which ALWAYS writes the `type` discriminator) must
 //     parse unchanged — `type` is accepted-and-ignored, AMI renders the `command`. A
 //     non-string `type` is surfaced as an invalid-value diagnostic (the command still loads).
 

@@ -1,5 +1,5 @@
 /**
- * U075 — size-1 last-command parse cache for parseBashAST (parity: Claude Code's
+ * U075 — size-1 last-command parse cache for parseBashAST (parity: the reference's
  * memoized parse). The same command is parsed more than once per security
  * evaluation, so a one-entry memo keyed on (input + budget) elides the duplicate
  * work. Behavior-preserving: a cache hit returns the identical AST reference; a

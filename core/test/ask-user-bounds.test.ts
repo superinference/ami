@@ -8,7 +8,7 @@ import {
 } from '../src/tools/ask-user';
 
 // ---------------------------------------------------------------------------
-// validateAskUserQuestionInput — cardinality bounds (parity with Claude's zod
+// validateAskUserQuestionInput — cardinality bounds (parity with the reference's zod
 // `.min(1).max(4)` on questions and `.min(2).max(4)` on options). JSON-Schema
 // minItems/maxItems are advisory, so the validator fail-closes on bad bounds.
 // ---------------------------------------------------------------------------

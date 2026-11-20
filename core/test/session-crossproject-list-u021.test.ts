@@ -1,6 +1,6 @@
 /**
  * U021 session.ts parity additions — cross-project & picker-scope listing:
- *  - SessionListEntry.projectPath surfaced by list() (parity: Claude's SessionInfo.cwd);
+ *  - SessionListEntry.projectPath surfaced by list() (parity: the reference's SessionInfo.cwd);
  *  - list({ filterByBranch }) — the data-model side of LogSelector's Ctrl+B branch filter;
  *  - list({ filterByTag }) + SessionManager.listTags() — the TagTabs All/#tag tab model;
  *  - SessionManager.projectsRoot / listProjectSessionDirs / listAcrossProjects — the

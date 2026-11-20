@@ -10,7 +10,7 @@ import {
 } from '../src/config';
 
 // U010 / w83: JSON Schema emission for the FULL project-config key set + `$schema`
-// reference-key support (parity: Claude Code's generateSettingsJSONSchema +
+// reference-key support (parity: the reference's generateSettingsJSONSchema +
 // CLAUDE_CODE_SETTINGS_SCHEMA_URL / `$schema`). The schema is DERIVED from the
 // authoritative validation tables so it self-updates and never drops a knob.
 

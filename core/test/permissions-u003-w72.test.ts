@@ -12,14 +12,14 @@ import {
 
 // ---------------------------------------------------------------------------
 // U003-w72 — TOCTOU path-expansion hardening + robust unquoted-expansion walker
-// for core/core/src/permissions.ts, mirroring Claude Code's pathValidation and
+// for core/core/src/permissions.ts, mirroring the reference's pathValidation and
 // readOnlyValidation.
 //
 //  1. detectPathExpansionHazard / pathExpansionHazardReason: a path kept LITERAL
 //     during permission validation but rewritten by the shell at execution —
 //     `$VAR`/`${VAR}`/`$(cmd)` (Unix), `%VAR%` (Windows), a leading `=` (zsh
 //     equals-expansion), OR an unsupported tilde variant (~user/~+/~-/~N) — is a
-//     TOCTOU gap and must require manual approval. Mirrors Claude's
+//     TOCTOU gap and must require manual approval. Mirrors the reference's
 //     pathValidation.ts L393-L436 blanket-reject + its distinct reason strings.
 //
 //  2. PermissionManager.classifyReadAccess downgrades such a path from 'allow'
@@ -29,7 +29,7 @@ import {
 //  3. containsUnquotedExpansion now uses a quote-state walker (correct single-
 //     quote escape semantics) and covers every `$`-expansion shape incl. the
 //     special parameters `$@ $* $# $? $! $$ $- $0-$9` the old regex missed, while
-//     correctly treating a backslash-escaped `\$` as literal. Mirrors Claude's
+//     correctly treating a backslash-escaped `\$` as literal. Mirrors the reference's
 //     containsUnquotedExpansion char-walk (readOnlyValidation.ts L1600-L1669).
 // ---------------------------------------------------------------------------
 

@@ -1,5 +1,5 @@
 // U023 (w85) — the skill tool must treat a forked skill's `model: 'inherit'` as a
-// sentinel (parity with Claude's loadSkillsDir, which maps frontmatter.model ===
+// sentinel (parity with the reference's loadSkillsDir, which maps frontmatter.model ===
 // 'inherit' to "use the parent/session model"), NOT as a concrete model id.
 //
 // Red-green reproducer: BEFORE the fix the fork path did `if (skill?.model)` with no

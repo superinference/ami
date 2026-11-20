@@ -6,7 +6,7 @@ import * as os from 'os';
 import { ProcessManager } from '../src/process-manager';
 
 // ---------------------------------------------------------------------------
-// U011 — teammate idle-fleet coordination (parity: Claude Code's
+// U011 — teammate idle-fleet coordination (parity: the reference's
 // hasWorkingInProcessTeammates / waitForTeammatesToBecomeIdle, teammate.ts
 // L205-292, and the TeamsDialog 'p' prune-idle handler, TeamsDialog.tsx L207-217).
 //   - hasWorkingAgents(): running AND not idle (the 'alive but busy' distinction)

@@ -1,6 +1,6 @@
 // U010 / w116 — ConfigService watcher per-path permission-error tolerance.
 //
-// Parity: Claude Code's changeDetector chokidar `ignorePermissionErrors: true`.
+// Parity: the reference's changeDetector chokidar `ignorePermissionErrors: true`.
 // A per-path EACCES/EPERM (an unreadable sibling/drop-in in the watched directory)
 // must NOT tear the whole watcher down — the handle still covers the rest of the dir,
 // so reacting by close()+re-establish would churn (and, on a persistently-unreadable

@@ -1,6 +1,6 @@
 /**
  * U007 (w83) — runtime (session/skill/agent-scoped) callback hook registration,
- * parity with Claude Code's sessionHooks.ts / registerFrontmatterHooks.ts /
+ * parity with the reference's sessionHooks.ts / registerFrontmatterHooks.ts /
  * hookEvents.ts. Covers these confirmed gaps on core/core/src/hooks.ts:
  *
  *  - matcher-scoped runtime hooks: registerCallback accepts a matcher; a runtime

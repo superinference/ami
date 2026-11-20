@@ -1,7 +1,7 @@
 /**
  * Unit tests for migrateDeprecatedModelAlias — the idempotent startup migration that
  * rewrites a persisted deprecated/renamed pinned `model` id in the GLOBAL settings to
- * its current successor (parity: Claude's migrateLegacyOpusToCurrent / migrateFennecToOpus).
+ * its current successor (parity: the reference's migrateLegacyOpusToCurrent / migrateFennecToOpus).
  * Each test discriminates the fix: a bare no-op implementation (or a non-idempotent /
  * wrong-source one) would fail.
  * Run: cd core/core && node --import tsx --test test/reference-journal-model-migration.test.ts

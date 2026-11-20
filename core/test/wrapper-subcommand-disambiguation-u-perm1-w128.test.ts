@@ -24,7 +24,7 @@ test('INVARIANT: no wrapper-prefix command is a subcommand-aware root (disjoint 
   assert.deepEqual(
     overlap,
     [],
-    `A subcommand-aware root must never be a wrapper (would be mis-unwrapped like Claude's git-as-wrapper bug): ${overlap.join(', ')}`,
+    `A subcommand-aware root must never be a wrapper (would be mis-unwrapped like the reference's git-as-wrapper bug): ${overlap.join(', ')}`,
   );
 });
 

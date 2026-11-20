@@ -21,7 +21,7 @@ import type { ToolContext } from '../src/types';
 // ---------------------------------------------------------------------------
 // U038 (w98) — re-sanitization of a team name at the READ/RESUME boundary.
 //
-// Parity: Claude Code (utils/swarm/teamHelpers.ts L100-123) turns a team name
+// Parity: the reference (utils/swarm/teamHelpers.ts L100-123) turns a team name
 // into a path through a SINGLE canonical helper — getTeamDir(name) =
 // join(getTeamsDir(), sanitizeName(name)) and getTeamFilePath = join(getTeamDir,
 // config.json) — so readTeamFile / getTeamFilePath apply sanitizeName on EVERY

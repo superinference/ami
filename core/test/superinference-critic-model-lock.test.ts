@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
 import { resolveCriticModelLock } from '../src/superinference/types';
 
-// Gap (parity: Claude's advisor `canUserConfigure`): a reviewer-model override must be
+// Gap (parity: the reference's advisor `canUserConfigure`): a reviewer-model override must be
 // LOCKABLE by a managed/experiment policy. When the policy pins the critic model
 // (canUserConfigureCriticModel === false) a user-supplied override is dropped in favour
 // of the pinned value; when user-configurable, the user's choice wins.

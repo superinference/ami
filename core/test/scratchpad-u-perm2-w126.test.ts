@@ -13,7 +13,7 @@ import {
 
 // ===========================================================================
 // UNIT U-perm2 (w126) gap 1 — canonical scratchpad-dir resolution + containment.
-// Parity: Claude Code's isScratchpadEnabled / getScratchpadDir / isScratchpadPath
+// Parity: the reference's isScratchpadEnabled / getScratchpadDir / isScratchpadPath
 // (utils/permissions/filesystem.ts L293-424). AMI superset: the dir is operator-set
 // via SUPERINFERENCE_SCRATCHPAD_DIR (the same knob the system-prompt scratchpad
 // section already uses), so prompt + permission carve-out share one source of truth.

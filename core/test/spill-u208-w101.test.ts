@@ -1,7 +1,7 @@
 /**
  * U208 (w101) — Structured spill metadata + background-source discriminator.
  *
- * Parity: Claude Code's ExecResult carries structured `{ outputFilePath,
+ * Parity: the reference's ExecResult carries structured `{ outputFilePath,
  * outputFileSize }` when stdout overflows inline to a file (ShellCommand.ts
  * #handleExit), and distinguishes a user-requested background (`backgroundedByUser`)
  * from an assistant auto-background. AMI previously exposed the spill file only via

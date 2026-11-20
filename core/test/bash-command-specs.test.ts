@@ -13,7 +13,7 @@ import {
 } from '../src/tools/bash-security.ts';
 
 // ===========================================================================
-// UNIT U273 — declarative per-command spec registry (parity: Claude Code
+// UNIT U273 — declarative per-command spec registry (parity: the reference
 // src/utils/bash/registry.ts + specs/*). A typed CommandSpec/Option vocabulary
 // models each wrapper's option-argument arity; the security wrapper-unwrapping
 // derives its value-flag matchers from it instead of hand-copied regex literals.

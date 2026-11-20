@@ -6,7 +6,7 @@ import * as os from 'os';
 import { ProcessManager } from '../src/process-manager';
 
 // ---------------------------------------------------------------------------
-// U001 gap (parity: Claude Code's clearConversation task teardown,
+// U001 gap (parity: the reference's clearConversation task teardown,
 // commands/clear/conversation.ts:L146-166): on a conversation CLEAR, every
 // non-preserved RUNNING task is killed + its on-disk output evicted, so a wiped
 // conversation does not leave orphaned background shells / agents / monitors
@@ -90,7 +90,7 @@ describe('ProcessManager.killForClear', () => {
     registerAgent(pm, 'a1', 'first');
     registerAgent(pm, 'a2', 'second');
     // Make the FIRST kill throw to prove one failing teardown does not abort the
-    // whole clear (parity: Claude's per-task try/catch + logError).
+    // whole clear (parity: the reference's per-task try/catch + logError).
     const realKill = pm.kill.bind(pm);
     let calls = 0;
     (pm as unknown as { kill: ProcessManager['kill'] }).kill = ((id: string, opts?: { suppressCompletion?: boolean; reason?: string }) => {

@@ -1,6 +1,6 @@
 // U007 (w74) — Sampling-origin discriminator for pre/postSampling hooks.
 //
-// Parity with Claude Code's MagicDocs querySource boundary (magicDocs.ts
+// Parity with the reference's MagicDocs querySource boundary (magicDocs.ts
 // L222-224: `if (querySource !== 'repl_main_thread') return`): a pre/postSampling
 // hook can be scoped by the ORIGIN of the sampling call ('main' = top-level loop,
 // 'subagent' = a forked/nested agent) so a hook that itself samples the model can

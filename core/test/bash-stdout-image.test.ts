@@ -19,7 +19,7 @@ const PNG_1x1 =
 // ---------------------------------------------------------------------------
 // maybeBuildShellImageOutput — surface a base64 image data URI from stdout as a
 // real image tool_result instead of a truncated/corrupt text blob.
-// Parity: Claude Code BashTool utils isImageOutput / buildImageToolResult.
+// Parity: the reference BashTool utils isImageOutput / buildImageToolResult.
 // ---------------------------------------------------------------------------
 
 describe('maybeBuildShellImageOutput', () => {

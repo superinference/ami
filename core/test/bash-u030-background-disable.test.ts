@@ -18,7 +18,7 @@ import type { ToolContext } from '../src/types';
 // disable background tasks (removes run_in_background from the advertised
 // schema); kill-switch env var to fully disable background tasks; and
 // CLAUDE_CODE_DISABLE_BACKGROUND_TASKS config knob to gate background guidance.
-// Parity: Claude Code's CLAUDE_CODE_DISABLE_BACKGROUND_TASKS.
+// Parity: the reference's CLAUDE_CODE_DISABLE_BACKGROUND_TASKS.
 // ---------------------------------------------------------------------------
 
 function ctx(overrides?: Partial<ToolContext>): ToolContext {

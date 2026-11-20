@@ -11,7 +11,7 @@ import {
 } from '../src/permissions';
 
 // ---------------------------------------------------------------------------
-// getLegacyToolNames — reverse of normalizeToolName (parity: Claude's
+// getLegacyToolNames — reverse of normalizeToolName (parity: the reference's
 // permissionRuleParser.getLegacyToolNames, L35-41). Enumerate every legacy /
 // cross-framework alias that maps to a canonical AMI tool, for display.
 // ---------------------------------------------------------------------------
@@ -38,7 +38,7 @@ test('getLegacyToolNames is the inverse of normalizeToolName for each alias', ()
 
 // ---------------------------------------------------------------------------
 // findOverlyBroadBashPermissions — structured YOLO-equivalent detection over
-// loaded rules AND raw CLI --allow specs (parity: Claude's
+// loaded rules AND raw CLI --allow specs (parity: the reference's
 // permissionSetup.findOverlyBroadBashPermissions, L376-412).
 // ---------------------------------------------------------------------------
 
@@ -73,7 +73,7 @@ test('findOverlyBroadBashPermissions returns [] when no broad grants exist', () 
 
 // ---------------------------------------------------------------------------
 // formatPermissionRuleError — composed `error. suggestion. Examples: a, b`
-// (parity: Claude's PermissionRuleSchema superRefine, permissionValidation.ts
+// (parity: the reference's PermissionRuleSchema superRefine, permissionValidation.ts
 // L244-262). Previously AMI composed only `error. suggestion` and dropped examples.
 // ---------------------------------------------------------------------------
 
@@ -106,7 +106,7 @@ test('validatePermissionRule examples flow through formatPermissionRuleError', (
 // ---------------------------------------------------------------------------
 // WebFetch domain-pattern validation — reject any URL-form (`scheme://` at the
 // start OR a stray `://` anywhere), keep bare domains (incl. `http`-prefixed).
-// Parity: Claude's WebFetch validator (toolValidationConfig.ts L55-66); AMI keeps
+// Parity: the reference's WebFetch validator (toolValidationConfig.ts L55-66); AMI keeps
 // its bare-domain syntax (no required `domain:` prefix).
 // ---------------------------------------------------------------------------
 
@@ -125,7 +125,7 @@ test('validatePermissionRule keeps bare WebFetch domains (incl. http-prefixed) a
 });
 
 // ---------------------------------------------------------------------------
-// denialLimitWarning — human-readable circuit-breaker message (parity: Claude's
+// denialLimitWarning — human-readable circuit-breaker message (parity: the reference's
 // permissions.ts L999-L1058). Total-limit message takes precedence; null while open.
 // ---------------------------------------------------------------------------
 

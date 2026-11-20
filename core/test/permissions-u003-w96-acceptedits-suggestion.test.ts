@@ -5,7 +5,7 @@ import { buildPermissionSuggestions, PermissionManager } from '../src/permission
 // ---------------------------------------------------------------------------
 // U003 / w96 — G9 (missing affordance): a blocked file EDIT/WRITE now offers a
 // one-tap "switch to acceptEdits" (setMode) suggestion alongside the existing
-// path-scoped allow rule, mirroring Claude's pathValidation write affordance
+// path-scoped allow rule, mirroring the reference's pathValidation write affordance
 // `{ type:'setMode', mode:'acceptEdits' }` (tools/.../pathValidation.ts
 // L1792-1798). AMI already offered addDirectories/addRules affordances; the
 // setMode affordance was absent. Offered ONLY for edit-capable tools (the ones

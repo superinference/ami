@@ -170,7 +170,7 @@ describe('pov/token-estimator matrix: estimateMessageTokens', () => {
       ],
     };
     // null/42/{type:'text'} with no text → 0; {text:123} has no recognized type → serialized
-    // via the catch-all (mirrors Claude's roughTokenCountEstimationForBlock); 'real' → its text.
+    // via the catch-all (mirrors the reference's roughTokenCountEstimationForBlock); 'real' → its text.
     assert.equal(
       estimateMessageTokens(msg as unknown as Message),
       estimateTokens(JSON.stringify({ text: 123 })) + estimateTokens('real') + OVERHEAD_PER_MESSAGE,

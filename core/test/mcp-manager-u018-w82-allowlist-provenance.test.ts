@@ -9,7 +9,7 @@ import { McpManager } from '../src/mcp/manager';
 // name, so "only servers from this plugin are trusted" is expressible. AMI's
 // provenance tag is `McpServerConfig.pluginSource` (stamped by
 // scopePluginMcpServers). The allowlist now accepts provenance entries —
-// `{ pluginSource }` (AMI-native) and the Claude-shaped `{ marketplace, plugin }`
+// `{ pluginSource }` (AMI-native) and the reference-shaped `{ marketplace, plugin }`
 // (composed to the `<plugin>@<marketplace>` pluginSource convention) — alongside
 // the existing name / command / URL entries, enforced through the SAME
 // enforceAllowlist path addServer already runs.

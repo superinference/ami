@@ -1,7 +1,7 @@
 /**
  * U075 — AST operator-node detection: distinguish an escaped `\;` word-argument
  * from a real `;` operator so the POSIX `find … -exec cmd {} \;` idiom is not
- * false-blocked (parity: Claude Code `hasActualOperatorNodes`,
+ * false-blocked (parity: the reference `hasActualOperatorNodes`,
  * utils/bash/treeSitterAnalysis.ts).
  *
  * RED-GREEN: reverting ANY of the three source fixes (the new

@@ -1,4 +1,4 @@
-// U010 — resetConfigToDefault self-heal (parity: Claude Code's InvalidConfigDialog
+// U010 — resetConfigToDefault self-heal (parity: the reference's InvalidConfigDialog
 // "Reset with default configuration" branch). Verifies that a corrupt/present config
 // file is QUARANTINED (bytes preserved) and replaced with the default config, and that
 // the absent-file case writes a default without a spurious backup.

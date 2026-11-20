@@ -1,4 +1,4 @@
-// U023-w67 — skill/command metadata flags (parity with Claude Code's command
+// U023-w67 — skill/command metadata flags (parity with the reference's command
 // `isSensitive` / `isHidden` / `userFacingName()` / `disableNonInteractive` /
 // `supportsNonInteractive`) + the generic `wasGenerated` agent provenance flag.
 // Pure-helper unit coverage lives here; the skill-tool end-to-end wiring (arg

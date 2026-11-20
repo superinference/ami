@@ -9,7 +9,7 @@ import {
 } from '../src/permissions';
 
 // ---------------------------------------------------------------------------
-// U003 / w99 — injectable auto-mode safety classifier seam (parity with Claude
+// U003 / w99 — injectable auto-mode safety classifier seam (parity with the reference
 // Code's transcript / yolo classifier: classifierApprovals.ts + useCanUseTool).
 //
 // The deterministic permission engine is the floor. On the AUTONOMOUS auto-approve

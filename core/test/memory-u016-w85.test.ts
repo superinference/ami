@@ -1,20 +1,20 @@
 /**
  * U016 (wave 85) — memory.ts / memory-consolidation.ts parity gaps:
  *
- *   1. CONSOLIDATION LIVE PROGRESS / INTROSPECTION (parity: Claude Code's
+ *   1. CONSOLIDATION LIVE PROGRESS / INTROSPECTION (parity: the reference's
  *      DreamDetailDialog + DreamTaskState — components/tasks/DreamDetailDialog.tsx):
  *      a ticking elapsed timer, a `reviewing N sessions · M files touched` summary,
  *      a running/completed/error status, and a per-turn transcript with tool counts.
  *      Implemented as `ConsolidationProgress` + create/record/seal/format/snapshot
  *      helpers, wired into `beginConsolidationRun` / `abortConsolidationRun`.
  *
- *   2. TEAM-MEMORY WRITE DETECTION -> SYNC NOTIFICATION (parity: Claude Code's
+ *   2. TEAM-MEMORY WRITE DETECTION -> SYNC NOTIFICATION (parity: the reference's
  *      sessionFileAccessHooks.ts PostToolUse path — Edit/Write ONLY on an
  *      isTeamMemFile path calls teamMemWatcher.notifyTeamMemoryWrite()):
  *      `MemoryManager.notifyTeamMemoryWrite(tool, path)` emits a `teamMemoryWrite`
  *      hook event only for file_edit/file_write on a team file when enabled.
  *
- *   3/4. ASYNC, PARALLEL, CANCELLABLE HEADER SCAN (parity: Claude Code's
+ *   3/4. ASYNC, PARALLEL, CANCELLABLE HEADER SCAN (parity: the reference's
  *      scanMemoryFiles(dir, signal) — memdir/memoryScan.ts): AbortSignal threaded
  *      into the scan + per-file parallel reads via Promise.allSettled with per-file
  *      graceful failure. Implemented as `MemoryManager.scanMemoryHeadersAsync`.

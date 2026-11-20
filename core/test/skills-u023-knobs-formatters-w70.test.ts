@@ -24,7 +24,7 @@ import {
 // Claude Code building blocks AMI's core skills library was missing.
 // ---------------------------------------------------------------------------
 
-describe('isSkillImmediate (parity: Claude command `immediate`)', () => {
+describe('isSkillImmediate (parity: the reference command `immediate`)', () => {
   it('is true only for an explicit immediate=true flag', () => {
     assert.equal(isSkillImmediate({ immediate: true }), true);
     assert.equal(isSkillImmediate({ immediate: false }), false);
@@ -41,7 +41,7 @@ describe('isSkillImmediate (parity: Claude command `immediate`)', () => {
   });
 });
 
-describe('parseShellFrontmatter (parity: Claude parseShellFrontmatter)', () => {
+describe('parseShellFrontmatter (parity: the reference parseShellFrontmatter)', () => {
   it('accepts the known shells case-insensitively', () => {
     assert.equal(parseShellFrontmatter('bash'), 'bash');
     assert.equal(parseShellFrontmatter('PowerShell'), 'powershell');
@@ -72,7 +72,7 @@ describe('parseShellFrontmatter (parity: Claude parseShellFrontmatter)', () => {
   });
 });
 
-describe('formatToolNameList (parity: Claude getToolsDisplay 5-branch)', () => {
+describe('formatToolNameList (parity: the reference getToolsDisplay 5-branch)', () => {
   it('undefined means "All tools"', () => {
     assert.equal(formatToolNameList(undefined), 'All tools');
   });
@@ -92,7 +92,7 @@ describe('formatToolNameList (parity: Claude getToolsDisplay 5-branch)', () => {
   });
 });
 
-describe('progressiveArgumentHint (parity: Claude generateProgressiveArgumentHint)', () => {
+describe('progressiveArgumentHint (parity: the reference generateProgressiveArgumentHint)', () => {
   it('shows only the remaining unfilled argument names', () => {
     assert.equal(progressiveArgumentHint(['a', 'b', 'c'], []), '[a] [b] [c]');
     assert.equal(progressiveArgumentHint(['a', 'b', 'c'], ['x']), '[b] [c]');
@@ -105,7 +105,7 @@ describe('progressiveArgumentHint (parity: Claude generateProgressiveArgumentHin
   });
 });
 
-describe('applySkillTemplateVariables (parity: Claude {{key}} SKILL_MODEL_VARS)', () => {
+describe('applySkillTemplateVariables (parity: the reference {{key}} SKILL_MODEL_VARS)', () => {
   it('substitutes known {{key}} tokens and leaves unknown ones intact', () => {
     const out = applySkillTemplateVariables(
       'Use {{model}} (ver {{version}}) and keep {{unknown}}.',
@@ -154,7 +154,7 @@ describe('applySkillTemplateVariables (parity: Claude {{key}} SKILL_MODEL_VARS)'
   });
 });
 
-describe('isBuiltInAgent (parity: Claude isBuiltIn source discriminator)', () => {
+describe('isBuiltInAgent (parity: the reference isBuiltIn source discriminator)', () => {
   it('is true only when source === "built-in"', () => {
     assert.equal(isBuiltInAgent({ source: 'built-in' }), true);
     assert.equal(isBuiltInAgent({ source: 'plugin' }), false);

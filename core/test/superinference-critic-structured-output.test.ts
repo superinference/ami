@@ -8,7 +8,7 @@
 //
 //   - ProviderConfig.responseFormat ({ type:'json_schema', schema, name? }) is
 //     threaded into the AI SDK `output: Output.object({ schema })` option by
-//     streamChatCompletion (parity: Claude Code's `outputFormat:
+//     streamChatCompletion (parity: the reference's `outputFormat:
 //     { type:'json_schema', schema }` on auxiliary queries).
 //   - Critic.evaluate passes CRITIC_VERDICT_SCHEMA so the reviewer model is
 //     constrained to emit schema-valid {approved,score,reason} JSON; extractJSON

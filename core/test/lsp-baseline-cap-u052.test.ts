@@ -46,7 +46,7 @@ function fakeSource(map: Record<string, Diagnostic[] | null> = {}): DiagnosticSo
 }
 
 describe('MAX_TRACKED_BASELINE_FILES', () => {
-  it('matches Claude Code MAX_DELIVERED_FILES (500)', () => {
+  it('matches the reference MAX_DELIVERED_FILES (500)', () => {
     assert.equal(MAX_TRACKED_BASELINE_FILES, 500);
   });
 });

@@ -12,7 +12,7 @@ import {
 // ---------------------------------------------------------------------------
 // U031 / w91: per-foreground-subagent abort registry.
 //
-// Parity with Claude Code's InProcessTeammateDetailDialog 'x' → onKill, which can
+// Parity with the reference's InProcessTeammateDetailDialog 'x' → onKill, which can
 // abort ANY running teammate — foreground OR background. A foreground subagent
 // blocks the parent turn and is NOT a tracked background row, so kill() (which only
 // targets `processes` entries) can never reach it; the only recourse used to be

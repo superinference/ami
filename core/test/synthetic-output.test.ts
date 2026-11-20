@@ -296,7 +296,7 @@ describe('createVerificationOutputTool (reusable {ok,reason} verdict tool)', () 
     assert.equal(tool.name, VERIFICATION_OUTPUT_TOOL_NAME);
     assert.equal(tool.name, 'verification_output');
     assert.equal(tool.description, VERIFICATION_OUTPUT_PROMPT);
-    // The gap's required wording (parity with Claude's createStructuredOutputTool.prompt()).
+    // The gap's required wording (parity with the reference's createStructuredOutputTool.prompt()).
     assert.ok(tool.description.includes('return your verification result'));
     assert.ok(tool.description.includes('exactly once at the end of your response'));
     assert.ok(tool.isReadOnly);

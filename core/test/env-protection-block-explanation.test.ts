@@ -10,7 +10,7 @@ import {
 // ---------------------------------------------------------------------------
 // U108 — Blocked-env-var explanation message (why it is dangerous).
 //
-// Parity: Claude's ManagedSettingsSecurityDialog / managedEnvConstants.ts
+// Parity: the reference's ManagedSettingsSecurityDialog / managedEnvConstants.ts
 // explain the concrete risk of a blocked env var in plain language rather than
 // surfacing a raw internal category slug. AMI's checkAndBlock must do the same:
 // enrich the reason with a per-category risk explanation + a remediation pointer.

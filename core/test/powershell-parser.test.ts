@@ -1,6 +1,6 @@
 /**
  * Tests for the PowerShell AST-based structural command analyser
- * (src/tools/powershell-parser.ts), mirroring Claude Code's
+ * (src/tools/powershell-parser.ts), mirroring the reference's
  * references/claude/claude-code-main/src/utils/powershell/parser.ts.
  *
  * Covers the five confirmed parity gaps for this file:

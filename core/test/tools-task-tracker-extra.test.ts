@@ -372,7 +372,7 @@ describe('taskTool — execute with engine factory', () => {
     assert.ok(capturedConfig);
     assert.equal(capturedConfig.permissionMode, 'auto-allow');
     // In explore mode, tools should only be read-only ones (incl. read-only-guarded
-    // bash — parity with Claude's read-only Explore agent).
+    // bash — parity with the reference's read-only Explore agent).
     const toolNames = capturedConfig.tools.map((t: any) => t.name);
     for (const name of toolNames) {
       assert.ok(

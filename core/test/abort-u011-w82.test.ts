@@ -8,7 +8,7 @@ import {
 } from '../src/utils/abort';
 import { linkChildAbortToParent } from '../src/tools/task';
 
-test('DEFAULT_ABORT_MAX_LISTENERS matches Claude Code (50)', () => {
+test('DEFAULT_ABORT_MAX_LISTENERS matches the reference (50)', () => {
   assert.equal(DEFAULT_ABORT_MAX_LISTENERS, 50);
 });
 

@@ -13,7 +13,7 @@ import * as cron from '../src/cron';
 // "absent" only for the genuinely-unreachable codes and surfacing any UNEXPECTED
 // failure (EIO, a decode error, a non-errno throw) instead of a blanket
 // catch -> null that masks real faults. errno.ts is that single source
-// (getErrnoCode / isFsInaccessible, parity with Claude's utils/errors.ts).
+// (getErrnoCode / isFsInaccessible, parity with the reference's utils/errors.ts).
 //
 // This unit's remaining work was CONSOLIDATION (invariant #6, no semantic
 // duplication): config.ts's reader used an ad-hoc inline `err.code` cast and

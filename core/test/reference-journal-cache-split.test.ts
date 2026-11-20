@@ -2,7 +2,7 @@
  * buildUsageFields per-TTL cache-creation split red-green: the journal usage
  * schema carries cache_creation.{ephemeral_5m_input_tokens, ephemeral_1h_input_tokens}
  * so 1-hour vs 5-minute prompt-cache writes are priced/surfaced independently
- * (parity: Claude's emptyUsage). Previously the builder hardcoded
+ * (parity: the reference's emptyUsage). Previously the builder hardcoded
  * ephemeral_1h_input_tokens:0 and attributed ALL cache-creation to the 5m bucket,
  * so the 1h tier the schema models could never be observed. buildUsageFields must
  * now honor an explicit split supplied by the provider layer while preserving the

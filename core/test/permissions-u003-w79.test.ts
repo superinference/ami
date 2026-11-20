@@ -13,7 +13,7 @@ import {
 //
 //  1. getDestructiveCommandWarning — a bash DestructivePattern { pattern, warning }
 //     registry returning a specific, human-readable, most-specific-first warning
-//     ("Note: may recursively force-remove files", …). Parity with Claude's
+//     ("Note: may recursively force-remove files", …). Parity with the reference's
 //     utils/.../destructiveCommandWarning.ts (bash variant). Purely informational;
 //     surfaced through the existing `destructive` safetyCheck decision reason so a
 //     permission prompt explains WHY a command is destructive instead of a generic
@@ -21,7 +21,7 @@ import {
 //
 //  2. deriveWebFetchDomainRuleContent + its wiring into buildPermissionSuggestions —
 //     a domain-scoped "always allow" rule candidate for web_fetch (the URL's
-//     hostname). Parity with Claude's WebFetchPermissionRequest
+//     hostname). Parity with the reference's WebFetchPermissionRequest
 //     ("Yes, and don't ask again for <hostname>"). AMI's canonical web_fetch rule
 //     content is the BARE DOMAIN (not Claude's `domain:` prefix) so it matches AMI's
 //     existing matcher + sandbox-domain extraction — an intentional superset

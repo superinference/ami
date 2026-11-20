@@ -1,7 +1,7 @@
 /**
  * U015 (w102) — getGlobalGitignorePath + addFileGlobRuleToGitignore.
  *
- * Parity with Claude Code's `utils/git/gitignore.ts` (L43-99): a SYNC global-ignore
+ * Parity with the reference's `utils/git/gitignore.ts` (L43-99): a SYNC global-ignore
  * mutator that keeps a locally-generated, never-shared file out of version control.
  * Branches mirrored from the reference:
  *   1. no-op outside a git repo;

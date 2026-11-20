@@ -8,7 +8,7 @@ import { MemoryManager, isMemorySourceEnabled, type MemorySource } from '../src/
 import * as logger from '../src/logger';
 
 // ---------------------------------------------------------------------------
-// U016 (w76): per-tier instruction-source enable toggles (parity: Claude Code's
+// U016 (w76): per-tier instruction-source enable toggles (parity: the reference's
 // per-source isSettingSourceEnabled) + errno-aware instruction-file read error
 // handling (ENOENT/ENOTDIR silent, EACCES/other surfaced).
 // ---------------------------------------------------------------------------

@@ -12,7 +12,7 @@ import {
 } from '../src/tools/bash-sandbox';
 
 // ---------------------------------------------------------------------------
-// UNIT U045 (dependency-diagnostics cluster) — parity with Claude Code's
+// UNIT U045 (dependency-diagnostics cluster) — parity with the reference's
 // SandboxManager.checkDependencies() two-tier { errors, warnings } contract:
 //   - structured dependency check (errors vs warnings)                 [medium]
 //   - warn when a requested control (allowedDomains) silently cannot be

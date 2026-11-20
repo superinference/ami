@@ -1,6 +1,6 @@
 // U016 — capability-gated per-agent memory block at agent-spawn time.
 //
-// Parity with Claude Code: the agent-creation wizard only inserts MemoryStep when
+// Parity with the reference: the agent-creation wizard only inserts MemoryStep when
 // `isAutoMemoryEnabled()` (CreateAgentWizard.tsx:52) and MemoryStep's
 // `getSystemPrompt` only prepends `loadAgentMemoryPrompt(...)` when
 // `isAutoMemoryEnabled() && memory && agentType` (MemoryStep.tsx:80). AMI has no

@@ -1,6 +1,6 @@
 /**
  * Unit + integration coverage for the meaningful-first-prompt picker preview
- * (parity with Claude's getFirstMeaningfulUserMessageTextContent /
+ * (parity with the reference's getFirstMeaningfulUserMessageTextContent /
  * extractFirstPromptFromHead / getLogDisplayTitle):
  *
  *   - skip synthetic/ephemeral (`isMeta`, transcript-only) + sidechain turns

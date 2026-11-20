@@ -15,7 +15,7 @@ import { isSafeEnvVar } from '../src/env-protection';
 
 // ---------------------------------------------------------------------------
 // U208 gap-7: always-on default cap on subagent/task output
-// (parity: Claude Code getMaxTaskOutputLength / TASK_MAX_OUTPUT_DEFAULT)
+// (parity: the reference getMaxTaskOutputLength / TASK_MAX_OUTPUT_DEFAULT)
 // ---------------------------------------------------------------------------
 describe('U208 resolveTaskMaxChars — always-on bounded task cap', () => {
   const SAVE = process.env.TASK_MAX_OUTPUT_LENGTH;

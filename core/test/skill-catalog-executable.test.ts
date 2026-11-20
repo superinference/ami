@@ -1,7 +1,7 @@
 // Parity unit U104 — executable-file declarations on a catalog entry.
 // validateCatalogIndex must retain only executable paths that correspond to a
 // declared, safety-validated file; everything else is dropped with an error.
-// Mirrors Claude Code's archive exec-bit preservation (officialMarketplaceGcs
+// Mirrors the reference's archive exec-bit preservation (officialMarketplaceGcs
 // parseZipModes → chmod when mode & 0o111), declared per-file in the catalog
 // since AMI fetches skill files individually over HTTP.
 

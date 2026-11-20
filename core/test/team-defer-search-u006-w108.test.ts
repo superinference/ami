@@ -1,6 +1,6 @@
 /**
  * U006 (w108): team_create gains a concept searchHint + self-declared shouldDefer
- * (parity: Claude's TeamCreateTool `searchHint: 'create a multi-agent swarm team'`,
+ * (parity: the reference's TeamCreateTool `searchHint: 'create a multi-agent swarm team'`,
  * `shouldDefer: true`). Verifies the fields are set and that tool_search surfaces
  * team_create by concept terms ("swarm", "multi-agent") that are absent from its
  * human name.

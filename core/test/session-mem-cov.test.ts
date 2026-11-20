@@ -374,7 +374,7 @@ describe('acquireSessionLock / isSessionLocked — defensive paths', () => {
 
   it('a second acquire by the same live process is re-entrant with a no-op release', () => {
     // FUNCTIONAL (labeled): same-process re-acquire is re-entrant (acquired, fresh:false),
-    // not a block — parity with Claude's AcquireResult. The no-op release must not
+    // not a block — parity with the reference's AcquireResult. The no-op release must not
     // remove the lock the original fresh handle still owns.
     const dir = mkTmp();
     const first = acquireSessionLock(dir);

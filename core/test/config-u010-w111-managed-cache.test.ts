@@ -1,5 +1,5 @@
 /**
- * U010 / w111 — managed-config result cache (parity: Claude Code's `mdmCache` behind
+ * U010 / w111 — managed-config result cache (parity: the reference's `mdmCache` behind
  * the explicit `clearMdmSettingsCache` clear hook).
  *
  * `loadManagedConfig()` is re-invoked on EVERY config-waterfall merge (getMergedConfig,

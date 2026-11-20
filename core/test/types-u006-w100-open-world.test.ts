@@ -1,7 +1,7 @@
 /**
  * U006 (w100) — uniform, input-aware open-world (SSRF/egress-surface) marker.
  *
- * Parity: Claude's `Tool.isOpenWorld?(input)` — the reference declares the marker
+ * Parity: the reference's `Tool.isOpenWorld?(input)` — the reference declares the marker
  * per-tool and consults it input-aware (`tool.isOpenWorld?.(input)`, cli/print.ts,
  * MCPToolDetailView). AMI's `ToolDefinition.isOpenWorld` was a plain boolean, so a
  * tool could not declare egress for a SPECIFIC input only. These tests cover the
@@ -31,7 +31,7 @@ describe('resolveToolOpenWorld (input-aware open-world marker)', () => {
     assert.equal(resolveToolOpenWorld(tool, { url: 'https://example.com' }), true);
     assert.equal(resolveToolOpenWorld(tool, { url: 'file:///etc/passwd' }), false);
     // Default input ({}) — the tool-level badge/introspection query — is closed-world
-    // here because no url is present. Parity: Claude's `tool.isOpenWorld?.({})`.
+    // here because no url is present. Parity: the reference's `tool.isOpenWorld?.({})`.
     assert.equal(resolveToolOpenWorld(tool), false);
   });
 

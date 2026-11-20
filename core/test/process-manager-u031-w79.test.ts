@@ -12,7 +12,7 @@ import {
 // ---------------------------------------------------------------------------
 // U031 / w79: cooperative graceful-shutdown flag, idle lifecycle (event-driven
 // waitForIdle / onIdleCallbacks), and the gated per-transition lifecycle trace.
-// Parity with Claude Code's InProcessTeammateTask shutdownRequested / isIdle /
+// Parity with the reference's InProcessTeammateTask shutdownRequested / isIdle /
 // onIdleCallbacks and InProcessBackend's gated lifecycle trace.
 // Red-green: reverting requestShutdown / markIdle / waitForIdle / traceLifecycle
 // fails the matching cases below.

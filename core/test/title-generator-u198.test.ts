@@ -7,7 +7,7 @@ import type { ProviderConfig } from '../src/types';
 import type { streamChatCompletion } from '../src/provider';
 
 // ---------------------------------------------------------------------------
-// U198 — title-generator parity with Claude Code's session-title path:
+// U198 — title-generator parity with the reference's session-title path:
 //   (a) parseTitleJson: structured JSON-schema title output instead of raw
 //       free-form text + regex scrubbing (utils/sessionTitle.ts:90-120).
 //   (b) few-shot examples + explicit format constraints in the naming prompt

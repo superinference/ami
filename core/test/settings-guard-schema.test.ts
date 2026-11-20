@@ -7,7 +7,7 @@ import {
   DANGEROUS_SHELL_SETTINGS,
 } from '../src/settings-guard';
 
-// Parity: Claude Code's generateSettingsJSONSchema (utils/settings/schemaOutput.ts).
+// Parity: the reference's generateSettingsJSONSchema (utils/settings/schemaOutput.ts).
 // AMI has no emitted JSON Schema for its settings file; this generator derives one
 // from the settings-guard module's own authoritative key sets so the schema can
 // never drift from the governed keys (no hardcoded key list — it self-updates).
@@ -19,7 +19,7 @@ describe('getSettingsJSONSchema', () => {
     assert.equal(typeof schema.title, 'string');
     assert.ok(schema.title.length > 0);
     // A partial schema for the governed keys: other settings keys must not be
-    // rejected (mirrors Claude's non-strict settings schema).
+    // rejected (mirrors the reference's non-strict settings schema).
     assert.equal(schema.additionalProperties, true);
     assert.equal(typeof schema.properties, 'object');
   });

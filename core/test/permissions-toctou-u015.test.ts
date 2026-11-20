@@ -9,7 +9,7 @@ import { PermissionManager } from '../src/permissions.ts';
 // require explicit approval (an `ask`) even under a wildcard/tool-wide allow rule,
 // because the auto-allow paths cannot see the runtime repo/path redirection those
 // shapes introduce (the archive is unpacked, or the link created, AFTER the
-// permission decision and BEFORE the later command runs). Parity with Claude's
+// permission decision and BEFORE the later command runs). Parity with the reference's
 // GIT_SAFETY_ARCHIVE_EXTRACTORS + hasSymlinkCreate gates.
 //
 // RED/GREEN discriminator: with a tool-wide `allow` rule, these commands would

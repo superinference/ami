@@ -1,7 +1,7 @@
 /**
  * w84-U027 — LocationLink normalization prefers `targetSelectionRange`.
  *
- * Parity: Claude Code's `toLocation` (tools/LSPTool/LSPTool.ts L620-631) collapses
+ * Parity: the reference's `toLocation` (tools/LSPTool/LSPTool.ts L620-631) collapses
  * a `LocationLink` into a `Location` using `targetSelectionRange || targetRange` —
  * i.e. when a server returns both the full declaration span (`targetRange`) and
  * the narrower identifier span (`targetSelectionRange`), the identifier span is

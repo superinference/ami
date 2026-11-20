@@ -6,7 +6,7 @@
  *    {alias,name,multiplier} (parity with references/claude .../utils/model/contextWindowUpgradeCheck.ts:L9-L47).
  *  - deriveMaxThinkingBudget: a completion cap learned from a live /models payload
  *    (warmed from the on-disk cache) bounds the thinking budget, not just output
- *    (parity with Claude's getMaxThinkingTokensForModel deriving from the live cap).
+ *    (parity with the reference's getMaxThinkingTokensForModel deriving from the live cap).
  *  - lookupOutputTokenRange: longest-key-first specificity ordering so a newer minor
  *    version is not shadowed by a shorter family key regardless of table order
  *    (parity with sortForMatching, .../utils/model/modelCapabilities.ts:L53-L58).

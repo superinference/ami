@@ -2,7 +2,7 @@
 // mtls-ca-trust-u020-w70.test.ts
 //
 // Parity unit U020 (wave 70) — CA trust-store assembly for custom undici
-// dispatchers in core/core/src/utils/mtls.ts. Mirrors Claude Code's
+// dispatchers in core/core/src/utils/mtls.ts. Mirrors the reference's
 // getCACertificates / hasNodeOption (utils/caCerts.ts, utils/mtls.ts,
 // utils/proxy.ts):
 //

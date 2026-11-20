@@ -1,6 +1,6 @@
 /**
  * U075 — DECLARATION_COMMANDS allow-set + declaration-command variable
- * extraction (parity: Claude Code's utils/bash/parser.ts DECLARATION_COMMANDS,
+ * extraction (parity: the reference's utils/bash/parser.ts DECLARATION_COMMANDS,
  * L20-28, and extractCommandArguments L189-196).
  *
  * bash/tree-sitter models `export`/`declare`/`typeset`/`readonly`/`local`/

@@ -63,7 +63,7 @@ function spawnCapture(fake: FakeProc): { shell?: string; args?: string[] } {
 }
 
 // ---------------------------------------------------------------------------
-// computeProgressSlices — pure newline-walk (matches Claude's TaskOutput loop)
+// computeProgressSlices — pure newline-walk (matches the reference's TaskOutput loop)
 // ---------------------------------------------------------------------------
 describe('U049 computeProgressSlices', () => {
   it('returns empty slices and zero lines for empty input', () => {

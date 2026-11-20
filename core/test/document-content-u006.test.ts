@@ -2,7 +2,7 @@
  * U006 — native `document` (PDF) content block parity.
  *
  * Covers the three building blocks that let a PDF enter the model's context as a
- * native `document` block (parity: Claude's Read-tool PDF path emitting
+ * native `document` block (parity: the reference's Read-tool PDF path emitting
  * `{ type: 'document', source: { type:'base64', media_type:'application/pdf', data } }`):
  *   1. the {@link DocumentContent} type carried in a user message's content union,
  *   2. {@link modelSupportsDocuments} — the capability gate (distinct from vision), and

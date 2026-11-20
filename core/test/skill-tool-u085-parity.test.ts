@@ -74,11 +74,11 @@ describe('resolveSkillModelOverride — carries the session [1m] suffix', () => 
 });
 
 // ===========================================================================
-// GAP: filterToolsForSkill — scoped `Tool(scope:*)` + Claude-cased normalization
+// GAP: filterToolsForSkill — scoped `Tool(scope:*)` + compat-cased normalization
 // ===========================================================================
 
-describe('filterToolsForSkill — Claude-cased + scoped allowed-tools', () => {
-  it('resolves Claude-cased bare names to AMI tools', () => {
+describe('filterToolsForSkill — compat-cased + scoped allowed-tools', () => {
+  it('resolves compat-cased bare names to AMI tools', () => {
     const skill = { allowedTools: ['Read', 'Grep', 'LS'] } as SkillDefinition;
     const names = filterToolsForSkill(allTools, skill).map(t => t.name).sort();
     assert.deepEqual(names, ['file_read', 'grep', 'list_dir'].sort());
@@ -102,7 +102,7 @@ describe('filterToolsForSkill — Claude-cased + scoped allowed-tools', () => {
     assert.equal(names.length, allTools.filter(t => t.name !== 'skill').length);
   });
 
-  it('normalizes Claude-cased disallowed entries too', () => {
+  it('normalizes compat-cased disallowed entries too', () => {
     const skill = { disallowedTools: ['Bash'] } as SkillDefinition;
     const names = filterToolsForSkill(allTools, skill).map(t => t.name);
     assert.ok(!names.includes('bash'));
@@ -194,7 +194,7 @@ describe('skillTool.execute — forked skill applies U085 behaviors', () => {
     assert.ok(Array.isArray(warnings) && warnings.some(w => w.entry === 'bogus_tool'));
   });
 
-  it('resolves a Claude-cased allowed-tools list for the forked sub-engine', async () => {
+  it('resolves a compat-cased allowed-tools list for the forked sub-engine', async () => {
     let captured: any = null;
     await skillTool.execute(
       { skill: 'sub' },

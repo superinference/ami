@@ -3,7 +3,7 @@ import * as assert from 'node:assert/strict';
 import { askUserQuestionTool } from '../src/tools/ask-user';
 
 // ---------------------------------------------------------------------------
-// Rich preview-field usage guidance (parity with Claude's
+// Rich preview-field usage guidance (parity with the reference's
 // AskUserQuestionTool PREVIEW_FEATURE_PROMPT). The per-option `preview` field
 // description must tell the model:
 //   - what to use previews FOR (concrete artifacts: mockups / code / diagrams /

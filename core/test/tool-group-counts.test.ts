@@ -72,7 +72,7 @@ describe('tool-group-counts: isGitOpBashCommand', () => {
     assert.equal(isGitOpBashCommand(undefined as unknown as string), false);
   });
 
-  // U030 w69 — parity: Claude's gitOperationTracking subcommand set
+  // U030 w69 — parity: the reference's gitOperationTracking subcommand set
   // (GIT_CHERRY_PICK/MERGE/REBASE_RE + GH_PR_ACTIONS + glab mr).
   it('detects cherry-pick / merge / rebase git operations', () => {
     assert.equal(isGitOpBashCommand('git cherry-pick abc123'), true);

@@ -1485,7 +1485,7 @@ describe('McpManager — listResources', () => {
     await manager.connectServer('srv1');
 
     // Filter to a non-existent server now throws, enumerating the valid servers so
-    // the caller/model can self-correct (parity with Claude's server-not-found).
+    // the caller/model can self-correct (parity with the reference's server-not-found).
     await assert.rejects(
       () => manager.listResources('nonexistent'),
       /not found\. Available servers: srv1/,

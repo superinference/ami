@@ -1,5 +1,5 @@
 /**
- * U018 (w85) — MCP tool-polling schema + scheduler (parity: Claude Code's
+ * U018 (w85) — MCP tool-polling schema + scheduler (parity: the reference's
  * `mcp-polling-update`).
  *
  * Parity gap (UserResourceUpdateMessage.tsx:L34-43): Claude surfaces a second

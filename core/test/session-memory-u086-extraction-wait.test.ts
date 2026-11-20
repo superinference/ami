@@ -4,7 +4,7 @@
  * EXTRACTION_STALE_THRESHOLD_MS + markExtractionStarted/Completed +
  * waitForSessionMemoryExtraction).
  *
- * Parity: Claude's sessionMemoryUtils.ts (L12-13, L74-106) tracks extractionStartedAt
+ * Parity: the reference's sessionMemoryUtils.ts (L12-13, L74-106) tracks extractionStartedAt
  * and exposes a wait helper that blocks up to a timeout and bails on a stale pass, so
  * a consumer (compaction/shutdown) can coordinate with an in-flight extraction without
  * hanging. These tests drive the wait/stale/timeout branches with an injected clock +

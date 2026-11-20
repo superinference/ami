@@ -1,6 +1,6 @@
 /**
  * U007 (w79) — registerConfigEntries `isAgent` Stop→SubagentStop remap + source
- * attribution logging (parity with Claude Code's registerFrontmatterHooks).
+ * attribution logging (parity with the reference's registerFrontmatterHooks).
  *
  * Covered confirmed gaps (core/core/src/hooks.ts):
  *  - "Session/agent-scoped hook registration + `isAgent` Stop→SubagentStop remap

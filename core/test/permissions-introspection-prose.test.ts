@@ -12,7 +12,7 @@ import {
 
 // ---------------------------------------------------------------------------
 // U003 — getRuleBehaviorDescription (behavior enum → grammatical past-tense prose)
-// Parity: Claude's utils/permissions/PermissionResult.ts getRuleBehaviorDescription.
+// Parity: the reference's utils/permissions/PermissionResult.ts getRuleBehaviorDescription.
 // ---------------------------------------------------------------------------
 describe('getRuleBehaviorDescription', () => {
   it('maps allow → "allowed"', () => {
@@ -65,7 +65,7 @@ describe('createPermissionRequestMessage — hook behavior prose', () => {
 
 // ---------------------------------------------------------------------------
 // U003 — getAutoAllowedCommands(mode) introspection accessor.
-// Parity: Claude's BashTool/modeValidation.ts getAutoAllowedCommands.
+// Parity: the reference's BashTool/modeValidation.ts getAutoAllowedCommands.
 // ---------------------------------------------------------------------------
 describe('getAutoAllowedCommands', () => {
   it('acceptEdits returns the sorted edit-adjacent fs command set', () => {

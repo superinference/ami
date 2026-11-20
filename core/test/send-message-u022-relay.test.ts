@@ -1,7 +1,7 @@
 /**
  * U022-F0767: ordered receive-side relay router (relayIncomingMessage).
  *
- * Mirrors Claude Code's UserTeammateMessage ordered dispatch (L62-136): lifecycle
+ * Mirrors the reference's UserTeammateMessage ordered dispatch (L62-136): lifecycle
  * signals are processed silently (dropped), a completed task renders as a terse
  * `✓ Completed task #id` line, every other structured control message relays as a
  * concise summary, and plain text relays verbatim — a raw control-plane JSON blob

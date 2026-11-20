@@ -8,7 +8,7 @@ import { notebookEditTool } from '../src/tools/notebook-edit';
 
 // U098 (w89) — cell-aware live-progress activity hint for notebook_edit.
 //
-// Parity: Claude's NotebookEditTool `getActivityDescription` returns
+// Parity: the reference's NotebookEditTool `getActivityDescription` returns
 // "Editing notebook <summary>" where the summary names the targeted cell. AMI's
 // core `describeToolActivity` previously shared the plain file_edit case
 // ("Editing <path>") for notebook_edit — it neither used the "notebook" verb

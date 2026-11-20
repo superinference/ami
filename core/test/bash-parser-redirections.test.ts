@@ -1,6 +1,6 @@
 /**
  * Parity tests for structured output-redirection + pipe-segment accessors on the
- * bash parser, mirroring Claude Code's IParsedCommand
+ * bash parser, mirroring the reference's IParsedCommand
  * (references/claude/claude-code-main/src/utils/bash/ParsedCommand.ts):
  *
  *   - OutputRedirection { target, operator } captured on the AST (truncate `>`

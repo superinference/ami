@@ -12,7 +12,7 @@ import { isReadOnlyBashCommand } from '../src/tools/bash-cache';
 
 // ===========================================================================
 // U085 (medium) — least-privilege capability ceiling for forked sub-agents
-// (parity with Claude Code's createAutoMemCanUseTool). Pure building block.
+// (parity with the reference's createAutoMemCanUseTool). Pure building block.
 // ===========================================================================
 
 describe('evaluateToolCeiling — undefined / inert', () => {

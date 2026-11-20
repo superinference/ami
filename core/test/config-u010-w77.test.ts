@@ -1,11 +1,11 @@
 // U010 / w77 — two additive config.ts parity features:
 //
-//  1. statusLine `{ command, padding }` object form (parity: Claude Code's
+//  1. statusLine `{ command, padding }` object form (parity: the reference's
 //     `settings.statusLine` object). A ported CC settings file using the object shape
 //     must PARSE (not be rejected as "must be a string"), and `normalizeStatusLine`
 //     collapses both shapes into one `{ command?, padding? }` result.
 //
-//  2. ConfigService global-tier watch + real `source` discrimination (parity: Claude's
+//  2. ConfigService global-tier watch + real `source` discrimination (parity: the reference's
 //     useSettingsChange threading the tier `source` and watching every tier). With
 //     `watchGlobal`, a runtime edit to `~/.ami/config.json` fires onConfigChange with
 //     `source: 'global'` (vs the project tier's `'project'`); default-off keeps the

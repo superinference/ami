@@ -1,12 +1,12 @@
 /**
  * U021-w69 — session.ts parity additions:
  *  - SessionKind classification enum + env override knob (envSessionKind) +
- *    isBgSession predicate (parity: Claude concurrentSessions.ts SessionKind);
+ *    isBgSession predicate (parity: the reference concurrentSessions.ts SessionKind);
  *  - save() stamps `kind` (caller > env > 'interactive'); list() surfaces it;
  *  - loadLatest({ skipBackground }) skips bg/daemon sessions so a no-arg
  *    --continue auto-picks the most-recent FOREGROUND session;
  *  - safeAppendTranscript recreate-parent-dir-and-retry on a transient append
- *    failure (parity: Claude appendToFile mkdir-and-retry).
+ *    failure (parity: the reference appendToFile mkdir-and-retry).
  */
 import { describe, it, after, mock } from 'node:test';
 import * as assert from 'node:assert/strict';

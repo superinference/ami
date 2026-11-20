@@ -110,7 +110,7 @@ describe('multi_edit tool', () => {
   });
 
   it('rejects a later edit whose old_string is a previous new_string (Claude substring guard)', async () => {
-    // Parity with Claude FileEditTool/utils.ts:301-308: an edit that targets text a
+    // Parity with the reference FileEditTool/utils.ts:301-308: an edit that targets text a
     // previous edit just wrote is refused, so edit 1 applies and edit 2 is rejected.
     const file = path.join(tmpDir, 'test.ts');
     fs.writeFileSync(file, 'AAA\n');

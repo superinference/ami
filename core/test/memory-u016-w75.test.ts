@@ -32,7 +32,7 @@ import { getAgentMemoryDir } from '../src/memory';
  * (AutoDreamConfig + defaults/validation, mtime-is-timestamp consolidation lock,
  * due-gate, consolidation-prompt builder) and per-agent memory snapshot
  * staleness detection (schema-validated corruption-tolerant JSON read +
- * three-state drift algorithm). Parity with Claude Code's
+ * three-state drift algorithm). Parity with the reference's
  * services/autoDream/{autoDream,consolidationLock,consolidationPrompt}.ts and
  * tools/AgentTool/agentMemorySnapshot.ts.
  */

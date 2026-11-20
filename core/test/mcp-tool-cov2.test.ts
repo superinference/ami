@@ -266,7 +266,7 @@ describe('processMcpContent', () => {
     const out = processMcpContent({ structuredContent: { a: 1, b: ['x'] }, content: [] });
     assert.ok(out, 'structuredContent should be surfaced');
     assert.deepEqual(JSON.parse(out!.text), { a: 1, b: ['x'] });
-    // Parity: Claude's transformMCPResult attaches inferCompactSchema() to the
+    // Parity: the reference's transformMCPResult attaches inferCompactSchema() to the
     // structuredContent format so a spilled result tells the model its shape.
     assert.equal(out!.format, 'JSON with schema: {a: number, b: [string]}');
   });

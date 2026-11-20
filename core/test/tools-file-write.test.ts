@@ -290,7 +290,7 @@ describe('fileEditTool – read-before-write enforcement', () => {
 
 describe('fileEditTool – CRLF handling', () => {
   it('full-content write honors the content EOL, not the old file (U039 parity)', async () => {
-    // Parity with Claude Code's FileWriteTool: a full-content write is a deliberate
+    // Parity with the reference's FileWriteTool: a full-content write is a deliberate
     // replacement that writes the content's own line endings verbatim, rather than
     // re-converting to the old file's EOL (which silently corrupted e.g. a CRLF→LF
     // shell-script rewrite).

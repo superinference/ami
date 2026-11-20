@@ -2,7 +2,7 @@
  * U003 / w104 parity — persistToSettings on a per-host sandbox network-egress grant
  * (allow-once vs allow-and-remember-host).
  *
- * Mirrors Claude's `{ allow, persistToSettings }` network-egress response
+ * Mirrors the reference's `{ allow, persistToSettings }` network-egress response
  * (SandboxPermissionRequest.tsx): the dialog's "yes, don't ask again" option writes
  * the specific host to durable settings so it is never re-prompted, distinct from a
  * plain "yes" (allow once). AMI's registry grants were previously SESSION-only; this

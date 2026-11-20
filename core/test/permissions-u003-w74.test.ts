@@ -10,7 +10,7 @@ import {
 // U003 (w74): read-only command-allowlist parity for base64 / checksum (sha*sum,
 // md5sum) / grep flag enforcement / dotnet SDK queries / pyright type-checking /
 // git ls-remote (incl. --server-option exfil exclusion) / fd -l exec exclusion.
-// Mirrors Claude's readOnlyValidation.ts / readOnlyCommandValidation.ts configs.
+// Mirrors the reference's readOnlyValidation.ts / readOnlyCommandValidation.ts configs.
 // ---------------------------------------------------------------------------
 
 const pm = new PermissionManager();

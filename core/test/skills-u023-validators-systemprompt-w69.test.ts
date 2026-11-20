@@ -17,7 +17,7 @@ import {
 import type { ToolContext, ToolDefinition, EngineConfig } from '../src/types';
 
 // ---------------------------------------------------------------------------
-// F1 — validateAgentType / validateSkillName (parity: Claude validateAgentType)
+// F1 — validateAgentType / validateSkillName (parity: the reference validateAgentType)
 // ---------------------------------------------------------------------------
 describe('validateAgentType / validateSkillName', () => {
   it('accepts a well-formed identifier', () => {
@@ -37,7 +37,7 @@ describe('validateAgentType / validateSkillName', () => {
     assert.match(validateAgentType('abc-')!, /start and end with alphanumeric/);
     assert.match(validateAgentType('a b')!, /only letters, numbers, and hyphens/);
     assert.match(validateAgentType('under_score')!, /only letters, numbers, and hyphens/);
-    // a single char fails the start-AND-end regex, matching Claude's ordering
+    // a single char fails the start-AND-end regex, matching the reference's ordering
     assert.match(validateAgentType('a')!, /start and end with alphanumeric/);
   });
 

@@ -1,7 +1,7 @@
 /**
  * U051 — user env-var capability override for pinned third-party / gateway models.
  *
- * Mirrors Claude's get3PModelCapabilityOverride
+ * Mirrors the reference's get3PModelCapabilityOverride
  * (references/claude/claude-code-main/src/utils/model/modelSupportOverrides.ts:L4-L50):
  *  - ignored on a first-party endpoint (no custom *_BASE_URL set);
  *  - a tier with no pin OR an unset capability list → undefined (falls through);

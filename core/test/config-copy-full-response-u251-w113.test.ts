@@ -1,5 +1,5 @@
 // U251 (wave 113) — copyFullResponse is a recognized, type-checked, mergeable config
-// key (parity: Claude Code's global-config `copyFullResponse` knob, copy.tsx).
+// key (parity: the reference's global-config `copyFullResponse` knob, copy.tsx).
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {

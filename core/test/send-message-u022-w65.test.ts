@@ -6,7 +6,7 @@ import { isToolReadOnlyForInput } from '../src/tools/tool-categories';
 // ---------------------------------------------------------------------------
 // U022 (w65) — per-invocation read-only verdict for send_message.
 //
-// Parity: Claude's SendMessageTool declares `isReadOnly(input) =>
+// Parity: the reference's SendMessageTool declares `isReadOnly(input) =>
 // typeof input.message === 'string'` — a plain-text chat message mutates
 // nothing (auto-allow, no permission prompt), while a STRUCTURED control
 // message (shutdown / plan / permission / mode / task) changes a teammate's

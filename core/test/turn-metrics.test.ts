@@ -252,7 +252,7 @@ describe('formatTurnSummary — human-readable metrics report', () => {
     assert.ok(out.includes('By model'), `has model section: ${out}`);
     assert.ok(out.includes('haiku'), `lists haiku: ${out}`);
     assert.ok(out.includes('opus'), `lists opus: ${out}`);
-    // cost > $0.50 renders 2dp (parity with Claude formatCost)
+    // cost > $0.50 renders 2dp (parity with the reference formatCost)
     assert.ok(out.includes('$0.90'), `opus cost 2dp: ${out}`);
   });
 

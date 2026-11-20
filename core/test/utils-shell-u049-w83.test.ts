@@ -4,13 +4,13 @@
  * Parity gaps covered (all verified=confirmed):
  *  - Shared never-throw file+args exec wrapper `execFileNoThrow` with a per-call
  *    `shell?: boolean | string` toggle and cross-platform Windows `.bat`/`.cmd`
- *    handling + argument escaping (parity with Claude Code's execFileNoThrow.ts:
+ *    handling + argument escaping (parity with the reference's execFileNoThrow.ts:
  *    "By using execa, Windows automatically gets shell escaping + BAT / CMD
  *    handling"). Routed into workspace-indexer's `git ls-files` discovery as the
  *    real consumer so a missing/failed git never throws.
  *  - Shell-override introspection/feedback: resolveShell emits "Using shell
  *    override: <path>" on success and a "falling back to detection" notice when
- *    the AMI_SHELL / CLAUDE_CODE_SHELL override is rejected (parity with Claude
+ *    the AMI_SHELL / CLAUDE_CODE_SHELL override is rejected (parity with the reference
  *    Code's Shell.ts override logging), through the opt-in onShellDebug surface.
  */
 import { describe, it, mock, afterEach } from 'node:test';

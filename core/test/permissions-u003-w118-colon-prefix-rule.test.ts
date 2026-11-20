@@ -11,7 +11,7 @@ import {
 // canonical example) and stores it verbatim, but the raw glob matcher treated the
 // `:` literally so a `git:*` allow rule never matched `git status`. A rule the user
 // is explicitly told is valid silently granted nothing. This wires
-// `permissionRuleExtractPrefix` into bash matching (parity with Claude's
+// `permissionRuleExtractPrefix` into bash matching (parity with the reference's
 // shellPermissionHelpers.ts L76-84).
 
 describe('permissionRuleExtractPrefix (Claude :* prefix convention)', () => {

@@ -2,13 +2,13 @@
 //  - Anti-error description hint: the fileEditTool description now explains that
 //    file_read prefixes every line with "N\t" and that old_string must contain
 //    ONLY the content after that tab, with original indentation preserved
-//    (parity: Claude Code's FileEditTool prompt line-number-prefix guidance). The
+//    (parity: the reference's FileEditTool prompt line-number-prefix guidance). The
 //    existing "prefer editing existing files" and "only emojis if asked" steering
 //    hints are also locked here.
 //  - Richer file-not-found recovery: the single-replace ENOENT branch now reuses
 //    the canonical suggestSimilarPaths helper (same base name / different
 //    extension, case-only mismatch) instead of a crude 3-char-prefix substring
-//    scan (parity: Claude Code's findSimilarFile).
+//    scan (parity: the reference's findSimilarFile).
 //  - Permission-rule validity on settings edits: an edit to a Claude-compatible
 //    settings.json/settings.local.json that would INTRODUCE an invalid
 //    permissions.{allow,deny,ask} rule into a previously-valid file is blocked,

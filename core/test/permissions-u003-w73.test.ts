@@ -10,7 +10,7 @@ import {
 // ---------------------------------------------------------------------------
 // U003 (w73): extended PermissionDecisionReason taxonomy — workingDir / hook /
 // sandboxOverride arms, their rendering, and the machine-readable ruleSource
-// provenance on the `rule` arm. Mirrors Claude's decisionReason union
+// provenance on the `rule` arm. Mirrors the reference's decisionReason union
 // (components/permissions/hooks.ts + PermissionDecisionDebugInfo.tsx).
 // ---------------------------------------------------------------------------
 

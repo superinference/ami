@@ -17,10 +17,10 @@ import {
 //     — forces the outbound allowlist to the managed list ALONE, ignoring any
 //       user `allowedHosts` (incl. folded web_fetch-allow rules). Empty managed
 //       list => no outbound host allowed (full egress block). deny still wins.
-//       Mirrors Claude's shouldAllowManagedSandboxDomainsOnly().
+//       Mirrors the reference's shouldAllowManagedSandboxDomainsOnly().
 //   sandbox.filesystem.allowManagedReadPathsOnly + managedAllowRead
 //     — forces read RE-allow carve-outs to the managed list ALONE, ignoring user
-//       `allowRead`. Mirrors Claude's allowManagedReadPathsOnly.
+//       `allowRead`. Mirrors the reference's allowManagedReadPathsOnly.
 // ---------------------------------------------------------------------------
 
 function baseCfg(overrides: Partial<SandboxConfig> = {}): SandboxConfig {

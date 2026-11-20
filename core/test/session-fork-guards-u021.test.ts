@@ -10,7 +10,7 @@ import { asSessionId } from '../src/types';
 /**
  * U021 — "Nothing to branch" guards for {@link SessionManager.fork}.
  *
- * Parity: Claude's createFork (commands/branch/branch.ts L77-115) surfaces three
+ * Parity: the reference's createFork (commands/branch/branch.ts L77-115) surfaces three
  * clean errors at the boundary of forking a brand-new / empty session:
  *   - unreadable transcript file        -> `No conversation to branch`
  *   - zero-length transcript file       -> `No conversation to branch`

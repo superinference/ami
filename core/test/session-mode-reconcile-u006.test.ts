@@ -1,7 +1,7 @@
 /**
  * session-mode-reconcile-u006.test.ts — session operating-mode reconciliation (U006, gap 14).
  *
- * Covers the pure {@link reconcileSessionMode} decision formula (parity: Claude's
+ * Covers the pure {@link reconcileSessionMode} decision formula (parity: the reference's
  * matchSessionMode): an absent stored mode is a back-compat no-op, a matching mode is a
  * no-op, and each mismatch direction flips to the stored (resumed-session-wins) target
  * with the correct human-readable warning. Also pins the exported mode enum.

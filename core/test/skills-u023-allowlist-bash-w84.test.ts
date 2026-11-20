@@ -5,7 +5,7 @@ import { isBashToolAllowRule, allowlistGrantsBash } from '../src/skills';
 
 // ===========================================================================
 // GAP U023 / gap [0] (medium): detect project-shipped bash-capable skills /
-// slash commands as a workspace-trust signal (parity with Claude Code's
+// slash commands as a workspace-trust signal (parity with the reference's
 // TrustDialog `hasSkillsBash` / `hasSlashCommandBash`). These are the canonical
 // pure core detectors the safe-mode settings scanner + the `/safe-mode audit`
 // per-file workspace audit both delegate to, so "does this allowlist grant a

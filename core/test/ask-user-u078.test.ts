@@ -8,7 +8,7 @@ import {
 
 // ---------------------------------------------------------------------------
 // U078 — additive validator parity:
-//   - header/chip width (<= 12, parity with Claude's ASK_USER_QUESTION_TOOL_CHIP_WIDTH)
+//   - header/chip width (<= 12, parity with the reference's ASK_USER_QUESTION_TOOL_CHIP_WIDTH)
 //   - previews only on single-select questions (not multiSelect)
 // ---------------------------------------------------------------------------
 

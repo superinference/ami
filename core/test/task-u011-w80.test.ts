@@ -6,7 +6,7 @@ import * as path from 'path';
 import {
   taskTool,
   resetAgentRegistry,
-  // w80 additions under test — plan-required subagent spawns (parity: Claude Code
+  // w80 additions under test — plan-required subagent spawns (parity: the reference
   // planModeRequired + CLAUDE_CODE_PLAN_MODE_REQUIRED).
   SUBAGENT_PLAN_REQUIRED_ENV,
   CLAUDE_PLAN_MODE_REQUIRED_ENV,

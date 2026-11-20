@@ -2,7 +2,7 @@
  * Parity unit U017 — core/core/src/mcp/manager.ts.
  *
  * MCP server-status introspection fields, surfacing config detail the `/mcp` drill
- * previously could not show (parity with Claude Code's MCPStdioServerMenu and
+ * previously could not show (parity with the reference's MCPStdioServerMenu and
  * `mcp xaa show`):
  *
  *   1. `command` / `args` on `McpServerStatus` — the resolved launch command + args of

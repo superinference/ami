@@ -1,6 +1,6 @@
 /**
  * Tests for the persisted one-time preference / count-limited notice helpers and the
- * global-scoped transactional config updater (parity: Claude Code's `saveGlobalConfig`
+ * global-scoped transactional config updater (parity: the reference's `saveGlobalConfig`
  * updater + the `hasIdeAutoConnectDialogBeenShown` / `hasUsedBackgroundTask` one-time
  * flags and the count-limited notice seen-count knobs). All state lives in the GLOBAL
  * config (`~/.ami/config.json`) and is read/written via the lock-safe

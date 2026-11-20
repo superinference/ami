@@ -1,7 +1,7 @@
 /**
  * U010 — `hasTrustDialogAccepted` persisted per-project FOLDER-TRUST config knob.
  *
- * Parity: Claude Code's `hasTrustDialogAccepted` project-config knob
+ * Parity: the reference's `hasTrustDialogAccepted` project-config knob
  * (checkHasTrustDialogAccepted / saveCurrentProjectConfig). AMI previously had only
  * the INVERSE `safeMode` opt-in distrust and no config-backed way to GRANT trust, so
  * HookManager.setWorkspaceTrusted had no production caller and project hooks stayed

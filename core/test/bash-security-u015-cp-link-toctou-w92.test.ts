@@ -6,7 +6,7 @@ import { detectSymlinkCreateCompound } from '../src/tools/bash-security.ts';
 // UNIT U015 (w92) — broaden the compound-command link-create TOCTOU guard to
 // every link-creating coreutil, not just `ln`.
 //
-// Parity with Claude Code's isSymlinkCreatingCommand, which recognises link
+// Parity with the reference's isSymlinkCreatingCommand, which recognises link
 // creation across SymbolicLink / Junction / HardLink (PowerShellTool/
 // modeValidation.ts L82-117). On bash the same read-through-a-just-created-link
 // exfil (`ln -s /etc x && cat x/shadow`) is equally reachable via:

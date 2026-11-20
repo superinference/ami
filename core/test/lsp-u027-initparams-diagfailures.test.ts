@@ -10,7 +10,7 @@
  *  2. Per-server consecutive diagnostic-failure tracking — when delivering a
  *     `publishDiagnostics` notification (storage + registered handlers) throws,
  *     the client increments a per-language streak, logs a warning once it reaches
- *     3 (parity with Claude's passiveFeedback warn-after-3), and resets the streak
+ *     3 (parity with the reference's passiveFeedback warn-after-3), and resets the streak
  *     on the next successful delivery. The count is surfaced on the per-server
  *     introspection status (`getServerStatus().consecutiveDiagnosticFailures`).
  */

@@ -15,7 +15,7 @@ import { classifySubprocessError } from '../src/error-classifier';
  * and exits non-zero must have the classifier's remediation STEPS appended to its
  * retained `lastError` (surfaced in `/doctor`) — not just an opaque
  * "crashed with exit code N". Exercised against REAL child-process servers
- * (parity: Claude Code's verifyIt2Setup stderr → actionable remediation).
+ * (parity: the reference's verifyIt2Setup stderr → actionable remediation).
  *
  * RED/GREEN: reverting the `classifySubprocessError` append in client.ts leaves
  * `lastError` as the bare "crashed with exit code 1" with no remediation text, so

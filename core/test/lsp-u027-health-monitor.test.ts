@@ -16,7 +16,7 @@ import type { LspInitializationStatus, LspServerStatus } from '../src/lsp/client
 import { registerLspServers, resetLspServers } from '../src/lsp/config';
 
 /**
- * U027 — LSP health-poll state machine (parity with Claude Code's
+ * U027 — LSP health-poll state machine (parity with the reference's
  * useLspInitializationNotification polling loop). Covers:
  *   1. `collectLspHealthErrors` branch structure: failed→report+stop,
  *      pending/not-started→continue-silent, success→scan-servers+continue.

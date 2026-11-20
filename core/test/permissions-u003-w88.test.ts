@@ -102,7 +102,7 @@ describe('validatePermissionRule — MCP rules', () => {
 // A user allow rule asserts the COMMAND is safe, not that arbitrary variable /
 // command-substitution expansion THROUGH it is safe. `echo $ANTHROPIC_API_KEY`
 // exfiltrates a secret and `cp $(curl …) .` runs arbitrary code — neither is
-// covered by Bash(echo:*) / Bash(cp:*). Mirrors Claude's argLeaksValue
+// covered by Bash(echo:*) / Bash(cp:*). Mirrors the reference's argLeaksValue
 // (PowerShell readOnlyValidation.ts) ported to bash expansion syntax.
 // ---------------------------------------------------------------------------
 describe('bashCommandArgLeaksValue', () => {

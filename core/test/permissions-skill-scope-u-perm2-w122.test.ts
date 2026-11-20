@@ -10,7 +10,7 @@ import {
 } from '../src/permissions';
 
 // ---------------------------------------------------------------------------
-// U-perm2 / w122 — Skill-scoped permission narrowing (parity with Claude's
+// U-perm2 / w122 — Skill-scoped permission narrowing (parity with the reference's
 // getClaudeSkillScope, utils/permissions/filesystem.ts L101-157). A write under
 // `<configRoot>/skills/<name>/` now offers a NARROW least-privilege "allow edits
 // to this skill only" session grant, instead of only the broad config-folder

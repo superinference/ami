@@ -1,7 +1,7 @@
 // Unit U088 — MCP resource content parity: binary-blob interception (decode +
 // persist + saved-to-disk message), the normalized structured `contents[]` shape
 // ({uri, mimeType, text, blobSavedTo}), and the per-resource description/server
-// fields in the list output — mirroring Claude's ReadMcpResourceTool /
+// fields in the list output — mirroring the reference's ReadMcpResourceTool /
 // ListMcpResourcesTool behavior.
 import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';

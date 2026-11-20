@@ -1,7 +1,7 @@
 /**
  * U010 / w115 — collectConfigDiagnostics multi-source dedup.
  *
- * Parity with Claude Code's loadSettingsFromDisk seenFiles/seenErrors: when two
+ * Parity with the reference's loadSettingsFromDisk seenFiles/seenErrors: when two
  * config tiers resolve to the SAME physical file (most commonly running AMI from
  * the home directory, where `<cwd>/.ami/config.json` IS `<home>/.ami/config.json`),
  * the file must be loaded/diagnosed only ONCE and the identical diagnostic must not

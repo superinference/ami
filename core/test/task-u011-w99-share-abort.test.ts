@@ -1,4 +1,4 @@
-// U011 / w99 — per-spawn `share_abort_controller` knob (parity: Claude Code's
+// U011 / w99 — per-spawn `share_abort_controller` knob (parity: the reference's
 // SubagentContextOverrides.shareAbortController). AMI's default (true) cascades a
 // parent-turn abort to the child subagent — the safe default that never orphans a
 // detached agent. An explicit `false` opts the child OUT of the cascade so a

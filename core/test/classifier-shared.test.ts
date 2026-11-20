@@ -1,5 +1,5 @@
 /**
- * Shared classifier infrastructure (parity: Claude Code's
+ * Shared classifier infrastructure (parity: the reference's
  * utils/permissions/classifierShared.ts — extractToolUseBlock + parseClassifierResponse).
  *
  * RED on revert: core/src/permissions/classifier-shared.ts does not exist, so the import

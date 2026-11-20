@@ -1,5 +1,5 @@
 /**
- * Unit tests for the structured async-hook completion record (parity: Claude
+ * Unit tests for the structured async-hook completion record (parity: the reference
  * Code's finalizeHook/emitHookResponse, utils/hooks/AsyncHookRegistry.ts).
  *
  * The async-hook path previously only re-woke the model via `hookRewake` on a

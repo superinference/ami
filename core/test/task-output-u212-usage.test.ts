@@ -7,11 +7,11 @@ import type { ToolContext } from '../src/types';
 /**
  * U212 parity (additive superset) — remaining task_output gaps:
  *   - a documented structured worker-result USAGE block (duration + total_tokens +
- *     tool_uses) is surfaced for a TERMINAL agent task, mirroring Claude Code's
+ *     tool_uses) is surfaced for a TERMINAL agent task, mirroring the reference's
  *     coordinator result envelope (`usage: { total_tokens, tool_uses, duration_ms }`).
  *     Reuses the canonical `formatUsageClause` so there is one usage-string source.
  *   - the live "waiting for task" progress line carries the "esc to give additional
- *     instructions" interrupt affordance, mirroring Claude Code's
+ *     instructions" interrupt affordance, mirroring the reference's
  *     renderToolUseProgressMessage.
  */
 

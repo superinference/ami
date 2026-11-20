@@ -1,7 +1,7 @@
 /**
  * U010 — managed-config OVERRIDE trust boundary.
  *
- * Parity: Claude Code's managed/enterprise config is sourced from a FIXED admin-only OS
+ * Parity: the reference's managed/enterprise config is sourced from a FIXED admin-only OS
  * location the end user cannot relocate (mdm/settings.ts). AMI additionally honors a
  * user-settable SUPERINFERENCE_MANAGED_CONFIG override for testing / non-standard
  * deployments — a relocation hole: an unprivileged user could point the authoritative

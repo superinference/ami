@@ -10,7 +10,7 @@ import { taskOutputTool } from '../src/tools/task-output';
 
 // PARITY (additive): back-compat alias-aware tool dispatch — a tool must be
 // resolvable by any of its declared `aliases` (renamed/legacy names from old
-// transcripts or SDK callers), not only by its primary name. Mirrors Claude's
+// transcripts or SDK callers), not only by its primary name. Mirrors the reference's
 // `toolMatchesName` / `findToolByName` helpers and the per-tool `aliases` knob.
 
 describe('toolMatchesName', () => {

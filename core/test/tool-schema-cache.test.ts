@@ -4,7 +4,7 @@
  *   - convertToolsForSDK (src/provider.ts) — byte-stable per-tool SDK schema;
  *   - McpManager.invalidateToolCache (src/mcp/manager.ts) — clear-on-reconnect hook.
  *
- * Parity with Claude Code's utils/toolSchemaCache.ts: the rendered tool-schema
+ * Parity with the reference's utils/toolSchemaCache.ts: the rendered tool-schema
  * array sits at server position 2, so its bytes must stay stable across a session
  * (MCP reconnects hand us a fresh ToolDefinition object; a server can re-advertise
  * a key-reordered-but-equal schema) — freezing them at first render keeps the

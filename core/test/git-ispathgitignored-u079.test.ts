@@ -1,7 +1,7 @@
 /**
  * U079 — isPathGitignored: authoritative per-path ignore check via `git check-ignore`.
  *
- * Parity with Claude Code's utils/git/gitignore.ts isPathGitignored: the predicate
+ * Parity with the reference's utils/git/gitignore.ts isPathGitignored: the predicate
  * delegates the whole "is this path ignored?" question to git so ALL ignore sources
  * resolve with git's real precedence (nested .gitignore, .git/info/exclude, global
  * gitignore). Exit-code branching: 0 → ignored (true), 1 → not ignored (false),

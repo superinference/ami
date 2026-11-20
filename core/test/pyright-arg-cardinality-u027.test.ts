@@ -9,7 +9,7 @@ import { PermissionManager, validateCommandFlags } from '../src/permissions';
 // pyright" and "cannot distinguish arg-consuming flags from positional file args
 // for pyright." AMI DOES model this — the declarative `PYRIGHT_ARG_TYPES` map +
 // the strict `pyright` entry in `SAFE_COMMAND_FLAGS` drive the getopt-accurate
-// walker `validateTypedCommandFlags`, which mirrors Claude Code's
+// walker `validateTypedCommandFlags`, which mirrors the reference's
 // PYRIGHT_READ_ONLY_COMMANDS (utils/shell/readOnlyCommandValidation.ts L1504)
 // flag-for-flag: same safeFlags, same `--watch`/`-w` danger callback, same
 // `respectsDoubleDash:false`.
@@ -17,7 +17,7 @@ import { PermissionManager, validateCommandFlags } from '../src/permissions';
 // These tests LOCK that behavior: the value token after an arg-taking option is
 // consumed as the option's VALUE (not mistaken for a positional file) while real
 // positional files are still recognised, and the exact set of auto-approvable
-// flags matches Claude's (write-shaped / unlisted flags prompt, and none can be
+// flags matches the reference's (write-shaped / unlisted flags prompt, and none can be
 // smuggled past `--`). A regression that drops the pyright schema, mis-attributes
 // a value token, or broadens the safe set beyond Claude's would fail here.
 // ---------------------------------------------------------------------------
@@ -50,7 +50,7 @@ test('pyright: a missing or dash-led option value is rejected (type confusion)',
   assert.equal(validateCommandFlags('pyright', ['--project', './cfg', 'src/']), true);
 });
 
-test('pyright: auto-approvable flag set matches Claude; unlisted/write flags prompt', () => {
+test('pyright: auto-approvable flag set matches the reference; unlisted/write flags prompt', () => {
   // In Claude's PYRIGHT_READ_ONLY_COMMANDS safeFlags (and AMI's PYRIGHT_ARG_TYPES).
   assert.equal(pm.classifyBashCommand('pyright --outputjson'), 'safe');
   assert.equal(pm.classifyBashCommand('pyright --stats --verbose'), 'safe');

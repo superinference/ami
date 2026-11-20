@@ -3,7 +3,7 @@
 //
 // Unit U051 — per-model 'max' reasoning-effort tier gating + max→high downgrade.
 //
-// Mirrors Claude Code's modelSupportsMaxEffort + resolveAppliedEffort
+// Mirrors the reference's modelSupportsMaxEffort + resolveAppliedEffort
 // (references/claude/claude-code-main/src/utils/effort.ts:L50-65, L162-165) and
 // the ModelPicker displayEffort clamp (components/ModelPicker.tsx:L147-170):
 // the top 'max' effort tier is Opus-4.6+-class only; the API rejects

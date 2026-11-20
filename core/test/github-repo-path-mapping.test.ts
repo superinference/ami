@@ -1,6 +1,6 @@
 /**
  * Tests for the persistent GitHub-repo -> local-clone-path registry with MRU ordering
- * (parity: Claude Code's `githubRepoPathMapping.ts`). All state lives in the GLOBAL
+ * (parity: the reference's `githubRepoPathMapping.ts`). All state lives in the GLOBAL
  * config (`~/.ami/config.json`); each test points HOME at a throwaway dir and builds
  * real temp git repos so detection/validation exercise actual `git` plumbing.
  */

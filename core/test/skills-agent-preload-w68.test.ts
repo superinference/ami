@@ -1,5 +1,5 @@
 // U023-w68 — buildPreloadedSkillsBlock: assemble the system-prompt block for an
-// agent's `skills` preload allowlist (parity with Claude's runAgent skill
+// agent's `skills` preload allowlist (parity with the reference's runAgent skill
 // preloading), reporting which skills loaded vs. which names could not be resolved.
 
 import { describe, it } from 'node:test';

@@ -2,7 +2,7 @@
 // ca-certs-u337-w114.test.ts
 //
 // Parity unit U337 (wave 114) — memoized CA resolution + runtime cache
-// invalidation in core/core/src/ca-certs.ts. Mirrors Claude Code's
+// invalidation in core/core/src/ca-certs.ts. Mirrors the reference's
 // getCACertificates / clearCACertsCache (utils/caCerts.ts):
 //
 //   - getCACertificates(): env-driven CA trust bundle (bundled roots +

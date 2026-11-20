@@ -5,7 +5,7 @@
 // from re-triggering the ConfigService file watcher — a self-feedback loop in
 // which a `/config` change (persisted via safeWriteConfig) fires the watcher,
 // which reloads and invokes the onChange / onConfigChange hooks as if an external
-// editor had changed the file (parity: Claude Code's changeDetector
+// editor had changed the file (parity: the reference's changeDetector
 // markInternalWrite / consumeInternalWrite).
 //
 // The primitive-level behavior is covered in config-file-safety.test.ts. This

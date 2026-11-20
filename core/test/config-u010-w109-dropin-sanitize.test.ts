@@ -1,7 +1,7 @@
 /**
  * U010 / w109 — managed `config.d/` drop-in enumeration sanitization.
  *
- * Parity: Claude Code's managed-settings.d enumeration guard defensively skips any
+ * Parity: the reference's managed-settings.d enumeration guard defensively skips any
  * entry that is NOT a regular file or symlink, does not end in `.json`, or is a
  * dotfile. AMI previously filtered the drop-in listing ONLY on the `.json` suffix,
  * so a hidden `.secret.json` dotfile was read as policy, and a `*.json`-NAMED FIFO

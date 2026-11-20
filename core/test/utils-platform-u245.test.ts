@@ -12,7 +12,7 @@ import {
 import { isWSL } from '../src/utils/env';
 
 // ---------------------------------------------------------------------------
-// U245 — platform detection parity with Claude Code's utils/platform.ts,
+// U245 — platform detection parity with the reference's utils/platform.ts,
 // utils/env.ts, utils/envDynamic.ts:
 //   - isMuslEnvironment() (musl vs glibc via the arch-specific loader stat)
 //   - isNpmFromWindowsPath() (WSL npm resolving onto /mnt/c)
@@ -143,7 +143,7 @@ describe('isWSL — resilient WSLInterop binfmt file probe', () => {
 
 // ---------------------------------------------------------------------------
 // SUPPORTED_PLATFORMS allow-list + isSupportedPlatform() gating predicate
-// (parity: Claude Code's utils/platform.ts SUPPORTED_PLATFORMS constant).
+// (parity: the reference's utils/platform.ts SUPPORTED_PLATFORMS constant).
 // ---------------------------------------------------------------------------
 
 describe('SUPPORTED_PLATFORMS allow-list', () => {

@@ -8,7 +8,7 @@ import type { ToolContext } from '../src/types';
 
 // ===========================================================================
 // GAP U023 / M0 (medium): Least-privilege, PATH-scoped tool allowlist for a
-// command/skill-spawned subagent (parity with Claude Code's
+// command/skill-spawned subagent (parity with the reference's
 // `allowedTools: ['Read(~/**)', 'Edit(~/.claude/settings.json)']`). AMI's
 // name-only filter (filterToolsForSkill) says WHICH tools a forked skill gets;
 // scopedToolAllowRules adds the WHICH-ARGUMENTS half as additive permission

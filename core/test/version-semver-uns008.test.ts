@@ -3,7 +3,7 @@ import * as assert from 'node:assert/strict';
 import { parseSemver, orderSemver, isSemverNewer } from '../src/version';
 
 // UNS008 — `{ loose: true }` parsing option: prerelease / build-metadata aware
-// version parsing + precedence ordering (parity with Claude Code's
+// version parsing + precedence ordering (parity with the reference's
 // utils/semver.ts order()/{loose:true}). Distinct from skill-catalog's
 // prerelease-AGNOSTIC compareSemver (release-floor) — this honors SemVer §11.
 describe('parseSemver (loose, prerelease/build-metadata aware)', () => {

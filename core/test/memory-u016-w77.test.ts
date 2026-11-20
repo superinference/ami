@@ -11,10 +11,10 @@ import {
 /**
  * U016 / wave-77 — memory.ts parity additions:
  *  - additionalInstructionDirsEnabled + MemoryManager additional-directory
- *    instruction loading (parity: Claude Code CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD
+ *    instruction loading (parity: the reference CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD
  *    + getAdditionalDirectoriesForClaudeMd — --add-dir dirs contribute CLAUDE.md).
  *  - projectIsInGitRepo + describeProjectMemory git-aware project-memory description
- *    (parity: Claude Code MemoryFileSelector "Checked in at" vs "Saved in").
+ *    (parity: the reference MemoryFileSelector "Checked in at" vs "Saved in").
  */
 
 const ENV_FLAG = 'AMI_ADDITIONAL_DIRECTORIES_CLAUDE_MD';

@@ -834,7 +834,7 @@ describe('httpErrorContext', () => {
 
   // --- U060: network error code + request-body log hygiene -----------------
   it('surfaces a bare network error code when there is no url (ECONNREFUSED)', () => {
-    // Parity with Claude Code api.ts: a pure network failure logs `err.code`.
+    // Parity with the reference api.ts: a pure network failure logs `err.code`.
     assert.equal(httpErrorContext({ code: 'ECONNREFUSED' }), '[code=ECONNREFUSED] ');
     assert.equal(httpErrorContext({ code: 'ETIMEDOUT' }), '[code=ETIMEDOUT] ');
   });
@@ -1683,7 +1683,7 @@ describe('batched diagnostics channel', () => {
 
 // ---------------------------------------------------------------------------
 // Debug-mode enable gate: DEBUG/DEBUG_SDK/AMI_DEBUG env + --debug/-d/--debug=
-// argv flags + mid-session enableDebugLogging() (parity: Claude Code isDebugMode
+// argv flags + mid-session enableDebugLogging() (parity: the reference isDebugMode
 // / enableDebugLogging).
 // ---------------------------------------------------------------------------
 describe('isDebugMode / enableDebugLogging', () => {
@@ -1744,7 +1744,7 @@ describe('isDebugMode / enableDebugLogging', () => {
 
 // ---------------------------------------------------------------------------
 // Boundary gate: NODE_ENV=test suppression + non-node-runtime guard
-// (parity: Claude Code shouldLogDebugMessage prelude).
+// (parity: the reference shouldLogDebugMessage prelude).
 // ---------------------------------------------------------------------------
 describe('persistence boundary gate', () => {
   const ORIG = { ...process.env };
@@ -1806,7 +1806,7 @@ describe('persistence boundary gate', () => {
 
 // ---------------------------------------------------------------------------
 // Deferred write queue: buffer-on-failure + replay-in-order on next success
-// (parity: Claude Code errorQueue + drain-on-attach).
+// (parity: the reference errorQueue + drain-on-attach).
 // ---------------------------------------------------------------------------
 describe('deferred write queue', () => {
   const ORIG = { ...process.env };

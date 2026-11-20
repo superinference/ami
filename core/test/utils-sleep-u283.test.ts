@@ -2,7 +2,7 @@
 // Unit U283 — `unref` option on the shared sleep + its best-effort consumers.
 //
 // U297 added `sleep(ms, signal?, { unref })` to core/core/src/utils/sleep.ts
-// (parity with Claude Code's utils/sleep.ts L50-L52). This unit (a) locks that
+// (parity with the reference's utils/sleep.ts L50-L52). This unit (a) locks that
 // `{ unref: true }` ACTUALLY calls `timer.unref()` (not just that it doesn't
 // throw), and (b) WIRES that option into the real best-effort consumers that must
 // never hold the process open at shutdown: the analytics graceful-close drain

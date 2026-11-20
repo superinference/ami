@@ -1,14 +1,14 @@
 /**
  * U022 (w82) — two additive send_message capabilities:
  *
- *  1. Message URGENCY status (`normal` | `proactive`), mirroring Claude Code's
+ *  1. Message URGENCY status (`normal` | `proactive`), mirroring the reference's
  *     BriefTool `status` discriminator on the model→user/teammate channel. A
  *     plain-text message may be marked `proactive`; it is stamped on the stored
  *     AgentMessage, surfaced on the send result's metadata, and drained AHEAD of
  *     ordinary peer chatter (anti-starvation) by drainMailboxPrioritized.
  *
  *  2. Open task-assignment tracking → a termination notice with a task-unassignment
- *     summary, mirroring Claude Code's unassignTeammateTasks (useInboxPoller). A
+ *     summary, mirroring the reference's unassignTeammateTasks (useInboxPoller). A
  *     task_assignment opens an assignment; a completed idle_notification closes it;
  *     notifyLeadTeammateTerminated reports the still-open ones as orphaned.
  *

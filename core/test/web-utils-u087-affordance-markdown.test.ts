@@ -7,7 +7,7 @@
  *    with Claude Code's ssrfError (ssrfGuard.ts:L287). Applied to the private-
  *    hostname, private-IP, and redirect block messages.
  *  - Redirect-limit error names the ceiling: "Too many redirects (exceeded N
- *    hops)" instead of a bare "Too many redirects" — parity with Claude's
+ *    hops)" instead of a bare "Too many redirects" — parity with the reference's
  *    `Too many redirects (exceeded ${MAX_REDIRECTS})` (WebFetchTool/utils.ts:269).
  *  - stripHtml preserves anchor link targets as Markdown [text](href) before the
  *    catch-all tag strip, instead of discarding every <a href> URL — parity with

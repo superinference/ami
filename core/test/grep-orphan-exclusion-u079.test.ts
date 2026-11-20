@@ -11,7 +11,7 @@ import type { ToolContext } from '../src/types';
 /**
  * U079 — grep must never return matches from superseded plugin versions that the
  * installer relocated into the hidden `.orphaned/` hold dir (common's
- * plugin-orphan-cache). Parity: Claude's getGlobExclusionsForPluginCache feeds
+ * plugin-orphan-cache). Parity: the reference's getGlobExclusionsForPluginCache feeds
  * `--glob '!<orphaned>/**'` into Grep/Glob; AMI excludes its hold dir by name on
  * BOTH the ripgrep path and the in-process fallback walker.
  */

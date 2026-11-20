@@ -13,7 +13,7 @@ import type { ToolContext } from '../src/types';
 //      coerceNumber replacing the raw `as number` cast).
 //   2. Write-path glob guard: a notebook_path containing `*`/`?` is rejected
 //      with an actionable "specify an exact file path" message, mirroring
-//      file-edit.ts (parity: Claude's pathValidation glob-in-write rejection).
+//      file-edit.ts (parity: the reference's pathValidation glob-in-write rejection).
 // ---------------------------------------------------------------------------
 
 let tmpDir: string;

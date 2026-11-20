@@ -19,7 +19,7 @@ function ctx(overrides?: Partial<ToolContext>): ToolContext {
 // directory TOCTOU-safely (realpath, no existsSync pre-check) and RECOVERS to the
 // launch directory (process.cwd()) when the cwd is gone, surfacing a
 // "Shell cwd was reset to …" note. A hard error is returned only when neither the
-// cwd nor the fallback can be resolved. Parity: Claude Code Shell.ts setCwd +
+// cwd nor the fallback can be resolved. Parity: the reference Shell.ts setCwd +
 // delete-recovery.
 describe('bashTool — cwd validation / recovery', () => {
   afterEach(() => mock.restoreAll());

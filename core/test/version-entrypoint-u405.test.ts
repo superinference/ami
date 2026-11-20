@@ -12,7 +12,7 @@ import { resolveClientSurface } from '../src/tools/git-commit';
 // ---------------------------------------------------------------------------
 // U405 gap 2: entrypoint / client-app knobs in the client identity so MCP and
 // HTTP peers can tell which surface (TUI, detached CLI, MCP, an embedding SDK/
-// host app) originated a request. Parity with Claude Code's getMCPUserAgent /
+// host app) originated a request. Parity with the reference's getMCPUserAgent /
 // getUserAgent (src/utils/http.ts), which append CLAUDE_CODE_ENTRYPOINT,
 // agent-sdk/<ver> and client-app/<id> to the UA.
 // ---------------------------------------------------------------------------

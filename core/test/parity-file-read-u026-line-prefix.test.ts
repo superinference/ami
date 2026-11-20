@@ -45,7 +45,7 @@ afterEach(() => {
 // Gap (utils/file.ts :: config knob to select the read line-number prefix
 // format): getLineNumberStyle resolves compact by default + arrow on request,
 // and a malformed value can never corrupt the format (falls back to compact).
-// Mirrors Claude Code isCompactLinePrefixEnabled() (utils/file.ts).
+// Mirrors the reference isCompactLinePrefixEnabled() (utils/file.ts).
 // ---------------------------------------------------------------------------
 describe('getLineNumberStyle – config knob', () => {
   it('defaults to compact when unset', () => {
@@ -160,7 +160,7 @@ describe('line-number prefix round-trip (format <-> strip)', () => {
 // ---------------------------------------------------------------------------
 // Gap (FileEditTool/prompt.ts :: configurable line-number prefix format): the
 // file_edit description reflects whichever prefix format is active, so the model
-// strips the correct prefix. Mirrors Claude Code getEditToolDescription().
+// strips the correct prefix. Mirrors the reference getEditToolDescription().
 // ---------------------------------------------------------------------------
 describe('buildFileEditDescription – reflects the active prefix format', () => {
   it('compact: describes the "N\\t" tab prefix', () => {

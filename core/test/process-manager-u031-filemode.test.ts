@@ -1,6 +1,6 @@
 /**
  * U031 — Bash stdout/stderr routed directly to a file fd, bypassing the JS heap
- * ("file mode"). Parity with Claude Code's TaskOutput stdoutToFile (L21-36): a bash
+ * ("file mode"). Parity with the reference's TaskOutput stdoutToFile (L21-36): a bash
  * command's stdout AND stderr go STRAIGHT to the output-file fd so "neither enters
  * JS". AMI previously always piped every byte through JS ('data' listeners +
  * writeChunk). This adds an opt-in file mode where ProcessManager.spawn wires
@@ -94,7 +94,7 @@ describe('U031 file mode — stdio wired straight to the fd (bypasses JS)', () =
     pm = new ProcessManager(tmp);
     const id = pm.spawn('echo out; echo err 1>&2', { cwd: tmp, fileMode: true });
     await waitFor(() => pm!.getStatus(id) !== 'running');
-    assert.equal(pm.getStderr(id), '', 'no separable stderr tail in file mode (parity with Claude getStderr()="")');
+    assert.equal(pm.getStderr(id), '', 'no separable stderr tail in file mode (parity with the reference getStderr()="")');
   });
 
   it('getOutputSize reflects the on-disk size while bytesWritten stays 0 (output bypassed JS)', async () => {

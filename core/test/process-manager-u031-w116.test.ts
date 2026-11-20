@@ -14,7 +14,7 @@ import { projectStateDir } from '../src/reference-journal';
 // U031-w116 — Parse-failure guard on external (persisted) task registry
 // records before trusting them into tracked state.
 //
-// Parity with Claude Code's ITermBackend split-output guard
+// Parity with the reference's ITermBackend split-output guard
 // (references/claude/claude-code-main/src/utils/swarm/backends/ITermBackend.ts:L217-L223):
 // after parsing an id/handle out of external process output, an empty / garbage
 // value must be REJECTED (explicit failure) instead of being pushed into tracked

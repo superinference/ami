@@ -1,7 +1,7 @@
 /**
  * Unit tests for the JetBrains IDE detection building blocks (core/src/ide.ts).
  *
- * Mirrors Claude Code's `src/utils/jetbrains.ts` — the `ideNameToDirMap` config
+ * Mirrors the reference's `src/utils/jetbrains.ts` — the `ideNameToDirMap` config
  * table (15 JetBrains IDEs) and `buildCommonPluginDirectoryPaths` platform-aware
  * path resolution with APPDATA/LOCALAPPDATA env fallbacks and XDG-style Linux
  * defaults. The resolver is pure and context-injected, so every platform branch

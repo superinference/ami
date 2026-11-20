@@ -15,7 +15,7 @@ import type { StreamChunk } from '../src/provider';
 // Gap: healOrphanedToolCalls only reconciles id-pairing; it never validates the
 // referenced tool NAME against the available set, so a tool_call/tool_result for a
 // disconnected MCP server or removed plugin tool is still forwarded to the provider
-// (which rejects it). Mirrors Claude's stripUnavailableToolReferencesFromUserMessage.
+// (which rejects it). Mirrors the reference's stripUnavailableToolReferencesFromUserMessage.
 // ---------------------------------------------------------------------------
 
 const asmCall = (id: string, name: string): Message => ({

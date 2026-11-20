@@ -1,7 +1,7 @@
 /**
  * U007 (w111) — prompt hook conversation-history prepend.
  *
- * Parity: Claude Code's execPromptHook accepts an optional `messages[]` and, when
+ * Parity: the reference's execPromptHook accepts an optional `messages[]` and, when
  * present, prepends the full conversation history before the hook's user message
  * (`messagesToQuery = [...messages, userMessage]`) so the LLM can judge the hook
  * condition against the ACTUAL conversation rather than the self-contained event

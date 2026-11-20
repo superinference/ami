@@ -28,7 +28,7 @@ function recordingStreamFn(
 const contentChunk = (text: string): StreamChunk => ({ type: 'content_delta', text } as unknown as StreamChunk);
 
 // ---------------------------------------------------------------------------
-// Gap: {{variable}} substitution helper (parity: Claude's substituteVariables)
+// Gap: {{variable}} substitution helper (parity: the reference's substituteVariables)
 // ---------------------------------------------------------------------------
 describe('substituteMemoryVariables', () => {
   it('replaces every {{name}} token with the matching value', () => {

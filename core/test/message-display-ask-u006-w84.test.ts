@@ -10,7 +10,7 @@ import type { ToolResult } from '../src/types';
 // ===========================================================================
 // U006-w84 — ToolResult `behavior: 'ask'` recoverable-validation render state.
 //
-// Parity with Claude Code's FileEditTool `behavior: 'ask' | 'error'` split: a
+// Parity with the reference's FileEditTool `behavior: 'ask' | 'error'` split: a
 // recoverable validation failure (fix-and-retry) is classified distinctly from a
 // fatal error so a frontend/transcript can present an "ask and retry" affordance
 // instead of a hard stop. classifyToolResultState gains an `ask` state that wins

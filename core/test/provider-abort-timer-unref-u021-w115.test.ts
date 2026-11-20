@@ -11,7 +11,7 @@ import type { ProviderConfig, Message, StreamChunk } from '../src/types';
 // ---------------------------------------------------------------------------
 // U021 (w115) — abort/deadline timers must be `unref`'d so a pending timeout
 // never keeps the Node event loop (or the process) alive on a path where its
-// `clearTimeout` is skipped. Parity with Claude Code's `timer.unref?.()` on
+// `clearTimeout` is skipped. Parity with the reference's `timer.unref?.()` on
 // every abort-timeout timer (utils/combinedAbortSignal.ts L35).
 //
 // RED on revert:

@@ -5,7 +5,7 @@ import { detectCdSensitiveDesync } from '../src/tools/bash-security.ts';
 // ===========================================================================
 // UNIT U015 — compound cwd-desync TOCTOU detector (detectCdSensitiveDesync).
 //
-// Parity with Claude Code's compoundCommandHasCd cwd-desync guard
+// Parity with the reference's compoundCommandHasCd cwd-desync guard
 // (PowerShellTool/modeValidation.ts L192-224, pathValidation.ts L1599-1617):
 // once a statement changes directory, a later RELATIVE operand resolves against
 // the changed cwd at runtime while the permission layer only saw the literal

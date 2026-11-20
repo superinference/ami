@@ -41,7 +41,7 @@ describe('notebook_edit – per-mode cell preview (U098-w70)', () => {
     assert.ok(result.output.includes('Inserted cell source:'), result.output);
     assert.ok(result.output.includes('b = 2'), result.output);
     assert.ok(result.output.includes('print(b)'), result.output);
-    // Insert is NOT a unified diff (parity: Claude highlights the source, no @@ hunks).
+    // Insert is NOT a unified diff (parity: the reference highlights the source, no @@ hunks).
     assert.ok(!result.output.includes('@@'), result.output);
   });
 

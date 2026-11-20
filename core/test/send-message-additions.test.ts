@@ -25,7 +25,7 @@ describe('send_message additions', () => {
       const ok = parseStructuredMessage('{"type":"plan_approval_request","requestId":"p1","planContent":"do X","planFilePath":"/tmp/plan.md"}');
       assert.deepEqual(ok, { type: 'plan_approval_request', requestId: 'p1', planContent: 'do X', planFilePath: '/tmp/plan.md' });
       // requestId is optional on the wire for a *request* — it is auto-generated
-      // before queueing (parity with Claude's generateRequestId).
+      // before queueing (parity with the reference's generateRequestId).
       const noId = parseStructuredMessage('{"type":"plan_approval_request","planContent":"x"}');
       assert.deepEqual(noId, { type: 'plan_approval_request', requestId: undefined, planContent: 'x', planFilePath: undefined });
       const noPlan = parseStructuredMessage('{"type":"plan_approval_request","requestId":"p1"}');

@@ -17,7 +17,7 @@ import {
 //     (shred/truncate/rmdir/kill/pkill/killall) had NO per-pattern warning and
 //     fell back to a generic "is destructive" line. Add specific, human-readable
 //     notes, distinguishing CERTAINTY ("will" for a deterministic effect like
-//     `shred`, "may" for conditional ones) — parity with Claude's
+//     `shred`, "may" for conditional ones) — parity with the reference's
 //     destructiveCommandWarning.ts will/may wording. Purely informational;
 //     surfaced through the existing `destructive` safetyCheck decision reason.
 //

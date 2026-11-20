@@ -167,7 +167,7 @@ describe('type-branded AgentId', () => {
 });
 
 describe('NOTIFICATION_CHANNELS', () => {
-  it('enumerates the 7 terminal notification channels (parity with Claude)', () => {
+  it('enumerates the 7 terminal notification channels (parity with the reference)', () => {
     assert.equal(NOTIFICATION_CHANNELS.length, 7);
     for (const ch of ['auto', 'iterm2', 'iterm2_with_bell', 'terminal_bell', 'kitty', 'ghostty', 'notifications_disabled'] as const) {
       assert.ok(NOTIFICATION_CHANNELS.includes(ch), `missing channel: ${ch}`);

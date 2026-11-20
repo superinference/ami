@@ -12,11 +12,11 @@ import {
 // ---------------------------------------------------------------------------
 // Unit U030 / wave w67 — two additive parity features on the bash tool:
 //   A. AMI_DISABLE_GIT_INSTRUCTIONS knob: drop the git/commit sentence from the
-//      bash description (parity: Claude's shouldIncludeGitInstructions() /
+//      bash description (parity: the reference's shouldIncludeGitInstructions() /
 //      getCommitAndPRInstructions() gate in prompt.ts).
 //   B. Affordance hints in the description: run `ls` to verify the parent dir
 //      before creating files, and separate multiple commands with `&&`/`;` not
-//      newlines (parity: Claude prompt.ts:L297-L302, L332).
+//      newlines (parity: the reference prompt.ts:L297-L302, L332).
 // ---------------------------------------------------------------------------
 
 // ---- Feature A: AMI_DISABLE_GIT_INSTRUCTIONS --------------------------------

@@ -7,7 +7,7 @@ import { redactSecretValue, REDACT_MIN_LENGTH } from '../src/env-access-guard';
 // ---------------------------------------------------------------------------
 // U069 (w82) — JSON field-name-based secret redaction + partial masking parity.
 //
-// Parity with Claude Code bridge/debugUtils.ts SECRET_FIELD_NAMES: redactSecrets
+// Parity with the reference bridge/debugUtils.ts SECRET_FIELD_NAMES: redactSecrets
 // must scrub a secret by its JSON FIELD NAME regardless of the value's shape, so
 // an opaque custom token (one that matches no provider prefix) sitting under a
 // `"access_token"`/`"session_ingress_token"`/`"environment_secret"` key cannot

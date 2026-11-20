@@ -1,5 +1,5 @@
 /**
- * U021 — additive session-resume primitives (parity with Claude's resume path):
+ * U021 — additive session-resume primitives (parity with the reference's resume path):
  *  - buildConversationChain follows `logicalParentUuid` across a deliberate
  *    session-break nullification (parentUuid === undefined) so lineage spanning a
  *    `/clear`-style break is still reconstructed (logs.ts TranscriptMessage

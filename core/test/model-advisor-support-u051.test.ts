@@ -3,7 +3,7 @@
 //
 // Unit U051 — per-model capability gate for a secondary advisor/architect model.
 //
-// Mirrors Claude Code's modelSupportsAdvisor
+// Mirrors the reference's modelSupportsAdvisor
 // (references/claude/claude-code-main/src/utils/advisor.ts:L88-L96) and the
 // no-arg advisor status "(inactive)" state gated on the current base model
 // (references/claude/claude-code-main/src/commands/advisor.ts:L31-L36):

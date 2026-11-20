@@ -7,7 +7,7 @@ import {
 } from '../src/tools/ask-user';
 
 // ---------------------------------------------------------------------------
-// validateHtmlPreview — HTML-fragment safety (parity with Claude)
+// validateHtmlPreview — HTML-fragment safety (parity with the reference)
 // ---------------------------------------------------------------------------
 
 describe('validateHtmlPreview', () => {

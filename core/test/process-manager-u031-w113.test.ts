@@ -14,7 +14,7 @@ import {
 // U031 / w113: incremental OUTPUT delta reporting of still-running background
 // tasks.
 //
-// Parity with Claude Code's LocalShellTaskState `lastReportedTotalLines` delta
+// Parity with the reference's LocalShellTaskState `lastReportedTotalLines` delta
 // cursor: a long-running background shell's NEW output is surfaced to the model
 // incrementally (periodic progress attachments) instead of the model learning
 // nothing until the task completes. AMI had the primitive (getOutputTail) but it

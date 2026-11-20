@@ -7,7 +7,7 @@
  *  - batched fire-stamp persistence: N durable fires in one tick coalesce into
  *    a single file write instead of one write per fired job.
  *
- * Mirrors Claude's createCronScheduler() options (getNextFireTime / isKilled /
+ * Mirrors the reference's createCronScheduler() options (getNextFireTime / isKilled /
  * batched markCronTasksFired) in references/claude/.../utils/cronScheduler.ts.
  */
 

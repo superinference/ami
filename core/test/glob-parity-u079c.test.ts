@@ -12,10 +12,10 @@ import type { ToolContext } from '../src/types';
  * U079c — two parity behaviors on the glob tool:
  *  - orphaned plugin hold-dir exclusion (`.orphaned/`): superseded plugin
  *    versions relocated by common's plugin-orphan-cache must never surface in
- *    glob results (parity: Claude's getGlobExclusionsForPluginCache).
+ *    glob results (parity: the reference's getGlobExclusionsForPluginCache).
  *  - file-READ deny patterns from the permission context (`readIgnorePatterns`)
  *    must be folded into the ignore set on BOTH the tinyglobby and ripgrep routes
- *    (parity: Claude's getFileReadIgnorePatterns → glob exclusions).
+ *    (parity: the reference's getFileReadIgnorePatterns → glob exclusions).
  */
 describe('U079c glob — orphaned plugin hold dir excluded (tinyglobby route)', () => {
   let tmpDir: string;

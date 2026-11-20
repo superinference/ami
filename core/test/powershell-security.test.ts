@@ -218,7 +218,7 @@ describe('CLM type-cast boundary wired into the permission path', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Dangerous-cmdlet config lists (mirrors Claude's dangerousCmdlets.ts). The
+// Dangerous-cmdlet config lists (mirrors the reference's dangerousCmdlets.ts). The
 // detectors below consume these, so they are the single source of truth.
 // ---------------------------------------------------------------------------
 describe('PowerShell dangerous-cmdlet config lists', () => {
@@ -400,7 +400,7 @@ describe('detectDangerousPsCmdlets', () => {
 
 // ---------------------------------------------------------------------------
 // detectStopParsingToken — the `--%` stop-parsing / analysis-bypass boundary.
-// Mirrors Claude Code's parser token check (MinusMinus / dash-normalized '--%').
+// Mirrors the reference's parser token check (MinusMinus / dash-normalized '--%').
 // ---------------------------------------------------------------------------
 describe('detectStopParsingToken', () => {
   it('flags a standalone --% stop-parsing token', () => {
@@ -528,7 +528,7 @@ describe('detectDangerousPowerShellCommand aggregate + permission-path wiring', 
 
 // ---------------------------------------------------------------------------
 // Categorized dangerous-cmdlet config lists (network / filepath-exec /
-// scriptblock) — mirrors Claude's dangerousCmdlets.ts data structures.
+// scriptblock) — mirrors the reference's dangerousCmdlets.ts data structures.
 // ---------------------------------------------------------------------------
 describe('categorized dangerous-cmdlet config lists', () => {
   it('NETWORK_CMDLETS covers the web-request/exfil cmdlets', () => {

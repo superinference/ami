@@ -5,7 +5,7 @@
  *     Claude's `cleanupPeriodDays`: delete transcripts older than N days, no-op when
  *     the window is unset / 0 / negative / non-finite, and remove the blob sidecar
  *     alongside the JSON.
- *  2. `contentToText` / deriveFirstPrompt hardening — parity with Claude's
+ *  2. `contentToText` / deriveFirstPrompt hardening — parity with the reference's
  *     deriveFirstPrompt: a title/preview is derived from a multimodal (array)
  *     first user message by extracting its first text block, instead of collapsing
  *     to a generic placeholder.

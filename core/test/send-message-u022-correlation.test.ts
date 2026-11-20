@@ -1,7 +1,7 @@
 /**
  * U022 — request/response correlation output fields on send_message results.
  *
- * Mirrors Claude Code's SendMessageToolOutput discriminator fields
+ * Mirrors the reference's SendMessageToolOutput discriminator fields
  * (tools/SendMessageTool/UI.tsx L21-26): a REQUEST-type control send surfaces a
  * `request_id` + `target` so a later response can be correlated to it, and a
  * RESPONSE-type send is marked `routing: true` (a fire-and-forward routed reply)

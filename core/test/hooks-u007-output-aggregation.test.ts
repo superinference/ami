@@ -4,7 +4,7 @@
  * Gaps covered (all self-contained in core/core/src/hooks.ts):
  *  - [20] executePostToolUse / executeUserPromptSubmit aggregate ALL
  *    additionalContexts + blockingErrors from every matching hook (vs the old
- *    last-wins overwrite). Mirrors Claude Code's AggregatedHookResult which
+ *    last-wins overwrite). Mirrors the reference's AggregatedHookResult which
  *    collects additionalContexts: string[] / blockingErrors: HookBlockingError[].
  *  - [17] PostToolUse hooks may emit `updatedMCPToolOutput` (Claude Code's key
  *    for MCP tool-output rewrites) as an alias of AMI's `updatedToolOutput`.

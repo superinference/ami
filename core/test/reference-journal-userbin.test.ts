@@ -1,7 +1,7 @@
 /**
  * U058 — reference-journal user-bin-dir convention + PATH-membership helper:
  *  - getUserBinDir: the conventional per-user executable dir (`~/.local/bin`),
- *    HOME-aware via resolveHome (parity: Claude Code's xdg.ts getUserBinDir).
+ *    HOME-aware via resolveHome (parity: the reference's xdg.ts getUserBinDir).
  *  - isDirOnPath: canonical PATH-membership check (resolve + trim + skip-empty;
  *    case-insensitive on Windows) shared by the native-install PATH diagnostic and
  *    the `~/.local/bin` doctor check so the rule lives in exactly one place.

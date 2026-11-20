@@ -13,7 +13,7 @@ import { searchSymbolsTool, _resetIndexer } from '../src/tools/search-symbols';
 import type { ToolContext } from '../src/types';
 
 // ---------------------------------------------------------------------------
-// U109 async-build cluster — parity with Claude Code's file-index
+// U109 async-build cluster — parity with the reference's file-index
 // loadFromFileListAsync (references native-ts/file-index/index.ts L34-133):
 //   - CHUNK_MS time-based async-build knob (indexBuildConfig.chunkMs)
 //   - Time-based cooperative yielding during the build (indexerHooks.yieldToEventLoop)

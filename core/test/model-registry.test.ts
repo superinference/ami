@@ -372,7 +372,7 @@ describe('formatModelList — additional coverage', () => {
 
 // ---------------------------------------------------------------------------
 // In-flight listing coalescing (gap: concurrency-guarded, de-duplicated model
-// listing — parity with Claude Code's sequential()-guarded background init).
+// listing — parity with the reference's sequential()-guarded background init).
 // Concurrent callers for the same endpoint must share ONE /models request; a
 // later call (after the first settled) must re-fetch.
 // ---------------------------------------------------------------------------
@@ -422,7 +422,7 @@ describe('listModels — in-flight coalescing', () => {
 });
 
 // ---------------------------------------------------------------------------
-// getAgentModelOptions — curated agent-model catalog (parity with Claude's
+// getAgentModelOptions — curated agent-model catalog (parity with the reference's
 // getAgentModelOptions + ModelSelector custom-id injection).
 // ---------------------------------------------------------------------------
 describe('getAgentModelOptions', () => {
@@ -476,7 +476,7 @@ describe('getAgentModelOptions', () => {
 
 // ---------------------------------------------------------------------------
 // getModelDescriptionForModel — longer MODEL-FACING capability/cost copy, distinct
-// from the terse human picker copy (parity: Claude's ModelOption.descriptionForModel).
+// from the terse human picker copy (parity: the reference's ModelOption.descriptionForModel).
 // ---------------------------------------------------------------------------
 describe('getModelDescriptionForModel', () => {
   it('resolves a family-level model-facing description for a known id', () => {

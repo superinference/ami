@@ -4,16 +4,16 @@
  *  1. Injectable programmatic kill-switch (setKillSwitch): the CALLBACK form of
  *     the env AMI_DISABLE_CRON gate, polled once at tick entry so flipping it mid
  *     session stops an already-running scheduler (not just new ones). Surfaced via
- *     isKilled(). Mirrors Claude's isKilled() scheduler option.
+ *     isKilled(). Mirrors the reference's isKilled() scheduler option.
  *
  *  2. Per-task filter (setTaskFilter): a predicate applied before ANY side effect.
  *     A job returning false is invisible to this scheduler instance — never fired,
  *     stamped, deleted/expired, surfaced as missed, or counted in getNextFireTime().
- *     Mirrors Claude's per-task filter scheduler option.
+ *     Mirrors the reference's per-task filter scheduler option.
  *
  *  3. Orphaned-cron cleanup (setAgentAliveCheck): a due recurring cron whose owning
  *     teammate (agentId) is gone is pruned, with a diagnostic log, instead of firing
- *     into nowhere every tick. Mirrors Claude's onFireTask orphaned-cron removal.
+ *     into nowhere every tick. Mirrors the reference's onFireTask orphaned-cron removal.
  *
  * References: src/utils/cronScheduler.ts (isKilled/filter) and
  *             src/hooks/useScheduledTasks.ts (orphaned-cron cleanup).

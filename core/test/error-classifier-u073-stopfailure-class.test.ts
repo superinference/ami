@@ -29,7 +29,7 @@ import {
 } from '../src/error-classifier';
 import { HookManager, getHookEventMetadata, type StopFailureContext } from '../src/hooks';
 
-describe('STOP_FAILURE_ERROR_CLASSES — mirrors Claude Code taxonomy', () => {
+describe('STOP_FAILURE_ERROR_CLASSES — mirrors the reference taxonomy', () => {
   it('is the exact reference set', () => {
     assert.deepEqual([...STOP_FAILURE_ERROR_CLASSES], [
       'rate_limit', 'authentication_failed', 'billing_error', 'invalid_request',

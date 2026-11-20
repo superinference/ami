@@ -1,14 +1,14 @@
 // Unit U039 (wave w71) — additive parity gaps for core/core/src/tools/file-edit.ts:
 //  - Team-memory-scoped secret guard: a write that would introduce a secret into
 //    a file under the SHARED team-memory tree is blocked with a distinct,
-//    collaborator-aware message (parity: Claude Code's teamMemSecretGuard, which
+//    collaborator-aware message (parity: the reference's teamMemSecretGuard, which
 //    scopes a stricter "shared with all repository collaborators" block to
 //    team-memory paths). Any other path keeps the generic repository-scoped
 //    warning. Reuses the ONE canonical classifier MemoryManager.isTeamMemFile.
 //  - Accurate 1-based edit location: the single-replace `[edit: …]` patch-info
 //    tag now carries the TRUE 1-based line where the change landed (the first
 //    hunk's oldStart), so the model/UI can locate the edit without re-reading the
-//    file (parity: Claude Code's readEditContext lineOffset).
+//    file (parity: the reference's readEditContext lineOffset).
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import * as assert from 'node:assert/strict';
 import * as fs from 'fs';

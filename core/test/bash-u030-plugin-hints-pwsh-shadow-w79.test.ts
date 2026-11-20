@@ -253,7 +253,7 @@ describe('U030/w79 processPluginHints', () => {
 });
 
 // Gap U030: per-session anti-thrash dedup bounding repeat surfacing of the SAME
-// plugin hint (parity: Claude Code hintRecommendation.ts triedThisSession L83-96).
+// plugin hint (parity: the reference hintRecommendation.ts triedThisSession L83-96).
 describe('U030 processPluginHints — per-session dedup (anti-thrash)', () => {
   afterEach(() => { delete process.env.AMI_PLUGIN_HINTS; _resetPluginHintSessionForTest(); });
 

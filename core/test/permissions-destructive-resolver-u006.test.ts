@@ -1,7 +1,7 @@
 /**
  * U006 — generic per-tool destructive-operation guard.
  *
- * Parity: Claude's generic `Tool.isDestructive(input)`. The permission layer must
+ * Parity: the reference's generic `Tool.isDestructive(input)`. The permission layer must
  * downgrade an over-broad `allow` rule to an explicit prompt (`ask`) in `ask` mode
  * for ANY tool whose injected destructive resolver flags the call irreversible —
  * not just bash. It must also attribute that prompt to the `destructive` safetyCheck

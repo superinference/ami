@@ -3,7 +3,7 @@
  *
  * A transient capacity overload (HTTP 503/529, "overloaded", "capacity") must be
  * flagged `overloaded: true` so the engine rides it out on the same model for a few
- * retries before switching to a fallback model (parity: Claude Code's MAX_529_RETRIES
+ * retries before switching to a fallback model (parity: the reference's MAX_529_RETRIES
  * threshold before FallbackTriggeredError). A genuine model-unavailable error
  * (`model_not_found`) is still `model_unavailable`/`shouldFallback` but is NOT an
  * overload, so it keeps falling back immediately.

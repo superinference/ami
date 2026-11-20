@@ -22,7 +22,7 @@ function ctx(overrides?: Partial<ToolContext>): ToolContext {
 // ===========================================================================
 // U011-w68 — Auto-background of long-running foreground subagents.
 //
-// Parity with Claude's AgentTool getAutoBackgroundMs()/autoBackgroundMs
+// Parity with the reference's AgentTool getAutoBackgroundMs()/autoBackgroundMs
 // (AgentTool.tsx:72-77, 808-833, ~1195): a foreground agent that keeps running
 // past a configured threshold is automatically promoted to a background task so
 // the parent turn is not blocked indefinitely. AMI previously declared the

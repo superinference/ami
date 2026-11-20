@@ -1,7 +1,7 @@
 // U023 (w75): per-skill / per-agent frontmatter `hooks` field — the canonical
 // parser (parseFrontmatterHooks), the SkillDefinition/AgentDefinition schema +
 // safe-property + validation wiring, and the invocation-scoped
-// HookManager.registerConfigEntries lifecycle API. Parity with Claude Code's
+// HookManager.registerConfigEntries lifecycle API. Parity with the reference's
 // PromptCommand/agent `hooks` + registerFrontmatterHooks.
 
 import { test } from 'node:test';

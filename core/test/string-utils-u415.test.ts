@@ -4,7 +4,7 @@
  * Covers the three helpers consolidated from a dozen+ open-coded call sites
  * (the `${n === 1 ? '' : 's'}` plural idiom, the `charAt(0).toUpperCase()`
  * capitalize idiom, and four private `escapeReg(Exp|ex)` RegExp-escape copies),
- * matching Claude Code's `src/utils/stringUtils.ts` behaviour exactly.
+ * matching the reference's `src/utils/stringUtils.ts` behaviour exactly.
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';

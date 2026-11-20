@@ -19,7 +19,7 @@ import type { ToolContext } from '../src/types';
 // A name whose holder has TERMINATED (completed/failed/killed) is reclaimed for
 // the new live agent instead of being pushed to a suffixed alias, so a message /
 // resume aimed at the canonical name routes to the running instance — not the dead
-// one (parity: Claude Code's findTeammateTaskByAgentId preferring the RUNNING task
+// one (parity: the reference's findTeammateTaskByAgentId preferring the RUNNING task
 // over a stale killed/completed one, InProcessTeammateTask.tsx:L92-108).
 //
 // Red-green: reverting the `isTerminal?.(existing) -> return name` reclamation in

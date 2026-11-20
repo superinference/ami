@@ -7,7 +7,7 @@ import { fileEditTool } from '../src/tools/file-edit';
 import type { ToolContext, GitDiffSummary } from '../src/types';
 
 // ---------------------------------------------------------------------------
-// U039 / w79 — structured edit-result metadata (parity: Claude Code's
+// U039 / w79 — structured edit-result metadata (parity: the reference's
 // FileEditTool outputSchema): gitDiff, editMode, replaceAll, userModified.
 // Plus the documented intentional divergence from line-reference ("hashline")
 // edits (string-match addressing is AMI's canonical edit mode).

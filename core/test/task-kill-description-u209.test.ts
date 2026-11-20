@@ -5,7 +5,7 @@ import { taskKillTool } from '../src/tools/task-kill';
 
 /**
  * U209 — PARITY (additive): task_kill's description carries explicit
- * when-to-use + parameter/result-contract guidance, mirroring Claude Code's
+ * when-to-use + parameter/result-contract guidance, mirroring the reference's
  * TaskStop prompt.ts (prompt.ts:3-9):
  *   - "Use this tool when you need to terminate a long-running task"
  *   - "Takes a task_id parameter identifying the task to stop"

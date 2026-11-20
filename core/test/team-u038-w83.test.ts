@@ -24,7 +24,7 @@ import type { ToolContext } from '../src/types';
 
 // ---------------------------------------------------------------------------
 // U038 (w83) — worker permission-escalation gate.
-// Parity: Claude Code's WorkerPendingPermission (components/permissions/
+// Parity: the reference's WorkerPendingPermission (components/permissions/
 // WorkerPendingPermission.tsx L12-15) embodies a privilege-separation rule: a
 // WORKER cannot self-approve a permission request; its request is held pending
 // and routed UP to the human-supervised team LEADER, who decides. AMI surfaces

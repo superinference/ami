@@ -3,7 +3,7 @@
  *
  * `readGitHeadFromDisk` / `readGitHeadLabelFromDisk` must distinguish a branch
  * from a detached HEAD (and return a SHA-derived label for the detached case)
- * instead of collapsing every non-branch HEAD to '' — parity with Claude's
+ * instead of collapsing every non-branch HEAD to '' — parity with the reference's
  * filesystem `readGitHead` (gitFilesystem.ts L149-183). `readGitBranchFromDisk`
  * keeps its '' contract on a detached HEAD by delegating to the structured reader.
  *

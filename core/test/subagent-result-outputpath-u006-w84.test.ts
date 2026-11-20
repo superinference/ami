@@ -14,7 +14,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 // ===========================================================================
 // U006-w84 — subagent_result carries `outputPath` for the spilled agent output.
 //
-// Parity with Claude Code's task terminal notification `output_file`: a stream
+// Parity with the reference's task terminal notification `output_file`: a stream
 // consumer needs to locate the file holding the (auto-backgrounded) agent's
 // output without a separate task_output call. AMI background agents already write
 // to `<project>/tasks/<taskId>.output`, but the subagent_result event exposed no

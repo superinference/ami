@@ -9,7 +9,7 @@ import {
 
 // ---------------------------------------------------------------------------
 // MCP tool-name parity: normalization hardening (collapse/strip to protect the
-// `__` delimiter) and the centralized inverse parser. Mirrors Claude Code's
+// `__` delimiter) and the centralized inverse parser. Mirrors the reference's
 // normalizeNameForMCP / mcpInfoFromString.
 // ---------------------------------------------------------------------------
 

@@ -74,7 +74,7 @@ describe('ProcessManager – spawn error path', () => {
     pm = new ProcessManager(tmpDir);
     // FUNCTIONAL CHANGE (U031 CWD recovery): a merely-missing cwd no longer reaches
     // the async proc.on('error') path — it is now recovered to the known-good root
-    // BEFORE spawn (parity: Claude Code Shell.ts realpath recovery). To still cover
+    // BEFORE spawn (parity: the reference Shell.ts realpath recovery). To still cover
     // the genuine proc.on('error') branch (a cwd that passes validation but the OS
     // rejects at fork time), make the pre-spawn realpath check PASS for a path the
     // kernel will then reject with ENOENT at spawn.
@@ -113,7 +113,7 @@ describe('ProcessManager – spawn error path', () => {
 // spawn: writeChunk output-cap runaway watchdog
 //   covers: subarray truncation to the cap, the cap-breach note, the early
 //   `bytesWritten >= cap` return for later chunks, and the KILL-on-breach
-//   watchdog (parity with Claude Code's ShellCommand size watchdog — a producer
+//   watchdog (parity with the reference's ShellCommand size watchdog — a producer
 //   that blows past the cap is stopped, not silently truncated-and-left-running).
 // ---------------------------------------------------------------------------
 
@@ -160,7 +160,7 @@ describe('ProcessManager – getOutput missing file', () => {
     assert.ok(result, 'task still tracked, so result object is returned');
     // A spawned task's output file is created up-front, so a missing file means it
     // was deleted/tampered with mid-run — surface a diagnostic rather than a silent
-    // empty read (parity with Claude Code's #readStdoutFromFile).
+    // empty read (parity with the reference's #readStdoutFromFile).
     assert.match(result!.output, /task output unavailable/i);
     assert.match(result!.output, /ENOENT/);
     assert.equal(result!.status, 'completed');

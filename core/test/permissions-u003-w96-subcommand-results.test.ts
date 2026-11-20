@@ -9,7 +9,7 @@ import { PermissionManager } from '../src/permissions';
 // can show WHICH specific segment forced the ask/deny instead of collapsing
 // the whole chain to a single verdict. Deny-wins aggregation is preserved: the
 // overall decision stays authoritative, the map is additive diagnostics.
-// Mirrors Claude's BashPermissionRequest.subcommandResults
+// Mirrors the reference's BashPermissionRequest.subcommandResults
 // (Map<string, PermissionResult>) + per-segment deny-wins ordering
 // (tools/BashTool/bashCommandHelpers.ts L84-156).
 // ---------------------------------------------------------------------------

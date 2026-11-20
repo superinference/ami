@@ -7,7 +7,7 @@ import {
 
 // ---------------------------------------------------------------------------
 // UNIT U045 (continuation) — explicit weaker-fallback warning for the host
-// bash sandbox (bash-sandbox.ts). Parity with Claude Code's degraded-mode
+// bash sandbox (bash-sandbox.ts). Parity with the reference's degraded-mode
 // "Cannot block …" notices (SandboxSettings.tsx L40-41,L235-241): when the
 // namespace sandbox silently degrades to resource-limits-only, surface which
 // REQUESTED protections are no longer enforced instead of running silently.

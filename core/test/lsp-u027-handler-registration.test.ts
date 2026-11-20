@@ -133,7 +133,7 @@ describe('LSPClient.registerDiagnosticHandlers — aggregate registration result
     assert.equal(reg.registrationErrors.length, 1);
     assert.equal(reg.registrationErrors[0].serverName, 'crashlang');
     assert.match(reg.registrationErrors[0].error, /crashed with exit code 1/);
-    // Aggregate failure line is logged (parity with Claude's "N/M succeeded").
+    // Aggregate failure line is logged (parity with the reference's "N/M succeeded").
     assert.ok(
       getInMemoryErrors().some((e) => e.error.includes('1/2 server(s) ready') && e.error.includes('crashlang')),
       'expected an aggregate registration-status log line',

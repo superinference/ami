@@ -6,7 +6,7 @@ import type { ToolDefinition } from '../src/types';
 
 // ---------------------------------------------------------------------------
 // U006 / w112 — canonical auto-mode-classifier INPUT PROJECTION resolver.
-// Parity: Claude Code yoloClassifier `Tool.toAutoClassifierInput` (L384-424):
+// Parity: the reference yoloClassifier `Tool.toAutoClassifierInput` (L384-424):
 //   - per-tool hook is the single source of truth for the projected view,
 //   - '' means "not security relevant" -> short-circuit to auto-allow,
 //   - the hook runs on unvalidated model/history input so a throw falls back to

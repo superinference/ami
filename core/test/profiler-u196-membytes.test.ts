@@ -1,6 +1,6 @@
 /**
  * U196 — profiler memory output consolidated onto the shared `formatFileSize`
- * humanizer (parity with Claude's profilerBase formatTimelineLine, which renders
+ * humanizer (parity with the reference's profilerBase formatTimelineLine, which renders
  * `RSS: <size>, Heap: <size>`). Before this, the timeline printed heap-only as an
  * ad-hoc `(bytes / 1_048_576).toFixed(1)}MB`, so a 2GB RSS never appeared and a
  * 1.5GB heap read as `1536.0MB` instead of `1.5GB`. These tests lock the shared

@@ -1,6 +1,6 @@
 // U539 (w115) — openrouter-zdr `fetchZdrModelIds` must adopt the shared
 // `createCombinedAbortSignal({ timeoutMs })` helper and free its timer the instant
-// the fetch settles (parity with Claude Code's combinedAbortSignal.ts eager
+// the fetch settles (parity with the reference's combinedAbortSignal.ts eager
 // setTimeout+clearTimeout pattern), instead of `AbortSignal.timeout(ms)` whose
 // timer is retained for the FULL timeout window even after the request resolves.
 //

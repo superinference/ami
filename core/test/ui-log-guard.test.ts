@@ -105,7 +105,7 @@ describe('UILogGuard', () => {
   });
 
   it('addLog evicts the OLDEST entry and keeps the NEWEST when full (ring buffer)', () => {
-    // Parity with Claude's addToInMemoryErrorLog (bootstrap/state.ts): when the
+    // Parity with the reference's addToInMemoryErrorLog (bootstrap/state.ts): when the
     // bounded buffer is full it shift()s the oldest and push()es the new entry so
     // the most recent (most diagnostic) logs are retained — never frozen on the
     // first N. RED on the old drop-newest policy, which kept ['a','b'].

@@ -3,7 +3,7 @@
  * src/mcp/client.ts, covering four confirmed gaps:
  *
  *   1. connect() race neutralizes the losing performInitialize promise so a late
- *      rejection cannot surface as an unhandledRejection (parity with Claude's
+ *      rejection cannot surface as an unhandledRejection (parity with the reference's
  *      `void enumP.catch(() => {})`).
  *   2. reconnect() gains a wall-clock give-up budget alongside the attempt cap.
  *   3. reconnect() loop is abortable mid-retry: a disconnect()/stopServer while a

@@ -2,7 +2,7 @@
  * U022 (w81) — structured/typed `message` input: accept a DISCRIMINATED OBJECT, not
  * only a plain string.
  *
- * Mirrors Claude Code's SendMessage `Input.message`
+ * Mirrors the reference's SendMessage `Input.message`
  * (tools/SendMessageTool/UI.tsx L6-13), where `message` is a structured object
  * carrying a discriminated `type` field (e.g. `plan_approval_response`) plus typed
  * payload fields like `approve`, with `to` as a sibling. AMI previously typed

@@ -1,5 +1,5 @@
 // U004 — PermissionManager.syncRulesFromDisk: re-apply on-disk permission rules to
-// the LIVE session when settings change at runtime (parity: Claude's
+// the LIVE session when settings change at runtime (parity: the reference's
 // loadAllPermissionRulesFromDisk + syncPermissionRulesFromDisk in applySettingsChange).
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import * as assert from 'node:assert/strict';

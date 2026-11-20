@@ -13,7 +13,7 @@ import type { ToolContext } from '../src/types';
 //      DESCRIPTION), and
 //   2. a `toAutoClassifierInput` projection (pipe-joined question texts) for the
 //      auto-mode security classifier.
-// Parity: Claude Code's AskUserQuestionTool `searchHint` (L111) and
+// Parity: the reference's AskUserQuestionTool `searchHint` (L111) and
 // `toAutoClassifierInput` (L152-154).
 // ---------------------------------------------------------------------------
 

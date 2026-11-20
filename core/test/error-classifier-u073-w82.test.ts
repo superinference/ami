@@ -18,7 +18,7 @@ import type { StreamChunk, Message, ToolDefinition, ProviderConfig } from '../sr
 // Gap: when background (auto) compaction fails or is interrupted, AMI gave the
 // user no guidance (the manual /compact path had an error line; the auto path was
 // opaque). compactionFailureMessage() classifies the failure and returns copy that
-// says what happened + how to recover. Parity: Claude's ERROR_MESSAGE_* compaction
+// says what happened + how to recover. Parity: the reference's ERROR_MESSAGE_* compaction
 // strings (services/compact/compact.ts).
 // ---------------------------------------------------------------------------
 describe('compactionFailureMessage', () => {

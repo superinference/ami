@@ -2,7 +2,7 @@
  * U022 — transcript-suppression decision for routed / async-request send_message
  * results.
  *
- * Mirrors Claude Code's SendMessageTool renderToolResultMessage two null-render
+ * Mirrors the reference's SendMessageTool renderToolResultMessage two null-render
  * branches (tools/SendMessageTool/UI.tsx L21-26): a result whose metadata carries a
  * truthy `routing` field (fire-and-forward / hub-routed RESPONSE) OR both
  * `request_id` and `target` (async REQUEST/response correlation) is ABSORBED from

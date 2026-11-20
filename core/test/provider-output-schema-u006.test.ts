@@ -8,7 +8,7 @@ import type { ToolDefinition } from '../src/types';
 // ---------------------------------------------------------------------------
 // U006 — Per-tool outputSchema exposure with an object-root-only guard. A
 // ToolDefinition.outputSchema is advertised in the OpenAI tool payload only when
-// its root type is exactly `object` (parity: Claude Code's mcp.ts). Non-object /
+// its root type is exactly `object` (parity: the reference's mcp.ts). Non-object /
 // absent outputSchema is dropped, never emitted.
 //
 // Red-green: revert the `tool.outputSchema.type === 'object'` guard in

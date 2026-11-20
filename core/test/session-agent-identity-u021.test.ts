@@ -1,5 +1,5 @@
 /**
- * Unit tests for the U021 agent-identity session additions (parity: Claude's
+ * Unit tests for the U021 agent-identity session additions (parity: the reference's
  * conversationRecovery session metadata agentName/agentColor/agentSetting +
  * restoreAgentFromSession's 'inherit' model sentinel / --agent override precedence):
  *

@@ -129,7 +129,7 @@ describe('todo-write cluster (T1-T8)', () => {
     assert.deepEqual(itemSchema.properties.status.enum, ['pending', 'in_progress', 'completed', 'cancelled']);
   });
 
-  // --- T5b: strict advertised item schema (mirrors Claude z.strictObject + .min(1))
+  // --- T5b: strict advertised item schema (mirrors the reference z.strictObject + .min(1))
   it('T5b: inputSchema item declares additionalProperties:false (rejects unknown per-item keys)', () => {
     const itemSchema = (todoWriteTool.inputSchema.properties as any).todos.items;
     assert.equal(itemSchema.additionalProperties, false);
@@ -297,7 +297,7 @@ describe('todo-write cluster (T1-T8)', () => {
     assert.match(d, /no longer relevant/);
   });
 
-  // --- searchHint discovery surface (parity: Claude's Tool.searchHint) --------
+  // --- searchHint discovery surface (parity: the reference's Tool.searchHint) --------
   it('declares a concise searchHint distinct from the long description', () => {
     assert.equal(typeof todoWriteTool.searchHint, 'string');
     assert.ok((todoWriteTool.searchHint as string).length > 0);

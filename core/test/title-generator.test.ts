@@ -268,7 +268,7 @@ describe('sanitizeTitle — single-line markdown-free flattening', () => {
 
 // ---------------------------------------------------------------------------
 // Title-source selection — skips meta/synthetic/tool/non-human messages
-// (parity: Claude's initReplBridge backward scan + isSyntheticMessage filter)
+// (parity: the reference's initReplBridge backward scan + isSyntheticMessage filter)
 // ---------------------------------------------------------------------------
 
 describe('isHumanAuthoredUserMessage', () => {

@@ -2,7 +2,7 @@
  * U010 (w86) — inherited per-directory FOLDER-TRUST: `trustedProjectPaths` allowlist +
  * parent-directory traversal (`isPathTrusted`) + true-only latch cache.
  *
- * Parity: Claude Code's `computeTrustDialogAccepted` / `isPathTrusted`, which persist
+ * Parity: the reference's `computeTrustDialogAccepted` / `isPathTrusted`, which persist
  * per-project trust and resolve it by walking from the normalized cwd up through every
  * ancestor (trusting a parent implies trust of all children), behind a latch that caches
  * only the positive result so trust never silently revokes mid-session.

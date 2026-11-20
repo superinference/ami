@@ -12,7 +12,7 @@ after(() => { setTimeout(() => process.exit(0), 200); });
 // SUPERINFERENCE_MCP_SHELL_PREFIX — a stdio MCP server can be launched THROUGH a
 // wrapper command so a sandbox/shim mediates it. When the env var is set, the
 // client must spawn the PREFIX as the executable and pass `command arg1 arg2 …`
-// as a single argument (parity with Claude's CLAUDE_CODE_SHELL_PREFIX).
+// as a single argument (parity with the reference's CLAUDE_CODE_SHELL_PREFIX).
 // ---------------------------------------------------------------------------
 
 // A wrapper that behaves as a minimal MCP stdio server and echoes back the single

@@ -692,7 +692,7 @@ describe('readLastFetchTime / isCloneStale', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('7-day window constant matches Claude', () => {
+  it('7-day window constant matches the reference', () => {
     assert.equal(STALE_FETCH_WARN_MS, 7 * 24 * 60 * 60 * 1000);
   });
 

@@ -1,16 +1,16 @@
 // Unit U039 (wave w70) — parity gaps for core/core/src/tools/file-edit.ts:
 //  - Atomicity: a synchronous staleness RE-CHECK runs immediately before the
 //    disk write, closing the race window opened by the async pre-write
-//    file-history backup (parity: Claude keeps "no async operations between the
+//    file-history backup (parity: the reference keeps "no async operations between the
 //    staleness check and writing to disk"). Covers all write sites:
 //    writeEntireFile, applySequentialEdits, single-replace, and replace_all.
 //  - `mode` option: create/overwrite with explicit octal permission bits
 //    (parseFileMode + atomic create-with-mode via writeFileAtomicSync).
 //  - Overwrite diff degrades to a size-only summary past EDIT_DIFF_SCAN_MAX_BYTES
-//    (parity: Claude's MAX_SCAN_BYTES fallback to the plain "create" view).
+//    (parity: the reference's MAX_SCAN_BYTES fallback to the plain "create" view).
 //  - Large-needle short-circuit: an old_string longer than the whole file can
 //    never match, so the full-file scan is skipped with a precise diagnostic
-//    (parity: Claude's CHUNK_SIZE large-old_string fast path).
+//    (parity: the reference's CHUNK_SIZE large-old_string fast path).
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import * as assert from 'node:assert/strict';
 import * as fs from 'fs';

@@ -11,7 +11,7 @@ import { SCRATCHPAD_DIR_ENV } from '../src/scratchpad';
 //  gap 1 — scratchpad read+write carve-out in the permission layer. The system
 //    prompt already tells the model SUPERINFERENCE_SCRATCHPAD_DIR is "writable
 //    without a permission prompt"; this wires that promise into PermissionManager
-//    (check / classifyReadAccess / isPathAllowed). Parity: Claude's getScratchpadDir
+//    (check / classifyReadAccess / isPathAllowed). Parity: the reference's getScratchpadDir
 //    allowlist (utils/permissions/filesystem.ts L384-424).
 //  gap 2 — edit-access-implies-read: an out-of-workspace path with a file_edit ALLOW
 //    rule is readable too, but read-specific deny/ask rules win first. Parity:

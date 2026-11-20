@@ -5,7 +5,7 @@ import { exitWorktreeTool } from '../src/tools/exit-worktree';
 
 // ---------------------------------------------------------------------------
 // U006 — per-tool `toAutoClassifierInput` projection for the worktree tools.
-// Parity: Claude Code's EnterWorktreeTool (`input.name ?? ''`) and
+// Parity: the reference's EnterWorktreeTool (`input.name ?? ''`) and
 // ExitWorktreeTool (`input.action`) feed a compact, decision-relevant value to
 // the auto-mode security classifier so an auto-approval keys on the actual
 // parameter (the worktree name / the keep-vs-remove action) rather than the full

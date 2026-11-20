@@ -17,7 +17,7 @@ function ctx(overrides?: Partial<ToolContext>): ToolContext {
 }
 
 // U015 / w89 — Non-ASCII homoglyph command-name folding.
-// Parity with Claude Code utils/powershell/parser.ts L872-886: a command NAME
+// Parity with the reference utils/powershell/parser.ts L872-886: a command NAME
 // carrying non-ASCII look-alike letters resolves to the real command at runtime
 // (OrdinalIgnoreCase / Cyrillic-Greek homoglyphs) while evading ASCII-anchored
 // deny regexes, so it can never be auto-approved.

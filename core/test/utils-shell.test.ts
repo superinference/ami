@@ -135,7 +135,7 @@ describe('execCommand – output truncation', () => {
     assert.ok(result.stdout.startsWith('HEAD'));
     assert.ok(result.stdout.includes('TAIL'));
     // The enriched truncation note reports the kept head/tail bounds, the true
-    // total size, and the dropped count (U049 parity with Claude's size report).
+    // total size, and the dropped count (U049 parity with the reference's size report).
     assert.ok(result.stdout.includes('truncated'));
     assert.ok(/kept first \d+ \+ last \d+ of \d+ chars/.test(result.stdout));
     assert.ok(result.stdout.length < 1_200_000);

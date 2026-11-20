@@ -14,7 +14,7 @@ import { validateBashSecurity } from '../src/tools/bash-security';
  * AST-blocked command (`"nc"`, `'insmod'`, `r"m"`, `\rm`) parses to a command
  * token that still carries the quotes, so the `AST_BLOCKED_COMMANDS` match in
  * bash-security silently fails open — a real sandbox-escape / exfil bypass.
- * Mirrors Claude Code's ast.ts resolved-argv (quotes removed, backslash
+ * Mirrors the reference's ast.ts resolved-argv (quotes removed, backslash
  * unescaped) feeding the permission/security matcher.
  */
 describe('resolveShellWord', () => {

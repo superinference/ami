@@ -1,7 +1,7 @@
 /**
  * U022 — Predicate-filtered + blocking Mailbox API parity.
  *
- * Mirrors Claude Code's utils/mailbox.ts Mailbox class (poll(fn)/receive(fn) +
+ * Mirrors the reference's utils/mailbox.ts Mailbox class (poll(fn)/receive(fn) +
  * waiter handoff in send()) and its revision/length introspection getters, which
  * AMI's module-level mailbox store previously lacked (it only had the drain-all
  * pollMailbox + non-destructive peek/ack). Implements selective, predicate-based

@@ -1,17 +1,17 @@
 // U023 (w66) — Claude-parity skill/agent building blocks added to core/core/src/skills.ts:
 //   * getPromptForCommand / resolveSkillPrompt — programmatic dynamic skill body
-//       (parity with Claude's bundled-skill getPromptForCommand, e.g. /batch, /claude-api)
+//       (parity with the reference's bundled-skill getPromptForCommand, e.g. /batch, /claude-api)
 //   * files / getSkillFile — bundled companion-file resources with path-traversal safety
-//       (parity with Claude's SKILL_FILES)
+//       (parity with the reference's SKILL_FILES)
 //   * progressMessage / skillProgressMessage — in-progress affordance with 'running' default
-//       (parity with Claude's command progressMessage)
+//       (parity with the reference's command progressMessage)
 //   * estimateSkillFrontmatterTokens — per-skill frontmatter token estimate for /skills listing
-//       (parity with Claude's estimateSkillFrontmatterTokens)
+//       (parity with the reference's estimateSkillFrontmatterTokens)
 //   * getSystemPrompt / resolveAgentSystemPrompt — dynamic computed agent system prompt
-//       (parity with Claude's agent getSystemPrompt(ctx))
+//       (parity with the reference's agent getSystemPrompt(ctx))
 //   * SkillUpdate / SkillImprovementSuggestion + parseSkillUpdates / isValidSkillImprovement /
 //       formatSkillUpdates — structured skill-improvement descriptor
-//       (parity with Claude's SkillImprovementSuggestion / SkillUpdate)
+//       (parity with the reference's SkillImprovementSuggestion / SkillUpdate)
 //
 // Each assertion exercises the REAL exported function against an observable result.
 

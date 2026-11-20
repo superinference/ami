@@ -2,7 +2,7 @@
  * U016 (wave 82) — parity gaps:
  *   1. CONSOLIDATION prompt — PRIORITIZED signal gathering that names the dated
  *      daily-log stream (`logs/YYYY/MM/YYYY-MM-DD.md`) as the primary, cheapest
- *      source before the expensive JSONL transcript grep (parity with Claude Code's
+ *      source before the expensive JSONL transcript grep (parity with the reference's
  *      services/autoDream/consolidationPrompt.ts:L31-40 priority-ordered gather).
  *   2. AGENT-MEMORY SNAPSHOT lifecycle introspection — a no-PII `agent_memory_snapshot`
  *      diagnostic ({ action, scope }) emitted when the drift check decides to

@@ -10,7 +10,7 @@ import {
 
 // ---------------------------------------------------------------------------
 // NO_PROXY parity: port-specific entries + CIDR / IP-range entries.
-// Mirrors Claude Code's shouldBypassProxy (utils/proxy.ts L83-124) and the
+// Mirrors the reference's shouldBypassProxy (utils/proxy.ts L83-124) and the
 // CIDR forms carried by NO_PROXY (upstreamproxy.ts L34-63). Exercised through
 // the real consumer resolveProxyForUrl (no network).
 // ---------------------------------------------------------------------------

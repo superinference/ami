@@ -31,7 +31,7 @@ function cfg(overrides: Partial<EngineConfig> = {}): EngineConfig {
 }
 
 describe('LSP recommendation ignored-count gating', () => {
-  it('MAX constant matches Claude (5)', () => {
+  it('MAX constant matches the reference (5)', () => {
     assert.equal(MAX_LSP_RECOMMENDATION_IGNORED_COUNT, 5);
   });
 

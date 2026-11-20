@@ -16,7 +16,7 @@ import {
 // classify as merely 'unsafe', not 'destructive', so the existing
 // isDestructiveBash downgrade never caught them). check() now downgrades such a
 // MATCHED allow rule to an explicit prompt in the rule-evaluated modes
-// ('ask' and 'acceptEdits'). Mirrors Claude's dangerousPatterns.ts +
+// ('ask' and 'acceptEdits'). Mirrors the reference's dangerousPatterns.ts +
 // isDangerousBashPermission / stripDangerousPermissionsForAutoMode.
 // ---------------------------------------------------------------------------
 

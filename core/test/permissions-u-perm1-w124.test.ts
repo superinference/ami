@@ -18,7 +18,7 @@ import {
 // subshell via extractBaseCommands and could classify a subshell whose inner
 // command looked read-only as 'safe', letting acceptEdits / auto modes
 // auto-allow it. The fix elevates any auto-'safe' grouped command to 'unsafe'
-// (= prompt) using the existing analyzeCommandStructure AST, matching Claude's
+// (= prompt) using the existing analyzeCommandStructure AST, matching the reference's
 // hasSubshell || hasCommandGroup forced-ask.
 // -----------------------------------------------------------------------------
 describe('U-perm1/w124 — subshell / command-group forced-ask (classifier)', () => {

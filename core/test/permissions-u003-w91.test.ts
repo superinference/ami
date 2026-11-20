@@ -17,7 +17,7 @@ import {
 //     `cd $PWD && <real-cmd>`; that identity cd is a no-op and must not count
 //     toward the multiple-cd guard or the cd+redirect desync guard (it would
 //     otherwise spuriously escalate a benign command to an explicit prompt).
-//     Parity: Claude's BashTool bashPermissions strips a leading `cd <cwd>`
+//     Parity: the reference's BashTool bashPermissions strips a leading `cd <cwd>`
 //     subcommand before counting cd commands / per-subcommand evaluation.
 //
 //  2. SAFE_ENV_VARS allowlist coverage: pytest config, extended locale,

@@ -212,7 +212,7 @@ describe('canonicalizeExisting', () => {
   });
 
   it('fails closed on an unverifiable error (e.g. EACCES) instead of trusting the lexical path', () => {
-    // Parity with Claude's realpathDeepestExisting / isRealPathWithinTeamDir, which
+    // Parity with the reference's realpathDeepestExisting / isRealPathWithinTeamDir, which
     // fail closed on EACCES/EIO: a symlink we could not read may escape the base.
     assert.throws(
       () =>

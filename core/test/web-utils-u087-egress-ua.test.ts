@@ -9,11 +9,11 @@
  *     the boundary). `httpGet` must raise a distinct `EgressBlockedError` carrying
  *     the blocked host, and `web_fetch` must surface the actionable remedy.
  *     An ordinary origin `403` (no such header) is unaffected and flows through as
- *     a normal body (regression lock). Mirrors Claude's `EgressBlockedError`.
+ *     a normal body (regression lock). Mirrors the reference's `EgressBlockedError`.
  *
  *  2. User-Agent product version from the single-source `AMI_VERSION` macro
  *     (core/src/version.ts) instead of a hardcoded "1.0" — a version bump flows
- *     through automatically (parity with Claude's `claude-code/${MACRO.VERSION}`).
+ *     through automatically (parity with the reference's `claude-code/${MACRO.VERSION}`).
  *
  * E2E through the real `httpGet` redirect/response loop (via the `_webHooks.rawGet`
  * seam, no network) and through the real `web_fetch` tool execute() path.

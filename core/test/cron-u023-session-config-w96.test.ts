@@ -1,5 +1,5 @@
 // U023-w96 — per-job session-config knobs on a scheduled cron job: a `model`
-// override and an `allowedTools` whitelist (parity with Claude Code's scheduled-job
+// override and an `allowedTools` whitelist (parity with the reference's scheduled-job
 // `session_context.model` + `allowed_tools`, scheduleRemoteAgents.ts:L204-L211).
 // AMI's cron only stored a bare prompt enqueued into the current session; a job can
 // now carry its own model + toolset, recorded on the CronJob and surfaced when it fires.

@@ -10,7 +10,7 @@ import type { ToolContext } from '../src/types';
 /**
  * U055 parity: files_with_matches is recency-ordered in JS (stat + mtime) and
  * ripgrep runs WITHOUT `--sortr` so it stays multi-threaded. Content/count output
- * keeps ripgrep's natural order. Mirrors Claude Code's GrepTool mtime sort.
+ * keeps ripgrep's natural order. Mirrors the reference's GrepTool mtime sort.
  */
 
 let tmpDir: string;

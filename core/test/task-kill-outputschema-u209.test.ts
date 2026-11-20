@@ -7,7 +7,7 @@ import type { ToolContext } from '../src/types';
 
 /**
  * U209 — PARITY (additive): task_kill declares a machine-readable
- * `outputSchema` describing its structured stop result, mirroring Claude Code's
+ * `outputSchema` describing its structured stop result, mirroring the reference's
  * TaskStopTool `outputSchema` (message / task_id / task_type / command fields).
  *
  * The schema describes exactly the fields AMI already carries on

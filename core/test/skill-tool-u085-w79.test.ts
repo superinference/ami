@@ -1,12 +1,12 @@
 // U085 (w79) — additive skill-tool parity building blocks:
 //   * `requiresGitRepo` skill precondition — a worktree/PR-spawning skill refuses a
-//     non-git cwd with an explanatory up-front message (parity: Claude's getIsGit()
+//     non-git cwd with an explanatory up-front message (parity: the reference's getIsGit()
 //     guard in /batch), surfaced via the new `isGitRepo` core git helper.
 //   * `requiresGitRepo` is a reviewed-safe declarative property (never forces the
 //     permission gate).
 //   * skill-tool `args` description documents the supported placeholder forms
 //     ($ARGUMENTS, $ARGUMENTS[N], $N, $0).
-//   * `recordSkillUsage` DEBOUNCED global-config write (parity: Claude's
+//   * `recordSkillUsage` DEBOUNCED global-config write (parity: the reference's
 //     SKILL_USAGE_DEBOUNCE_MS) — hot-repeat invocations skip the disk round-trip.
 
 import { describe, it, beforeEach, afterEach } from 'node:test';

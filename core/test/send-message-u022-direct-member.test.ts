@@ -1,7 +1,7 @@
 /**
  * U022 — user-facing `@agent-name message` direct-message delivery.
  *
- * Parity with Claude Code's utils/directMemberMessage.ts (sendDirectMemberMessage):
+ * Parity with the reference's utils/directMemberMessage.ts (sendDirectMemberMessage):
  * the human hands a message straight to a named teammate's mailbox, bypassing the
  * model. `deliverDirectMemberMessage` is the real delivery leg (the pure parser
  * lives in common/src/direct-member-mode.ts). It reuses the canonical in-session

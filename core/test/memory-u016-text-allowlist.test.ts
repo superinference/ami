@@ -1,7 +1,7 @@
 /**
  * U016 — deny-by-default TEXT_FILE_EXTENSIONS allowlist for @include / @path imports.
  *
- * Parity with Claude Code (utils/claudemd.ts `parseMemoryFileContent` /
+ * Parity with the reference (utils/claudemd.ts `parseMemoryFileContent` /
  * `TEXT_FILE_EXTENSIONS`). AMI previously gated @include through a finite BINARY
  * DENYlist (and gated @path imports not at all), so any unlisted or multi-dotted
  * binary extension (`.so.1`, `.bin`, a novel `.xyz`) was silently inlined into the

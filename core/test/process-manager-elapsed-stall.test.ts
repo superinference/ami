@@ -165,7 +165,7 @@ describe('ProcessManager – stall watchdog notifies instead of killing', () => 
     // Past the threshold + prompt-like tail → notify.
     last = (pm as any).stallTick(id, last, t0 + STALL_THRESHOLD_MS + 1);
 
-    // The task is NOT killed — parity with Claude's actionable notification.
+    // The task is NOT killed — parity with the reference's actionable notification.
     assert.equal(pm.getStatus(id), 'running', 'stalled task must stay running, not be killed');
     assert.equal(stalledEvents.length, 1, 'stalled event emitted exactly once');
     assert.equal(stalledEvents[0].taskId, id);

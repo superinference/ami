@@ -13,7 +13,7 @@ import {
 // U003 (w78): deterministic permission risk explainer (RiskLevel /
 // PermissionExplanation) + its wiring into the recent-denials log.
 //
-// Parity: Claude's PermissionExplanation / RiskLevel
+// Parity: the reference's PermissionExplanation / RiskLevel
 // (utils/permissions/permissionExplainer.ts) — Claude generates it with an LLM
 // side-query; AMI computes it DETERMINISTICALLY from the canonical permission
 // classifiers, so there is no model round-trip and the output is stable.

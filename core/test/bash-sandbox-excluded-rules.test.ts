@@ -8,7 +8,7 @@ import { bashTool, _bashHooks } from '../src/tools/bash';
 import type { ToolContext } from '../src/types';
 
 // ---------------------------------------------------------------------------
-// Structured sandbox `excludedCommands` matching — parity with Claude Code's
+// Structured sandbox `excludedCommands` matching — parity with the reference's
 // containsExcludedCommand (shouldUseSandbox.ts). Each user excludedCommands
 // entry is parsed into a structured prefix/wildcard rule and matched against the
 // BASE command of every (env/wrapper-normalized) subcommand instead of as a

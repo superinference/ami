@@ -74,7 +74,7 @@ describe('tool_use_progress structured fields + slow-reveal threshold', () => {
     assert.equal(ev.type === 'tool_use_progress' ? ev.totalLines : undefined, 240);
   });
 
-  it('MIN_SLOW_PROGRESS_REVEAL_SECONDS matches Claude (2)', () => {
+  it('MIN_SLOW_PROGRESS_REVEAL_SECONDS matches the reference (2)', () => {
     assert.equal(MIN_SLOW_PROGRESS_REVEAL_SECONDS, 2);
   });
 

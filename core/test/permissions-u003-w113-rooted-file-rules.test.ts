@@ -12,7 +12,7 @@ import {
 // ---------------------------------------------------------------------------
 // U003 / w113 — gitignore-style per-root resolution for FILE permission rules.
 //
-// Parity: Claude Code resolves each Edit/Read file rule against a root derived
+// Parity: the reference resolves each Edit/Read file rule against a root derived
 // from the pattern's leading sigil before matching
 // (references/claude/claude-code-main/src/utils/permissions/filesystem.ts
 // patternWithRoot L852-917 / matchingRuleForInput L955). AMI previously matched

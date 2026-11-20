@@ -8,7 +8,7 @@ import { MemoryManager } from '../src/memory';
 import { projectStateDir } from '../src/reference-journal';
 
 // Parity gates for the Memory Guidelines block emitted by getMemoryContext().
-// Mirrors Claude Code's memdir/memoryTypes.ts sections:
+// Mirrors the reference's memdir/memoryTypes.ts sections:
 //   TYPES_SECTION_INDIVIDUAL, WHAT_NOT_TO_SAVE_SECTION, WHEN_TO_ACCESS_SECTION,
 //   TRUSTING_RECALL_SECTION (## Before recommending from memory),
 //   body_structure guidance + MEMORY_FRONTMATTER_EXAMPLE.

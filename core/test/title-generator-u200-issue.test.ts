@@ -57,7 +57,7 @@ function makeProvider(port: number, model = 'test-model'): ProviderConfig {
 }
 
 // ---------------------------------------------------------------------------
-// createIssueFallbackTitle — VERBATIM parity with Claude's createFallbackTitle
+// createIssueFallbackTitle — VERBATIM parity with the reference's createFallbackTitle
 // (components/Feedback.tsx:L475-499)
 // ---------------------------------------------------------------------------
 describe('createIssueFallbackTitle', () => {
@@ -103,7 +103,7 @@ describe('createIssueFallbackTitle', () => {
 });
 
 // ---------------------------------------------------------------------------
-// startsWithApiErrorPrefix — parity with Claude's errors.ts:56-60
+// startsWithApiErrorPrefix — parity with the reference's errors.ts:56-60
 // ---------------------------------------------------------------------------
 describe('startsWithApiErrorPrefix', () => {
   it('matches the bare API Error prefix', () => {

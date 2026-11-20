@@ -126,7 +126,7 @@ describe('enter_worktree — U066-w67 (sparsePaths knob + structured outputSchem
   });
 
   // ---------------------------------------------------------------------------
-  // Per-tool structured outputSchema + metadata (parity: Claude EnterWorktreeTool)
+  // Per-tool structured outputSchema + metadata (parity: the reference EnterWorktreeTool)
   // ---------------------------------------------------------------------------
   it('declares a structured outputSchema (worktreePath/worktreeBranch/message)', () => {
     const schema = enterWorktreeTool.outputSchema;

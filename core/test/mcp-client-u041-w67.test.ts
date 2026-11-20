@@ -48,7 +48,7 @@ const rpcError = (res: http.ServerResponse, id: number, code: number, message: s
 
 // ---------------------------------------------------------------------------
 // GAP U041-w67 (McpRpcError): a JSON-RPC error preserves code + data so callers
-// can branch on well-known codes (parity with Claude Code's code-based checks).
+// can branch on well-known codes (parity with the reference's code-based checks).
 // ---------------------------------------------------------------------------
 describe('McpRpcError preserves code + data', () => {
   const servers: Array<() => void> = [];
@@ -209,7 +209,7 @@ describe('callTool URL-elicitation (-32042) retry loop', () => {
 
 // ---------------------------------------------------------------------------
 // GAP U041-w67: an unrecoverable auth error on a live tool call flips the client
-// to `needs-auth` (parity with Claude Code flipping a client on McpAuthError).
+// to `needs-auth` (parity with the reference flipping a client on McpAuthError).
 // ---------------------------------------------------------------------------
 describe('needs-auth on a tool-call auth failure', () => {
   const servers: Array<() => void> = [];

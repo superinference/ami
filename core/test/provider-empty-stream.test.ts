@@ -9,7 +9,7 @@ import {
 import type { ProviderConfig, Message, StreamChunk } from '../src/types';
 
 // ---------------------------------------------------------------------------
-// Empty / degenerate response-stream detection (parity with Claude Code's
+// Empty / degenerate response-stream detection (parity with the reference's
 // claude.ts "Stream ended without receiving any events" non-streaming fallback).
 //
 // Two proxy failure modes must be treated as a retryable failure rather than a

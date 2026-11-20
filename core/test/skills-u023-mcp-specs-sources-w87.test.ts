@@ -1,10 +1,10 @@
 // Unit coverage for the U023 w87 additive skills building blocks:
 //   - classifyAgentMcpServerSpecs — per-agent MCP server spec classification into
 //     REFERENCED (by name, shared, not cleaned up) vs INLINE (single-key object,
-//     agent-specific, cleaned up) vs INVALID (parity with Claude Code's AgentTool
+//     agent-specific, cleaned up) vs INVALID (parity with the reference's AgentTool
 //     `initializeAgentMcpServers` per-spec handling).
 //   - the expanded agent source tiers (managed/policy, local, flag) — display label,
-//     editability, and recommended memory scope (parity with Claude Code's AgentsMenu
+//     editability, and recommended memory scope (parity with the reference's AgentsMenu
 //     policySettings/localSettings/flagSettings source tiers).
 
 import { describe, it } from 'node:test';

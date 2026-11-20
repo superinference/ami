@@ -13,7 +13,7 @@ import {
 import { resolveConfigDir, projectSlug, canonicalGitRoot } from '../src/reference-journal';
 
 /**
- * U016 — per-agent persistent memory primitives (parity: Claude Code
+ * U016 — per-agent persistent memory primitives (parity: the reference
  * AgentTool/agentMemory.ts: sanitizeAgentTypeForPath / getAgentMemoryDir /
  * getAgentMemoryEntrypoint / getMemoryScopeDisplay / loadAgentMemoryPrompt).
  *

@@ -1,4 +1,4 @@
-// Unit U039 — edit-equivalence helper (parity: Claude Code's
+// Unit U039 — edit-equivalence helper (parity: the reference's
 // FileEditTool/utils.ts areFileEditsEquivalent): apply-both-and-compare edit
 // equivalence, including equal-error equivalence, reusing the ONE canonical edit
 // engine (fuzzyFindAndReplace) so a verdict reflects the tool's real output.

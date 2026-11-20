@@ -2,7 +2,7 @@
 // Unit U297 — canonical core/core/src/utils/sleep.ts
 //
 // Consolidates AMI's previously-duplicated timing primitives into ONE core-layer
-// home (parity with Claude Code's utils/sleep.ts):
+// home (parity with the reference's utils/sleep.ts):
 //   - sleep(ms, signal?, opts?)  — abort-responsive delay, selectable abort
 //   - withTimeout(promise, ms, message) — race-against-deadline guard
 //

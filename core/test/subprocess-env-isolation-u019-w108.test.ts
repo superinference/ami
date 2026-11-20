@@ -3,7 +3,7 @@
  * AMI strips credential-bearing vars from every child process spawned by the bash
  * tool (sanitizeEnvForSubprocess) and merges explicit /env overrides in.
  * describeSubprocessEnvIsolation() surfaces THAT policy so it is discoverable via
- * `ami --introspect` (introspection-on-every-change rule / parity with Claude
+ * `ami --introspect` (introspection-on-every-change rule / parity with the reference
  * Code's tmuxSocket isolation-state getters).
  *
  * These tests also lock the introspection view to the REAL stripping behavior, so

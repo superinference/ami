@@ -25,7 +25,7 @@ function bareCtx(): ToolContext {
 }
 
 // U022 / w70 — delivery-state affordance on the plain-text receipt.
-// Mirrors Claude Code's call() branching (SendMessageTool.ts L800-874): a message
+// Mirrors the reference's call() branching (SendMessageTool.ts L800-874): a message
 // to a RUNNING agent is queued for its next tool round, and a message to an agent
 // that is actively listening (eager-delivery notifier registered) is delivered
 // now. AMI surfaces which of the two happened so the sender knows whether the

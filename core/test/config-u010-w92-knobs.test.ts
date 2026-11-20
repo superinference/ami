@@ -1,6 +1,6 @@
 /**
  * U010 / w92 — three additive UI/UX config knobs on ProjectConfig and their resolvers
- * (parity: Claude Code's `showClearContextOnPlanAccept`, `prStatusFooterEnabled`, and
+ * (parity: the reference's `showClearContextOnPlanAccept`, `prStatusFooterEnabled`, and
  * `lastReleaseNotesSeen`). Covers: merge propagation (last-layer-wins), the default-aware
  * resolvers, the persisted release-notes-seen global-state helpers, and schema / known-key
  * / base-type-validation recognition so each knob is a first-class recognized key.

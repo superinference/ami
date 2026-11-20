@@ -15,7 +15,7 @@ import { mergeConfigs } from '../src/config';
 
 // U056 — settings cascade: plugin base tier (lowest-priority default layer),
 // flag tier (--settings file between local and env), and the layered
-// effective-vs-applied distinction. Parity: Claude's settingsCache plugin base,
+// effective-vs-applied distinction. Parity: the reference's settingsCache plugin base,
 // SETTING_SOURCES flagSettings layer, and SDK get_settings effective/applied split.
 
 describe('settings tiers include plugin + flag (managed first, cli last preserved)', () => {

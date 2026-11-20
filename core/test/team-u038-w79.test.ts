@@ -16,7 +16,7 @@ import type { ToolContext } from '../src/types';
 
 // ---------------------------------------------------------------------------
 // U038 (w79) — team-role task-list visibility gate.
-// Parity: Claude Code's useTasksV2 hook gates the persistent shared task-list
+// Parity: the reference's useTasksV2 hook gates the persistent shared task-list
 // panel with `!teamContext || isTeamLead(teamContext)` — inside a team only the
 // LEAD sees the shared list; a non-lead teammate suppresses it. AMI's
 // isTaskListVisibleForSelf() is the core predicate that drives the same gate.

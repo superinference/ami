@@ -13,9 +13,9 @@ import {
 // 1. Dangerous (non-static) redirect-target validation that runs in EVERY mode,
 //    closing the relaxed-detached hole where `> $VAR` / `> ~/x` / `> *.conf` /
 //    `< $SECRET` targets were neither blocked nor path-validated.
-//    (parity: Claude Code utils/bash/commands.ts hasDangerousExpansion)
+//    (parity: the reference utils/bash/commands.ts hasDangerousExpansion)
 // 2. Bounded-recursion safety cap on nested safe-wrapper prefixes.
-//    (parity: Claude Code utils/bash/prefix.ts wrapperCount/recursionDepth caps)
+//    (parity: the reference utils/bash/prefix.ts wrapperCount/recursionDepth caps)
 // ---------------------------------------------------------------------------
 
 describe('validateDangerousRedirectTargets (U015/w80)', () => {

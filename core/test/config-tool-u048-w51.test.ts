@@ -22,7 +22,7 @@ describe('configTool U048/w51 — value union, scope routing, affordance text', 
 
   after(() => { fs.rmSync(tmpDir, { recursive: true, force: true }); });
 
-  describe('value parameter is a string|boolean|number union (parity: Claude union)', () => {
+  describe('value parameter is a string|boolean|number union (parity: the reference union)', () => {
     it('declares the value schema as an array-type union', () => {
       const valueProp = configTool.inputSchema.properties.value;
       assert.ok(Array.isArray(valueProp.type), `value.type should be a union array, got: ${JSON.stringify(valueProp.type)}`);

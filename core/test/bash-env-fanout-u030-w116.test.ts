@@ -4,7 +4,7 @@
  *
  * 1. `applyProxyFanout` fans a single configured proxy var out to its other-case
  *    sibling so a child curl (lower-case) and gh/python (upper-case) share ONE
- *    relay — parity with Claude Code upstreamproxy `getUpstreamProxyEnv`, mirroring
+ *    relay — parity with the reference upstreamproxy `getUpstreamProxyEnv`, mirroring
  *    AMI's existing `applyCaBundleFanout`.
  * 2. `describeSubprocessEnvIsolation` advertises the CA-bundle + proxy fan-out
  *    vars so the seam is discoverable via `ami --introspect`.

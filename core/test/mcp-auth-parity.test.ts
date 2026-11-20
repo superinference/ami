@@ -1,6 +1,6 @@
 /**
  * Parity hardening tests for the MCP `authenticate` pseudo-tool
- * (src/tools/mcp-auth.ts), bringing it to functional parity with Claude Code's
+ * (src/tools/mcp-auth.ts), bringing it to functional parity with the reference's
  * `/mcp` OAuth flow as an additive superset.
  *
  * Each test is a RED-GREEN reproducer: it discriminates the hardened behavior

@@ -2,7 +2,7 @@
  * U041 — WebSocket MCP transport (`ws://` / `wss://`) + connect() late-rejection
  * swallow.
  *
- * Covers the additive WebSocket transport (parity with Claude Code's
+ * Covers the additive WebSocket transport (parity with the reference's
  * `WebSocketTransport` in `utils/mcpWebSocketTransport.ts` and the `ws`/`wss`
  * transport selection in `services/mcp/{utils,types}.ts`): a selectable network
  * transport whose frames route through the SAME JSON-RPC dispatcher the stdio/http
@@ -11,7 +11,7 @@
  *   2. a REAL hand-rolled RFC-6455 server + the runtime global `WebSocket`
  *      (end-to-end proof the wired path actually speaks WebSocket).
  *
- * Also validates the connect() late-rejection swallow (parity with Claude's
+ * Also validates the connect() late-rejection swallow (parity with the reference's
  * racing-request cleanup, `utils/computerUse/mcpServer.ts`): when the connect
  * timeout wins the race, the losing initialize promise's LATE rejection must not
  * surface as an unhandledRejection (RED without the `void connectPromise.catch`).

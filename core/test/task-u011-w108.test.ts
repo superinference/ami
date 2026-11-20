@@ -37,7 +37,7 @@ function skillManagerWith(agents: AgentDefinition[]): SkillManagerLike {
 
 // ===========================================================================
 // U011-w108 — coordinator affordance surfaces the named-agent-type catalog
-// (parity: Claude Code injects the available config surface — MCP servers +
+// (parity: the reference injects the available config surface — MCP servers +
 //  plugin/agent catalog — into an agent's runtime context so it delegates to the
 //  specialist it actually has rather than guessing / falling back to general).
 // ===========================================================================

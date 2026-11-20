@@ -17,16 +17,16 @@ import {
 //
 //   Gap #18 — owner-only 0o600 permissions on config writes: a newly-created
 //             config file is created owner-read/write only; an existing file's
-//             mode is PRESERVED across a rewrite. Parity: Claude writes config
+//             mode is PRESERVED across a rewrite. Parity: the reference writes config
 //             with mode 0o600.
 //   Gap #84 — durable (fsync-flushed) config writes: the temp file is written
 //             with `flush: true` so a crash/power-loss right after the rename
-//             cannot leave a zero-length/half-flushed config. Parity: Claude's
+//             cannot leave a zero-length/half-flushed config. Parity: the reference's
 //             writeFileSyncAndFlush.
 //   Gap #50 — distinguish ENOENT/ENOTDIR (absent) from EACCES/EIO (present but
 //             unreadable) in loadConfigFileChecked, surfacing the latter as an
 //             `unreadable` diagnostic instead of silently treating it as "no
-//             config". Parity: Claude's handleFileSystemError.
+//             config". Parity: the reference's handleFileSystemError.
 //   Gap #57 — JSON syntax-error recovery guidance on a corrupt config load.
 //   Gap #130 — JSON syntax-error recovery guidance from validateConfigJson.
 //

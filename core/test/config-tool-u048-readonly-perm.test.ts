@@ -4,7 +4,7 @@ import { isToolReadOnlyForInput, type CategorizableTool } from '../src/tools/ind
 import { configTool } from '../src/tools/config-tool';
 
 // U048 — dynamic read-vs-write permission classification for the config tool
-// (parity: Claude's ConfigTool.isReadOnly(input) = `value === undefined`). A config
+// (parity: the reference's ConfigTool.isReadOnly(input) = `value === undefined`). A config
 // `get` only reads, so it must be reported read-only (→ auto-allowed without a
 // prompt), while a `set` that carries a value mutates on-disk config and must stay
 // writable (→ permission-asking path).
@@ -59,7 +59,7 @@ describe('configTool.isReadOnlyForInput — get reads, set writes', () => {
   });
 
   it('classifies a set WITHOUT a value as read-only (it is a no-op error, writes nothing)', () => {
-    // Mirrors Claude's value-presence rule: no value → nothing is persisted.
+    // Mirrors the reference's value-presence rule: no value → nothing is persisted.
     assert.equal(configTool.isReadOnlyForInput!({ action: 'set', key: 'model' }), true);
   });
 });

@@ -11,7 +11,7 @@ import type { ToolContext, ProviderConfig } from '../src/types';
  * U048 — async per-setting validateOnWrite (model API check).
  *
  * The config tool must refuse to persist a model id that the configured provider
- * does not serve (parity: Claude's ConfigTool.validateOnWrite), reusing the
+ * does not serve (parity: the reference's ConfigTool.validateOnWrite), reusing the
  * shared validateModel check. Without resolved provider credentials it must
  * soft-allow (offline edits / bare engine must still work).
  */

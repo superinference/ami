@@ -7,7 +7,7 @@ import type { ToolContext } from '../src/types';
 /**
  * U212 parity (functional change): task_output BLOCKS by default.
  *
- * Mirrors Claude Code's TaskOutputTool `block: semanticBoolean(z.boolean().default(true))`
+ * Mirrors the reference's TaskOutputTool `block: semanticBoolean(z.boolean().default(true))`
  * + `timeout: z.number().default(30000)` — a call with no explicit `wait` blocks until
  * the task reaches a terminal state (or the 30s timeout elapses), returning the final
  * result in a single call. Passing `wait:false` takes a one-shot non-blocking snapshot.
@@ -29,7 +29,7 @@ function ctx(getOutput: () => unknown, extra?: Partial<ToolContext>): ToolContex
   } as unknown as ToolContext;
 }
 
-describe('task_output block-by-default (parity: Claude TaskOutputTool block:true)', () => {
+describe('task_output block-by-default (parity: the reference TaskOutputTool block:true)', () => {
   it('BLOCKS until terminal when no `wait` is given (default true), not a one-shot read', async () => {
     let calls = 0;
     const c = ctx(() => {

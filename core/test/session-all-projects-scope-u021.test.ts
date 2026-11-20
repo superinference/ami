@@ -1,6 +1,6 @@
 /**
  * U021 session.ts parity addition — resume/session-picker "all projects" scope
- * toggle (parity: Claude Code's resume picker `showAllProjects`).
+ * toggle (parity: the reference's resume picker `showAllProjects`).
  *
  * `isResumeAllProjectsEnabled` is the env-knob predicate that flips the DEFAULT
  * `/sessions` + `/resume` scope from the current project to every project's store

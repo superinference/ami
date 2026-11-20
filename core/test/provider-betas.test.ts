@@ -60,7 +60,7 @@ function restoreEnv(saved: Record<string, string | undefined>): void {
 // supportsInterleavedThinking — Claude 4+ Opus/Sonnet families only.
 // ---------------------------------------------------------------------------
 describe('supportsInterleavedThinking', () => {
-  it('matches Claude 4+ Opus/Sonnet families', () => {
+  it('matches the reference 4+ Opus/Sonnet families', () => {
     assert.equal(supportsInterleavedThinking('claude-sonnet-4-6'), true);
     assert.equal(supportsInterleavedThinking('claude-opus-4-1'), true);
     assert.equal(supportsInterleavedThinking('claude-sonnet-45-beta'), true);

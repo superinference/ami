@@ -10,7 +10,7 @@ import {
   CHECK_IDS,
 } from '../src/tools/bash-security';
 
-// Parity: Claude Code's bash parser enforces a wall-clock timeout
+// Parity: the reference's bash parser enforces a wall-clock timeout
 // (PARSE_TIMEOUT_MS=50) and a node-count budget (MAX_NODES=50_000) and returns a
 // dedicated PARSE_ABORTED sentinel (distinct from `null`) that callers MUST treat
 // fail-CLOSED. See references/claude/claude-code-main/src/utils/bash/parser.ts

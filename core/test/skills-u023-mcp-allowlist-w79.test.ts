@@ -12,7 +12,7 @@ import type { SkillDefinition } from '../src/skills';
 import type { ToolDefinition } from '../src/types';
 
 // ---------------------------------------------------------------------------
-// U023 / w79 — MCP-derived tool allowlists (parity: Claude Code's bundled
+// U023 / w79 — MCP-derived tool allowlists (parity: the reference's bundled
 // claude-in-chrome skill, whose allowedTools is derived from the MCP server's
 // advertised tool set as `mcp__<server>__<tool>`). See core/core/src/skills.ts.
 // ---------------------------------------------------------------------------

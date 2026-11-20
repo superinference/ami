@@ -13,7 +13,7 @@ import { fsHooks, __resetLoggerForTest } from '../src/logger';
 // The permission layer previously mutated state silently: addRule/removeRule/
 // setMode/registerAllowedRoot/removeAllowedRoot/saveRules emitted no trace. This
 // suite proves each mutation now routes ONE descriptive line through the core
-// logger (AMI's introspection surface, mirroring Claude Code's logForDebugging
+// logger (AMI's introspection surface, mirroring the reference's logForDebugging
 // calls in applyPermissionUpdate/persistPermissionUpdate). It is also the RED
 // guard: with the traceMutation() calls reverted, every assertion below fails.
 //

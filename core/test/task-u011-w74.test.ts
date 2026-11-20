@@ -71,7 +71,7 @@ describe('filterToolsForAgent — MCP tools survive EVERY mode', () => {
     assert.ok(kept.includes('file_read'), 'read-only kept');
     assert.ok(kept.includes('mcp__srv__read'), 'mcp read kept in explore');
     assert.ok(kept.includes('mcp__srv__write'), 'mcp write kept in explore (unconditional)');
-    // Explore RETAINS bash (parity: Claude's read-only Explore agent) — but as the
+    // Explore RETAINS bash (parity: the reference's read-only Explore agent) — but as the
     // read-only-guarded variant (isReadOnly pinned true), never the raw writable tool.
     assert.ok(kept.includes('bash'), 'read-only bash kept in explore');
     assert.equal(resolved.find(t => t.name === 'bash')!.isReadOnly, true, 'explore bash is read-only-guarded');
@@ -164,7 +164,7 @@ describe('task.execute wires filterToolsForAgent (behavior preserved)', () => {
     const { isError, toolNames } = await runTask({ prompt: 'look around', mode: 'explore' });
     assert.ok(!isError, 'explore spawn ok');
     assert.ok(toolNames.includes('file_read'), 'has read tool');
-    // Explore retains bash for read-only shell ops (parity: Claude Explore agent).
+    // Explore retains bash for read-only shell ops (parity: the reference Explore agent).
     assert.ok(toolNames.includes('bash'), 'explore keeps read-only bash');
     for (const forbidden of ['file_edit', 'task']) {
       assert.ok(!toolNames.includes(forbidden), `explore must not get ${forbidden}`);

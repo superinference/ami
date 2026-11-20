@@ -1,6 +1,6 @@
 /**
  * U037 — getAgentModelDisplay: canonical display string for an agent/subagent
- * model CHOICE (parity: Claude Code's getAgentModelDisplay, utils/model/agent.ts
+ * model CHOICE (parity: the reference's getAgentModelDisplay, utils/model/agent.ts
  * L124-L131). Pairs with getAgentModelOptions (the selectable catalog) so a picker
  * and the rendered value agree on wording.
  */

@@ -39,7 +39,7 @@ function makePushedRepo(): { repo: string; remote: string } {
 }
 
 // ===========================================================================
-// U011-w67 — `description` is a required schema field (parity: Claude's
+// U011-w67 — `description` is a required schema field (parity: the reference's
 // baseInputSchema requires description, not .optional()).
 // ===========================================================================
 
@@ -60,7 +60,7 @@ describe('U011-w67 — description is a required schema field', () => {
 
 // ===========================================================================
 // U011-w67 — cwd and isolation:"worktree" are mutually exclusive
-// (parity: Claude's cwd param is documented "Mutually exclusive with
+// (parity: the reference's cwd param is documented "Mutually exclusive with
 // isolation: worktree").
 // ===========================================================================
 
@@ -115,7 +115,7 @@ describe('U011-w67 — cwd / isolation:"worktree" mutual exclusivity', () => {
 
 // ===========================================================================
 // U011-w67 — worked <example> blocks in the tool description
-// (parity: Claude's Agent tool description embeds concrete <example> calls).
+// (parity: the reference's Agent tool description embeds concrete <example> calls).
 // ===========================================================================
 
 describe('U011-w67 — worked examples in the task tool description', () => {
@@ -131,7 +131,7 @@ describe('U011-w67 — worked examples in the task tool description', () => {
 
 // ===========================================================================
 // U011-w67 — isolated-worktree cleanup on the ERROR / ABORT paths
-// (parity: Claude runs cleanupWorktreeIfNeeded in finally "to handle
+// (parity: the reference runs cleanupWorktreeIfNeeded in finally "to handle
 // abort/error paths"). AMI previously only cleaned up on the success return.
 // ===========================================================================
 

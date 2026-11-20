@@ -3,7 +3,7 @@
  *
  * Two confirmed, previously-unimplemented gaps against core/core/src/mcp/client.ts:
  *
- *  1. JSON-RPC envelope validation before dispatch (parity: Claude's
+ *  1. JSON-RPC envelope validation before dispatch (parity: the reference's
  *     mcpWebSocketTransport validateJsonRpcMessage / zod-parsed inbound frames).
  *     A malformed frame pushed by an untrusted server (bare primitive, array, or an
  *     object with neither id nor method) must be rejected + surfaced as a
@@ -11,7 +11,7 @@
  *     RED (revert isValidJsonRpcMessage in routeMessage): the malformed object is
  *     silently dropped → no protocol-error → the count assertion fails.
  *
- *  2. 403-token-revoked full re-authorization (parity: Claude's also403Revoked in
+ *  2. 403-token-revoked full re-authorization (parity: the reference's also403Revoked in
  *     utils/http.ts). A 403 whose challenge/body marks the token revoked/invalid
  *     must drive onUnauthorized (full re-auth) + a single retry, NOT the
  *     insufficient_scope step-up (onForbidden). RED (revert the is403RevokedToken

@@ -14,7 +14,7 @@ import {
 // ===========================================================================
 // U073 — fail-safe fallback semantics for a safety classifier that CAN FAIL.
 //
-// Parity with Claude Code's YoloClassifierResult (`unavailable`,
+// Parity with the reference's YoloClassifierResult (`unavailable`,
 // `transcriptTooLong`, `durationMs`) + the documented decision that a classifier
 // which cannot produce a verdict must FALL BACK to normal prompting — never
 // retry a deterministic failure and never auto-approve/hard-deny a failed check.

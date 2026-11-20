@@ -11,7 +11,7 @@ import {
 } from '../src/code-security-patterns';
 
 // ---------------------------------------------------------------------------
-// U238 / w81 — parity with Claude's security-review detection algorithm:
+// U238 / w81 — parity with the reference's security-review detection algorithm:
 //   * SQL/NoSQL injection + path-traversal detectors (security-review.ts:62-67)
 //   * multi-line cross-boundary pattern matching (security-review.ts:140-160)
 //   * sound positional added-lines diff (LCS, not Set-membership)

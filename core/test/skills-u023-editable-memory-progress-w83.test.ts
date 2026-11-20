@@ -1,6 +1,6 @@
 // Unit coverage for the U023 w83 additive skills/agent building blocks:
 //   - progress affordance kind-awareness (skill 'loading' vs command 'running') —
-//     parity with Claude Code's loadPluginCommands `progressMessage: isSkill ?
+//     parity with the reference's loadPluginCommands `progressMessage: isSkill ?
 //     'loading' : 'running'`.
 //   - agent source-based editability (AgentsMenu `isEditable`).
 //   - composite (name, source) agent identity (AgentsMenu dedup/selection key).

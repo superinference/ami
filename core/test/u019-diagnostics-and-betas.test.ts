@@ -14,7 +14,7 @@ import {
   EXTENDED_CACHE_TTL_BETA,
 } from '../src/provider';
 
-// U019 G6: bounded ring buffer of the last N API requests (parity: Claude's
+// U019 G6: bounded ring buffer of the last N API requests (parity: the reference's
 // dumpPrompts MAX_CACHED_REQUESTS cache). AMI previously kept only the single
 // latest request; this keeps the most recent MAX_CACHED_API_REQUESTS for a
 // bug-report / diagnostic surface.
@@ -72,7 +72,7 @@ describe('U019 G6: recent-API-request ring buffer', () => {
 });
 
 // U019 G12: active/available Anthropic betas surfaced as introspectable metadata
-// (parity: Claude's getSdkBetas session field).
+// (parity: the reference's getSdkBetas session field).
 describe('U019 G12: describeAnthropicBetas', () => {
   const saved = process.env.ANTHROPIC_BETAS;
   afterEach(() => {

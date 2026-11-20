@@ -11,7 +11,7 @@ import type { Session, SessionListDiagnostics } from '../src/session';
 // "Resume-discovery diagnostics (how many sessions found/enriched/filtered and why
 //  each was hidden)". AMI's SessionManager.list() silently dropped unreadable/filtered
 // rows; listWithDiagnostics()/list({diagnostics}) now tallies found/listed/skipped-by-
-// reason so a missing session is diagnosable. Parity: Claude's `/resume: found N,
+// reason so a missing session is diagnosable. Parity: the reference's `/resume: found N,
 // M filtered out, K visible` debug counts.
 
 function makeTempDir(): string {

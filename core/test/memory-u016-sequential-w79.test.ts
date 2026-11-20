@@ -3,7 +3,7 @@
  * serialize MemoryManager index mutations.
  *
  * Gap: core had no reusable "serialize an arbitrary async fn and get its result"
- * primitive (parity: Claude Code utils/sequential.ts). Concurrent memory-index
+ * primitive (parity: the reference utils/sequential.ts). Concurrent memory-index
  * read-then-write cycles could interleave and lose entries.
  */
 import { describe, it } from 'node:test';

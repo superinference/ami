@@ -27,7 +27,7 @@ import {
 // ---------------------------------------------------------------------------
 
 describe('prompt-rule content codec', () => {
-  it('PROMPT_RULE_PREFIX matches Claude PROMPT_PREFIX', () => {
+  it('PROMPT_RULE_PREFIX matches the reference PROMPT_PREFIX', () => {
     assert.equal(PROMPT_RULE_PREFIX, 'prompt:');
   });
 

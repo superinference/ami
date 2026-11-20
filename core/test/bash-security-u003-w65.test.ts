@@ -5,7 +5,7 @@ import { validateBashSecurity } from '../src/tools/bash-security.ts';
 // ===========================================================================
 // UNIT U003 — wave w65: `srun` added to bash-security SAFE_WRAPPERS so the
 // AST-blocked-command fallback scan unwraps `srun [opts] <cmd>` and sees the
-// inner command. Mirrors Claude's srun wrapper spec (specs/srun.ts) and keeps
+// inner command. Mirrors the reference's srun wrapper spec (specs/srun.ts) and keeps
 // bash-security's wrapper set aligned with permissions.ts SHELL_WRAPPERS.
 // ===========================================================================
 describe('U003/w65: srun wrapper in bash-security', () => {

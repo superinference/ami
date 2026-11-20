@@ -195,7 +195,7 @@ describe('cron-delete parity — additive superset', () => {
   it('declares a long-form prompt alongside the description (durable file vs session store + cron_create)', () => {
     const p = cronDeleteTool.prompt;
     assert.equal(typeof p, 'string');
-    // mentions where the job is removed from (parity: Claude buildCronDeletePrompt)
+    // mentions where the job is removed from (parity: the reference buildCronDeletePrompt)
     assert.match(p!, /cron_create/);
     assert.match(p!, /scheduled_tasks\.json/);
     assert.match(p!, /session/i);

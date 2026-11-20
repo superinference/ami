@@ -2,13 +2,13 @@
  * U006 (w119) — two additive type-level parity capabilities:
  *
  * 1. `THEME_LABELS` / `describeTheme` — descriptive labels for each {@link Theme}
- *    value (parity: Claude Code's `ThemePicker` option labels, e.g.
+ *    value (parity: the reference's `ThemePicker` option labels, e.g.
  *    `auto` → "Auto (match terminal)"). The `/theme` listing surfaces them so a
  *    user sees what each option does, not just its terse machine id.
  *
  * 2. `memory_warning` EngineEvent gains a progressive `level` (1 high / 2 critical /
  *    3 severe) so a frontend can render DISTINCT severity wording and escalate the
- *    notification kind at the top tier (parity: Claude's useMemoryUsage status).
+ *    notification kind at the top tier (parity: the reference's useMemoryUsage status).
  *
  * These lock the label map ↔ THEMES 1:1 invariant, the describeTheme pass-through,
  * and the memory_warning level discriminant.
@@ -32,7 +32,7 @@ describe('THEME_LABELS / describeTheme (U006 w119)', () => {
     );
   });
 
-  it('matches Claude ThemePicker labels for the descriptive entries', () => {
+  it('matches the reference ThemePicker labels for the descriptive entries', () => {
     assert.equal(THEME_LABELS['auto'], 'Auto (match terminal)');
     assert.equal(THEME_LABELS['dark'], 'Dark mode');
     assert.equal(THEME_LABELS['light'], 'Light mode');

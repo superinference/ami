@@ -12,7 +12,7 @@ import {
 } from '../src/permissions';
 
 // ---------------------------------------------------------------------------
-// U030 — glob boundary handling for READ paths. Parity: Claude Code's
+// U030 — glob boundary handling for READ paths. Parity: the reference's
 // pathValidation glob handling (pathValidation.ts L1161-L1241 / "finding #15").
 // A plain (non-traversal) read glob cannot be statically validated — the pre-glob
 // base is the only segment realpath'd, so a symlink matched INSIDE the expansion

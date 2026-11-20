@@ -4,7 +4,7 @@
  * A background shell command may be spawned as a 'monitor' (a long-lived stream
  * expected to idle between bursts). The schema advertises the knob, and the tool
  * threads an explicit 'monitor' into ProcessManager.spawn so the stall watchdog is
- * disabled and completion is worded as a stream ending. Parity: Claude Code's
+ * disabled and completion is worded as a stream ending. Parity: the reference's
  * BashTaskKind threaded through the spawn input (LocalShellTask).
  *
  * RED-GREEN: remove the `background_kind` → spawn `kind` threading in bash.ts and

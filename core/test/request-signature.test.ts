@@ -209,7 +209,7 @@ describe('createRequestSignature / verifyRequestSignature', () => {
 
 // --- Human-readable, detail-bearing expiry/skew reasons (G-DETAIL) ---
 // The expiry/future reasons must embed the concrete time delta (and the window
-// exceeded) so a downstream log/diagnostic is actionable — mirroring Claude
+// exceeded) so a downstream log/diagnostic is actionable — mirroring the reference
 // Code's jwtUtils, which renders every expiry/skew message with a formatted
 // duration. These FAIL against the pre-enrichment terse strings ('signature
 // expired' / 'signature timestamp in future') and PASS with the fix.

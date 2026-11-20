@@ -23,7 +23,7 @@ function ctx(overrides: Record<string, unknown>, signal?: AbortSignal): ToolCont
 }
 
 describe('task_output U212: timeout_ms schema bound', () => {
-  it('advertises minimum 0 and maximum 600000 (mirrors Claude min/max)', () => {
+  it('advertises minimum 0 and maximum 600000 (mirrors the reference min/max)', () => {
     const props = (taskOutputTool.inputSchema as { properties: Record<string, { minimum?: number; maximum?: number }> }).properties;
     assert.equal(props.timeout_ms.minimum, 0, 'schema advertises a lower bound of 0');
     assert.equal(props.timeout_ms.maximum, 600000, 'schema advertises the 600000ms ceiling');
@@ -63,7 +63,7 @@ describe('task_output U212: explicit abort signalling', () => {
       getOutput: () => ({ status: 'running', exitCode: null, elapsedMs: 10, output: 'x' }),
     });
     const res = await taskOutputTool.execute!({ task_id: 't', wait: true, timeout_ms: 1 }, c);
-    // Mirrors Claude Code's retrieval_status:'timeout' disambiguation — the model
+    // Mirrors the reference's retrieval_status:'timeout' disambiguation — the model
     // must be able to tell a full-wait timeout apart AND know the concrete next
     // moves (wait longer, or enumerate tasks) instead of blindly re-polling.
     assert.match(res.output, /larger timeout_ms/, 'suggests raising timeout_ms');
@@ -158,7 +158,7 @@ describe('task_output U212: failure remediation hint', () => {
   });
 });
 
-describe('getAgentOutputTaskId (parity: Claude Code FileReadTool/UI getAgentOutputTaskId)', () => {
+describe('getAgentOutputTaskId (parity: the reference FileReadTool/UI getAgentOutputTaskId)', () => {
   it('extracts the task id from a …/tasks/<id>.output path', () => {
     assert.equal(getAgentOutputTaskId('/home/u/.ami/projects/p/tasks/bg-123.output'), 'bg-123');
     assert.equal(getAgentOutputTaskId('tasks/abc.output'), 'abc');

@@ -39,7 +39,7 @@ after(() => {
 
 // ---------------------------------------------------------------------------
 // Gap 1 — session-stable base-realpath memoization
-// (parity: Claude's memoize(getPathsForPermissionCheck) /
+// (parity: the reference's memoize(getPathsForPermissionCheck) /
 //  getResolvedWorkingDirPaths for session-stable config paths,
 //  references/claude/.../utils/permissions/pathValidation.ts:L101-128,L130-146)
 // ---------------------------------------------------------------------------
@@ -143,7 +143,7 @@ test('canonical fast-path still DENIES a symlink hop to a forbidden target (full
 
 // ---------------------------------------------------------------------------
 // Gap 4 — pluggable per-tool custom validation (getCustomValidation)
-// (parity: Claude's toolValidationConfig customValidation hook,
+// (parity: the reference's toolValidationConfig customValidation hook,
 //  references/claude/.../utils/settings/permissionValidation.ts:L137-153)
 // ---------------------------------------------------------------------------
 

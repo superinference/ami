@@ -9,7 +9,7 @@ import type {
 } from '../src/tools/powershell-parser';
 
 // ---------------------------------------------------------------------------
-// U111 — AST-based powershellCommandIsSafe validator (parity with Claude Code's
+// U111 — AST-based powershellCommandIsSafe validator (parity with the reference's
 // PowerShellTool/powershellSecurity.ts powershellCommandIsSafe). Fixtures are
 // hand-built ParsedPowerShellCommand ASTs so the suite does NOT require a pwsh
 // runtime — it exercises the structural (AST-only) checks and the fail-safe

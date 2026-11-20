@@ -278,7 +278,7 @@ describe('planModeTool — session slug cache + word-slug filenames', () => {
     const a = allocatePlanFile(dir, { sessionId: 'sess-A' });
     const b = allocatePlanFile(dir, { sessionId: 'sess-A' });
     assert.equal(a, b, 'same session should reuse the same plan file');
-    // The session filename is <slug>.md (no plan- prefix), per Claude parity.
+    // The session filename is <slug>.md (no plan- prefix), per the reference parity.
     assert.match(path.basename(a), /^[a-z]+-[a-z]+-[a-z]+\.md$/);
     clearAllPlanSlugs();
     fs.rmSync(dir, { recursive: true, force: true });

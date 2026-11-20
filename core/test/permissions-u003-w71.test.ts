@@ -14,14 +14,14 @@ import {
 //
 //  1. isHelpCommand: a plain `<cmd> --help` is read-only; the derived allow rule
 //     should be the FULL command, never a broad `cmd:*` prefix (which would grant
-//     arbitrary execution through the interpreter). Mirrors Claude's
+//     arbitrary execution through the interpreter). Mirrors the reference's
 //     utils/bash/commands.ts isHelpCommand bypassing prefix extraction.
 //
 //  2. isDangerousRemovalPath / commandHasDangerousRemoval: a generalized
 //     catastrophic-removal guard (root, home, EVERY direct child of root, drive
 //     roots, `/*` wildcard) that forces an explicit prompt and can never be
 //     auto-allowed — even under a wildcard allow rule or a blanket auto-allow
-//     mode. Mirrors Claude's tools/BashTool/pathValidation.ts
+//     mode. Mirrors the reference's tools/BashTool/pathValidation.ts
 //     isDangerousRemovalPath + checkDangerousRemovalPaths.
 // ---------------------------------------------------------------------------
 

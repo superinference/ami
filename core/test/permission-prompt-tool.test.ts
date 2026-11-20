@@ -1,5 +1,5 @@
 /**
- * Delegated permission-prompt tool result parsing (parity: Claude Code's
+ * Delegated permission-prompt tool result parsing (parity: the reference's
  * --permission-prompt-tool / permissionToolOutputSchema).
  *
  * RED on revert: core/src/permission-prompt-tool.ts does not exist, so the import fails.

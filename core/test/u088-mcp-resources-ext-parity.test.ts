@@ -1,4 +1,4 @@
-// Unit U088 — MCP resource blob persistence: mime→extension parity with Claude's
+// Unit U088 — MCP resource blob persistence: mime→extension parity with the reference's
 // `extensionForMimeType`. The on-disk extension must come from a conservative
 // allowlist (so native tools open the file correctly) and default to `bin` for
 // ANYTHING not in the allowlist — never a garbage extension derived from an

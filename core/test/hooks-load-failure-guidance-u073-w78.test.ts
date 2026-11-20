@@ -1,6 +1,6 @@
 /**
  * U073 / w78 — Categorized, actionable remediation guidance on a hooks/config
- * load failure (parity with Claude Code's sessionStart plugin-hook-load triage).
+ * load failure (parity with the reference's sessionStart plugin-hook-load triage).
  *
  * A malformed .ami/hooks.json / .ami/config.json silently disables every hook it
  * would contribute. recordConfigError now routes the failure through

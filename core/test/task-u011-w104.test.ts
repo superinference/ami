@@ -1,5 +1,5 @@
 // U011 / w104 — stable caller-assigned `agent_id` distinct from the display `name`
-// (parity: Claude Code's teammate identity separating a stable machine `agentId`
+// (parity: the reference's teammate identity separating a stable machine `agentId`
 // from the human `agentName`, utils/teammate.ts:L44-45). AMI previously exposed only
 // a `name` (both display label AND send_message/resume address); the taskId — the
 // durable machine id that keys the output file, file-cache, and process-manager

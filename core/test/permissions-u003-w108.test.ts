@@ -12,12 +12,12 @@ import {
 // ---------------------------------------------------------------------------
 // U003 / w108 — three additive permission-layer parity improvements:
 //   G6  — strip dangerous code-exec `allow` rules on escalation INTO a permissive
-//         mode (parity: Claude's transitionPermissionMode cleanup).
+//         mode (parity: the reference's transitionPermissionMode cleanup).
 //   G13/G14/G15 — source-tracked additional read roots + persistence to
-//         `permissions.additionalDirectories` (parity: Claude's
+//         `permissions.additionalDirectories` (parity: the reference's
 //         additionalWorkingDirectories Map + persistPermissionUpdate dedupe).
 //   G20 — reject a shell-DYNAMIC token in a persistent bash `allow` pattern
-//         (parity: Claude's staticPrefix.ts dynamic-arg sanitization).
+//         (parity: the reference's staticPrefix.ts dynamic-arg sanitization).
 // ---------------------------------------------------------------------------
 
 function mkTmp(): string {

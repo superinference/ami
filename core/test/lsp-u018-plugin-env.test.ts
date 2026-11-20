@@ -1,6 +1,6 @@
 /**
  * U018 — resolvePluginLspEnvironment: variable substitution for plugin-contributed
- * LSP server configs (parity: Claude Code's resolvePluginLspEnvironment,
+ * LSP server configs (parity: the reference's resolvePluginLspEnvironment,
  * lspPluginIntegration.ts:L229-292).
  *
  * Covers the plugin-scoped tier (${CLAUDE_PLUGIN_ROOT}, ${CLAUDE_PLUGIN_DATA},

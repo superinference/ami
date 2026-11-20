@@ -1,6 +1,6 @@
 // UNIT U-perm2 (w128)
 //  gap — Re-run the plan/auto-mode transition (transitionPlanAutoMode) when the
-//    permission context is rebuilt from an on-disk settings change. Parity: Claude's
+//    permission context is rebuilt from an on-disk settings change. Parity: the reference's
 //    applySettingsChange running transitionPlanAutoMode(newContext) after
 //    syncPermissionRulesFromDisk (utils/settings/applySettingsChange.ts:L68 +
 //    utils/permissions/permissionSetup.ts transitionPlanAutoMode).

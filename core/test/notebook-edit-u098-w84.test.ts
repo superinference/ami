@@ -5,7 +5,7 @@ import { deriveNotebookLanguage, deriveCellLanguage } from '../src/tools/noteboo
 // ---------------------------------------------------------------------------
 // U098-w84 — notebook cell highlight-language derivation exported as the single
 // canonical source reused by the permission-time cell preview (common/src/
-// permission-preview.ts). Parity: Claude's NotebookEditToolDiff selects the
+// permission-preview.ts). Parity: the reference's NotebookEditToolDiff selects the
 // highlight lexer by cell_type (markdown vs the notebook's language_info.name).
 // These guard the exported helpers' behaviour and edge cases so a consumer can
 // derive the cell language without re-implementing the metadata lookup.

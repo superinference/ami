@@ -13,7 +13,7 @@ import {
 // ---------------------------------------------------------------------------
 // U016 — Unified memory-source taxonomy + malformed-frontmatter surfacing.
 //
-// Gaps implemented here (parity with Claude Code utils/memory/types.ts
+// Gaps implemented here (parity with the reference utils/memory/types.ts
 // MEMORY_TYPE_VALUES = User/Project/Local/Managed/AutoMem/(TeamMem) and
 // utils/yaml.ts error surfacing):
 //   - Distinct 'local' InstructionSource level for *.local.md override files

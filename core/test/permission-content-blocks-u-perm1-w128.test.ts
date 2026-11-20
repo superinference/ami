@@ -11,7 +11,7 @@ import type { TextContent, ImageContent, DocumentContent } from '../src/types';
 
 // U-perm1 / w128 — permission-decision contentBlocks.
 //
-// Parity: Claude Code's permission allow/deny/abort decisions carry an optional
+// Parity: the reference's permission allow/deny/abort decisions carry an optional
 // `contentBlocks: ContentBlockParam[]` (PermissionContext buildAllow / cancelAndAbort
 // / handleUserAllow) so rich content (structured text, images, documents) flows back
 // to the model with the permission result. AMI's PermissionPromptResult now carries

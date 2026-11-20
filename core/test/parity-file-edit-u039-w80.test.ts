@@ -9,7 +9,7 @@ import type { ToolContext } from '../src/types';
 
 // ---------------------------------------------------------------------------
 // U039 / w80 — HARD read-before-edit enforcement on the string-replace and
-// multi-edit paths (parity: Claude Code's FileEditTool `validateInput`,
+// multi-edit paths (parity: the reference's FileEditTool `validateInput`,
 // errorCode 6: "File has not been read yet. Read it first before writing to
 // it.", plus its isPartialView rejection). AMI previously AUTO-READ on these
 // paths — a leniency that let a blind edit through and contradicted the tool's

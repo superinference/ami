@@ -12,7 +12,7 @@ import { PermissionManager } from '../src/permissions';
 // permissions.ts change the "safe"/"unsafe"→expected line flips back and the
 // test fails. The negative-control lines (read-only invocations) lock in that
 // the hardening does not over-block.
-// Mirrors Claude Code's per-flag safeFlags restrictions (jq --library-path, man
+// Mirrors the reference's per-flag safeFlags restrictions (jq --library-path, man
 // pager/html exec, file --compile/--magic-file) and its force-push / branch
 // force-delete / kubectl-delete destructive escalation.
 // ---------------------------------------------------------------------------

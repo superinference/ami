@@ -1,6 +1,6 @@
 /**
  * U021 — forward chunked, compact-boundary-truncating resume reader
- * (parity with Claude's sessionStoragePortable readTranscriptForLoad +
+ * (parity with the reference's sessionStoragePortable readTranscriptForLoad +
  * TRANSCRIPT_READ_CHUNK_SIZE):
  *
  *  - TRANSCRIPT_READ_CHUNK_SIZE = 1 MiB knob exists alongside the pre-existing

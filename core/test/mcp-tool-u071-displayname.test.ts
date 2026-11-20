@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { getMcpToolDisplayName } from '../src/tools/mcp-tool';
 
 // U071 (continuation) — user-facing MCP tool display name from the `title`
-// annotation, mirroring Claude Code's userFacingName (client.ts:L1972-1976):
+// annotation, mirroring the reference's userFacingName (client.ts:L1972-1976):
 // `<server> - <title||name> (MCP)`.
 describe('getMcpToolDisplayName', () => {
   it('prefers the annotation title over the raw tool name', () => {

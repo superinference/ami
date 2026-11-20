@@ -15,19 +15,19 @@ import {
 //     as destructive via a flat DESTRUCTIVE_COMMANDS membership, so `git clean -n`
 //     was wrongly escalated to a destructive-approval prompt. The warning engine
 //     already excluded dry-runs; this brings the CLASSIFIER into line, sharing one
-//     canonical regex. Parity with Claude's git-clean negative-lookahead + required
+//     canonical regex. Parity with the reference's git-clean negative-lookahead + required
 //     `-f` (destructiveCommandWarning.ts L67-71).
 //
 //  2. `printf` added to the xargs safe-target allowlist. `printf` is a pure
 //     read-only output command (no file writes), so `… | xargs printf` is safe to
-//     auto-classify, matching Claude's SAFE_TARGET_COMMANDS_FOR_XARGS (which lists
+//     auto-classify, matching the reference's SAFE_TARGET_COMMANDS_FOR_XARGS (which lists
 //     echo/printf/wc/grep/head/tail). AMI's list omitted `printf`.
 //
 //  3. Specific destructive-warning NOTES for the PowerShell deletions AMI already
 //     escalates (`Remove-Item -Recurse/-Force`, `Clear-Content`). classifyBashCommand
 //     classifies these as `destructive`, but getDestructiveCommandWarning returned
 //     null, so the prompt fell back to the generic "is destructive" line. Add the
-//     per-pattern note so the prompt explains WHY. Parity with Claude's PowerShell
+//     per-pattern note so the prompt explains WHY. Parity with the reference's PowerShell
 //     destructiveCommandWarning cmdlet notes.
 // ---------------------------------------------------------------------------
 

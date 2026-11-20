@@ -2,7 +2,7 @@
 // provider-u020-w82.test.ts
 //
 // Parity unit U020 (wave 82) — selectable abort semantics for the shared backoff
-// `sleep` (parity: Claude Code's utils/sleep.ts). By DEFAULT an abort SILENTLY
+// `sleep` (parity: the reference's utils/sleep.ts). By DEFAULT an abort SILENTLY
 // RESOLVES (caller checks signal.aborted after the await); `throwOnAbort` rejects
 // so a surrounding retry loop is cancelled; `abortError` rejects with a specific
 // error class (implies throwOnAbort). The default rejection is a DOMException

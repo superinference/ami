@@ -20,7 +20,7 @@ import type { ToolDefinition } from '../src/types';
 // Gap: `buildConversationCachePoints` / `buildToolCacheBreakpoints` hardcoded the
 // breakpoint as `{ type: 'ephemeral' }` with no way to opt a breakpoint into the
 // 1h extended-cache window (or a cross-session scope). They now accept the actual
-// breakpoint object to emit, mirroring Claude's getCacheControl() return shape
+// breakpoint object to emit, mirroring the reference's getCacheControl() return shape
 // `{ type: 'ephemeral'; ttl?: '1h'; scope?: CacheScope }`, and that value is
 // consumed on both the SDK (providerOptions) and the raw-vertex (injected body)
 // cache paths.

@@ -2,7 +2,7 @@
 // dump-prompts.test.ts
 //
 // Unit coverage for the per-session, deduplicated prompt-dump entry schema
-// (core/core/src/dump-prompts.ts), mirroring Claude Code's createDumpPromptsFetch
+// (core/core/src/dump-prompts.ts), mirroring the reference's createDumpPromptsFetch
 // DumpState bookkeeping (services/api/dumpPrompts.ts):
 //   - initFingerprint: cheap model|toolNames|systemLen change proxy (string vs
 //     array system, missing tools/system).

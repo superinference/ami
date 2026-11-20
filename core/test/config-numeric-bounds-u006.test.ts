@@ -5,7 +5,7 @@ import { validateProjectConfigValues } from '../src/config';
 import type { ProjectConfig } from '../src/config';
 
 // U006 — numeric boundary enforcement on maxWebSearchesPerSession,
-// bashOutputMaxChars and taskOutputMaxChars (parity: Claude Code's numeric
+// bashOutputMaxChars and taskOutputMaxChars (parity: the reference's numeric
 // settings min/max/nonnegative/int enforcement). Before this unit these three
 // EngineConfig numeric knobs flowed past validateEngineConfig unchecked.
 

@@ -11,7 +11,7 @@ import {
 } from '../src/utils/platform';
 
 // ---------------------------------------------------------------------------
-// U425 — canonical typed host-platform detection (parity with Claude Code's
+// U425 — canonical typed host-platform detection (parity with the reference's
 // utils/platform.ts + utils/systemDirectories.ts): the five-member Platform enum
 // incl. a distinct `wsl` and an observable `unknown` (one-shot debug log), plus
 // XDG-/USERPROFILE-aware system-directory resolution.

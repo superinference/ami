@@ -18,7 +18,7 @@ import type { ToolContext } from '../src/types';
 
 // ---------------------------------------------------------------------------
 // U050 — cross-process task surfacing: a configurable debounce knob
-// (resolveTaskWatchDebounceMs, mirroring Claude Code's DEBOUNCE_MS), a reconcile
+// (resolveTaskWatchDebounceMs, mirroring the reference's DEBOUNCE_MS), a reconcile
 // that diffs the on-disk task file against the in-memory store and returns ONLY
 // another process's deltas (reconcileExternalTaskChanges), and the fs.watch-based
 // live watcher (watchTaskList) that debounces bursts and feeds those deltas to a

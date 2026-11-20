@@ -14,7 +14,7 @@ import { PermissionManager } from '../src/permissions';
 // rule against every command (`rule.pattern ? … : true`). A committed/untrusted
 // project settings file must never silently grant the whole team that breadth.
 //
-// Parity: Claude's isOverlyBroadBashAllowRule / findOverlyBroadBashPermissions
+// Parity: the reference's isOverlyBroadBashAllowRule / findOverlyBroadBashPermissions
 // (utils/permissions/permissionSetup.ts) + removeDangerousPermissions re-run on
 // every settings sync (utils/settings/applySettingsChange.ts L50-59).
 // ---------------------------------------------------------------------------

@@ -1,9 +1,9 @@
 // Unit coverage for the U023 w91 additive agent-creation-method building block:
 //   - the `generate | manual` method allowlist + case-insensitive parser
-//     (parity with Claude Code's new-agent wizard MethodStep methodOptions).
+//     (parity with the reference's new-agent wizard MethodStep methodOptions).
 //   - the ordered, recommended-default-first option list with branch metadata
 //     (generate → 'generate' step + wasGenerated:true; manual → 'configure' step
-//     + wasGenerated:false — mirroring Claude's goNext() vs goToStep(3) branch).
+//     + wasGenerated:false — mirroring the reference's goNext() vs goToStep(3) branch).
 
 import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';

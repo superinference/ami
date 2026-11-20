@@ -13,7 +13,7 @@ import {
 // UNIT U010 — cross-process advisory lock on config writes.
 //   updateConfigFile wraps its re-read → merge → write in withFileLockSync so
 //   concurrent AMI processes serialize instead of losing each other's keys
-//   (parity: Claude Code's saveConfigWithLock lockSync + onCompromised). Each
+//   (parity: the reference's saveConfigWithLock lockSync + onCompromised). Each
 //   assertion discriminates the LOCKED behavior from the pre-fix unlocked one.
 // ---------------------------------------------------------------------------
 

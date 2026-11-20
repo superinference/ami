@@ -1007,7 +1007,7 @@ describe('teamCreateTool and teamDeleteTool', () => {
 
   it('teamDeleteTool is a graceful no-op when no active team', async () => {
     const r = await teamDeleteTool.execute({}, ctx({ cwd: tmpDir }));
-    // Parity: Claude returns success + "nothing to clean up" (non-error).
+    // Parity: the reference returns success + "nothing to clean up" (non-error).
     assert.ok(!r.isError);
     assert.ok(r.output.includes('nothing to clean up'));
   });
@@ -1335,7 +1335,7 @@ describe('taskTool — subagent_type', () => {
     assert.ok(!toolNames.includes('bash'));
     assert.ok(!toolNames.includes('file_write'));
     // U011: a non-built-in (custom) agent additionally loses CUSTOM_AGENT_DISALLOWED_TOOLS
-    // (parity: Claude's source-trust tool gate), which includes `task` — so an untrusted
+    // (parity: the reference's source-trust tool gate), which includes `task` — so an untrusted
     // custom agent cannot spawn nested subagents even when task isn't in its own disallowedTools.
     assert.ok(!toolNames.includes('task'), 'task denied for a non-built-in custom agent via CUSTOM_AGENT_DISALLOWED_TOOLS');
   });

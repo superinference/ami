@@ -30,7 +30,7 @@ import {
 } from '../src/hooks';
 
 describe('U007 w94 — UserPromptSubmit veto message formatters (unit)', () => {
-  it('formatUserPromptSubmitBlockedMessage mirrors Claude Code wording', () => {
+  it('formatUserPromptSubmitBlockedMessage mirrors the reference wording', () => {
     assert.equal(
       formatUserPromptSubmitBlockedMessage('policy violation'),
       'UserPromptSubmit operation blocked by hook:\npolicy violation',

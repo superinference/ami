@@ -256,7 +256,7 @@ describe('resolveCommitAttribution', () => {
 
   it('suppresses the trailer when SUPERINFERENCE_DISABLE_CO_AUTHOR=1', () => {
     // No config attribution.commit here: an explicit config attribution takes
-    // PRECEDENCE over this deprecated binary env opt-out (parity with Claude Code,
+    // PRECEDENCE over this deprecated binary env opt-out (parity with the reference,
     // whose `attribution` setting overrides the legacy toggle). The env opt-out is
     // exercised on its own so it genuinely suppresses the trailer.
     process.env.SUPERINFERENCE_DISABLE_CO_AUTHOR = '1';

@@ -4,7 +4,7 @@
 // low-frequency poll the managed/policy config tier (getManagedConfigPath + its
 // config.d drop-ins) and fire onConfigChange('managed', path) ONLY when the merged
 // managed policy actually changed, failing OPEN on a transient/tampered read so a
-// mid-session refresh never crashes the running session. Parity: Claude Code's
+// mid-session refresh never crashes the running session. Parity: the reference's
 // background managed/policy settings refresh + notifyChange('policySettings').
 //
 // Gaps: managed-tier mid-session refresh (remoteManagedSettings), runtime

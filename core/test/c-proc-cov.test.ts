@@ -119,7 +119,7 @@ describe('process-manager — defensive catch / boundary branches', () => {
     // Close the backing fd mid-flight so the manager's fs.writeSync on the output
     // path throws and must hit its defensive catch (never escaping). U031 added
     // resolveSpawnCwd: a non-existent cwd now RECOVERS to the manager root and the
-    // command runs to completion (parity: Claude's spawn cwd recovery), instead of
+    // command runs to completion (parity: the reference's spawn cwd recovery), instead of
     // surfacing an async ENOENT failure — so the task completes rather than fails.
     fs.closeSync((pm as any).processes.get(id).outputFd);
     const event = await waitForComplete(pm, id);

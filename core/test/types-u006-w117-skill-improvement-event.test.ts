@@ -2,7 +2,7 @@
  * U006 (w117) — `skill_improvement` EngineEvent (introspection surface for AMI's
  * write-back-to-SKILL.md feature).
  *
- * Parity: Claude Code's structured `skill_improvement_detected` signal
+ * Parity: the reference's structured `skill_improvement_detected` signal
  * (utils/hooks/skillImprovement.ts) and its survey appeared/responded lifecycle
  * (hooks/useSkillImprovementSurvey.ts), minus the vendor telemetry routing. AMI had
  * the skill-improvement FEATURE (`/skill improve`) but no observable event, so the TUI,

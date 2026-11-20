@@ -19,7 +19,7 @@ import {
 // show how far over the limit the request was. This populates the same three
 // fields from the max_tokens-exceed form (actual = input + max_tokens,
 // limit = context limit, gap = actual - limit) so BOTH overflow forms carry
-// magnitude. Parity: Claude's magnitude-aware overflow handling
+// magnitude. Parity: the reference's magnitude-aware overflow handling
 // (services/api/errors.ts parse helpers), extended to the max_tokens form.
 // ---------------------------------------------------------------------------
 describe('U073/w88 magnitude-aware max_tokens context overflow', () => {

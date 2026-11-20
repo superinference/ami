@@ -15,7 +15,7 @@ import {
 import { MemoryManager, resolveMemoryExcludes } from '../src/memory';
 
 // ---------------------------------------------------------------------------
-// U010 — ProjectConfig.memoryExcludes (parity: Claude Code's claudeMdExcludes).
+// U010 — ProjectConfig.memoryExcludes (parity: the reference's claudeMdExcludes).
 // A persisted config knob that excludes specific instruction (CLAUDE.md /
 // AGENTS.md / *.local.md) files from the auto-loaded memory context, unioned
 // with the one-shot AMI_MEMORY_EXCLUDES env list and honored during loading.

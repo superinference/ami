@@ -6,7 +6,7 @@ import { pathsOverlap, _pathHooks } from '../src/utils/path';
 
 /**
  * U081 — `pathsOverlap` symmetric, root- and case-aware path-overlap primitive
- * (core/core/src/utils/path.ts). Mirrors Claude Code's
+ * (core/core/src/utils/path.ts). Mirrors the reference's
  * `utils/plugins/orphanedPluginFilter.ts::pathsOverlap`: two paths overlap when
  * one is the same as, or nested inside, the other (in EITHER direction), with a
  * filesystem root overlapping everything and a case-fold on case-insensitive

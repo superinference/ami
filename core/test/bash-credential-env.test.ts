@@ -326,7 +326,7 @@ describe('SENSITIVE_ENV_SET', () => {
 // ---------------------------------------------------------------------------
 // Parity: header-bearing, cloud-bearer, GitHub-Actions OIDC/runtime, and
 // action-input credential vars whose token word is NOT the last name segment
-// (so suffix-only matching misses them). Mirrors Claude Code's GHA scrub list.
+// (so suffix-only matching misses them). Mirrors the reference's GHA scrub list.
 // ---------------------------------------------------------------------------
 
 describe('sanitizeEnvForSubprocess – header/token-adjacent credential vars', () => {

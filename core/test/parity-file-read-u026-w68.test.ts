@@ -60,7 +60,7 @@ describe('U026-w68: classifyPdfErrorReason taxonomy', () => {
   }
 
   it('password classification wins over corrupted when both words appear', () => {
-    // password branch is evaluated first (parity with Claude's ordering)
+    // password branch is evaluated first (parity with the reference's ordering)
     assert.equal(classifyPdfErrorReason('encrypted and corrupt'), 'password_protected');
   });
 });

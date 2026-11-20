@@ -14,7 +14,7 @@ import type { ToolContext } from '../src/types';
 // previously-unwired core/git helpers that the worktree subsystem must consume:
 //   1. isShallowClone  → explain a resolvable-looking base_ref that is missing
 //      because the clone's history is truncated (shallow-clone edge-case
-//      fallback, parity with Claude's shallow detection).
+//      fallback, parity with the reference's shallow detection).
 //   2. findRemoteBase  → default worktree base follows git's own priority
 //      (upstream @{u} → origin/HEAD → candidate list) instead of a hardcoded
 //      origin/<default>.

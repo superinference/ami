@@ -5,7 +5,7 @@ import type { ProviderConfig, Message, StreamChunk, RetryErrorKind } from '../sr
 
 // ---------------------------------------------------------------------------
 // U006 / w91 — the `onRetry` callback now carries an `errorKind` discriminator
-// (parity: Claude's withRetry cause classification) so a connection reset, a
+// (parity: the reference's withRetry cause classification) so a connection reset, a
 // request timeout, an idle-stream abort, and an HTTP-status retry are each
 // representable distinctly even when no HTTP status is present.
 //

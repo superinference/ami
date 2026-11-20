@@ -95,7 +95,7 @@ describe('evaluateSkillPermission — per-skill deny/allow/ask keyed by name', (
     assert.equal(evaluateSkillPermission('x', rules), 'ask');
   });
 
-  it('honors Claude-cased `Skill` rule tool via the alias map', () => {
+  it('honors compat-cased `Skill` rule tool via the alias map', () => {
     // A rule authored as Skill(dangerous) normalizes its tool to 'skill'.
     assert.equal(normalizeToolName('Skill'), 'skill');
     const rules = [{ tool: 'Skill', pattern: 'dangerous', action: 'deny' as const }];

@@ -1,7 +1,7 @@
 /**
  * U001 — getDefaultPermissionPatterns(): the serializable snapshot of the
  * built-in classifier patterns surfaced by `/permissions defaults|effective`.
- * Parity: Claude Code's `auto-mode defaults` dump.
+ * Parity: the reference's `auto-mode defaults` dump.
  */
 import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';

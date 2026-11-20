@@ -36,7 +36,7 @@ function waitFor(cond: () => boolean, timeoutMs = 5000): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// GAP: Robust process-TREE kill (parity with Claude Code's ShellCommand #doKill
+// GAP: Robust process-TREE kill (parity with the reference's ShellCommand #doKill
 // → treeKill). ProcessManager.kill() previously signalled ONLY the child's
 // process GROUP (`process.kill(-pid)`), so a descendant that escaped the group
 // via setsid()/double-fork survived the stop. It must now reuse the shared
@@ -82,7 +82,7 @@ describe('ProcessManager.kill – robust process-tree kill', () => {
 });
 
 // ---------------------------------------------------------------------------
-// GAP: task-KIND discriminator (parity with Claude's BackgroundTaskState `type`
+// GAP: task-KIND discriminator (parity with the reference's BackgroundTaskState `type`
 // union + LocalShellTask `kind`). Every tracked entry carries a `kind`
 // (bash | monitor | agent) so consumers branch on it instead of brittle
 // command-string heuristics, and taskType() no longer MISCLASSIFIES a monitor
@@ -139,7 +139,7 @@ describe('ProcessManager – task-kind discriminator', () => {
 });
 
 // ---------------------------------------------------------------------------
-// GAP: reason-bearing kill (parity with Claude's killShellTasksForAgent debug
+// GAP: reason-bearing kill (parity with the reference's killShellTasksForAgent debug
 // line). The emitted 'killed' event carries WHY the task was reaped, and
 // killTasksForAgent supplies `agent <id> exiting`. The taskType on the event is
 // derived from the authoritative kind (a monitor → undefined).

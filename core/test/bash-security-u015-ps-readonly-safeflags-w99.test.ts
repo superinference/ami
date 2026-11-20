@@ -18,7 +18,7 @@ import { PermissionManager } from '../src/permissions';
 // allowlisted read cmdlet, so a remote/side-effecting flag on an otherwise
 // read-only cmdlet (`Get-Process -ComputerName remote`, `Get-Service
 // -ComputerName remote`, `Get-DnsClientCache -CimSession s`) was silently
-// classified as safe. Parity with Claude: an allowlisted read cmdlet carrying a
+// classified as safe. Parity with the reference: an allowlisted read cmdlet carrying a
 // flag outside its read-only surface falls through to a prompt.
 // ---------------------------------------------------------------------------
 

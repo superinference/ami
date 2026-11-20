@@ -14,7 +14,7 @@ import type { ToolContext, ToolDefinition } from '../src/types';
 
 // ---------------------------------------------------------------------------
 // U011 (w100) gap: in-process teammate-only tool gating.
-// Parity with Claude's IN_PROCESS_TEAMMATE_ALLOWED_TOOLS — task CRUD, send_message,
+// Parity with the reference's IN_PROCESS_TEAMMATE_ALLOWED_TOOLS — task CRUD, send_message,
 // and the scheduler are injected ONLY for in-process teammates (isInProcessTeammate),
 // never handed to a plain general/agent-def sub-agent. AMI previously exposed them to
 // every sub-agent via the one default registry.

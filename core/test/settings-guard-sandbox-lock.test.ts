@@ -12,7 +12,7 @@ import {
 
 // U056 — sandbox managed-policy lock wiring: the affordance message, the
 // `(managed)` status suffix, and the `allowManagedSandboxDomainsOnly` managed knob.
-// Parity: Claude Code's SandboxOverridesTab locked-override text +
+// Parity: the reference's SandboxOverridesTab locked-override text +
 // areSandboxSettingsLockedByPolicy + shouldAllowManagedSandboxDomainsOnly().
 
 describe('SANDBOX_POLICY_LOCK_MESSAGE', () => {

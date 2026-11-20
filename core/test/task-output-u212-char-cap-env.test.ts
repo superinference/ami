@@ -7,7 +7,7 @@ import type { ToolContext } from '../src/types';
 /**
  * U212 (parity, additive): the hard character cap on returned task output is
  * operator-tunable via the `AMI_TASK_MAX_OUTPUT_CHARS` env var, validated through
- * the canonical bounded-int env validator — mirroring Claude Code's
+ * the canonical bounded-int env validator — mirroring the reference's
  * getMaxTaskOutputLength()/validateBoundedIntEnvVar around TASK_MAX_OUTPUT_LENGTH.
  * Absent/garbage → default; below the floor → default; above the ceiling → clamped.
  * The cap can never be disabled or set to an unbounded value.

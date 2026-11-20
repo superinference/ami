@@ -6,7 +6,7 @@ import {
 } from '../src/tools/bash-security';
 
 // ---------------------------------------------------------------------------
-// U015 — Fail-closed safe-wrapper flag parsing (parity with Claude Code's
+// U015 — Fail-closed safe-wrapper flag parsing (parity with the reference's
 // checkSemantics wrapper unwrapping in utils/bash/ast.ts:L2213-2384).
 //
 // A "safe wrapper" (timeout/env/stdbuf/nice/…) prefixes a real command. Claude

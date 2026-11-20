@@ -1,7 +1,7 @@
 /**
  * U030 — derive sandbox outbound-network allow/deny domains from web_fetch rules.
  *
- * Parity: Claude's sandbox-adapter folds WebFetch permission rules into the
+ * Parity: the reference's sandbox-adapter folds WebFetch permission rules into the
  * sandbox network allow/deny lists so the same per-domain allowlist governs BOTH
  * the WebFetch tool and in-sandbox outbound traffic. AMI already enforces
  * `network.allowedHosts`/`deniedHosts` in the sandbox backend, but nothing ever

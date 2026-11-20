@@ -66,7 +66,7 @@ describe('safeXmlKey', () => {
 // cannot be escaped (unlike values), so a crafted meta key like `x="" injected="y`
 // must be REJECTED, not fallback-substituted. This is the reusable primitive any
 // tag-wrapping code (channel/meta tagging, MCP notes) uses to interpolate untrusted
-// key/value pairs. Parity: Claude Code's `SAFE_META_KEY` + `escapeXmlAttr`.
+// key/value pairs. Parity: the reference's `SAFE_META_KEY` + `escapeXmlAttr`.
 describe('isSafeXmlAttrName', () => {
   it('accepts plain identifier keys (letter/underscore start, word chars)', () => {
     assert.equal(isSafeXmlAttrName('chat_id'), true);

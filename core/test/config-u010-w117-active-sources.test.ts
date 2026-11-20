@@ -1,6 +1,6 @@
 // U010 / w117 — collectActiveConfigSources: the live config SOURCE STACK.
 //
-// Parity: Claude Code's Settings status `buildSettingSourcesProperties()` active
+// Parity: the reference's Settings status `buildSettingSourcesProperties()` active
 // setting-sources list. Distinct from resolveSettingsFilePaths (lists the four POSSIBLE
 // tier paths regardless of existence) and collectConfigDiagnostics (only tiers with
 // ERRORS): this enumerates the file-based tiers in precedence order (highest first) with

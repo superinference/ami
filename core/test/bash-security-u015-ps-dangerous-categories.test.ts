@@ -9,7 +9,7 @@ import {
 // ---------------------------------------------------------------------------
 // U015 — PowerShell / cross-platform dangerous-command security categories.
 //
-// Parity with Claude Code's yoloClassifier POWERSHELL_DENY_GUIDANCE
+// Parity with the reference's yoloClassifier POWERSHELL_DENY_GUIDANCE
 // (references/claude/claude-code-main/src/utils/permissions/yoloClassifier.ts
 // L1402-L1411): AMI already blocked the "Code from External" download-and-execute
 // cradles, but NOT the Persistence (profile / service / Run-key / WMI event) and

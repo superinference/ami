@@ -5,7 +5,7 @@
  * Parity gaps covered (all verified=confirmed):
  *  - Configurable default command timeout via AMI_DEFAULT_TIMEOUT_MS /
  *    CLAUDE_CODE_SHELL_TIMEOUT (resolveDefaultTimeoutMs), so long builds/test
- *    suites can match Claude Code's 30-minute default (Shell.ts:L44) instead of
+ *    suites can match the reference's 30-minute default (Shell.ts:L44) instead of
  *    AMI's conservative 2-minute baseline.
  *  - Interactive-shell introspection getShellType() → 'zsh'|'bash'|'fish'|
  *    'unknown' for shell-tailored setup hints (localInstaller.ts:L153-162), also

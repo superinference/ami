@@ -18,7 +18,7 @@ import {
 import { applyConfigFeatureFlags, applyConfigStartupKnobs } from '../src/config';
 
 // U010 (w100) — generic feature() capability gate + config.features bridge.
-// Parity: Claude Code's `features` map / `feature()` conditional task registration.
+// Parity: the reference's `features` map / `feature()` conditional task registration.
 
 describe('featureFlagEnvName — normalization', () => {
   it('upper-cases and collapses non-alnum runs to a single underscore', () => {

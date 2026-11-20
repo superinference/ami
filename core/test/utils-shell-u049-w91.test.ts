@@ -1,7 +1,7 @@
 /**
  * U049 (w91) — ripgrep shell integration in the shell snapshot.
  *
- * Covers `buildRipgrepShellIntegration` (parity with Claude Code's
+ * Covers `buildRipgrepShellIntegration` (parity with the reference's
  * `createRipgrepShellIntegration` / `createArgv0ShellFunction`, ShellSnapshot.ts)
  * and its wiring into `createShellSnapshot` so a model-typed `rg` in a sourced
  * snapshot dispatches to the SAME ripgrep binary AMI's grep/glob tools use.

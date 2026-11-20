@@ -19,7 +19,7 @@ import type { ToolContext } from '../src/types';
 
 // U033 / w67 — genuinely-missing cron parity sub-capabilities:
 //  1. One-shot jitter FLOOR knob (CronJitterConfig.oneShotFloorMs) + cross-field
-//     refine (validateJitterConfig), mirroring Claude's cronJitterConfig refine.
+//     refine (validateJitterConfig), mirroring the reference's cronJitterConfig refine.
 //  2. Per-job expiry window (maxAgeDays, 0=never) surfaced through the cron_create
 //     tool schema/output and the cron_list flags, with MAX_AGE_DAYS interpolated
 //     from the single source constant.

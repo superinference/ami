@@ -1,6 +1,6 @@
 // Unit U088 — MCP resource tool-definition parity: searchHint (findability via
 // tool_search) and maxResultSizeChars (a declared, consumed result-size knob)
-// mirroring Claude's ListMcpResourcesTool / ReadMcpResourceTool definitions.
+// mirroring the reference's ListMcpResourcesTool / ReadMcpResourceTool definitions.
 import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
 import * as fs from 'fs';

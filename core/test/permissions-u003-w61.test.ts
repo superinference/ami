@@ -149,7 +149,7 @@ describe('U003/w61: containsShellSubstitution special parameters', () => {
 
 // ---------------------------------------------------------------------------
 // Gap: recognize `time` as a command wrapper so safety/permission analysis
-//   unwraps to the INNER command (parity with Claude's `time` command spec).
+//   unwraps to the INNER command (parity with the reference's `time` command spec).
 //   claudeRef references/claude/.../utils/bash/specs/time.ts:L3-L11
 // ---------------------------------------------------------------------------
 describe('U003/w61: `time` command-wrapper unwrapping', () => {

@@ -12,7 +12,7 @@ import { PermissionManager } from '../src/permissions';
 // ---------------------------------------------------------------------------
 // U003 (w78): auto-mode availability gating with reason classification.
 //
-// Parity: Claude's getAutoModeUnavailableReason / getAutoModeUnavailableNotification
+// Parity: the reference's getAutoModeUnavailableReason / getAutoModeUnavailableNotification
 // (utils/permissions/permissionSetup.ts) + useAutoModeUnavailableNotification —
 // a reason-tagged one-shot notice when an elevated autonomy mode cannot be entered.
 // ---------------------------------------------------------------------------

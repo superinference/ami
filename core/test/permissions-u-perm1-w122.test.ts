@@ -6,7 +6,7 @@ import { PermissionManager } from '../src/permissions';
 
 // ---------------------------------------------------------------------------
 // explainAllow — structured machine-readable decisionReason on an AUTO-ALLOW
-// (parity: Claude's PowerShellTool modeValidation auto-allow decisionReason).
+// (parity: the reference's PowerShellTool modeValidation auto-allow decisionReason).
 // The only two ways AMI auto-approves: an explicit allow RULE, or the MODE.
 // ---------------------------------------------------------------------------
 
@@ -46,7 +46,7 @@ test('explainAllow prefers the RULE over the mode when both would allow', async 
 
 // ---------------------------------------------------------------------------
 // blockedPath — the exact path that tripped the gate on an ask/deny verdict
-// (parity: Claude's PermissionAskDecision.blockedPath / PermissionResult.blockedPath).
+// (parity: the reference's PermissionAskDecision.blockedPath / PermissionResult.blockedPath).
 // ---------------------------------------------------------------------------
 
 test('checkWithReason sets blockedPath + workingDir reason for an out-of-workspace read', async () => {

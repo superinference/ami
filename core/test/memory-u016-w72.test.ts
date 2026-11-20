@@ -15,7 +15,7 @@ import { projectStateDir } from '../src/reference-journal';
 /**
  * U016 / wave-72 — relative-time formatting, memory-file classification,
  * team-memory op classification + enable knob, date-partitioned daily logs, and
- * EEXIST-safe create-if-absent. Parity with Claude Code's utils/format.ts +
+ * EEXIST-safe create-if-absent. Parity with the reference's utils/format.ts +
  * utils/intl.ts (formatRelativeTime/Ago), utils/memoryFileDetection.ts
  * (isAutoManagedMemoryFile), utils/teamMemoryOps.ts (team-op classifier),
  * memdir/paths.ts (getAutoMemDailyLogPath) and commands/memory/memory.tsx

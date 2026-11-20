@@ -12,7 +12,7 @@ import type { ToolContext, EngineConfig, Message } from '../src/types';
 // ===========================================================================
 // Unit U011 / wave w95 — CACHE-IDENTICAL FORK PREFIX.
 //
-// Parity with Claude Code's forkSubagent (forkSubagent.ts:L44-L71) +
+// Parity with the reference's forkSubagent (forkSubagent.ts:L44-L71) +
 // resumeAgent (resumeAgent.ts:L116-L148,L183-L190): a `fork`-mode child must
 // reuse the PARENT's already-rendered system prompt bytes and the parent's
 // EXACT ordered tool pool so the API request prefix stays byte-identical to the

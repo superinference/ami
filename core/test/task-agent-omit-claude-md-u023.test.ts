@@ -1,4 +1,4 @@
-// U023 — per-agent `omitClaudeMd` project-context knob (parity with Claude's agent
+// U023 — per-agent `omitClaudeMd` project-context knob (parity with the reference's agent
 // `omitClaudeMd`, inverted for AMI's lean-subagent perk). AMI subagents run on a
 // REPLACED lean/identity prompt that already omits the project CLAUDE.md/AGENTS.md and
 // the session-start git status. The knob lets a NAMED agent OPT BACK IN to the project

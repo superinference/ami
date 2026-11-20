@@ -72,7 +72,7 @@ describe('task.ts pure helpers', () => {
     assert.ok(names.includes('file_read'));
     assert.ok(!names.includes('file_edit'));
     // Explore now RETAINS bash for read-only shell ops (git status/log/diff, ls,
-    // cat, head, tail, find, grep) — parity with Claude's Explore agent — but the
+    // cat, head, tail, find, grep) — parity with the reference's Explore agent — but the
     // bash it keeps is the read-only-guarded variant (isReadOnly pinned true).
     assert.ok(names.includes('bash'));
     const bash = explore.find(t => t.name === 'bash')!;
@@ -1082,7 +1082,7 @@ describe('teamCreateTool / teamDeleteTool', () => {
 
   it('delete is a graceful no-op when there is no active team', async () => {
     const r = await teamDeleteTool.execute({}, ctx({ cwd: tmp }));
-    // Parity: Claude returns a non-error "nothing to clean up" result.
+    // Parity: the reference returns a non-error "nothing to clean up" result.
     assert.ok(!r.isError);
     assert.ok(r.output.includes('nothing to clean up'));
   });

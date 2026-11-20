@@ -8,7 +8,7 @@ import {
 } from '../src/tools/bash-parser';
 import { validateASTCommands, CHECK_IDS } from '../src/tools/bash-security';
 
-// Parity: Claude Code's treeSitterAnalysis.ts exposes a single structured result
+// Parity: the reference's treeSitterAnalysis.ts exposes a single structured result
 // (DangerousPatterns { hasCommandSubstitution, hasProcessSubstitution,
 // hasParameterExpansion, hasHeredoc, hasComment } + CompoundStructure
 // { hasCompoundOperators, hasPipeline, hasSubshell, hasCommandGroup, operators[],

@@ -17,7 +17,7 @@ function ctx(overrides?: Partial<ToolContext>): ToolContext {
 }
 
 // ---------------------------------------------------------------------------
-// extractBashCommentLabel — parity with Claude Code BashTool/commentLabel
+// extractBashCommentLabel — parity with the reference BashTool/commentLabel
 // ---------------------------------------------------------------------------
 describe('extractBashCommentLabel', () => {
   it('returns the leading comment text stripped of # and whitespace', () => {

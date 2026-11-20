@@ -158,7 +158,7 @@ describe('webSearchTool.execute — mandatory Sources directive', () => {
 // (references/.../WebSearchTool/WebSearchTool.ts :: maxResultSizeChars knob)
 // ---------------------------------------------------------------------------
 describe('capResultSize — overall output-size cap', () => {
-  it('exposes the 100000-char cap constant mirroring Claude maxResultSizeChars', () => {
+  it('exposes the 100000-char cap constant mirroring the reference maxResultSizeChars', () => {
     assert.equal(MAX_RESULT_SIZE_CHARS, 100000);
   });
 

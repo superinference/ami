@@ -1,7 +1,7 @@
 /**
  * mcp-client-u041-in-process.test.ts — in-process (linked) MCP transport (U041).
  *
- * Parity with Claude Code's services/mcp/InProcessTransport.ts + SdkControlTransport.ts:
+ * Parity with the reference's services/mcp/InProcessTransport.ts + SdkControlTransport.ts:
  * two linked transports let an MCP server and client run in the SAME process with no
  * subprocess/socket. Covers the three algorithmic guarantees (microtask delivery,
  * symmetric+idempotent close, send-after-close guard) AND a full end-to-end round-trip

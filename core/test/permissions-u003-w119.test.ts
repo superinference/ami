@@ -14,7 +14,7 @@ import { PermissionManager } from '../src/permissions';
 //  4. special-file (FIFO/socket/device) guard before realpath in resolveForCheck
 //  5. isWithinWorkspace: realpath-resolve cwd/roots (symlinked-PWD parity) +
 //     macOS /private lexical fold
-// Parity: Claude's utils/permissions/*, utils/shell/readOnlyCommandValidation.ts.
+// Parity: the reference's utils/permissions/*, utils/shell/readOnlyCommandValidation.ts.
 // ---------------------------------------------------------------------------
 
 // --- 1. MCP server-level matching (i=60) --------------------------------------

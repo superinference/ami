@@ -6,7 +6,7 @@ import {
 } from '../src/utils/env';
 
 /**
- * U223 — parity with Claude Code's `validateBoundedIntEnvVar`, which calls
+ * U223 — parity with the reference's `validateBoundedIntEnvVar`, which calls
  * `logForDebugging(`${name} ${message}`)` whenever a numeric env override is
  * rejected (invalid) or clamped (capped). AMI already returns the structured
  * `{ effective, status, message }`; this adds the debug-log emission so a

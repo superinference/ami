@@ -409,7 +409,7 @@ describe('isBypassPermissionsModeDisabled', () => {
     assert.equal(isBypassPermissionsModeDisabled({ disableBypassPermissionsMode: true }), true);
     assert.equal(isBypassPermissionsModeDisabled({ disableBypassPermissionsMode: false }), false);
     // A truthy-but-not-true value is NOT treated as armed (fail safe = permissive
-    // only on an exact true, mirroring Claude's strict 'disable' check).
+    // only on an exact true, mirroring the reference's strict 'disable' check).
     assert.equal(isBypassPermissionsModeDisabled({ disableBypassPermissionsMode: 'disable' }), false);
     assert.equal(isBypassPermissionsModeDisabled({}), false);
     assert.equal(isBypassPermissionsModeDisabled(null), false);
@@ -456,7 +456,7 @@ describe('formatDangerousSettingsList', () => {
   });
 });
 
-describe('setting-source display names (parity: Claude settings/constants.ts mappers)', () => {
+describe('setting-source display names (parity: the reference settings/constants.ts mappers)', () => {
   it('maps the managed tier to enterprise prose in all three registers', () => {
     assert.equal(getSettingsTierShortName('managed'), 'Managed');
     assert.equal(getSettingsTierDisplayName('managed'), 'Enterprise managed settings');

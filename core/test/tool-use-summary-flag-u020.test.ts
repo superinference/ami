@@ -1,7 +1,7 @@
 /**
  * U020 — toolUseSummaryLabelEnabled() opt-in flag (core unit tests).
  *
- * Parity: Claude Code gates the tool-use summary generator behind
+ * Parity: the reference gates the tool-use summary generator behind
  * `CLAUDE_CODE_EMIT_TOOL_USE_SUMMARIES` (query/config.ts). AMI honors that AND the
  * AMI-native `SUPERINFERENCE_EMIT_TOOL_USE_SUMMARIES`; default OFF (the extra
  * cheap-model call per tool batch is opt-in).

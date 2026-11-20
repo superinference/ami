@@ -6,7 +6,7 @@ import { detectSymlinkCreateCompound } from '../src/tools/bash-security.ts';
 // UNIT U015 (w98) — extend the compound-command link-create TOCTOU guard to the
 // PowerShell `New-Item -ItemType SymbolicLink|Junction|HardLink` link creator.
 //
-// Parity with Claude Code's isSymlinkCreatingCommand (PowerShellTool/
+// Parity with the reference's isSymlinkCreatingCommand (PowerShellTool/
 // modeValidation.ts L82-117), which recognises link creation across
 // SymbolicLink / Junction / HardLink. AMI's system prompt tells the model to use
 // PowerShell on Windows, and such a command runs through the same bash tool, so a

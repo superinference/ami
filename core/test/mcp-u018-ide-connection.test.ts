@@ -123,7 +123,7 @@ describe('validateMcpServerConfigShape (IDE fields)', () => {
     assert.match(issues[0], /sse-ide/);
     assert.match(issues[0], /ws-ide/);
   });
-  it('normalizeMcpServerEntry maps a Claude-style type:sse-ide to transport', () => {
+  it('normalizeMcpServerEntry maps a reference-style type:sse-ide to transport', () => {
     const out = normalizeMcpServerEntry({ type: 'sse-ide', url: 'https://x', ideName: 'VS Code' }) as Record<string, unknown>;
     assert.equal(out.transport, 'sse-ide');
     assert.equal(out.type, undefined);

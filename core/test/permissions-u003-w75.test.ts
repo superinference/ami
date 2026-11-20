@@ -14,7 +14,7 @@ import {
 
 // ---------------------------------------------------------------------------
 // U003 (w75): operation-aware (read/write/create) + config-folder-scope permission
-// affordances. Mirrors Claude's FileOperationType + isInClaudeFolder /
+// affordances. Mirrors the reference's FileOperationType + isInClaudeFolder /
 // isInGlobalClaudeFolder (components/permissions/FilePermissionDialog/
 // permissionOptions.tsx): a mutating edit inside the agent's OWN config folder
 // offers a broader, session-scoped "allow editing its own settings this session"

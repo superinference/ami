@@ -16,7 +16,7 @@ import {
 // ===========================================================================
 // UNIT U-perm2 (w125) — structured per-argument spec attributes driving prefix
 // extraction (gap 4) + interpreter -c/-m special-casing in prefix construction
-// (gap 5). Parity: Claude Code src/utils/shell/specPrefix.ts (buildPrefix /
+// (gap 5). Parity: the reference src/utils/shell/specPrefix.ts (buildPrefix /
 // calculateDepth / shouldStopAtArg). AMI already declared the isCommand/isModule/
 // isVariadic/isOptional/isDangerous attributes on its CommandSpec model
 // (bash-command-specs.ts) but did not consume them for prefix DEPTH or module

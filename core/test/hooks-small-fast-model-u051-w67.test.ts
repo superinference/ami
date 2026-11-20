@@ -2,7 +2,7 @@
  * U051-w67 — a prompt hook is a cheap, single-shot verification verdict, so it
  * defaults to the operator-configured small/fast model (getSmallFastModel:
  * ANTHROPIC_SMALL_FAST_MODEL / AMI_SMALL_FAST_MODEL) instead of burning the main
- * model. Parity: Claude's execPromptHook `model: hook.model ?? getSmallFastModel()`.
+ * model. Parity: the reference's execPromptHook `model: hook.model ?? getSmallFastModel()`.
  * With no env set the session model is kept (current behavior preserved); an
  * explicit `hook.model` always wins.
  */

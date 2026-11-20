@@ -2,10 +2,10 @@
  * U065 (wf5) — model-registry additive parity:
  *  1. detectProvider — explicit CLAUDE_CODE_USE_FOUNDRY / SUPERINFERENCE_USE_FOUNDRY
  *     opt-in toggle routing to the azure-openai (Foundry) provider, independent of
- *     credential sniffing (parity: Claude Code getAPIProvider, utils/model/providers.ts).
+ *     credential sniffing (parity: the reference getAPIProvider, utils/model/providers.ts).
  *  2. resolveOverriddenModel — reverse of applyModelOverride: map a provider-specific
  *     override string (e.g. a Bedrock inference-profile ARN) back to its canonical id
- *     (parity: Claude's resolveOverriddenModel, utils/model/modelStrings.ts:L78-L100),
+ *     (parity: the reference's resolveOverriddenModel, utils/model/modelStrings.ts:L78-L100),
  *     and the display helpers (getModelDisplayName / getModelMetadata) honoring it so
  *     an opaque override surfaces its clean family name.
  *  3. MODEL_ENV_TOGGLES — introspection surface for the new Foundry env knobs.

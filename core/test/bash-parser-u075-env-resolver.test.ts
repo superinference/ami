@@ -12,7 +12,7 @@ import {
 /**
  * U075 — caller-supplied environment for `$VAR` command-name resolution.
  *
- * Parity with Claude Code's `tryParseShellCommand(cmd, env?)`
+ * Parity with the reference's `tryParseShellCommand(cmd, env?)`
  * (utils/bash/shellQuote.ts L24-L45): the parse/extraction entrypoints accept an
  * optional `env` that is EITHER a `Record<string,string|undefined>` OR a resolver
  * function `(key)=>string|undefined`, letting the caller control `$VAR` expansion

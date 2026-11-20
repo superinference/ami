@@ -9,7 +9,7 @@ import type { ToolContext } from '../src/types';
 
 /* ---------------------------------------------------------------- *
  * U237 / w88 — GAP 3 (E2E): enableSummarization gate wired into the
- * background-agent drain. Parity: Claude gates live progress-summary
+ * background-agent drain. Parity: the reference gates live progress-summary
  * generation on enableSummarization. AMI keeps it ON by default (superset) and
  * AMI_SUBAGENT_SUMMARIES=off disables ONLY the free-text progressSummary while
  * the tool-use count is still tracked.

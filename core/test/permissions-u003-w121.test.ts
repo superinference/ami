@@ -23,7 +23,7 @@ import {
 
 // ---------------------------------------------------------------------------
 // Gap: Disable xargs auto-allow on Windows (data-to-code UNC bridge).
-// Parity: Claude's getCommandAllowlist drops `xargs` on win32
+// Parity: the reference's getCommandAllowlist drops `xargs` on win32
 // (tools/BashTool/readOnlyValidation.ts L1203-1209). The hostile UNC path lives
 // in the PIPED DATA, not the command string, so the UNC guard cannot see it —
 // the only safe answer is to never auto-allow an xargs pipeline on Windows.
@@ -53,7 +53,7 @@ describe('xargs auto-allow disabled on Windows', () => {
 
 // ---------------------------------------------------------------------------
 // Gap: Tool pattern-class table (filePatternTools vs bashPrefixTools) +
-// isFilePatternTool/isBashPrefixTool helpers. Parity: Claude's
+// isFilePatternTool/isBashPrefixTool helpers. Parity: the reference's
 // toolValidationConfig (utils/settings/toolValidationConfig.ts L9-38).
 // ---------------------------------------------------------------------------
 describe('tool pattern classification', () => {
@@ -96,7 +96,7 @@ describe('tool pattern classification', () => {
 
 // ---------------------------------------------------------------------------
 // Gap: File-pattern-tool rule validation — reject ':*' (Bash-only) in a file
-// pattern, and flag a non-boundary wildcard. Parity: Claude's
+// pattern, and flag a non-boundary wildcard. Parity: the reference's
 // permissionValidation file-tool branch (utils/settings/permissionValidation.ts
 // L199-236).
 // ---------------------------------------------------------------------------
@@ -136,7 +136,7 @@ describe('validatePermissionRule — file-pattern tools', () => {
 
 // ---------------------------------------------------------------------------
 // Gap: Zod enum schema for permission-mode validation (permissionModeSchema /
-// externalPermissionModeSchema). Parity: Claude's
+// externalPermissionModeSchema). Parity: the reference's
 // utils/permissions/PermissionMode.ts schemas. The schema must back the existing
 // normalize/guard so they can never disagree on the valid set.
 // ---------------------------------------------------------------------------

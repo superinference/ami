@@ -13,10 +13,10 @@ import {
 // =============================================================================
 // U003 (w85) — two additive permission-parity features in core/permissions.ts:
 //   A. `gh` (GitHub CLI) read-only command classification + HOST/OWNER/REPO exfil
-//      guard (parity: Claude's GH_READ_ONLY_COMMANDS + ghIsDangerousCallback,
+//      guard (parity: the reference's GH_READ_ONLY_COMMANDS + ghIsDangerousCallback,
 //      utils/shell/readOnlyCommandValidation.ts).
 //   B. deny/ask RULE matching for file-path tools against BOTH the literal path
-//      AND every symlink-resolved form (parity: Claude's getPathsForPermissionCheck
+//      AND every symlink-resolved form (parity: the reference's getPathsForPermissionCheck
 //      threaded through deny/ask rule matching, utils/permissions/filesystem.ts).
 // =============================================================================
 

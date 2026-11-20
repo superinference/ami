@@ -1,6 +1,6 @@
 /**
  * U290 (wave 114) — agent-memory snapshot three-way UPDATE RESOLUTION
- * (parity with Claude Code's `SnapshotUpdateDialog` / `main.tsx` L2260-2273).
+ * (parity with the reference's `SnapshotUpdateDialog` / `main.tsx` L2260-2273).
  *
  * The detection (`checkAgentMemorySnapshot`) and the sync operations
  * (`initialize`/`replace`) already shipped. This covers the user-facing

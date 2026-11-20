@@ -10,7 +10,7 @@ import {
 } from '../src/types';
 
 // ---------------------------------------------------------------------------
-// UNIT U006 / gap 8 — forked-skill live-progress cap (parity: Claude Code's
+// UNIT U006 / gap 8 — forked-skill live-progress cap (parity: the reference's
 // SkillTool MAX_PROGRESS_MESSAGES_TO_SHOW + verbose flag), adapted to AMI's
 // live-stream model: an OPT-IN `maxSkillProgressMessages` knob caps how many
 // nested tool-use steps a forked skill surfaces live; the rest are suppressed

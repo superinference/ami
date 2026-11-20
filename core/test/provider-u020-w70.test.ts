@@ -2,7 +2,7 @@
 // provider-u020-w70.test.ts
 //
 // Parity unit U020 (wave 70) — custom-dispatcher trust + proxy-side DNS +
-// dispatcher-cache lifecycle in core/core/src/provider.ts. Mirrors Claude Code:
+// dispatcher-cache lifecycle in core/core/src/provider.ts. Mirrors the reference:
 //
 //   - proxyResolvesHosts() / getAddressFamily() / proxy-side DNS lookup
 //     [ref: utils/proxy.ts CLAUDE_CODE_PROXY_RESOLVES_HOSTS, getAddressFamily]

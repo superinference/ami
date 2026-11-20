@@ -648,7 +648,7 @@ describe('mergeConfigs — managed allowlist + bashOutputMaxChars', () => {
 
 // ---------------------------------------------------------------------------
 // mergeConfigs — additive array merge (concat + dedupe across layers)
-// Parity: Claude's settingsMergeCustomizer merges array-valued settings with
+// Parity: the reference's settingsMergeCustomizer merges array-valued settings with
 // uniq([...target, ...source]) so allow/deny lists, excluded commands and tool
 // lists ACCUMULATE across sources instead of a higher layer clobbering a lower
 // one. Managed-authoritative arrays still override wholesale (AMI superset).

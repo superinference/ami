@@ -14,7 +14,7 @@ import { describeRule, PermissionManager, type PermissionRule } from '../src/per
 // U003 (w76): auto-mode (YOLO) natural-language classifier rules + plain-language
 // permission-rule previews + managed-rule immutability on removal.
 //
-// Parity: Claude's settings.autoMode / yoloClassifier (three declarative rule
+// Parity: the reference's settings.autoMode / yoloClassifier (three declarative rule
 // categories: allow / soft_deny / environment with per-section REPLACE merge),
 // PermissionRuleDescription (describeRule), and the managed policySettings tier
 // being read-only to the user (removeRule refuses to delete it).

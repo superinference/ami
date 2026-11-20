@@ -1,7 +1,7 @@
 /**
  * U006 (w108): display discriminators added to message-display.ts —
  *  - shouldRenderToolResult: a tool can mark its own result non-rendering
- *    (parity: Claude's renderToolResultMessage returning null to suppress a
+ *    (parity: the reference's renderToolResultMessage returning null to suppress a
  *    redundant result covered by a batched lifecycle message).
  *  - summarizeToolInputFields: compact tool-use field summary
  *    (parity: SyntheticOutputTool.renderToolUseMessage — ≤3 keys inline,

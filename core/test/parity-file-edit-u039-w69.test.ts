@@ -1,8 +1,8 @@
 // Unit U039 (wave w69) — parity gaps for core/core/src/tools/file-edit.ts:
 //  - structuredPatch output: file_edit success results carry a machine-readable
-//    DiffHunk[] alongside the text diff (parity: Claude FileEdit `structuredPatch`)
+//    DiffHunk[] alongside the text diff (parity: the reference FileEdit `structuredPatch`)
 //  - buildStructuredPatch shares the EXACT hunk grouping of buildUnifiedDiff
-//  - searchHint discovery metadata on fileEditTool (parity: Claude Tool.searchHint),
+//  - searchHint discovery metadata on fileEditTool (parity: the reference Tool.searchHint),
 //    wired into tool_search ranking/gating
 //  - prompt steering: prefer editing existing files; never proactively create
 //    *.md / README docs; avoid writing emojis unless asked

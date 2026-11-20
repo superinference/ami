@@ -13,7 +13,7 @@ import {
 // U003 / w95 — G10: path-shape unvalidatable gates (UNC / credential-leak +
 // backtick command-substitution) extend the existing TOCTOU path-hazard
 // detector so these obscured path shapes are never silently auto-allowed and
-// are forced to a manual-approval prompt (parity: Claude's pathValidation UNC
+// are forced to a manual-approval prompt (parity: the reference's pathValidation UNC
 // + escape gating). Mirrors pathValidation.ts L1022-L1159.
 // ---------------------------------------------------------------------------
 
@@ -66,7 +66,7 @@ test('G10: isPathAllowed rejects, classifyReadAccess prompts for a UNC path', ()
 // U003 / w95 — G18: strip dangerous code-exec `allow` rules that originate from
 // an UNTRUSTED (shared/committable) settings tier (projectSettings / command),
 // recording them for reporting. A policy/personal-tier rule is NOT stripped.
-// Mirrors Claude's ToolPermissionContext.strippedDangerousRules.
+// Mirrors the reference's ToolPermissionContext.strippedDangerousRules.
 // ---------------------------------------------------------------------------
 
 function withTempProject(rules: unknown[], fn: (cwd: string) => void): void {

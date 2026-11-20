@@ -51,7 +51,7 @@ describe('cron_list U233 parity', () => {
     assert.doesNotMatch(out, /line two/);
   });
 
-  it('declares a maxResultSizeChars bound (parity with Claude 100_000)', () => {
+  it('declares a maxResultSizeChars bound (parity with the reference 100_000)', () => {
     assert.equal(cronListTool.maxResultSizeChars, 100_000);
   });
 

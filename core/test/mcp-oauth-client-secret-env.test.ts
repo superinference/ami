@@ -1,6 +1,6 @@
 /**
  * mcp-oauth-client-secret-env.test.ts — U036 OAuth parity: confidential-client
- * secret sourced from the environment (parity with Claude Code's
+ * secret sourced from the environment (parity with the reference's
  * `readClientSecret()` env precedence, services/mcp/auth.ts:L2362-L2397).
  *
  * AMI's OAuth path accepts a confidential `clientSecret` option but previously

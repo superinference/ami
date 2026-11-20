@@ -92,7 +92,7 @@ describe('ProcessManager.cleanup — reason-bearing reap (GAP: silent shutdown r
 
 // ---------------------------------------------------------------------------
 // Feature 2 — GAP: per-type pill-label counts from the authoritative `kind`
-//   discriminator (not brittle command-string heuristics). Mirrors Claude Code's
+//   discriminator (not brittle command-string heuristics). Mirrors the reference's
 //   getPillLabel splitting "1 shell, 1 monitor". task_list now renders a "By
 //   type:" line driven by the task `kind` field, and surfaces the count of running
 //   internal MCP monitors (still hidden from the per-task listing).

@@ -45,13 +45,13 @@ describe('U079 glob — richer descriptions', () => {
   });
 
   it('tool description advertises that it scales to any codebase size', () => {
-    // Parity with Claude's prompt bullet "works with any codebase size" so the
+    // Parity with the reference's prompt bullet "works with any codebase size" so the
     // model knows glob is the right tool even on very large trees.
     assert.match(globTool.description, /any codebase size/i);
   });
 
   it('tool description shows concrete example glob patterns', () => {
-    // Parity: Claude's prompt gives example patterns ("**/*.js" or "src/**/*.ts")
+    // Parity: the reference's prompt gives example patterns ("**/*.js" or "src/**/*.ts")
     // so the model has a template for the pattern syntax.
     assert.match(globTool.description, /\*\*\/\*\./);
     assert.match(globTool.description, /src\/\*\*\//);

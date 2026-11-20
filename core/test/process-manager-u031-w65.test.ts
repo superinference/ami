@@ -132,7 +132,7 @@ describe('ProcessManager – notified dedup suppresses the post-kill bash comple
     });
     // Even an EXPLICIT kill with suppressCompletion must NOT latch an agent — only
     // bash tasks are latched. The agent's abort completion carries the partial
-    // result and must still be reported, mirroring Claude's stopTask bash-vs-agent split.
+    // result and must still be reported, mirroring the reference's stopTask bash-vs-agent split.
     assert.equal(pm.kill('agent-1', { suppressCompletion: true }), true);
     assert.equal(pm.get('agent-1')!.status, 'killed');
     assert.notEqual(pm.get('agent-1')!.notified, true);

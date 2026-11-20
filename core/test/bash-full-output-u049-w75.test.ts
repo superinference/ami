@@ -1,7 +1,7 @@
 /**
  * U049 (w75) — E2E: a large bash command's COMPLETE stdout is spilled to disk,
  * so the middle that AMI's in-memory head+tail window drops is still retrievable
- * via file_read. Parity with Claude Code's persist-complete-output model
+ * via file_read. Parity with the reference's persist-complete-output model
  * (BashTool.tsx:L725-753).
  *
  * RED (before the fix): bash spilled `presented.stdout`, the already-truncated

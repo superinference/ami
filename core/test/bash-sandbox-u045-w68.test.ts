@@ -47,7 +47,7 @@ describe('buildSandboxTmpDir — TMPPREFIX + exposed scratch dir', () => {
   it('pins TMPPREFIX inside the scratch dir so zsh heredoc temp files stay contained', () => {
     const out = buildSandboxTmpDir(baseCfg({ sandboxTmpDir: '/var/sbx-tmp' }));
     // zsh uses TMPPREFIX (not TMPDIR) for heredoc temp files; it must be a path
-    // INSIDE the scratch dir, mirroring Claude's posixJoin(tmpDir, 'zsh').
+    // INSIDE the scratch dir, mirroring the reference's posixJoin(tmpDir, 'zsh').
     assert.ok(
       out.includes("TMPPREFIX='/var/sbx-tmp/zsh'"),
       `expected TMPPREFIX pinned under scratch dir, got: ${out}`,

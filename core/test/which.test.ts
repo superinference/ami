@@ -160,7 +160,7 @@ describe('whichSync', () => {
 // whichSync — Bun.which native fast path (no process spawn). Under Bun the
 // lookup routes through the in-process `Bun.which` resolver and never scans PATH
 // or spawns `where.exe`/`command -v`. Exercised by installing a fake `Bun`
-// global (absent under Node). Parity with Claude Code's `bunWhich` switch.
+// global (absent under Node). Parity with the reference's `bunWhich` switch.
 // ---------------------------------------------------------------------------
 describe('whichSync — Bun fast path', () => {
   const g = globalThis as { Bun?: unknown };
@@ -190,7 +190,7 @@ describe('whichSync — Bun fast path', () => {
 
   it('returns null (no Node fallback) when Bun.which misses', () => {
     // Even though the binary IS on PATH, under Bun the Node PATH-scan fallback is
-    // never consulted — Bun.which is authoritative (matches Claude: `bunWhich ?? …`
+    // never consulted — Bun.which is authoritative (matches the reference: `bunWhich ?? …`
     // binds the function, so whichNodeSync never runs under Bun).
     const exe = makeExe('ontool');
     process.env.PATH = dir;
@@ -276,7 +276,7 @@ describe('findOnPath — no-spawn lookup with injectable env', () => {
 
 // ---------------------------------------------------------------------------
 // isBinaryInstalled — cached, cross-platform binary-presence check built on
-// whichSync. Parity with Claude Code's binaryCheck.ts.
+// whichSync. Parity with the reference's binaryCheck.ts.
 // ---------------------------------------------------------------------------
 describe('isBinaryInstalled', () => {
   beforeEach(() => clearBinaryCache());
@@ -315,7 +315,7 @@ describe('isBinaryInstalled', () => {
 
 // ---------------------------------------------------------------------------
 // detectPackageManagers / detectRuntimes — system-wide, ordered, no-exec PATH
-// probes (parity with Claude Code's detectPackageManagers/detectRuntimes).
+// probes (parity with the reference's detectPackageManagers/detectRuntimes).
 // ---------------------------------------------------------------------------
 describe('detectPackageManagers / detectRuntimes', () => {
   it('exposes the canonical ordered probe lists', () => {

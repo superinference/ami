@@ -5,7 +5,7 @@ import { taskKillTool } from '../src/tools/task-kill';
 import type { ToolContext } from '../src/types';
 
 // ---------------------------------------------------------------------------
-// U011 — task_kill `prune_idle` bulk mode (parity: Claude Code's TeamsDialog 'p'
+// U011 — task_kill `prune_idle` bulk mode (parity: the reference's TeamsDialog 'p'
 // prune-idle handler, TeamsDialog.tsx L207-217): stop every idle teammate at once,
 // with NO task_id, leaving busy teammates untouched. Red-green: reverting the
 // prune_idle handler makes `{ prune_idle: true }` fall through to the task_id

@@ -17,7 +17,7 @@ import {
 // classifyReadAccess now strips the obscuring construct to a best-effort literal
 // and, if THAT guess is a forbidden credential/system path, DENIES outright — so
 // an obscured forbidden path can no longer downgrade a hard deny into an "ask"
-// (which an auto-allow session would then silently grant). Parity with Claude's
+// (which an auto-allow session would then silently grant). Parity with the reference's
 // checkDenyRuleForGuessedPath (PowerShellTool/pathValidation.ts L984-L1008).
 // ---------------------------------------------------------------------------
 

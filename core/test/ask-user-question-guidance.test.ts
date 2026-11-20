@@ -3,7 +3,7 @@ import * as assert from 'node:assert/strict';
 import { askUserQuestionTool } from '../src/tools/ask-user';
 
 // ---------------------------------------------------------------------------
-// Richer question-field guidance (parity with Claude's AskUserQuestionTool
+// Richer question-field guidance (parity with the reference's AskUserQuestionTool
 // questionSchema: concrete example + "end with a question mark" + multiSelect
 // phrasing hint). Asserts the runtime tool object the model is actually shown,
 // not source text.

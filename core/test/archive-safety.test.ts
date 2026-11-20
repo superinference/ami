@@ -137,7 +137,7 @@ describe('isArchivePathSafe', () => {
   it('rejects an absolute path', () => {
     assert.equal(isArchivePathSafe('/etc/passwd'), false);
   });
-  it('rejects any path containing a .. traversal segment (parity: Claude isPathSafe)', () => {
+  it('rejects any path containing a .. traversal segment (parity: the reference isPathSafe)', () => {
     assert.equal(isArchivePathSafe('../evil'), false);
     assert.equal(isArchivePathSafe('a/../../evil'), false);
     // Claude's containsPathTraversal rejects ANY `..` segment, even one that would

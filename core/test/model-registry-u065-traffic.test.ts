@@ -1,6 +1,6 @@
 /**
  * U065 — honor the essential-traffic-only privacy opt-out before the live
- * model-list discovery network call. Mirrors Claude Code's modelCapabilities
+ * model-list discovery network call. Mirrors the reference's modelCapabilities
  * skipping background discovery when *_DISABLE_NONESSENTIAL_TRAFFIC is set.
  *
  * Gap: "Honor an 'essential-traffic-only' privacy opt-out before making

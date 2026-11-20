@@ -6,7 +6,7 @@ import { BASH_MAX_OUTPUT_UPPER_LIMIT } from '../src/tools/bash';
 import { DEFAULT_TASK_MAX_CHARS, TASK_MAX_OUTPUT_UPPER_LIMIT } from '../src/tools/spill-output';
 
 /**
- * U346 — parity with Claude Code's Doctor env-validation surface (Doctor.tsx
+ * U346 — parity with the reference's Doctor env-validation surface (Doctor.tsx
  * L142-161 + utils/envValidation.ts + utils/shell/outputLimits.ts): Claude's
  * `/doctor` validates the OUTPUT-LENGTH env knobs (BASH_MAX_OUTPUT_LENGTH /
  * TASK_MAX_OUTPUT_LENGTH) through its bounded-int validator and surfaces any

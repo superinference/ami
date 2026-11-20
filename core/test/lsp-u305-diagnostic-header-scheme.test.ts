@@ -1,7 +1,7 @@
 /**
  * U305 — URI-scheme special-casing + path normalization for diagnostic file headers.
  *
- * Parity with Claude Code's DiagnosticsDisplay file header (components/
+ * Parity with the reference's DiagnosticsDisplay file header (components/
  * DiagnosticsDisplay.tsx L87): the header strips both `file://` and the virtual
  * `_claude_fs_right:` scheme, rebases the path relative to the cwd, and appends a
  * 3-way scheme label — `(file://)`, `(claude_fs_right)`, or a generic

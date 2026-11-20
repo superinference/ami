@@ -19,7 +19,7 @@ import {
 
 /**
  * U239 / wave-81 — background memory-consolidation ("dream") RUN descriptor and
- * namespaced debug introspection. Parity with Claude Code's
+ * namespaced debug introspection. Parity with the reference's
  * tasks/DreamTask/DreamTask.ts (registerDreamTask opts:
  * sessionsReviewing / priorMtime / abortController; type:'dream' discriminator;
  * isDreamTask guard) and services/autoDream/consolidationLock.ts ([autoDream]-

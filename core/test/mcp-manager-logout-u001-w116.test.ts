@@ -1,6 +1,6 @@
 /**
  * U001 (w116) — McpManager.logout: clear a server's stored OAuth login WITHOUT
- * forgetting the server (parity: Claude's "Clear Auth" / revokeServerTokens).
+ * forgetting the server (parity: the reference's "Clear Auth" / revokeServerTokens).
  *
  * Unlike removeServer (forgets the config), logout keeps the server listed but
  * clears its credentials: best-effort server-side revoke via a live client + purge

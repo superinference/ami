@@ -420,7 +420,7 @@ describe('tool_search — +required keyword terms (M4b)', () => {
     assert.ok(result.output.includes('file_read'));
     assert.ok(result.output.includes('file_write'));
     // Parity (U106): the +term gate is a WHOLE-WORD (\bfile\b) match on name OR
-    // description — matching Claude's compiled `\bterm\b`. grep's description
+    // description — matching the reference's compiled `\bterm\b`. grep's description
     // "Search for patterns in files" has only the plural "files", which is NOT
     // the whole word "file", so grep is correctly gated OUT (a prefix-only
     // boundary would have spuriously admitted it).
@@ -724,7 +724,7 @@ describe('tool_search — parity enhancements', () => {
 describe('tool_search searchHint ranking', () => {
   // A tool whose only match is via its searchHint synonym — the term appears in
   // NEITHER the name NOR the description, so it can only be found if tool_search
-  // weighs searchHint (parity: Claude's Tool.searchHint discovery surface).
+  // weighs searchHint (parity: the reference's Tool.searchHint discovery surface).
   const hintTool: ToolDefinition = {
     name: 'notebook_edit',
     description: 'Edit a cell in a document',

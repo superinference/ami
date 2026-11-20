@@ -2,7 +2,7 @@
 //
 // Covers three additive parity capabilities added to config.ts:
 //   - loadManagedConfig empty-source FALL-THROUGH: a present-but-empty higher-priority
-//     managed source does NOT shadow a populated lower-priority one (parity: Claude's
+//     managed source does NOT shadow a populated lower-priority one (parity: the reference's
 //     consumeRawReadResult first-non-empty-source-wins chain).
 //   - managed `config.d/*.json` drop-in FAIL-CLOSED trust: a drop-in is an authoritative
 //     managed-policy layer and enforces the SAME strict trust as the base managed file, so
@@ -12,7 +12,7 @@
 //     base file fails closed too (it IS the policy). Well-formed drop-ins still merge.
 //   - ConfigService.reload() introspection breadcrumb: a project-tier change emits a
 //     "changed; reapplying (source: project)" debug line, matching the global/managed
-//     tiers' change logs (parity: Claude's logForDebugging settings-change line).
+//     tiers' change logs (parity: the reference's logForDebugging settings-change line).
 
 import { describe, it, afterEach, beforeEach, mock } from 'node:test';
 import assert from 'node:assert/strict';

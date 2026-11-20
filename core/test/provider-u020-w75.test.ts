@@ -2,7 +2,7 @@
 // provider-u020-w75.test.ts
 //
 // Parity unit U020 (wave 75) — transport-boundary prompt/response debug capture
-// in core/core/src/provider.ts, mirroring Claude Code's createDumpPromptsFetch
+// in core/core/src/provider.ts, mirroring the reference's createDumpPromptsFetch
 // (services/api/dumpPrompts.ts L90-226).
 //
 // Covered parity gaps:

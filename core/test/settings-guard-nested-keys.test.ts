@@ -15,7 +15,7 @@ import {
 import { configToolWriteBlockReason } from '../src/tools/config-tool';
 
 // U056 gap: nested-key (sub-key) granularity for managed/locked settings.
-// Parity: Claude's settings.ts validNestedKeys — permissions/sandbox/hooks are
+// Parity: the reference's settings.ts validNestedKeys — permissions/sandbox/hooks are
 // expanded one level deep so a sub-path (`permissions.deny`,
 // `sandbox.allowUnsandboxedCommands`) is governed INDEPENDENTLY of its siblings.
 

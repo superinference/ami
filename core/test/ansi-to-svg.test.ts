@@ -1,6 +1,6 @@
 /**
  * Unit tests for core/core/src/utils/ansi-to-svg — the terminal-text → SVG
- * renderer. Covers parity with Claude Code's ansiToSvg (references/claude/
+ * renderer. Covers parity with the reference's ansiToSvg (references/claude/
  * claude-code-main/src/utils/ansiToSvg.ts): the options schema + documented
  * defaults, per-line <text>/<tspan fill> emission with bold via a `.b` class,
  * the layout heuristics (trailing-blank trim, width estimate, baseline y), and

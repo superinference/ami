@@ -39,7 +39,7 @@ const silentServer = `
 `;
 
 // ---------------------------------------------------------------------------
-// GAP U041-85: MCP_TIMEOUT connection-timeout env override (parity with Claude's
+// GAP U041-85: MCP_TIMEOUT connection-timeout env override (parity with the reference's
 // getConnectionTimeoutMs).
 // ---------------------------------------------------------------------------
 describe('getMcpConnectTimeout (MCP_TIMEOUT env override)', () => {

@@ -111,7 +111,7 @@ describe('fileEditTool – edits', () => {
   });
 
   it('rejects a later edit targeting a previous edit output (Claude substring guard)', async () => {
-    // Parity: Claude FileEditTool refuses an edit whose old_string is a substring of
+    // Parity: the reference FileEditTool refuses an edit whose old_string is a substring of
     // an earlier edit's new_string, so edit 1 applies and edit 2 is rejected.
     const file = path.join(tmpDir, 'seq.ts');
     fs.writeFileSync(file, 'AAA\n');

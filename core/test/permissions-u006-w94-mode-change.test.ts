@@ -1,7 +1,7 @@
 /**
  * U006 / w94 — Single observable choke point for permission-mode changes.
  *
- * Parity: Claude's `notifyPermissionModeChanged` (state/onChangeAppState.ts,
+ * Parity: the reference's `notifyPermissionModeChanged` (state/onChangeAppState.ts,
  * utils/sessionState.ts). EVERY mutation path (setMode, exitPlanMode fallback,
  * deserialize/loadRules, constructor) routes through `applyMode`, so a single
  * registered listener observes every real privilege transition — no path can

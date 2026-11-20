@@ -4,7 +4,7 @@ import { notebookEditTool } from '../src/tools/notebook-edit';
 
 // U098 (w90) — tool introspection/affordance metadata for notebook_edit.
 //
-// Parity: Claude's NotebookEditTool exposes `userFacingName: () => 'Edit Notebook'`
+// Parity: the reference's NotebookEditTool exposes `userFacingName: () => 'Edit Notebook'`
 // alongside a search affordance. AMI already carried `searchHint`, but the
 // `userFacingName` affordance (typed on ToolDefinition) was never set on the tool,
 // so the stable snake_case id `notebook_edit` had no readable display name for

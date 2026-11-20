@@ -1,5 +1,5 @@
 /**
- * U010 / w110 — config read-cache control (parity: Claude Code's settings cache).
+ * U010 / w110 — config read-cache control (parity: the reference's settings cache).
  *
  * Three Claude-Code parity caching capabilities, all correctness-preserving and
  * tied to ONE invalidation point:
@@ -18,7 +18,7 @@
  *    miss/negative distinction).
  *
  *  - A single resetConfigCache() invalidation point wired into every config write
- *    (safeWriteConfig), mirroring Claude's resetSettingsCache() fired on
+ *    (safeWriteConfig), mirroring the reference's resetSettingsCache() fired on
  *    write / --add-dir / plugin-init / hooks-refresh.
  *
  * RED (pre-feature): loadGlobalConfig re-read the file on every call (no cache), so

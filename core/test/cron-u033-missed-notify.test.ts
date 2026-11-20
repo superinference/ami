@@ -76,7 +76,7 @@ describe('buildMissedTaskNotification', () => {
     const msg = sched.buildMissedTaskNotification([job]);
     assert.match(msg, /A scheduled task was missed while AMI was not running/);
     assert.match(msg, /removed from the schedule/);
-    // The crucial ask-before-run affordance (parity with Claude's guidance).
+    // The crucial ask-before-run affordance (parity with the reference's guidance).
     assert.match(msg, /Do NOT execute this prompt yet/);
     assert.match(msg, /AskUserQuestion/);
     assert.match(msg, /Only execute if the user confirms/);

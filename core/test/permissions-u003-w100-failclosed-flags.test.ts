@@ -5,7 +5,7 @@ import { validateCommandFlags, PermissionManager } from '../src/permissions.ts';
 /**
  * U003 (w100) — fail-closed per-command flag model.
  *
- * Mirrors Claude Code's CommandConfig fail-closed semantics
+ * Mirrors the reference's CommandConfig fail-closed semantics
  * (readOnlyValidation.ts L39-56): a SAFE command must DECLARE its flag policy,
  * and a command with no declaration is positional-only. This replaces AMI's old
  * fail-OPEN default where `validateCommandFlags` returned `true` for any command

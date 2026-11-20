@@ -14,7 +14,7 @@ import {
 } from '../src/permissions';
 
 // ---------------------------------------------------------------------------
-// U003 / w117 — permissions.ts parity with Claude's bash permission helpers.
+// U003 / w117 — permissions.ts parity with the reference's bash permission helpers.
 //
 // Two additive capabilities implemented together:
 //   1. MAX_SUGGESTED_RULES_FOR_COMPOUND cap (default 5) on the per-subcommand

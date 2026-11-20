@@ -20,7 +20,7 @@ beforeEach(() => { resetAllMailboxes(); resetAgentRegistry(); });
 afterEach(() => { resetAllMailboxes(); resetAgentRegistry(); });
 
 // ---------------------------------------------------------------------------
-// U022 — typed MessageSource classification (parity with Claude's mailbox
+// U022 — typed MessageSource classification (parity with the reference's mailbox
 // Message.source). Lets a consumer route by origin without re-parsing content.
 // ---------------------------------------------------------------------------
 

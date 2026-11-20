@@ -7,7 +7,7 @@ import type { ToolContext, EngineConfig, EngineEvent } from '../src/types';
  * U006 (w78) — END-TO-END: a running sub-agent's relayed `subagent_progress`
  * events carry live cumulative usage (tokens / tool-uses / elapsed ms) AND the
  * structured `lastToolName`, driven through the real task tool → subagent-relay
- * → _emitChild path (parity: Claude's live task_progress usage).
+ * → _emitChild path (parity: the reference's live task_progress usage).
  *
  * This is the integration proof that the task.ts wiring (not just the pure helper)
  * actually stamps the snapshot onto emitted events the parent roster consumes.

@@ -102,7 +102,7 @@ describe('mostRestrictiveVerdict', () => {
     // FUNCTIONAL CHANGE (labeled): an empty evaluator chain is "nobody had an
     // opinion" = abstain, now expressed by the lattice's neutral `passthrough`
     // element (was `allow`). The caller resolves a passthrough against its own
-    // default. Parity: Claude's passthrough falls through to the normal flow.
+    // default. Parity: the reference's passthrough falls through to the normal flow.
     const result = mostRestrictiveVerdict([]);
     assert.equal(result.decision, 'passthrough');
   });

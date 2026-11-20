@@ -10,7 +10,7 @@ import type { ProviderConfig, Message, StreamChunk } from '../src/types';
 // the input itself exceeds the context window, so re-sending the SAME request
 // loops. The provider must stop immediately with a single error chunk and never
 // retry — even when a gateway sends x-should-retry:true (which would otherwise
-// force a pointless retry). Mirrors Claude Code's detectPromptTooLong path.
+// force a pointless retry). Mirrors the reference's detectPromptTooLong path.
 //
 // RED (revert the provider guard): x-should-retry:true forces a retry, so
 // attempts >= 2 and onRetry fires. GREEN (with the guard): attempts === 1 and

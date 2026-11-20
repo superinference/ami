@@ -2,7 +2,7 @@
  * extractCacheCreationSplit red-green: Anthropic bills 1-hour and 5-minute
  * prompt-cache WRITES at different rates, so the per-TTL split carried in
  * providerMetadata.anthropic.cache_creation must be surfaced independently
- * (parity: Claude's emptyUsage cache_creation {ephemeral_1h_input_tokens,
+ * (parity: the reference's emptyUsage cache_creation {ephemeral_1h_input_tokens,
  * ephemeral_5m_input_tokens}). When no split is present the whole aggregate is a
  * 5m write.
  *

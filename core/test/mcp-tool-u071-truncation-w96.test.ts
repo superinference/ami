@@ -16,7 +16,7 @@ import { getInMemoryErrors } from '../src/logger';
 // ---------------------------------------------------------------------------
 // U071 (w96) — token-aware MCP truncation + diagnostic accessor-before-init log
 //
-// Parity with Claude Code's TWO-STAGE truncation decision
+// Parity with the reference's TWO-STAGE truncation decision
 // (utils/mcpValidation.ts:L151-L178 `mcpContentNeedsTruncation`):
 //   1. a cheap rough-estimate gate at `budget × MCP_TOKEN_COUNT_THRESHOLD_FACTOR`
 //      short-circuits the more expensive accurate count for small results;
@@ -63,7 +63,7 @@ class MockManager extends EventEmitter {
 // ---------------------------------------------------------------------------
 
 describe('mcpContentNeedsTruncation', () => {
-  it('mirrors Claude Code MCP_TOKEN_COUNT_THRESHOLD_FACTOR (0.5)', () => {
+  it('mirrors the reference MCP_TOKEN_COUNT_THRESHOLD_FACTOR (0.5)', () => {
     assert.equal(MCP_TOKEN_COUNT_THRESHOLD_FACTOR, 0.5);
   });
 

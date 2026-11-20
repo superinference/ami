@@ -17,7 +17,7 @@ import type { ProviderConfig, Message, StreamChunk } from '../src/types';
 // ---------------------------------------------------------------------------
 // U020 (w89) — streaming -> NON-STREAMING request fallback.
 //
-// Parity with Claude Code's executeNonStreamingRequest: a gateway/proxy that
+// Parity with the reference's executeNonStreamingRequest: a gateway/proxy that
 // breaks SSE streaming (200 + non-SSE body => EMPTY_STREAM_ERROR, or a 404 on the
 // streaming endpoint) but serves a plain request fine is recovered by ONE bounded,
 // token-capped non-streaming request (AI SDK generateText) whose result is replayed

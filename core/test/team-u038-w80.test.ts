@@ -10,7 +10,7 @@ import type { ToolContext } from '../src/types';
 // U038 (w80) — team-name NORMALIZATION (sanitize-to-slug) instead of
 // reject-on-invalid.
 //
-// Parity: Claude Code's sanitizeName() (utils/swarm/teamHelpers.ts) NORMALIZES
+// Parity: the reference's sanitizeName() (utils/swarm/teamHelpers.ts) NORMALIZES
 // any team name into a filesystem-safe slug (every unsafe char -> '-') so
 // human-friendly names like "My Team!" are ACCEPTED and used, rather than
 // failing validation. AMI previously REJECTED any name containing a char

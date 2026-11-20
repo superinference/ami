@@ -1,7 +1,7 @@
 /**
  * U092 — plan-mode parity primitives:
  *  1. `planFileAgentSuffix(agentId?)` — per-subagent plan file path suffix
- *     (parity: Claude's getPlanFilePath(agentId) → `{slug}-agent-{agentId}.md`,
+ *     (parity: the reference's getPlanFilePath(agentId) → `{slug}-agent-{agentId}.md`,
  *     utils/plans.ts L113-129).
  *  2. `PlanRejectionTracker` — rejectCount / skip-already-rejected state
  *     (parity: ExitPlanModeScanner, utils/ultraplan/ccrSession.ts L80-181).

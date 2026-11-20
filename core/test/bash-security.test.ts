@@ -3993,7 +3993,7 @@ describe('detectPs4TraceRce', () => {
 
 // ---------------------------------------------------------------------------
 // stripHeredocBodies — quote/comment/escape/arith-aware heredoc parsing
-// (parity with Claude Code extractHeredocs; commands bash would NOT treat as a
+// (parity with the reference extractHeredocs; commands bash would NOT treat as a
 // heredoc must stay visible to the newline / redirection guards)
 // ---------------------------------------------------------------------------
 

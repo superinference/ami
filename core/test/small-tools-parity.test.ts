@@ -84,7 +84,7 @@ describe('subagent-relay human-readable activity', () => {
   });
 
   it('tool_use_start detail carries a human-readable verb + target, verb-only when empty', () => {
-    // Parity: Claude's toolSummary maps the tool to a verb (Bash->Running, Grep->Searching)
+    // Parity: the reference's toolSummary maps the tool to a verb (Bash->Running, Grep->Searching)
     // and appends the salient target from the input.
     const withArg = mapChildToSubagentEvent({ type: 'tool_use_start', toolName: 'bash', toolCallId: 'c', input: { command: 'ls' } }, 'n', 1);
     assert.equal((withArg as { detail: string }).detail, 'Running ls');

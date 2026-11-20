@@ -24,7 +24,7 @@ describe('mapChildToSubagentEvent — structured lastToolName (parity: last_tool
     );
     assert.equal(r?.type === 'subagent_progress' && r.lastToolName, 'file_read');
     // The structured name is authoritative over the free-text detail, which carries a
-    // human-readable "verb + target" line (parity: Claude's toolSummary: Read->Reading).
+    // human-readable "verb + target" line (parity: the reference's toolSummary: Read->Reading).
     assert.equal(r?.type === 'subagent_progress' && r.detail, 'Reading a.ts');
   });
 

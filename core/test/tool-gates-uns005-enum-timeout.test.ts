@@ -1,7 +1,7 @@
 /**
  * UNS005 — soft-fail timed tool-list / tool-description enumeration.
  *
- * Covers the reusable primitive added to tool-gates.ts that mirrors Claude
+ * Covers the reusable primitive added to tool-gates.ts that mirrors the reference
  * Code's `tryGetInstalledAppNames` / `APP_ENUM_TIMEOUT_MS` soft-fail pattern:
  * a configurable timeout knob plus a race-with-timeout helper that returns a
  * fallback on timeout OR rejection OR synchronous throw and swallows a late

@@ -1,9 +1,9 @@
 /**
  * U058 — reference-journal parity additions:
  *  - resolveCacheDir: a transient-cache config knob honoring XDG_CACHE_HOME,
- *    distinct from the durable data dir (parity: Claude's cachePaths cache base).
+ *    distinct from the durable data dir (parity: the reference's cachePaths cache base).
  *  - subagentJournalPathFor: optional run-grouping subdir so related subagent
- *    transcripts nest under a run folder (parity: Claude's agentId→subdir map).
+ *    transcripts nest under a run folder (parity: the reference's agentId→subdir map).
  *  - getMcpServerLogPath wiring: transient MCP logs follow the cache dir.
  * Run: cd core/core && node --import tsx --test test/reference-journal-u058.test.ts
  */

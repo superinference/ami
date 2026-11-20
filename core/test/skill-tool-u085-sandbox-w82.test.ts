@@ -11,7 +11,7 @@ import { PermissionManager } from '../src/permissions';
 // ===========================================================================
 // U085 (medium) — least-privilege capability ceiling for a FORKED skill,
 // wired end-to-end: skill frontmatter → EngineConfig.capabilityCeiling →
-// PermissionManager.check denies ahead of the ambient mode (parity: Claude's
+// PermissionManager.check denies ahead of the ambient mode (parity: the reference's
 // forked-agent createAutoMemCanUseTool).
 // ===========================================================================
 

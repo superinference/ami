@@ -93,7 +93,7 @@ describe('parity: concurrency-limit enforcement', () => {
 });
 
 // ---------------------------------------------------------------------------
-// GAP 2: getOutput() honors an optional line filter (regex), like Claude Code's
+// GAP 2: getOutput() honors an optional line filter (regex), like the reference's
 // BashOutput `filter`. RED (revert the filter logic in getOutput): the full
 // output is returned, so the "only matching lines" assertions fail.
 // ---------------------------------------------------------------------------

@@ -40,7 +40,7 @@ async function cleanupPm(pm: ProcessManager | null): Promise<void> {
 // Feature A — usage (duration_ms) clause in the background completion note.
 //   gap: LocalAgentTask "agent completion notification includes a usage section
 //   with duration_ms". The drained bash-completion note now carries how long the
-//   task ran, mirroring Claude Code's completion `duration_ms`.
+//   task ran, mirroring the reference's completion `duration_ms`.
 // ---------------------------------------------------------------------------
 
 const baseEvent: CompletedTaskEvent = {

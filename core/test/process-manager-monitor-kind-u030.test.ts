@@ -11,7 +11,7 @@ import {
 
 // ---------------------------------------------------------------------------
 // U030 — per-task 'kind' (BashTaskKind: 'bash' | 'monitor') on a spawned
-// background shell. Parity: Claude Code's LocalShellTask kind that (a) disables
+// background shell. Parity: the reference's LocalShellTask kind that (a) disables
 // the stall watchdog for a streaming/monitor command and (b) words its
 // completion as a stream ending rather than a command passing/failing.
 // ---------------------------------------------------------------------------

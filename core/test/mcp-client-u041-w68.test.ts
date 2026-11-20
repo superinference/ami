@@ -8,7 +8,7 @@ import { McpManager } from '../src/mcp/manager';
 //
 // 1. On-demand cancellation of an in-flight reconnect BACKOFF sleep. A
 //    disconnect()/stopServer that lands while the reconnect loop is mid-backoff
-//    must wake the sleep at once (parity with Claude Code's wakePollLoop
+//    must wake the sleep at once (parity with the reference's wakePollLoop
 //    cancelling an at-capacity sleep, bridge/bridgeDebug.ts) instead of burning
 //    the full (up to 30s) delay before the loop notices the abort.
 //    RED (pre-fix): reconnect() `await setTimeout(delay)` then checks the abort
@@ -18,7 +18,7 @@ import { McpManager } from '../src/mcp/manager';
 // 2. Live per-tool-call progress. callTool attaches a unique `_meta.progressToken`
 //    so a server can push `notifications/progress` for THAT call; the client
 //    routes them to a `tool-progress` event (determinate percent + message), and
-//    the manager re-emits it on its public bus (parity with Claude Code's
+//    the manager re-emits it on its public bus (parity with the reference's
 //    per-tool-call onProgress / progressToken).
 //    RED (pre-fix): callTool sends no progressToken, so server progress is never
 //    tied to the call and no `tool-progress` event is ever emitted.

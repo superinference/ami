@@ -14,7 +14,7 @@ import type { ProviderConfig } from '../src/types';
 import type { streamChatCompletion } from '../src/provider';
 
 // ---------------------------------------------------------------------------
-// U198 (second pass) — auxiliary/background-query parity with Claude Code:
+// U198 (second pass) — auxiliary/background-query parity with the reference:
 //   (1) deriveTitle: synchronous first-sentence placeholder (initReplBridge.ts
 //       :549-569) used as the title fallback (first-sentence intent, not first-50).
 //   (2) Structured, source-tagged AuxQueryResult emitted via onResult for every

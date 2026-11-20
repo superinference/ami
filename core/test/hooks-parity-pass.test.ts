@@ -241,7 +241,7 @@ describe('HTTP hook integration', () => {
     assert.ok(Date.now() - t0 < 2000, 'must reject without hanging on a connect');
   });
 
-  it('allows a loopback dev-server URL (matching Claude ssrfGuardedLookup)', async () => {
+  it('allows a loopback dev-server URL (matching the reference ssrfGuardedLookup)', async () => {
     const server = http.createServer((_req, res) => { res.statusCode = 200; res.end('DENY:local'); });
     await new Promise<void>(r => server.listen(0, '127.0.0.1', r));
     const port = (server.address() as any).port;

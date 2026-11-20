@@ -300,7 +300,7 @@ describe('U091 — todo-write parity additions', () => {
   });
 
   // --- Gap: uniform quoted-boolean coercion of the `merge` arg ---------------
-  // Parity: Claude's semanticBoolean applied to every boolean tool input. A model
+  // Parity: the reference's semanticBoolean applied to every boolean tool input. A model
   // that serializes merge as the STRING "false" must REPLACE, not merge (a naive
   // `(input.merge as boolean)` treats the non-empty string "false" as truthy).
   describe('merge arg quoted-boolean coercion (parity: semanticBoolean)', () => {

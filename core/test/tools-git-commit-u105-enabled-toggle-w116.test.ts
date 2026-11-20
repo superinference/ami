@@ -1,6 +1,6 @@
 /**
  * U105 (w116) — settings-driven MASTER attribution disable toggle
- * (`attribution.enabled: false`). Parity with Claude Code's deprecated
+ * (`attribution.enabled: false`). Parity with the reference's deprecated
  * `includeCoAuthoredBy: false`, which zeroed both the commit and PR attribution
  * texts via settings alone (no env var). This covers the COMMIT half in
  * {@link resolveCommitAttribution} plus the end-to-end git_commit path.

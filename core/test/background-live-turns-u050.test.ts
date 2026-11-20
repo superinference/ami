@@ -195,7 +195,7 @@ describe('U050 background-live-turns — isFileMutatingTool', () => {
     }
   });
 
-  it('matches Claude Code mutating tool names', () => {
+  it('matches the reference mutating tool names', () => {
     for (const name of ['Edit', 'Write', 'MultiEdit', 'NotebookEdit']) {
       assert.equal(isFileMutatingTool(name), true, name);
     }

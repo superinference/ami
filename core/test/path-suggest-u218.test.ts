@@ -21,7 +21,7 @@ import type { ToolContext } from '../src/types';
 describe('U218 security: hidden/dotfile + gitignore filtering of suggestions', () => {
   // A near-miss of a SECRET dotfile must never be surfaced — doing so leaks the
   // existence of credential files (.env, keys) the model/user has no business
-  // learning about. Mirrors Claude Code's suggestion pipeline filtering ignored
+  // learning about. Mirrors the reference's suggestion pipeline filtering ignored
   // files out of results (hooks/fileSuggestions.ts:289-295).
   it('does NOT suggest a dotfile neighbour for a near-miss hidden path', () => {
     const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'psug-dot-')));
@@ -96,7 +96,7 @@ describe('U218 security: suggestPathCorrection withholds dotfile case-variants',
 describe('U218 security: workspace-boundary containment for path enumeration', () => {
   // suggestSimilarPaths must not enumerate a directory OUTSIDE the caller's cwd.
   // An out-of-tree target would otherwise disclose sibling-filesystem contents.
-  // Mirrors Claude's cwd-scoped suggestion enumeration (hooks/fileSuggestions.ts
+  // Mirrors the reference's cwd-scoped suggestion enumeration (hooks/fileSuggestions.ts
   // :243-316).
   it('returns [] when the target directory is outside cwd', () => {
     const cwd = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'psug-cwd-')));

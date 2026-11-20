@@ -21,7 +21,7 @@ afterEach(() => {
 });
 
 // ---------------------------------------------------------------------------
-// windowsHide spawn flag (U049 — parity with Claude Shell.ts:336)
+// windowsHide spawn flag (U049 — parity with the reference Shell.ts:336)
 // ---------------------------------------------------------------------------
 
 describe('execCommand – windowsHide spawn flag', () => {
@@ -122,7 +122,7 @@ describe('execCommand – resolves on shell exit when close is blocked', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Full POSIX process-tree kill (U049 — parity with Claude's treeKill,
+// Full POSIX process-tree kill (U049 — parity with the reference's treeKill,
 // ShellCommand.ts #doKill). Kill every descendant pid, not just the process
 // group, so a child that escaped the group via setsid() is still terminated —
 // while never touching an unrelated pid.

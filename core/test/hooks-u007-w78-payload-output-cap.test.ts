@@ -8,7 +8,7 @@
  *    (Claude Code discriminates a user interrupt from an ordinary error and ties
  *    the failure back to the exact call), plus snake-case `is_error`.
  *  - Command-hook stdout/stderr capture is bounded in memory (head-preserving)
- *    so a hook that floods a stream cannot OOM the agent, mirroring Claude Code's
+ *    so a hook that floods a stream cannot OOM the agent, mirroring the reference's
  *    TaskOutput pipe-mode memory boundary — the decision at the head still parses.
  *
  * All three are driven through the REAL HookManager (on-disk .ami/hooks.json

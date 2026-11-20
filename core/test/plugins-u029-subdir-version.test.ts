@@ -9,7 +9,7 @@ import {
 
 // ---------------------------------------------------------------------------
 // U029 — git-subdir path hashing folded into a plugin's version/cache key
-// (parity: Claude's calculatePluginVersion git-subdir branch, pluginVersioning.ts
+// (parity: the reference's calculatePluginVersion git-subdir branch, pluginVersioning.ts
 // L63-88). Two plugins at different subdirs of the SAME monorepo commit share a
 // SHA; the path hash disambiguates their versions/cache keys so they never
 // collide at cache/<m>/<p>/<sha>/.

@@ -2,7 +2,7 @@
  * mcp-client-u041-ide-selection.test.ts — IDE-as-MCP-server editor-context
  * notifications (U041).
  *
- * Parity with Claude Code's hooks/useIdeSelection.ts (`SelectionChangedSchema` +
+ * Parity with the reference's hooks/useIdeSelection.ts (`SelectionChangedSchema` +
  * `selectionChangeHandler`) and hooks/useIdeAtMentioned.ts (`AtMentionedSchema` +
  * the 0-based→1-based line conversion at L57-61). An IDE acting as an MCP server
  * sends `selection_changed` / `at_mentioned` notifications; AMI validates the
@@ -103,7 +103,7 @@ describe('validateMcpNotificationParams — at_mentioned', () => {
   });
 });
 
-describe('normalizeIdeSelection — parity with Claude selectionChangeHandler', () => {
+describe('normalizeIdeSelection — parity with the reference selectionChangeHandler', () => {
   it('computes lineCount = end.line - start.line + 1 for a multi-line range', () => {
     const sel = normalizeIdeSelection({
       selection: { start: { line: 2, character: 4 }, end: { line: 5, character: 7 } },

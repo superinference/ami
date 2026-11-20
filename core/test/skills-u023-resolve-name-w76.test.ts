@@ -1,5 +1,5 @@
 // U023-w76 — resolveSkillName: the ordered, multi-strategy skill-name resolver
-// (parity with Claude Code's runAgent `resolveSkillName`) used by agent `skills:`
+// (parity with the reference's runAgent `resolveSkillName`) used by agent `skills:`
 // frontmatter preloading. Verifies exact (name/userFacingName/alias), plugin-
 // qualified, and plugin-namespaced suffix matching + their precedence, plus the
 // end-to-end fallback through buildPreloadedSkillsBlock.

@@ -1,7 +1,7 @@
 /**
  * U253-w112 — scan-throttle backoff for the background consolidation scheduler.
  *
- * Parity: Claude Code's `autoDream` runner guards its (expensive) per-turn session
+ * Parity: the reference's `autoDream` runner guards its (expensive) per-turn session
  * scan behind a closure-scoped `lastSessionScanAt` + `SESSION_SCAN_INTERVAL_MS`
  * (10 min). Because the lock mtime only advances once a consolidation actually
  * fires, a perpetually-open time-gate would otherwise re-scan the transcript

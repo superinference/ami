@@ -127,7 +127,7 @@ describe('isModAllowed — refusal reasons are clean + actionable (gaps: wording
     assert.equal(r.allowed, false);
     assert.ok(r.reason!.includes("is not part of your organization's managed mod set"));
     assert.ok(r.reason!.includes('was not loaded'));
-    // Remediation affordance (parity: Claude pairs every org-policy block with a next step).
+    // Remediation affordance (parity: the reference pairs every org-policy block with a next step).
     assert.ok(r.reason!.includes('contact your administrator'));
     // No leaked implementation jargon.
     assert.ok(!r.reason!.includes('allowManagedModsOnly'));

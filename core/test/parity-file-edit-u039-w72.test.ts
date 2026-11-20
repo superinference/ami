@@ -3,12 +3,12 @@
 //    an earlier one in the same batch (identical inputs, or the same effect on the
 //    original file) is SKIPPED with a clear note instead of being re-applied or
 //    failing with a confusing "not found" once the earlier edit rewrote the region
-//    (parity: Claude Code's areFileEditsEquivalent). The equivalence helper is the
+//    (parity: the reference's areFileEditsEquivalent). The equivalence helper is the
 //    ONE canonical core util (file-edit-equivalence.ts), reused here.
 //  - Accurate 1-based edit location for the MULTI-edit path: the result now opens
 //    with the same `[edit: file:LINE, +a -b]` location tag the single-replace path
 //    emits, so the model/UI can locate the change without re-reading the file
-//    (parity: Claude Code's readEditContext lineOffset, applied to both modes).
+//    (parity: the reference's readEditContext lineOffset, applied to both modes).
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import * as assert from 'node:assert/strict';
 import * as fs from 'fs';

@@ -42,7 +42,7 @@ test('spec depth lets deep CLIs extend past two words (DEPTH_RULES parity)', () 
   // kubectl depth 3, with a namespace flag consuming its value first.
   assert.equal(getSimpleCommandPrefix('kubectl -n kube-system get pods'), 'kubectl get pods');
   assert.equal(getSimpleCommandPrefix('docker compose up -d'), 'docker compose up');
-  // aws depth 4: command + up to 3 subcommand-shaped words (parity with Claude's
+  // aws depth 4: command + up to 3 subcommand-shaped words (parity with the reference's
   // spec-less DEPTH_RULES[aws]=4 — narrower rules are safe).
   assert.equal(getSimpleCommandPrefix('aws s3api get-object --bucket b'), 'aws s3api get-object');
   // stop at a flag once collection has begun (does not run past `-f`).

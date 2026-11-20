@@ -5,7 +5,7 @@ import { taskOutputTool } from '../src/tools/task-output';
 import type { ToolContext } from '../src/types';
 
 /**
- * NOTE: task_output BLOCKS by default (parity with Claude's `block:true`), so the
+ * NOTE: task_output BLOCKS by default (parity with the reference's `block:true`), so the
  * non-blocking read-formatting cases below pass `wait: false` to take a one-shot
  * snapshot of a still-running task instead of blocking for the (30s) timeout.
  *

@@ -24,7 +24,7 @@ function writeLock(dir: string, pid: number, startedAt = Date.now()): string {
   return lockPath;
 }
 
-// U021 — sentinel/corrupt PID liveness guard (parity: Claude's pidLock isProcessRunning
+// U021 — sentinel/corrupt PID liveness guard (parity: the reference's pidLock isProcessRunning
 // `pid <= 1` special-case). A lock whose recorded PID parses to 0 or 1 (corruption, a
 // truncated/zero-padded write, or a planted value) must be treated as DEAD so the stale
 // lock is reclaimable, instead of `process.kill(0|1, 0)` spuriously reporting it live and

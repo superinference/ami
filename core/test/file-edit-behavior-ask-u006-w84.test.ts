@@ -10,7 +10,7 @@ import type { ToolContext } from '../src/types';
 // ===========================================================================
 // U006-w84 — file_edit tags RECOVERABLE validation failures with behavior:'ask'.
 //
-// Parity with Claude Code's FileEditTool, which classifies most edit-validation
+// Parity with the reference's FileEditTool, which classifies most edit-validation
 // failures (identical strings, not-read, too-large, string-not-found,
 // multiple-matches, modified-since-read) as `behavior: 'ask'` (fix-and-retry)
 // rather than a fatal error. AMI previously collapsed all of these into a single

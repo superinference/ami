@@ -3,7 +3,7 @@
  * web-utils.ts / web-preapproved.ts:
  *
  *  1. Redirect message reports the HTTP redirect status code + reason phrase
- *     (parity with Claude's status-code-to-text redirect message), threaded from
+ *     (parity with the reference's status-code-to-text redirect message), threaded from
  *     the real httpGet redirect loop via a new `redirectStatusCode`.
  *  2. Time-bounded PDF text extraction (parsePdfWithTimeout) so a hostile/hung
  *     PDF cannot block the agent; the parser is always destroyed.

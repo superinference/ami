@@ -9,7 +9,7 @@ import { describeSymlinkTarget, _toolUtilsHooks } from '../src/tools/tool-utils'
 // ---------------------------------------------------------------------------
 // U069 — Symlink-target informed-consent disclosure (tool-utils.ts).
 //
-// Mirrors Claude Code's FilePermissionDialog symlink branch
+// Mirrors the reference's FilePermissionDialog symlink branch
 // (FilePermissionDialog.tsx:L75-89,L162-167): for a mutating file op whose target
 // is a symlink, compute the resolved real target and produce ONE of two consent
 // lines — an explicit "outside working directory via a symlink" warning when the

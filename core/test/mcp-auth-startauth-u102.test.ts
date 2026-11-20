@@ -5,7 +5,7 @@
  *     the URL immediately WITHOUT waiting for the background reconnect, and
  *     honors an AbortSignal.
  *   - The `authenticate` tool prefers startAuth and surfaces the URL inline
- *     (status "auth_url") the moment it is available — mirroring Claude Code's
+ *     (status "auth_url") the moment it is available — mirroring the reference's
  *     skipBrowserOpen McpAuthTool (start → capture URL → return → reconnect in
  *     background).
  *

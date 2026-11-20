@@ -7,7 +7,7 @@ import type { BackgroundProcess } from '../src/process-manager';
 // ---------------------------------------------------------------------------
 // U031 / w79: task_list surfaces the agent lifecycle badges [shutting down]
 // (cooperative graceful shutdown in flight) and [idle] (agent quiescent between
-// turns). Parity with Claude Code's InProcessTeammateTask shutdownRequested /
+// turns). Parity with the reference's InProcessTeammateTask shutdownRequested /
 // isIdle. Red-green: reverting the badge block drops these from the output.
 // ---------------------------------------------------------------------------
 

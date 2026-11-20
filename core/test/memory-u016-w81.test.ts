@@ -1,14 +1,14 @@
 /**
  * U016 / wave w81 — MemoryManager parity additions:
  *
- *   1. Persisted/env CONSENT to load outside-workspace `@imports` (parity: Claude
+ *   1. Persisted/env CONSENT to load outside-workspace `@imports` (parity: the reference
  *      Code's `hasClaudeMdExternalIncludesApproved` external-includes dialog). The
  *      default posture is a hard block; an explicit, recorded user decision (project
  *      config flag or the AMI_ALLOW_EXTERNAL_MEMORY_IMPORTS env), optionally scoped to
  *      trusted roots, is the sanctioned escape hatch. Covers
  *      `resolveExternalMemoryImportConsent` + the `resolveAtImports` approval branch.
  *
- *   2. Nested-worktree de-duplication of checked-in Project memory (parity: Claude
+ *   2. Nested-worktree de-duplication of checked-in Project memory (parity: the reference
  *      Code utils/claudemd.ts): from a worktree nested inside its own main repo, the
  *      walk continues past the worktree root to load the main repo's gitignored Local
  *      files while SKIPPING the main repo's checked-in Project files.

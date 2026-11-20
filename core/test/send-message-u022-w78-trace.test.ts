@@ -10,7 +10,7 @@ import {
 import { __resetLoggerForTest } from '../src/logger';
 
 // U022 (w78) — Gated per-transition lifecycle diagnostic trace for the teammate
-// mailbox. Mirrors Claude Code's InProcessBackend `logForDebugging('[InProcessBackend]
+// mailbox. Mirrors the reference's InProcessBackend `logForDebugging('[InProcessBackend]
 // ...')` opt-in lifecycle trace (utils/swarm/backends/InProcessBackend.ts): every
 // deliver / shutdown-open / shutdown-skip / broadcast transition in send_message now
 // emits a VERBOSE-level trace through AMI's canonical logger (no new facility — reuses

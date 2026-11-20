@@ -10,7 +10,7 @@ import {
 /* ---------------------------------------------------------------- *
  * U237 / w88 — GAP 1: idle-teammate lifecycle state
  *
- * Parity: Claude Code's TeamCreateTool prompt treats a teammate going idle
+ * Parity: the reference's TeamCreateTool prompt treats a teammate going idle
  * after a turn as a first-class, NON-error waiting state — an idle teammate can
  * still receive messages and must not be treated as an error or as done/gone.
  * The relay models this with a non-terminal 'idle' state distinct from the
@@ -106,7 +106,7 @@ describe('createSubagentRelay — idle-teammate lifecycle (U237)', () => {
  * U237 / w88 — GAP 2: spawn-vs-resume invocation accounting +
  * once-per-invocation sparse-edge emission.
  *
- * Parity: Claude Code's agentContext carries invokingRequestId +
+ * Parity: the reference's agentContext carries invokingRequestId +
  * invocationKind ('spawn'|'resume') and consumeInvokingRequestId() returns the
  * id EXACTLY ONCE per spawn/resume boundary (a sparse edge), undefined
  * thereafter — so a parent->child invocation graph can be reconstructed and a
@@ -179,7 +179,7 @@ describe('createAgentInvocationLedger — spawn/resume accounting (U237)', () =>
 /* ---------------------------------------------------------------- *
  * U237 / w88 — GAP 3: enableSummarization knob for background/resumed agents.
  *
- * Parity: Claude Code gates progress-summary generation on
+ * Parity: the reference gates progress-summary generation on
  * enableSummarization = isCoordinatorMode() || isForkSubagentEnabled() ||
  * getSdkAgentProgressSummariesEnabled(). AMI keeps summaries ON by default
  * (superset — never regress) but exposes an explicit disable knob, and the

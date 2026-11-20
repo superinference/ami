@@ -1,5 +1,5 @@
 /**
- * U309 (wave 90) — agent-memory snapshot ACT/sync operations (parity with Claude
+ * U309 (wave 90) — agent-memory snapshot ACT/sync operations (parity with the reference
  * Code's tools/AgentTool/agentMemorySnapshot.ts). The detection half
  * (`checkAgentMemorySnapshot`) already shipped; this adds the counterpart that
  * actually performs the sync the check decides on:

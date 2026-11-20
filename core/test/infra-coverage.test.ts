@@ -1715,7 +1715,7 @@ describe('PermissionManager — detectShadowedRules (lines 866-879)', () => {
   });
 
   it('does NOT shadow a tool-wide allow (it only conflicts with a tool-wide deny)', () => {
-    // Parity with Claude's shadowedRuleDetection: only a content-bearing (specific)
+    // Parity with the reference's shadowedRuleDetection: only a content-bearing (specific)
     // allow rule can be "shadowed"; a bare tool-wide allow merely conflicts.
     const pm = new PermissionManager('ask', [
       { tool: 'bash', action: 'deny' as const },

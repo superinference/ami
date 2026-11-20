@@ -10,7 +10,7 @@ import type { ToolContext } from '../src/types';
 // ---------------------------------------------------------------------------
 // U031 / w79: `graceful` option on task_kill — cooperative graceful shutdown of
 // a running in-process agent (requestShutdown + event-driven waitForIdle), as a
-// third tier between soft-interrupt and hard-kill. Parity with Claude Code's
+// third tier between soft-interrupt and hard-kill. Parity with the reference's
 // requestTeammateShutdown + leader-wait on onIdleCallbacks.
 // ---------------------------------------------------------------------------
 

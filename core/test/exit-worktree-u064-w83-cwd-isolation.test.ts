@@ -8,7 +8,7 @@
  * concurrently-running agent — a cross-agent isolation hazard (the whole point of
  * Claude's per-async-context cwd design, utils/cwd.ts).
  *
- * The fix mirrors Claude's `restoreSessionToOriginalCwd` guard (only restore the
+ * The fix mirrors the reference's `restoreSessionToOriginalCwd` guard (only restore the
  * working dir it actually changed — `projectRootIsWorktree`): AMI now touches the
  * GLOBAL process cwd ONLY when it is actually stranded inside the worktree being
  * torn down (the foreground/owning session that cd'd in). A concurrent agent whose

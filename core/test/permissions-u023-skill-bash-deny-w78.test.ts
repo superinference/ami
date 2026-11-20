@@ -1,6 +1,6 @@
 // U023 (core/core/src/permissions.ts) — PermissionManager.isBashCommandDenied:
 // the synchronous deny-half of hasPermissionsToUseTool that the SkillManager uses to
-// gate a trusted skill body's live `!`cmd` injections (parity with Claude Code's
+// gate a trusted skill body's live `!`cmd` injections (parity with the reference's
 // promptShellExecution permission check). It must reuse the SAME canonical bash
 // deny-matching check() uses — compound-command fanout, $(...) decomposition, and
 // de-obfuscation — so a deny configured for the model's own bash calls is honored

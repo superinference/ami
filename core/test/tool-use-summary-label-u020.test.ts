@@ -1,7 +1,7 @@
 /**
  * U020 — LLM-generated past-tense tool-use summary label (core unit tests).
  *
- * Parity with Claude Code's `generateToolUseSummary`
+ * Parity with the reference's `generateToolUseSummary`
  * (services/toolUseSummary/toolUseSummaryGenerator.ts): a cheap, deterministic aux
  * model call that produces a short, past-tense, git-commit-subject-style label
  * describing what a BATCH of completed tool calls accomplished, feeding each tool's

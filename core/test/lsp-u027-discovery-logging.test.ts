@@ -10,7 +10,7 @@ import { getInMemoryErrors, __resetLoggerForTest, fsHooks } from '../src/logger'
 
 /**
  * U027 — visible error reporting + lifecycle/affordance introspection logging on
- * the LSP client (parity with Claude Code's LSP discovery, which "doesn't throw
+ * the LSP client (parity with the reference's LSP discovery, which "doesn't throw
  * (LSP is optional) but needs visibility into why loading fails", plus its
  * per-server start logging and lazy-handler affordance hints):
  *   1. A supply-chain-guard rejection (npx without --no-install) is RECORDED on

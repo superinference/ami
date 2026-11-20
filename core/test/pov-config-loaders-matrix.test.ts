@@ -284,7 +284,7 @@ describe('mergeConfigs', () => {
   });
 
   it('array fields accumulate (concat + dedupe) across layers', () => {
-    // Parity: Claude's settingsMergeCustomizer merges arrays additively, so a
+    // Parity: the reference's settingsMergeCustomizer merges arrays additively, so a
     // higher layer augments rather than clobbers a lower one. Lower layer
     // (global) first, then higher (project), deduped.
     const merged = mergeConfigs(

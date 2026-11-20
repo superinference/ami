@@ -244,7 +244,7 @@ describe('loadFromConfig robustness', () => {
     return p;
   };
 
-  it('maps a Claude-style `type` transport onto `transport`', () => {
+  it('maps a reference-style `type` transport onto `transport`', () => {
     const mgr = new McpManager();
     const p = writeCfg({ mcpServers: { web: { type: 'http', url: 'https://w/mcp' } } });
     mgr.loadFromConfig(p);

@@ -1292,7 +1292,7 @@ describe('PermissionManager — env var prefix stripping (Gap #8)', () => {
     // An escalation-vector env var (GIT_DIR redirects git to an arbitrary repo and
     // runs its hooks/config; PATH/LD_PRELOAD hijack lookup) is NOT in the safe list,
     // so it stays in the command and breaks the allow match → prompt. Deny/ask rules
-    // still strip ALL env vars (see deny tests above). Mirrors Claude's safe-list
+    // still strip ALL env vars (see deny tests above). Mirrors the reference's safe-list
     // allow stripping vs strip-all deny.
     assert.equal(await pm.check('bash', { command: 'GIT_DIR=/foo git status' }), 'ask');
     assert.equal(await pm.check('bash', { command: 'PATH=/evil git status' }), 'ask');

@@ -24,7 +24,7 @@ import type { SandboxPolicy, ToolContext } from '../src/types';
 //      `permissions.additionalDirectories`/`--add-dir` write grant.
 //   2. normalizeSandboxFsPath — CC-specific sandbox fs path conventions
 //      (`//abs` → `/abs`, `~`/`~/x` home expansion, relative → cwd-relative),
-//      mirroring Claude's `resolveSandboxFilesystemPath`.
+//      mirroring the reference's `resolveSandboxFilesystemPath`.
 // ---------------------------------------------------------------------------
 
 function baseCfg(overrides: Partial<SandboxConfig> = {}): SandboxConfig {

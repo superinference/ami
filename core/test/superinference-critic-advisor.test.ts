@@ -75,7 +75,7 @@ describe('Critic — dedicated reviewer model', () => {
 
 // ---------------------------------------------------------------------------
 // Gap: per-auxiliary-model usage breakdown (reviewer/advisor spend surfaced
-// separately — parity: Claude's getAdvisorUsage, usage tagged with model)
+// separately — parity: the reference's getAdvisorUsage, usage tagged with model)
 // ---------------------------------------------------------------------------
 describe('Critic — auxiliary-model usage attribution', () => {
   function usageDone(usage: { promptTokens: number; completionTokens: number; totalTokens: number }): StreamChunk {
@@ -133,7 +133,7 @@ describe('Critic — auxiliary-model usage attribution', () => {
 
 // ---------------------------------------------------------------------------
 // Gap: redacted-but-complete review (the reviewer's reasoning came back
-// encrypted/redacted yet a verdict still rendered — parity: Claude's
+// encrypted/redacted yet a verdict still rendered — parity: the reference's
 // redacted-review completion state; the score/approval stand)
 // ---------------------------------------------------------------------------
 describe('Critic — redacted-but-complete review', () => {

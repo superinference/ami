@@ -45,7 +45,7 @@ describe('loadFigSpec', () => {
 
   it('returns null when the optional @withfig/autocomplete package is absent', async () => {
     // The package is not a declared dependency, so the dynamic import throws and
-    // is caught — exactly like Claude Code when the dependency is not installed.
+    // is caught — exactly like the reference when the dependency is not installed.
     assert.equal(await loadFigSpec('definitely-not-a-real-command-xyz'), null);
     assert.equal(await loadFigSpec('ls'), null);
   });

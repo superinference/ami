@@ -30,12 +30,12 @@ function projectToolAffordance(t: ToolDefinition): { name: string; userFacingNam
 }
 
 describe('U064 exit_worktree userFacingName affordance', () => {
-  it('exposes a static readable display name (parity: Claude "Exiting worktree")', () => {
+  it('exposes a static readable display name (parity: the reference "Exiting worktree")', () => {
     assert.equal(typeof exitWorktreeTool.userFacingName, 'function', 'exit_worktree must define userFacingName');
     assert.equal(exitWorktreeTool.userFacingName!({}), 'Exiting worktree');
   });
 
-  it('is input-independent (parity: Claude userFacingName ignores input)', () => {
+  it('is input-independent (parity: the reference userFacingName ignores input)', () => {
     // Every action projects to the same phrase — the label describes the turn's
     // activity, not the specific keep/merge/remove/stash choice.
     for (const action of ['keep', 'merge', 'remove', 'stash']) {

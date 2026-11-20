@@ -2,7 +2,7 @@
  * Crash-safe at-least-once message delivery: read (peek) is separated from
  * mark-as-read (ack). An unacked message requeues; acking removes BY ID so a
  * message arriving between a peek and the ack is never dropped; a broadcast
- * acked in one mailbox is untouched in the others. Mirrors Claude Code's
+ * acked in one mailbox is untouched in the others. Mirrors the reference's
  * readUnreadMessages / markMessagesAsRead split (useInboxPoller + teammateMailbox).
  */
 import { describe, it, beforeEach } from 'node:test';

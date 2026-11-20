@@ -17,7 +17,7 @@ import {
  *  - filesystem read-deny (`denyReadPaths`)
  *  - filesystem write-deny (`denyWritePaths`)
  *
- * These mirror Claude's SandboxNetworkConfig/SandboxFilesystemConfig knobs while
+ * These mirror the reference's SandboxNetworkConfig/SandboxFilesystemConfig knobs while
  * remaining an ADDITIVE superset: every new field defaults to a no-op so the
  * pre-existing wrapping behavior is byte-for-byte unchanged when unset.
  *

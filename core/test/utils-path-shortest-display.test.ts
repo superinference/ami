@@ -5,7 +5,7 @@ import * as path from 'path';
 import { shortestDisplayPath } from '../src/utils/path';
 
 // ===========================================================================
-// shortestDisplayPath — parity with Claude Code's getRelativeMemoryPath
+// shortestDisplayPath — parity with the reference's getRelativeMemoryPath
 // (src/components/memory/MemoryUpdateNotification.tsx L7-L20).
 //
 // Claude computes BOTH a home-relative form ('~' + slice) and a cwd-relative

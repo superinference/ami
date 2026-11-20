@@ -4,12 +4,12 @@
 // Covers two additive parity behaviors:
 //  1. The EDIT_DIFF_SCAN_MAX_BYTES "degrade to a size-only summary" fallback,
 //     previously only on the full-overwrite path, now applied UNIFORMLY to the
-//     single-replace, replace_all, and multi-edit paths (parity: Claude Code's
+//     single-replace, replace_all, and multi-edit paths (parity: the reference's
 //     MAX_SCAN_BYTES diff fallback across edit modes). RED before the fix: those
 //     paths built an O(file) unified + structured diff regardless of size.
 //  2. The not-found error preview now shows a bounded context WINDOW around the
 //     closest fuzzy match with true 1-based line numbers + omission markers
-//     (parity: Claude's scanForContext/sliceContext), instead of always dumping
+//     (parity: the reference's scanForContext/sliceContext), instead of always dumping
 //     the first 30 lines from the top.
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import * as assert from 'node:assert/strict';

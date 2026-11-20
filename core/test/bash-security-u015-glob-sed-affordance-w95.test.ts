@@ -1,7 +1,7 @@
 /**
  * U015 / w95 — two parity additions to the bash safety layer:
  *
- *  1. Glob-path permission reasoning (parity: Claude Code
+ *  1. Glob-path permission reasoning (parity: the reference
  *     PowerShellTool/pathValidation.ts getGlobBaseDirectory + "check deny rules on
  *     the base directory", finding #15). A glob metacharacter on a DIRECTORY
  *     component between a sensitive root and a sensitive leaf — `/etc/<glob>/shadow`,
@@ -12,7 +12,7 @@
  *     `PermissionManager.classifyBashCommand`) catches it. `getGlobBaseDirectory`
  *     is exported as the reusable parity primitive.
  *
- *  2. Approval affordance on gated sed blocks (parity: Claude Code
+ *  2. Approval affordance on gated sed blocks (parity: the reference
  *     BashTool/sedValidation.ts checkSedConstraints, which frames a dangerous sed
  *     as 'requires approval'). AMI's SED_DANGEROUS messages are more specific than
  *     Claude's but previously surfaced as a bare `Error: …` with no hint that the

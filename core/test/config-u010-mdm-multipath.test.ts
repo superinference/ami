@@ -33,7 +33,7 @@ const MAC_LEGACY = '/Library/Application Support/SuperInference/config.json';
 
 // ---------------------------------------------------------------------------
 // U010 — priority-ordered multi-path managed-config resolution
-// (parity: Claude Code getMacOSPlistPaths per-user > device-level ordering)
+// (parity: the reference getMacOSPlistPaths per-user > device-level ordering)
 // ---------------------------------------------------------------------------
 
 describe('getManagedConfigPaths — ordered candidate list', () => {

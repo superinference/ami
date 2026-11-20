@@ -46,7 +46,7 @@ async function runTask(
 
 // ---------------------------------------------------------------------------
 // U011 gap: per-spawn auto-approve `allowedTools` allowlist (distinct from the
-// availability `allowed_tools` scope). Parity: Claude inProcessRunner allowedTools.
+// availability `allowed_tools` scope). Parity: the reference inProcessRunner allowedTools.
 // ---------------------------------------------------------------------------
 describe('parseAutoApproveTools (shape validation)', () => {
   it('treats an absent value as no auto-approvals', () => {

@@ -6,7 +6,7 @@ import type { ToolContext } from '../src/types';
 
 /**
  * U212 (parity, additive): a per-call `tail_bytes` input lets the model request a
- * byte-bounded tail read of a task's on-disk log (mirrors Claude Code's
+ * byte-bounded tail read of a task's on-disk log (mirrors the reference's
  * ShellDetailDialog reading only the last N bytes / DEFAULT_MAX_READ_BYTES),
  * instead of the fixed internal window. The value is floored to an int and clamped
  * to [1, MAX_READ_BYTES]; a missing/garbage value uses the default window.

@@ -12,7 +12,7 @@ import {
 // U134 — parity unit for core/core/src/tools/workflow-runtime.ts
 //
 // Gap A (HIGH): parseWorkflowMeta must parse untrusted metadata WITHOUT executing
-//   code (parity with Claude's loadSkillsDir, which validates parsed frontmatter
+//   code (parity with the reference's loadSkillsDir, which validates parsed frontmatter
 //   as data via a schema and never evals it).
 // Gap B (MEDIUM): per-agent maxTurns cap plumbed through AgentOptions + cache key.
 // Gap C (LOW): WorkflowRuntime (an EventEmitter subclass) sets maxListeners(0) so

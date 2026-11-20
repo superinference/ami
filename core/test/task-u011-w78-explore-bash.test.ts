@@ -38,7 +38,7 @@ function fakeBash(): { tool: ToolDefinition; calls: Array<Record<string, unknown
   return { tool, calls };
 }
 
-describe('U011 w78 — explore mode retains read-only bash (parity: Claude Explore)', () => {
+describe('U011 w78 — explore mode retains read-only bash (parity: the reference Explore)', () => {
   it('EXPLORE_READ_ONLY_TOOLS includes bash', () => {
     assert.ok(EXPLORE_READ_ONLY_TOOLS.has('bash'));
   });

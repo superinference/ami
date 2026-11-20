@@ -20,7 +20,7 @@ function ctx(overrides?: Partial<ToolContext>): ToolContext {
 }
 
 // ---------------------------------------------------------------------------
-// Unit: pre-execution normalization (parity: Claude Code api.ts normalizeToolInput
+// Unit: pre-execution normalization (parity: the reference api.ts normalizeToolInput
 // + shellQuoting.rewriteWindowsNullRedirect)
 // ---------------------------------------------------------------------------
 
@@ -46,7 +46,7 @@ describe('U030 stripRedundantCdPrefix', () => {
   });
   it('strips the Windows posix-path variant of the cwd on win32', () => {
     // On Windows the cwd is native (C:\proj) but a Git-Bash model emits the
-    // POSIX drive form (/c/proj). Parity: Claude strips both variants.
+    // POSIX drive form (/c/proj). Parity: the reference strips both variants.
     assert.equal(stripRedundantCdPrefix('cd /c/proj && ls', 'C:\\proj', 'win32'), 'ls');
   });
   it('still strips the native cwd prefix on win32', () => {
@@ -121,7 +121,7 @@ describe('U030 normalizeBashInput (combined pipeline)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Unit: stripEmptyLines (parity: Claude Code BashTool/utils.ts)
+// Unit: stripEmptyLines (parity: the reference BashTool/utils.ts)
 // ---------------------------------------------------------------------------
 
 describe('U030 stripEmptyLines', () => {

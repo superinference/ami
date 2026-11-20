@@ -1,7 +1,7 @@
 /**
  * U021 (w81) — Schema/structural validation of a restored persisted session.
  *
- * Parity: Claude's safeParse-before-apply on restored persisted state
+ * Parity: the reference's safeParse-before-apply on restored persisted state
  * (sessionRestore.ts extractTodosFromTranscript / restoreSessionStateFromLog —
  * it validates untrusted on-disk data with a zod schema and drops malformed
  * input rather than trusting it). AMI's readSessionFile previously did a raw

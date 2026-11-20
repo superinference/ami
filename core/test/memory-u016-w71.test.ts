@@ -9,7 +9,7 @@ import { projectStateDir } from '../src/reference-journal';
 /**
  * U016 / wave-71 — Memory recall-shape introspection telemetry.
  *
- * Parity with Claude Code's `logMemoryRecallShape` (memdir/findRelevantMemories.ts):
+ * Parity with the reference's `logMemoryRecallShape` (memdir/findRelevantMemories.ts):
  * `MemoryManager.selectRelevantMemories` must emit a PII-free `memory_recall`
  * diagnostic on EVERY recall — including a recall that ran but selected nothing
  * (encoded with a -1 age sentinel) — so a selection-rate can be computed and

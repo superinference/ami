@@ -2,13 +2,13 @@
  * U030 — bash.ts parity improvements
  *
  * 1. isSilentBashCommand: compound/pipeline-aware no-output detection with a
- *    broad silent-command set and `||` fallback handling (parity: Claude Code
+ *    broad silent-command set and `||` fallback handling (parity: the reference
  *    BashTool isSilentBashCommand / BASH_SILENT_COMMANDS). Replaces the old
  *    leading-regex that only looked at the FIRST command and a narrow set, so a
  *    compound command whose later segment is noisy no longer gets a misleading
  *    "no output expected" affordance, and a broader set of silent commands
  *    (rmdir/chgrp/ln/cd/export/unset/wait) now gets it.
- * 2. formatDuration: human-readable command-timeout message (parity: Claude Code
+ * 2. formatDuration: human-readable command-timeout message (parity: the reference
  *    ShellCommand `Command timed out after ${formatDuration(timeout)}`), as a
  *    superset that keeps sub-second precision in ms.
  * 3. findstr.exe exit-code semantics (1 = no match, non-error) via

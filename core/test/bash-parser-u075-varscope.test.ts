@@ -12,7 +12,7 @@ import { validateBashSecurity } from '../src/tools/bash-security';
 /**
  * U075 — Variable-value scope tracking with flag-omission scope reset.
  *
- * Parity with Claude Code's collectCommands varScope (utils/bash/ast.ts
+ * Parity with the reference's collectCommands varScope (utils/bash/ast.ts
  * L504-563): a `VAR=value` assignment is tracked and a later `$VAR` / `${VAR}`
  * used as a COMMAND NAME is resolved to the assigned value so the AST-based
  * command blocklist is not defeated by the `A=nc; $A -e …` evasion. The tracked

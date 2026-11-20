@@ -16,7 +16,7 @@ import type { ToolContext } from '../src/types';
 // A tracked agent that was SIGNALLED TO ABORT but whose status has not flipped
 // yet still reads `running`, so a message would queue into a mailbox the aborting
 // engine never drains — a silent orphan. send_message now consults the composite
-// ProcessManager.isActive() (parity with Claude's InProcessBackend.isActive) and
+// ProcessManager.isActive() (parity with the reference's InProcessBackend.isActive) and
 // refuses a running-but-inactive target.
 // ---------------------------------------------------------------------------
 

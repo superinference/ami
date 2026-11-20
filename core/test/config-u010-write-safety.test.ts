@@ -21,13 +21,13 @@ import {
 //   Gap D — symlink-target write-through: when the config path is a symlink
 //           (dotfile-managed via stow/chezmoi), safeWriteConfig updates the
 //           LINK TARGET in place instead of replacing the symlink with a plain
-//           file. Parity: Claude's "if settings.json is a symlink, update the
+//           file. Parity: the reference's "if settings.json is a symlink, update the
 //           target file instead".
 //   Gap E — rolling timestamped backup-before-write with throttle + rotation:
 //           the prior on-disk content is snapshotted to `<file>.backup-<ms>`
 //           before being overwritten, throttled to one per
 //           CONFIG_BACKUP_MIN_INTERVAL_MS and pruned to MAX_CONFIG_BACKUPS.
-//           Parity: Claude's saveConfigWithLock timestamped-backup rotation.
+//           Parity: the reference's saveConfigWithLock timestamped-backup rotation.
 // Each assertion discriminates the NEW behavior from the pre-fix behavior.
 // ---------------------------------------------------------------------------
 

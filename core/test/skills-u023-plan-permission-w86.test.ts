@@ -1,13 +1,13 @@
 // U023-w86 — two additive parity gaps on the core skills building blocks:
 //
-//  * `plan` agent/skill permission mode (parity with Claude Code's `plan` agent
+//  * `plan` agent/skill permission mode (parity with the reference's `plan` agent
 //    permission mode): AGENT_PERMISSION_MODES + the AgentDefinition/SkillDefinition
 //    `permissionMode` type must accept `'plan'` so an agent/skill frontmatter
 //    declaring the read-only plan stance validates instead of warning. The engine's
 //    PERMISSION_MODES already accepts `plan` and task.ts's PERMISSION_MODE_RANK ranks
 //    it below `ask`, so a plan sub-agent reads/searches but is denied mutations.
 //
-//  * resolveSkillPrompt GRACEFUL DEGRADATION (parity with Claude Code's bundled
+//  * resolveSkillPrompt GRACEFUL DEGRADATION (parity with the reference's bundled
 //    claude-api skill, whose dynamic prompt builder wraps its project-environment
 //    detection in a try/catch and falls back to the static reference on failure): a
 //    getPromptForCommand builder that THROWS must degrade to the skill's static
