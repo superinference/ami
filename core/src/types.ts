@@ -1980,7 +1980,6 @@ export interface EngineConfig {
   /** Admin/settings policy for HTTP hooks — URL allowlist + header env-var
    *  allowlist. Undefined leaves HTTP hooks unrestricted (SSRF guard + non-2xx
    *  handling always apply regardless). */
-  httpHookPolicy?: import('./hooks').HttpHookPolicy;
   /** Invocation-scoped hooks a forked skill or spawned subagent contributes from its
    *  OWN definition's frontmatter `hooks` field (parity with the reference's
    *  registerFrontmatterHooks). Registered on this (sub-)engine's HookManager AFTER
@@ -2168,7 +2167,6 @@ export interface EngineConfig {
   verbose?: boolean;
   /** Separate, typically-stronger reviewer/advisor model that reviews the conversation
    *  mid-session. Parity: `advisorModel`. */
-  advisorModel?: string;
   /** Natural-language auto-mode (YOLO) rule configuration. Parity: `settings.autoMode`. */
   autoMode?: AutoModeConfig;
   /** Default install/update channel. Parity: `autoUpdatesChannel`. */
@@ -2177,17 +2175,14 @@ export interface EngineConfig {
    *  prompted once then trusted/rejected. Parity: `customApiKeyResponses`. */
   customApiKeyResponses?: { approved: string[]; rejected: string[] };
   /** Minutes-away threshold after which an idle-return prompt is shown. Parity: IdleReturnDialog. */
-  idleReturnPromptMinutes?: number;
   /** Enable automatic session-memory extraction/consolidation (default true). Parity:
    *  `isAutoMemoryEnabled` / `autoDreamEnabled`. */
   autoMemoryEnabled?: boolean;
   /** Run session-memory extraction only every N eligible turns. Parity: extraction throttle. */
   sessionMemoryInterval?: number;
   /** Master switch for time-based idle microcompact (default off). Parity: timeBasedMCConfig.enabled. */
-  idleMicrocompactEnabled?: boolean;
   /** Idle-gap threshold (minutes) before microcompact fires, tuned against the server
    *  prompt-cache TTL. Parity: `gapThresholdMinutes`. */
-  idleMicrocompactThresholdMinutes?: number;
   /** Enable file checkpointing/history (default true); false disables snapshots.
    *  Parity: `fileCheckpointingEnabled`. */
   fileCheckpointingEnabled?: boolean;
@@ -2202,10 +2197,8 @@ export interface EngineConfig {
    *  `maxOutputTokens`. */
   maxOutputTokens?: number;
   /** Show rotating capability tips (default true). Parity: `spinnerTipsEnabled`. */
-  spinnerTipsEnabled?: boolean;
   /** Disable fenced-code syntax highlighting while keeping UI color. Parity:
    *  `syntaxHighlightingDisabled`. */
-  syntaxHighlightingDisabled?: boolean;
   /** Reduce/disable animations for accessibility (persistent, vs env-only). Parity:
    *  `prefersReducedMotion`. */
   prefersReducedMotion?: boolean;
@@ -2215,17 +2208,14 @@ export interface EngineConfig {
   cleanupPeriodDays?: number;
   /** Enable the LLM-generated permission explainer (default true). Parity:
    *  `permissionExplainerEnabled`. */
-  permissionExplainerEnabled?: boolean;
   /** Directory (relative to project root) where plan .md files are written. Parity:
    *  `plansDirectory`. */
-  plansDirectory?: string;
   /** Capture a heap dump when the RSS memory-warning threshold is crossed (not just a
    *  warning). Reuses {@link memoryWarningRssBytes} as the trigger level. Parity:
    *  heapDumpService `auto-1.5GB`. */
   heapDumpOnMemoryWarning?: boolean;
   /** Apply /model, /thinking, /fast immediately to an in-flight turn rather than
    *  deferring to turn end. Parity: `shouldInferenceConfigCommandBeImmediate`. */
-  immediateInferenceConfig?: boolean;
   /** Backend that runs teammates/subagents; 'auto' resolves against the live
    *  environment. Parity: `teammateMode`. */
   teammateMode?: 'auto' | 'tmux' | 'in-process';
@@ -2249,7 +2239,6 @@ export interface EngineConfig {
    *  inference-profile ARN), layered on top of the resolved model. Parity: `modelOverrides`. */
   modelOverrides?: Record<string, string>;
   /** Terminal notification channel for turn-completion alerts. Parity: NOTIFICATION_CHANNELS. */
-  notificationChannel?: NotificationChannel;
   /** Plugin ids never suggested for LSP recommendations. Parity: `lspRecommendationNeverPlugins`. */
   lspRecommendationNeverPlugins?: string[];
   /** Hard off-switch for LSP-plugin recommendations. Parity: `lspRecommendationDisabled`. */
@@ -2264,14 +2253,11 @@ export interface EngineConfig {
   copyFullResponse?: boolean;
   /** Execute tool calls as they stream in during the assistant message (vs waiting for the
    *  whole message). Runtime gate. Parity: `streamingToolExecution` (query/config.ts). */
-  streamingToolExecution?: boolean;
   /** Show a one-line preview of each teammate's latest message in the teammate spinner tree.
    *  Parity: `showTeammateMessagePreview`. */
-  showTeammateMessagePreview?: boolean;
   /** Opt-in consent flag that suppresses the auto-mode (YOLO) permission-opt-in dialog on
    *  subsequent runs once the user has accepted it. Parity: `skipAutoPermissionPrompt`
    *  (components/AutoModeOptInDialog.tsx). */
-  skipAutoPermissionPrompt?: boolean;
   /** Explicit column width for the inline diff preview shown in a file-edit permission
    *  prompt. When unset, the width is derived from the verbose flag by
    *  {@link resolveDiffPreviewWidth} ({@link VERBOSE_DIFF_PREVIEW_WIDTH} vs

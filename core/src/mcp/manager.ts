@@ -26,7 +26,7 @@ import {
   type McpSecretStore,
 } from './secret-store';
 import { McpToolPoller, type McpToolPollSpec } from './tool-polling';
-import { stripInvisibleUnicode, recursivelySanitizeUnicode } from '../tools/input-sanitizer';
+import { recursivelySanitizeUnicode } from '../tools/input-sanitizer';
 import { clearToolSchemaCache } from '../tools/tool-schema-cache';
 import { EventEmitter } from 'events';
 import { execFile } from 'child_process';
