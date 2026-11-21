@@ -34,25 +34,51 @@ const DISPLAY_CONTROL_RE = /[\u0000-\u0008\u000B-\u001F\u007F]/g;
  */
 export const MAX_SANITIZE_ITERATIONS = 10;
 
+export interface StripInvisibleOptions {
+  /**
+   * When true (default), run NFKC before each strip pass. Required for
+   * untrusted INPUT (commands, MCP metadata) so a danger char disguised as a
+   * compatibility sequence cannot slip past. Must be FALSE for tool OUTPUT:
+   * NFKC compatibility-decomposes legitimate glyphs such as U+2139 INFORMATION
+   * SOURCE (`ℹ`) → ASCII `i`, which silently breaks the node:test reporter
+   * (`ℹ pass N` / `ℹ fail N`) that the detached harness parser keys on.
+   */
+  nfkc?: boolean;
+  /** Max normalize/strip iterations (default {@link MAX_SANITIZE_ITERATIONS}). */
+  maxIterations?: number;
+}
+
 /**
  * Strip invisible/smuggling Unicode from a string, hardened against
  * composition-based bypasses:
- *  1. NFKC normalization folds composed/compatibility sequences (full-width
- *     ASCII, ligatures, compatibility forms) to their canonical form FIRST, so a
- *     dangerous char disguised as a composed/compatibility sequence cannot slip
- *     past the character class.
+ *  1. NFKC normalization (when enabled) folds composed/compatibility sequences
+ *     (full-width ASCII, ligatures, compatibility forms) to their canonical form
+ *     FIRST, so a dangerous char disguised as a composed/compatibility sequence
+ *     cannot slip past the character class.
  *  2. The invisible/format/private-use/unassigned character class is removed.
  *  3. Steps 1–2 repeat to a fixpoint (bounded by `maxIterations`) because a
  *     single pass can leave a residual hidden char that only a re-pass removes.
  * Throws loudly (with a short input preview) if the string never settles within
  * the bound — a pathological payload fails observably rather than silently
  * returning partially-sanitized text.
+ *
+ * For tool/bash OUTPUT prefer `{ nfkc: false }` (see {@link StripInvisibleOptions.nfkc}).
  */
-export function stripInvisibleUnicode(text: string, maxIterations: number = MAX_SANITIZE_ITERATIONS): string {
+export function stripInvisibleUnicode(
+  text: string,
+  maxIterationsOrOpts: number | StripInvisibleOptions = MAX_SANITIZE_ITERATIONS,
+): string {
+  const opts: StripInvisibleOptions =
+    typeof maxIterationsOrOpts === 'number'
+      ? { maxIterations: maxIterationsOrOpts }
+      : maxIterationsOrOpts;
+  const maxIterations = opts.maxIterations ?? MAX_SANITIZE_ITERATIONS;
+  const useNfkc = opts.nfkc !== false;
   let current = text;
   for (let i = 0; i < maxIterations; i++) {
     const previous = current;
-    current = current.normalize('NFKC').replace(INVISIBLE_RE, '');
+    const normalized = useNfkc ? current.normalize('NFKC') : current;
+    current = normalized.replace(INVISIBLE_RE, '');
     if (current === previous) return current;
   }
   throw new Error(

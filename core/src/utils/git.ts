@@ -109,10 +109,17 @@ export function isPathGitignored(filePath: string, cwd: string): boolean {
  */
 export function getGlobalGitignorePath(
   homeDir: string = os.homedir(),
-  xdgConfigHome: string | undefined = process.env.XDG_CONFIG_HOME,
+  xdgConfigHome?: string | undefined,
 ): string {
-  const base = xdgConfigHome && xdgConfigHome.trim() !== ''
-    ? xdgConfigHome
+  // Only fall back to process.env when the caller OMITTED the arg. Passing
+  // `undefined` explicitly means "no XDG override" (so tests and callers that
+  // inject homeDir get a deterministic ~/.config under that home). A default
+  // parameter of `= process.env.XDG_CONFIG_HOME` would replace an explicit
+  // `undefined` with the ambient env and break that contract on CI runners
+  // that set XDG_CONFIG_HOME.
+  const xdg = arguments.length >= 2 ? xdgConfigHome : process.env.XDG_CONFIG_HOME;
+  const base = xdg && xdg.trim() !== ''
+    ? xdg
     : path.join(homeDir, '.config');
   return path.join(base, 'git', 'ignore');
 }

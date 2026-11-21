@@ -627,6 +627,22 @@ describe('stripInvisibleUnicode — NFKC normalization', () => {
     // full-width 'rm' + zero-width space + full-width space-less payload.
     assert.equal(stripInvisibleUnicode('ｒｍ​ -rf'), 'rm -rf');
   });
+
+  it('nfkc:false preserves INFORMATION SOURCE (U+2139) used by node:test reporter lines', () => {
+    // Default NFKC turns ℹ → ASCII "i", which breaks `ℹ pass N` / `ℹ fail N`
+    // parsing in the detached harness. Tool OUTPUT must opt out of NFKC.
+    const line = 'ℹ pass 12';
+    assert.equal(stripInvisibleUnicode(line), 'i pass 12');
+    assert.equal(stripInvisibleUnicode(line, { nfkc: false }), line);
+  });
+
+  it('nfkc:false still strips invisible/format chars', () => {
+    assert.equal(stripInvisibleUnicode('a​b', { nfkc: false }), 'ab');
+  });
+
+  it('numeric second arg remains a maxIterations overload', () => {
+    assert.equal(stripInvisibleUnicode('hello', 3), 'hello');
+  });
 });
 
 // ---------------------------------------------------------------------------
