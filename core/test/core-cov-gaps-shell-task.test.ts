@@ -120,10 +120,7 @@ describe('task-kill gap closure', () => {
 });
 
 describe('path-suggest gap closure', () => {
-  // Prefer a home-backed temp root — /tmp can hit EDQUOT under heavy parallel suites.
-  const TEMP_ROOT = fs.existsSync('/home/ccamacho/tmp-ami-cov')
-    ? '/home/ccamacho/tmp-ami-cov'
-    : os.tmpdir();
+  const TEMP_ROOT = os.tmpdir();
 
   it('suggestSimilarPaths surfaces same-stem + case-only corrections and skips ignored', () => {
     const d = fs.mkdtempSync(path.join(TEMP_ROOT, 'ps-'));

@@ -110,7 +110,7 @@ import { orderSemver, parseSemver, amiUserAgent, resolveEntrypoint } from '../sr
 import { log as realDebugLog } from '../src/logger';
 import type { ToolContext } from '../src/types';
 
-const TEMP = '/home/ccamacho/tmp-ami-cov-core/tmpdir';
+const TEMP = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-cov-'));
 
 afterEach(() => {
   mock.restoreAll();

@@ -16,6 +16,7 @@ import { describe, it, afterEach, mock } from 'node:test';
 import * as assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 import { execFileSync } from 'node:child_process';
 
 import { ansiToSvg } from '../src/utils/ansi-to-svg';
@@ -173,7 +174,7 @@ import { log as realDebugLog } from '../src/logger';
 import { gitExec } from '../src/worktree-manager';
 import type { Message, ToolContext } from '../src/types';
 
-const TEMP = '/home/ccamacho/tmp-ami-cov-core/tmpdir';
+const TEMP = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-cov-'));
 
 const realConsolFs = { ..._consolidationFsHooks };
 const realWatch = _taskTrackerHooks.watch;

@@ -92,7 +92,7 @@ import {
   MAX_PERSISTED_OUTPUT_BYTES,
 } from '../src/utils/shell';
 
-const TEMP = '/home/ccamacho/tmp-ami-cov-core/tmpdir';
+const TEMP = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-cov-'));
 
 afterEach(() => {
   mock.restoreAll();

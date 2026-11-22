@@ -67,7 +67,7 @@ import {
 } from '../src/worktree-manager';
 import type { ToolContext } from '../src/types';
 
-const TEMP = '/home/ccamacho/tmp-ami-cov';
+const TEMP = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-cov-'));
 
 afterEach(() => {
   mock.restoreAll();

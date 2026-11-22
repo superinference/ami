@@ -151,7 +151,7 @@ import {
 } from '../src/tools/tool-utils';
 import { HookManager } from '../src/hooks';
 
-const TEMP = '/home/ccamacho/tmp-ami-cov-core/tmpdir';
+const TEMP = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-cov-'));
 
 function mkTmp(prefix: string): string {
   fs.mkdirSync(TEMP, { recursive: true });

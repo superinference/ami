@@ -253,7 +253,7 @@ import { amiUserAgent, resolveEntrypoint } from '../src/version';
 import { resolveAutoDreamConfig } from '../src/memory-consolidation';
 import { appendToInbox, takeFsInbox, listInboxPeers } from '../src/tools/mailbox-fs';
 
-const TEMP = '/home/ccamacho/tmp-ami-cov-core/tmpdir';
+const TEMP = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-cov-'));
 
 function fakeInput(overrides: Partial<ComputerUseInputProvider> = {}): ComputerUseInputProvider {
   return {

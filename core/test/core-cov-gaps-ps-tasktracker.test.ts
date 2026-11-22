@@ -6,6 +6,7 @@ import { describe, it, mock, afterEach } from 'node:test';
 import * as assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 
 import {
   mapStatementType,
@@ -118,7 +119,7 @@ describe('task-tracker helpers gap closure', () => {
   });
 
   it('setTaskPersistPath + getTaskState round-trip an empty map on a fresh dir', () => {
-    const d = fs.mkdtempSync(path.join('/home/ccamacho/tmp-ami-cov', 'tt-'));
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-cov-tt-'));
     try {
       setTaskPersistPath(d, 'list-a');
       assert.equal(getTaskState().size, 0);

@@ -5,6 +5,7 @@
 import { describe, it, mock, afterEach } from 'node:test';
 import * as assert from 'node:assert/strict';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 
 import {
@@ -48,7 +49,7 @@ afterEach(() => {
 });
 
 function mkTmp(prefix: string): string {
-  return fs.mkdtempSync(path.join('/tmp', prefix));
+  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
 
 describe('secret-store wave8 — function surface', () => {

@@ -7,6 +7,7 @@ import { describe, it, mock, afterEach } from 'node:test';
 import * as assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 import { execFileSync } from 'child_process';
 
 import {
@@ -92,7 +93,7 @@ import {
 } from '../src/tools/path-suggest';
 import type { ToolContext } from '../src/types';
 
-const TEMP = '/home/ccamacho/tmp-ami-cov-core/tmpdir';
+const TEMP = fs.mkdtempSync(path.join(os.tmpdir(), 'ami-cov-'));
 
 afterEach(() => {
   mock.restoreAll();
