@@ -2975,7 +2975,7 @@ export class McpManager extends EventEmitter {
       promptCount: client.prompts?.length ?? 0,
       uptime: client.uptime,
       isAuthenticated: this.deriveIsAuthenticated(config, client),
-      channelPermissionRelay: client.supportsChannelPermissionRelay(),
+      channelPermissionRelay: client.supportsChannelPermissionRelay?.() ?? false,
       ...this.reconnectProgress(name),
       scope: this._serverScopes.get(name),
       sourcePath: this._serverSources.get(name),
