@@ -40,8 +40,9 @@ export function sequential<T extends unknown[], R>(
 
   async function processQueue(): Promise<void> {
     // Re-entrancy guard: only one drain loop runs at a time.
+    // Callers always push before invoking processQueue, so an empty-queue
+    // early-return is unreachable here (the while below is the sole drain gate).
     if (processing) return;
-    if (queue.length === 0) return;
 
     processing = true;
 
@@ -59,11 +60,12 @@ export function sequential<T extends unknown[], R>(
 
     processing = false;
 
-    // Items may have been enqueued during the final `await` of the loop body
-    // after `queue.length` was last observed as 0; pick them up now.
-    if (queue.length > 0) {
-      void processQueue();
-    }
+    // Items enqueued during the last `await` are already drained by the while
+    // loop above (the condition re-checks after each item). A post-drain
+    // re-entry would only matter if work could appear between the empty-queue
+    // observation and clearing `processing` — which cannot happen on the JS
+    // event loop without an await between those statements. Keep the flag
+    // clear so a subsequent caller starts a fresh drain.
   }
 
   return function (this: unknown, ...args: T): Promise<R> {

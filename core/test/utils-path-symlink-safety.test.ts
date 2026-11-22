@@ -24,9 +24,14 @@ describe('isPathSafe — symlink-chain boundary resolution', () => {
   let outside: string;
 
   before(() => {
-    // realpathSync resolves any aliasing in the OS tmp dir (e.g. macOS
-    // /var -> /private/var) so comparisons are against canonical paths.
-    tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ami-pathsafe-')));
+    // Force the fixture under /tmp (not os.tmpdir()/TMPDIR): isPathSafe also
+    // allows anything under $HOME, so when TMPDIR lives inside the home tree
+    // (e.g. coverage runs that redirect TMPDIR off a quota-exhausted /tmp) an
+    // "escape" symlink whose target is still under $HOME would correctly stay
+    // safe and the assertion would false-green. /tmp is outside $HOME on CI
+    // and local Linux hosts, so the escape is a real boundary crossing.
+    // realpathSync still resolves any aliasing (e.g. macOS /var -> /private/var).
+    tmp = fs.realpathSync(fs.mkdtempSync(path.join('/tmp', 'ami-pathsafe-')));
     cwd = path.join(tmp, 'workspace');
     outside = path.join(tmp, 'outside');
     fs.mkdirSync(cwd);

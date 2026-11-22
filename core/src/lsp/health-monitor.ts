@@ -52,8 +52,10 @@ export const LSP_HEALTH_HINT = '/doctor for details';
  * than any hard-coded styling — this is a pure string builder, no UI rendering.
  */
 export function formatLspHealthError(error: LspHealthError): { message: string; hint: string } {
+  // `plugin:` prefix: take the segment after the first colon. An empty segment
+  // (bare `plugin:`) is kept as-is — `??` would never fire for `''` anyway.
   const displayName = error.source.startsWith('plugin:')
-    ? error.source.split(':')[1] ?? error.source
+    ? error.source.split(':')[1]!
     : error.source;
   return { message: `LSP for ${displayName} failed`, hint: LSP_HEALTH_HINT };
 }

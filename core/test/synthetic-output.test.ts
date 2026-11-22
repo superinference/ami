@@ -201,6 +201,25 @@ describe('syntheticOutputTool', () => {
 
       const badRequired = createSyntheticOutputTool({ type: 'object', required: [1, 2] as unknown as string[] });
       assert.ok('error' in badRequired);
+
+      // Empty type array, non-array enum, bad min/maxItems, nested property error,
+      // items recursion, and additionalProperties-as-schema error arms.
+      assert.ok('error' in createSyntheticOutputTool({ type: [] as unknown as string }));
+      assert.ok('error' in createSyntheticOutputTool({ type: 'object', enum: 'x' as unknown as unknown[] }));
+      assert.ok('error' in createSyntheticOutputTool({ type: 'array', minItems: '1' as unknown as number }));
+      assert.ok('error' in createSyntheticOutputTool({ type: 'array', maxItems: '1' as unknown as number }));
+      assert.ok('error' in createSyntheticOutputTool({
+        type: 'object',
+        properties: { nested: { type: 'nope' } },
+      }));
+      assert.ok('error' in createSyntheticOutputTool({ type: 'array', items: { type: 'nope' } }));
+      assert.ok('error' in createSyntheticOutputTool({
+        type: 'object',
+        additionalProperties: { type: 'nope' },
+      }));
+      // Non-object schema root.
+      assert.ok('error' in createSyntheticOutputTool('string' as unknown as Record<string, unknown>));
+      assert.ok('error' in createSyntheticOutputTool(null as unknown as Record<string, unknown>));
     });
 
     it('memoizes the compiled result by schema object identity (WeakMap cache)', () => {

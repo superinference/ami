@@ -1,5 +1,7 @@
 import { fuzzyFindAndReplace, NOOP_EDIT_ERROR } from './fuzzy-match';
 import { normalizeToLf } from './tool-utils';
+import { errorMessage } from '../credential-guard';
+
 
 /**
  * A single search-and-replace edit, as accepted by the `file_edit` tool's
@@ -97,12 +99,12 @@ export function areFileEditsEquivalent(
   try {
     result1 = applyEditsToContent(originalContent, edits1);
   } catch (e) {
-    error1 = e instanceof Error ? e.message : String(e);
+    error1 = errorMessage(e);
   }
   try {
     result2 = applyEditsToContent(originalContent, edits2);
   } catch (e) {
-    error2 = e instanceof Error ? e.message : String(e);
+    error2 = errorMessage(e);
   }
 
   // Both failed: equal only when they failed the same way.

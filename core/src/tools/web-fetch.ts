@@ -12,6 +12,8 @@ import { isSandboxNetworkAskEnabled, requestSandboxHostAccess } from './sandbox-
 import { parseEnvBool } from '../utils/env';
 import { createCombinedAbortSignal } from '../utils/combined-abort-signal';
 import { resolveToolOutputMaxChars, loadProjectConfig } from '../config';
+import { errorMessage } from '../credential-guard';
+
 
 const MAX_RESPONSE_LENGTH = 50000;
 export const MAX_FETCH_DEADLINE_MS = 300_000;
@@ -84,7 +86,7 @@ export function filterTextByPattern(
     // eslint-disable-next-line security/detect-non-literal-regexp -- caller-supplied content filter, same contract as task-output's `filter`; no network/eval side effect
     re = new RegExp(pattern);
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
+    const msg = errorMessage(e);
     return { error: `invalid filter regex ${JSON.stringify(pattern)}: ${msg}` };
   }
   const kept = text.split('\n').filter((line) => re.test(line));
@@ -845,7 +847,7 @@ export const webFetchTool: ToolDefinition = {
 
       return { output };
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = errorMessage(err);
 
       if (deadlineSignal.aborted) {
         return {

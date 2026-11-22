@@ -47,6 +47,8 @@ test('raiseAbortListenerCap is best-effort (never throws on a plain signal)', ()
   const c = new AbortController();
   assert.doesNotThrow(() => raiseAbortListenerCap(c.signal, 25));
   assert.equal(getMaxListeners(c.signal), 25);
+  // Force the catch arm: setMaxListeners rejects a non-EventTarget.
+  assert.doesNotThrow(() => raiseAbortListenerCap({} as AbortSignal, 25));
   // default argument
   const d = new AbortController();
   raiseAbortListenerCap(d.signal);

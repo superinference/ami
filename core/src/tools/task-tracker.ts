@@ -17,9 +17,16 @@ import { isTaskTrackerEnabled } from './tool-gates';
  * file, via `--debug`/`AMI_DEBUG`, and `--debug-to-stderr`. Best-effort: a logging
  * failure must never fail a task mutation.
  */
-function taskDebug(msg: string, data?: Record<string, unknown>): void {
+/** DI seam so tests can force the best-effort catch arm / watch+close throws. */
+export const _taskTrackerHooks: {
+  log: typeof debugLog;
+  watch: typeof fs.watch;
+} = { log: debugLog, watch: fs.watch.bind(fs) };
+
+/** Exported so tests can drive the best-effort catch arm. */
+export function taskDebug(msg: string, data?: Record<string, unknown>): void {
   try {
-    debugLog('task-tracker', msg, data);
+    _taskTrackerHooks.log('task-tracker', msg, data);
   } catch {
     /* diagnostics must never fail the task operation */
   }
@@ -36,7 +43,8 @@ function taskDebug(msg: string, data?: Record<string, unknown>): void {
  * was missing. Fire-and-forget: a frontend that provides no `_emitChild` is a
  * no-op and a listener must never be able to fail the mutation.
  */
-function emitTaskUpdated(
+/** Exported so tests can drive the optional emit + catch arms. */
+export function emitTaskUpdated(
   context: ToolContext,
   taskId: number,
   status: string,
@@ -487,7 +495,7 @@ export function watchTaskList(
 
   try { fs.mkdirSync(dir, { recursive: true }); } catch { /* best-effort */ }
   try {
-    watcher = fs.watch(dir, (_event, filename) => schedule(filename != null ? String(filename) : null));
+    watcher = _taskTrackerHooks.watch(dir, (_event, filename) => schedule(filename != null ? String(filename) : null));
     watcher.unref?.();
   } catch {
     /* fs.watch throws synchronously on ENOENT / inotify exhaustion — degrade to no-op */

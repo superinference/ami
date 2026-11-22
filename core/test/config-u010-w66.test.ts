@@ -166,9 +166,12 @@ describe('U010/w66 Gap C — managed policy visibility in collectConfigDiagnosti
 
   it('adds NO diagnostic when the managed policy is absent (clean path)', () => {
     const cwd = mkTemp();
-    process.env.SUPERINFERENCE_MANAGED_CONFIG = path.join(mkTemp(), 'does-not-exist.json');
+    const missing = path.join(mkTemp(), 'does-not-exist.json');
+    process.env.SUPERINFERENCE_MANAGED_CONFIG = missing;
     const diags = collectConfigDiagnostics(cwd);
-    assert.equal(diags.length, 0);
+    // Only assert the managed tier is clean — global/project tiers may carry
+    // unrelated user-config noise (unknown keys, etc.) that must not fail this check.
+    assert.equal(diags.filter((d) => d.path === missing || d.source === 'managed').length, 0);
   });
 });
 

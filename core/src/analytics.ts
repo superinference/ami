@@ -456,8 +456,9 @@ export function resolveSampleRate(
  */
 export function trySerialize(value: unknown): string | null {
   try {
-    const s = JSON.stringify(value);
-    return typeof s === 'string' ? s : null;
+    // JSON.stringify returns `undefined` (not a string) for `undefined`/function/
+    // symbol inputs; coalesce that to null. Circular / BigInt inputs still throw.
+    return JSON.stringify(value) ?? null;
   } catch {
     return null;
   }
@@ -2987,16 +2988,19 @@ export class AnalyticsTracker {
   private async _sendWithRetry(batch: TelemetryBatch): Promise<boolean> {
     const headers = this._resolveHeaders();
     const resourceAttrs = this._otlpResourceAttrs;
-    for (let attempt = 1; attempt <= this._maxAttempts; attempt++) {
+    // `_maxAttempts` is clamped to ≥1 at construction, and every iteration returns
+    // (ok / permanent drop / final attempt), so a post-loop fallthrough was unreachable.
+    let attempt = 1;
+    for (;;) {
       const res = await postOtlpBatch(this._otlpEndpoint!, batch, { fetchImpl: this._otlpFetch, env: this._env, headers, resourceAttrs, timeoutMs: this._otlpTimeoutMs, dispatcher: this._otlpDispatcher, perSignal: this._otlpPerSignal });
       if (res.ok) return true;
       if (!res.retryable) return this._dropBatch(batch); // 4xx: permanent, drop
-      if (attempt === this._maxAttempts) return this._dropBatch(batch);
+      if (attempt >= this._maxAttempts) return this._dropBatch(batch);
       const base = Math.min(this._maxBackoffMs, this._baseBackoffMs * attempt * attempt);
       const jittered = res.retryAfterMs ?? Math.round(base * (0.5 + this._rand() * 0.5));
       if (jittered > 0) await this._sleep(jittered);
+      attempt++;
     }
-    return false;
   }
 
   /** Record a permanently-dropped batch, firing the onBatchDropped diagnostic hook. */
@@ -3071,17 +3075,20 @@ export class AnalyticsTracker {
   /** POST a pre-built OTLP signal payload with the shared retry/backoff + headers/transport. */
   private async _postSignal(url: string, payload: Record<string, unknown>): Promise<boolean> {
     const headers = this._resolveHeaders();
-    for (let attempt = 1; attempt <= this._maxAttempts; attempt++) {
+    // Same invariant as `_sendWithRetry`: every iteration returns, so a post-loop
+    // `return false` was unreachable dead code.
+    let attempt = 1;
+    for (;;) {
       const res = await postOtlpPayload(url, payload, {
         fetchImpl: this._otlpFetch, headers, timeoutMs: this._otlpTimeoutMs, dispatcher: this._otlpDispatcher,
       });
       if (res.ok) return true;
-      if (!res.retryable || attempt === this._maxAttempts) return false;
+      if (!res.retryable || attempt >= this._maxAttempts) return false;
       const base = Math.min(this._maxBackoffMs, this._baseBackoffMs * attempt * attempt);
       const jittered = res.retryAfterMs ?? Math.round(base * (0.5 + this._rand() * 0.5));
       if (jittered > 0) await this._sleep(jittered);
+      attempt++;
     }
-    return false;
   }
 
   /**

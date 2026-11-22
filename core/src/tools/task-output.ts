@@ -5,6 +5,8 @@ import { formatSize } from './spill-output';
 import { formatUsageClause } from '../process-manager';
 import { agentResultPath } from './task';
 import { validateBoundedIntEnvVar } from '../config';
+import { errorMessage } from '../credential-guard';
+
 
 /**
  * Default cap on how long a blocking task_output wait runs before giving up and
@@ -254,7 +256,7 @@ export const taskOutputTool: ToolDefinition = {
       try {
         filterRe = new RegExp(rawFilter);
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
+        const msg = errorMessage(e);
         return { output: `Error: invalid filter regex ${JSON.stringify(rawFilter)}: ${msg}`, isError: true };
       }
     }

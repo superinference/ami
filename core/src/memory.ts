@@ -792,6 +792,17 @@ function logUnexpectedReadError(err: unknown, filePath: string): void {
 const MEMORY_DIR_MODE = 0o700;
 const MEMORY_FILE_MODE = 0o600;
 
+/** Best-effort chmod: a filesystem that rejects the mode must not abort a memory write. */
+/** Best-effort chmod — exported so the catch arm is directly unit-testable. */
+export function bestEffortChmod(filePath: string, mode: number): void {
+  try { fs.chmodSync(filePath, mode); } catch { /* best effort */ }
+}
+
+/** Async counterpart of {@link bestEffortChmod}. */
+export async function bestEffortChmodAsync(filePath: string, mode: number): Promise<void> {
+  try { await fsp.chmod(filePath, mode); } catch { /* best effort */ }
+}
+
 /** mkdir -p the memory dir with owner-only mode, then chmod to defeat the umask
  *  / tighten an existing dir. Best-effort chmod: a filesystem that rejects the
  *  mode (e.g. a mounted volume) must not abort the memory write. */
@@ -808,7 +819,7 @@ function ensureMemoryDirMode(dir: string): void {
     coreLog('memory', `failed to create memory directory ${redactLogPath(dir)}`, { code: errnoCode(err) || 'unknown' }, 'warn');
     throw err;
   }
-  try { fs.chmodSync(dir, MEMORY_DIR_MODE); } catch { /* best effort — mode not enforceable here */ }
+  bestEffortChmod(dir, MEMORY_DIR_MODE);
 }
 
 /**
@@ -2917,7 +2928,7 @@ export class MemoryManager {
     // Owner-only file mode + chmod (defeat umask) — a memory file may hold
     // personal context and must not be group/world readable.
     fs.writeFileSync(filePath, fileContent, { encoding: 'utf-8', mode: MEMORY_FILE_MODE });
-    try { fs.chmodSync(filePath, MEMORY_FILE_MODE); } catch { /* best effort */ }
+    bestEffortChmod(filePath, MEMORY_FILE_MODE);
 
     // Step 2 of the two-step save: append a one-line pointer to the always-loaded
     // MEMORY.md index at the auto-memory root (a single index may point into the
@@ -2934,7 +2945,7 @@ export class MemoryManager {
       if (next !== null) {
         ensureMemoryDirMode(baseDir);
         fs.writeFileSync(indexPath, next, { encoding: 'utf-8', mode: MEMORY_FILE_MODE });
-        try { fs.chmodSync(indexPath, MEMORY_FILE_MODE); } catch { /* best effort */ }
+        bestEffortChmod(indexPath, MEMORY_FILE_MODE);
       }
     }
 
@@ -3046,7 +3057,7 @@ export class MemoryManager {
         );
         const kept = existing.split('\n').filter(line => !pointers.some(p => line.includes(p)));
         fs.writeFileSync(indexPath, kept.join('\n'), { encoding: 'utf-8', mode: MEMORY_FILE_MODE });
-        try { fs.chmodSync(indexPath, MEMORY_FILE_MODE); } catch { /* best effort */ }
+        bestEffortChmod(indexPath, MEMORY_FILE_MODE);
       }
     }
 
@@ -3822,7 +3833,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
     createFileIfAbsent(logPath);
     const clean = redactCredentials(sanitizeMemoryContent(entry)).trimEnd();
     fs.appendFileSync(logPath, `${clean}\n`, { encoding: 'utf-8', mode: MEMORY_FILE_MODE });
-    try { fs.chmodSync(logPath, MEMORY_FILE_MODE); } catch { /* best effort */ }
+    bestEffortChmod(logPath, MEMORY_FILE_MODE);
     return logPath;
   }
 
@@ -3880,7 +3891,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
 
     const fileContent = lines.join('\n');
     fs.writeFileSync(filePath, fileContent, { encoding: 'utf-8', mode: MEMORY_FILE_MODE });
-    try { fs.chmodSync(filePath, MEMORY_FILE_MODE); } catch { /* best effort */ }
+    bestEffortChmod(filePath, MEMORY_FILE_MODE);
 
     // No-PII introspection surface for the auto-extracted session-memory WRITE path
     // (parity with the reference's `tengu_session_memory_file_read` /
@@ -4207,7 +4218,7 @@ ${TWO_STEP_SAVE_GUIDANCE}${driftCaveat}${extraGuidelinesBlock}`;
         const next = computeIndexAppend(content, entry);
         if (next !== null) {
           await fsp.writeFile(indexPath, next, { encoding: 'utf-8', mode: MEMORY_FILE_MODE });
-          try { await fsp.chmod(indexPath, MEMORY_FILE_MODE); } catch { /* best effort */ }
+          await bestEffortChmodAsync(indexPath, MEMORY_FILE_MODE);
         }
       } catch { /* best effort */ }
     });

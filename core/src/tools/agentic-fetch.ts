@@ -1,5 +1,7 @@
 import { ToolDefinition, ToolResult, ToolContext, ExitReason } from '../types';
 import { coerceNumber } from '../utils/coerce';
+import { errorMessage as thrownErrorMessage } from '../credential-guard';
+
 
 /** Hard cap on pages the research subagent may fetch (defense-in-depth bound). */
 const MAX_PAGES_LIMIT = 10;
@@ -140,7 +142,7 @@ export const agenticFetchTool: ToolDefinition = {
       };
     }
     if (caught) {
-      const msg = caught instanceof Error ? caught.message : String(caught);
+      const msg = thrownErrorMessage(caught);
       return { output: `Error during web research: ${msg}`, isError: true };
     }
     if (errorMessage && !result) {

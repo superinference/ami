@@ -5,6 +5,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { createHash } from 'crypto';
+import { errorMessage } from '../credential-guard';
+
 
 /**
  * Conservative mime → file-extension allowlist for persisting binary resource
@@ -40,10 +42,12 @@ const MIME_EXT: Record<string, string> = {
   'image/svg+xml': 'svg',
 };
 
-function extForMime(mimeType: string | undefined): string {
+/** Exported for direct unit coverage of the mime→ext allowlist. */
+export function extForMime(mimeType: string | undefined): string {
   if (!mimeType) return 'bin';
   // Strip any charset/boundary parameter before matching the allowlist.
-  const base = (mimeType.split(';')[0] ?? '').trim().toLowerCase();
+  // String.prototype.split always yields at least one element.
+  const base = mimeType.split(';')[0]!.trim().toLowerCase();
   return MIME_EXT[base] ?? 'bin';
 }
 
@@ -64,7 +68,8 @@ interface ServerLike { name: string; state?: string }
  *   - not-connected server → reports its state + lists the connected servers,
  *     instead of letting an opaque transport / not-ready error bubble up.
  */
-function preflightServerError(
+/** Exported for direct unit coverage of the unknown / not-connected arms. */
+export function preflightServerError(
   mcpManager: { listServers?: () => ServerLike[] } | undefined,
   server: string,
 ): string | null {
@@ -132,17 +137,18 @@ export const listMcpResourcesTool: ToolDefinition = {
       // Cap the joined listing the same way the read tool caps its body, so a
       // server advertising a very large resource catalog cannot return an
       // unbounded string into the model context (the reference's maxResultSizeChars).
-      const cap = listMcpResourcesTool.maxResultSizeChars ?? 100_000;
+      // Declared on the tool def above — always a positive number.
+      const cap = listMcpResourcesTool.maxResultSizeChars as number;
       const output = spillToolText(context.cwd, 'mcp-resources', lines.join('\n'), cap);
       return { output, metadata: { count: resources.length, server: serverFilter } };
     } catch (err) {
-      return { output: `Error listing MCP resources: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+      return { output: `Error listing MCP resources: ${errorMessage(err)}`, isError: true };
     }
   },
 };
 
-/** Normalize a raw resources/read result into text/blob entries, persisting blobs. */
-function normalizeResourceResult(result: unknown, dir: string, server: string): ResourceContent[] {
+/** Normalize a raw resources/read result into text/blob entries, persisting blobs. Exported for coverage. */
+export function normalizeResourceResult(result: unknown, dir: string, server: string): ResourceContent[] {
   const raw = (result && typeof result === 'object' ? (result as { contents?: unknown }).contents : undefined);
   if (!Array.isArray(raw)) {
     // Not the standard { contents: [...] } shape — fall back to a single text entry.
@@ -164,7 +170,7 @@ function normalizeResourceResult(result: unknown, dir: string, server: string): 
         return { uri: it.uri, mimeType: it.mimeType, blobSavedTo: file, text: getBinaryBlobSavedMessage(file, it.mimeType, bytes.length, source) };
       } catch (err) {
         // Persistence failed — degrade to a text note rather than throwing.
-        const reason = err instanceof Error ? err.message : String(err);
+        const reason = errorMessage(err);
         return { uri: it.uri, mimeType: it.mimeType, text: `Binary content could not be saved to disk: ${reason}` };
       }
     }
@@ -211,10 +217,10 @@ export const readMcpResourceTool: ToolDefinition = {
         return { output: `MCP resource "${input.uri as string}" returned no content.`, metadata: { contents } };
       }
       const rendered = JSON.stringify({ contents }, null, 2);
-      const cap = readMcpResourceTool.maxResultSizeChars ?? 100_000;
+      const cap = readMcpResourceTool.maxResultSizeChars as number;
       return { output: spillToolText(context.cwd, 'mcp-resource', rendered, cap), metadata: { contents } };
     } catch (err) {
-      return { output: `Error reading MCP resource: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+      return { output: `Error reading MCP resource: ${errorMessage(err)}`, isError: true };
     }
   },
 };

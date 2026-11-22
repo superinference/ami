@@ -33,12 +33,22 @@ export const GCP_CREDENTIALS_CHECK_TIMEOUT_MS = 5_000;
  */
 export type GcpAccessTokenFetcher = () => Promise<void>;
 
+/** Minimal surface of `google-auth-library`'s `GoogleAuth` used by the default fetcher. */
+export type GoogleAuthLike = new (opts: { scopes: string[] }) => {
+  getClient(): Promise<{ getAccessToken(): Promise<unknown> }>;
+};
+
 /** Options for {@link checkGcpCredentialsValid} (all injectable for tests). */
 export interface CheckGcpCredentialsOptions {
   /** Override the ADC token fetch (default: dynamic import of google-auth-library). */
   fetchAccessToken?: GcpAccessTokenFetcher;
   /** Probe timeout in ms (default {@link GCP_CREDENTIALS_CHECK_TIMEOUT_MS}). */
   timeoutMs?: number;
+  /**
+   * Test seam for the default ADC fetcher's dynamic import. Production leaves this
+   * unset so `google-auth-library` is loaded only when a real probe runs.
+   */
+  loadGoogleAuth?: () => Promise<{ GoogleAuth: GoogleAuthLike }>;
 }
 
 /**
@@ -48,8 +58,10 @@ export interface CheckGcpCredentialsOptions {
  * missing library (never installed) or any auth error propagates as a rejection,
  * which {@link checkGcpCredentialsValid} turns into `false`.
  */
-async function defaultFetchAccessToken(): Promise<void> {
-  const { GoogleAuth } = await import('google-auth-library');
+async function defaultFetchAccessToken(
+  loadGoogleAuth?: () => Promise<{ GoogleAuth: GoogleAuthLike }>,
+): Promise<void> {
+  const { GoogleAuth } = await (loadGoogleAuth ?? (() => import('google-auth-library') as Promise<{ GoogleAuth: GoogleAuthLike }>))();
   const auth = new GoogleAuth({
     scopes: ['https://www.googleapis.com/auth/cloud-platform'],
   });
@@ -68,7 +80,9 @@ async function defaultFetchAccessToken(): Promise<void> {
 export async function checkGcpCredentialsValid(
   options: CheckGcpCredentialsOptions = {},
 ): Promise<boolean> {
-  const fetchAccessToken = options.fetchAccessToken ?? defaultFetchAccessToken;
+  const fetchAccessToken =
+    options.fetchAccessToken ??
+    (() => defaultFetchAccessToken(options.loadGoogleAuth));
   const timeoutMs = options.timeoutMs ?? GCP_CREDENTIALS_CHECK_TIMEOUT_MS;
   try {
     await withTimeout(

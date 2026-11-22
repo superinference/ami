@@ -246,9 +246,40 @@ describe('cron_run tool', () => {
     const none = await cronRunTool.execute!({}, ctx());
     assert.equal(none.isError, true);
     assert.match(none.output, /exactly one/);
+    const both = await cronRunTool.execute!({ id: 'cron_1_x', name: 'n' }, ctx());
+    assert.equal(both.isError, true);
+    assert.match(both.output, /exactly one/);
     const unk = await cronRunTool.execute!({ id: 'cron_1_x', bogus: 1 }, ctx());
     assert.equal(unk.isError, true);
     assert.match(unk.output, /unknown/);
+  });
+
+  it('rejects an invalid id and a non-string name', async () => {
+    const badId = await cronRunTool.execute!({ id: 'has spaces!' }, ctx());
+    assert.equal(badId.isError, true);
+    assert.match(badId.output, /id is required/);
+    const emptyId = await cronRunTool.execute!({ id: '' }, ctx());
+    assert.equal(emptyId.isError, true);
+    const badName = await cronRunTool.execute!({ name: 42 as unknown as string }, ctx());
+    assert.equal(badName.isError, true);
+    assert.match(badName.output, /name must be a non-empty string/);
+  });
+
+  it('rejects an ambiguous name shared by multiple jobs', async () => {
+    // Create two jobs with the same human-readable name under one owner.
+    await cronCreateTool.execute!({ cron: '7 9 * * *', prompt: 'a', name: 'dup' }, ctx());
+    await cronCreateTool.execute!({ cron: '8 9 * * *', prompt: 'b', name: 'dup' }, ctx());
+    const matches = getScheduler(dir).findByName('dup');
+    assert.ok(matches.length >= 2, `expected ≥2 jobs named dup, got ${matches.length}`);
+    const r = await cronRunTool.execute!({ name: 'dup' }, ctx());
+    assert.equal(r.isError, true);
+    assert.match(r.output, /ambiguous/);
+    assert.equal((r.metadata as { errorCode?: number }).errorCode, 1);
+  });
+
+  it('isEnabled follows the cron feature gate', () => {
+    assert.equal(typeof cronRunTool.isEnabled, 'function');
+    assert.equal(cronRunTool.isEnabled!(), true);
   });
 });
 

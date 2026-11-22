@@ -213,10 +213,16 @@ const toolCache = new WeakMap<object, CreateSyntheticOutputResult>();
  * validates-then-returns, with the compiled result memoized by schema identity.
  */
 export function createSyntheticOutputTool(jsonSchema: Record<string, unknown>): CreateSyntheticOutputResult {
+  // Non-object roots are not valid WeakMap keys and are never well-formed
+  // schemas — reject before touching the identity cache.
+  const shapeError = validateSchemaShape(jsonSchema);
+  if (shapeError && (typeof jsonSchema !== 'object' || jsonSchema === null)) {
+    return { error: shapeError };
+  }
+
   const cached = toolCache.get(jsonSchema);
   if (cached) return cached;
 
-  const shapeError = validateSchemaShape(jsonSchema);
   let result: CreateSyntheticOutputResult;
   if (shapeError) {
     result = { error: shapeError };

@@ -5,6 +5,8 @@ import { GIT_NO_PROMPT_ENV, validateGitSource, isScpLikeGitSource } from '../plu
 import { execSyncWatched, execFileSyncWatched } from '../utils/shell';
 import * as path from 'path';
 import * as fs from 'fs';
+import { errorMessage } from '../credential-guard';
+
 
 const DEFAULT_CLONE_TIMEOUT_MS = 60000;
 /** Hard caps on how much of each section scout emits. Named so the
@@ -340,7 +342,7 @@ export const scoutTool: ToolDefinition = {
     } catch (err) {
       // Redact any credentials embedded in a repo URL (https://user:token@host/…)
       // before surfacing git's failure message / command echo.
-      const rawMsg = err instanceof Error ? err.message : String(err);
+      const rawMsg = errorMessage(err);
       const safeMsg = redactSecrets(stripUrlCredentials(rawMsg));
       return { output: `Error scouting ${stripUrlCredentials(repo)}: ${safeMsg}`, isError: true };
     }

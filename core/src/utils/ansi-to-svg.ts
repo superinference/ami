@@ -131,7 +131,8 @@ export function ansiToSvg(ansiText: string, options: AnsiToSvgOptions = {}): str
     // One <text> per line; xml:space="preserve" keeps leading/inner whitespace.
     svg += `  <text x="${paddingX}" y="${y}" xml:space="preserve">`;
     for (const span of spans) {
-      if (!span.text) continue;
+      // parseAnsi only emits spans when `buf` is non-empty, so span.text is
+      // always truthy here — no empty-text guard.
       const boldClass = span.bold ? ' class="b"' : '';
       svg += `<tspan fill="${colorToRgb(span.color)}"${boldClass}>${escapeXmlText(span.text)}</tspan>`;
     }

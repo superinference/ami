@@ -29,6 +29,8 @@
  */
 
 import * as fs from 'fs';
+import { errorMessage } from '../credential-guard';
+
 
 /** Opt-out env var: set truthy to SKIP best-effort process hardening (e.g. when a
  *  developer needs full core dumps for a crash investigation). Default (unset) →
@@ -211,7 +213,7 @@ export function blockPtrace(
     log(`ptrace-hardening: ${detail}`);
     return { status: 'failed', platform, method, detail };
   } catch (err) {
-    const detail = `prctl unavailable (${err instanceof Error ? err.message : String(err)}); failing open`;
+    const detail = `prctl unavailable (${errorMessage(err)}); failing open`;
     log(`ptrace-hardening: ${detail}`);
     return { status: 'error', platform, method, detail };
   }

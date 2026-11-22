@@ -4,13 +4,16 @@ import { logError } from '../logger';
 import { isWithinWorkspaceRoots } from './tool-utils';
 import { matchesReadIgnore } from './read-ignore';
 import { findProjectRoot, gitignoreToIgnoreGlobs } from '../workspace-indexer';
+import { errorMessage } from '../credential-guard';
+
 
 // PARITY (error observability): a directory scan that fails with ENOENT is the
 // expected "parent does not exist" case and is swallowed quietly. Any OTHER
 // failure (EACCES permission-denied, ENOTDIR, EMFILE, …) is unexpected and was
 // previously discarded silently, making path-suggestion gaps undiagnosable.
 // Mirrors the reference's findSimilarFile (`if (!isENOENT(error)) logError(...)`).
-function isENOENT(err: unknown): boolean {
+/** Exported for direct unit coverage of the ENOENT quiet-swallow predicate. */
+export function isENOENT(err: unknown): boolean {
   return (
     typeof err === 'object' &&
     err !== null &&
@@ -18,9 +21,10 @@ function isENOENT(err: unknown): boolean {
   );
 }
 
-function logScanError(component: string, dir: string, err: unknown): void {
+/** Exported for direct unit coverage of non-ENOENT scan-error logging. */
+export function logScanError(component: string, dir: string, err: unknown): void {
   if (isENOENT(err)) return;
-  const msg = err instanceof Error ? err.message : String(err);
+  const msg = errorMessage(err);
   logError(component, `directory scan failed: ${dir}: ${msg}`);
 }
 
@@ -54,7 +58,8 @@ export function levenshteinDistance(a: string, b: string): number {
 // maxResults would turn `slice(0, n)` into a from-the-end slice and leak
 // unintended entries) and non-finite inputs. ADDITIVE: positive integers pass
 // through unchanged, so existing callers keep identical behavior.
-function clampCount(n: number): number {
+/** Exported for direct unit coverage of the bounds-hardening clamp. */
+export function clampCount(n: number): number {
   if (!Number.isFinite(n)) return 0;
   return Math.max(0, Math.floor(n));
 }
@@ -72,7 +77,8 @@ function clampCount(n: number): number {
 //      rather than re-implementing ignore parsing.
 // Patterns are gathered from the project root's `.git/info/exclude` and every
 // `.gitignore` from the root down to `scanDir` (each anchored at its own dir).
-function buildSuggestionIgnore(scanDir: string): (entry: string) => boolean {
+/** Exported for direct unit coverage of the ignore-builder. */
+export function buildSuggestionIgnore(scanDir: string): (entry: string) => boolean {
   const root = findProjectRoot(scanDir);
   const globs: string[] = [];
   if (root) {

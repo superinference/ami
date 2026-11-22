@@ -135,6 +135,16 @@ describe('removeSessionWorktreeIfClean — interrupt cleanup (U057-w100)', () =>
     setWorktreeSession(null);
     assert.equal(removeSessionWorktreeIfClean(), false);
   });
+
+  it('best-effort kills a linked tmux session when removing a clean worktree', () => {
+    const repo = makeRepo(); tmps.push(repo);
+    const session = createWorktreeSession(repo, 'wt-tmux');
+    session.tmuxSessionName = 'ami-cov-tmux-fake';
+    setWorktreeSession(session);
+    // killTmuxSession is best-effort — a missing tmux session must not block removal.
+    assert.equal(removeSessionWorktreeIfClean(), true);
+    assert.equal(getCurrentWorktreeSession(), null);
+  });
 });
 
 // ---------------------------------------------------------------------------

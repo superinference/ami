@@ -113,9 +113,10 @@ export function hookEnvFragmentPath(
  * Deterministic order for hook env fragments: first by event-type priority
  * (setup < sessionstart < cwdchanged < filechanged; unknown → 99), then by the
  * numeric hook index. Makes the concatenated env reproducible regardless of
- * `readdir` order.
+ * `readdir` order. Exported so unit tests can drive the unknown-type / missing-
+ * match arms that the production filter never feeds through.
  */
-function sortHookEnvFiles(a: string, b: string): number {
+export function sortHookEnvFiles(a: string, b: string): number {
   const aMatch = a.match(HOOK_ENV_REGEX);
   const bMatch = b.match(HOOK_ENV_REGEX);
   const aType = aMatch?.[1] || '';
@@ -128,8 +129,8 @@ function sortHookEnvFiles(a: string, b: string): number {
   return aIndex - bIndex;
 }
 
-/** Normalize an unknown thrown value to a human-readable message for logs. */
-function errText(e: unknown): string {
+/** Normalize an unknown thrown value to a human-readable message for logs. Exported for coverage. */
+export function errText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 

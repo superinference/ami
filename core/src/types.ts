@@ -2632,6 +2632,16 @@ function validateNumericKnob(
   return true;
 }
 
+/** @internal Test seam — `opts.max` is unused by current call sites (softMax only). */
+export function __validateNumericKnobForTest(
+  value: number,
+  name: string,
+  opts: { min: number; max?: number; softMax?: number; integer?: boolean },
+  warnings: string[],
+): boolean {
+  return validateNumericKnob(value, name, opts, warnings);
+}
+
 /** True when `n` is a usable TCP port (integer in 1..65535). */
 function isValidPort(n: number): boolean {
   return Number.isInteger(n) && n >= 1 && n <= 65535;

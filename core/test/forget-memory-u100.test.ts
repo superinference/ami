@@ -70,6 +70,24 @@ describe('forget_memory — delete-by-name affordance (gap: extractMemories forg
     const r = await forgetMemoryTool.execute({ name: 'a' }, c);
     assert.match(String(r.output), /You now have 1 private memory\. View with \/memory\./);
   });
+
+  it('rejects a non-string name and pluralizes multi-scope / multi-team remainders', async () => {
+    const c = ctx();
+    const bad = await forgetMemoryTool.execute({ name: 42 as unknown as string }, c);
+    assert.equal(bad.isError, true);
+    assert.match(String(bad.output), /name must not be empty/);
+
+    // Same name in private + team → one forget removes both (plural "memories").
+    await writeMemoryTool.execute({ name: 'shared', content: 'p', scope: 'private' }, c);
+    await writeMemoryTool.execute({ name: 'shared', content: 't', scope: 'team' }, c);
+    // Extra team memories so the post-delete team remainder is plural.
+    await writeMemoryTool.execute({ name: 'team-a', content: 'a', scope: 'team' }, c);
+    await writeMemoryTool.execute({ name: 'team-b', content: 'b', scope: 'team' }, c);
+    const r = await forgetMemoryTool.execute({ name: 'shared' }, c);
+    assert.notEqual(r.isError, true);
+    assert.match(String(r.output), /Forgot 2 memories named "shared"/);
+    assert.match(String(r.output), /2 team memories/);
+  });
 });
 
 describe('MemoryManager.deleteMemory', () => {

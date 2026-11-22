@@ -2260,8 +2260,8 @@ export class McpManager extends EventEmitter {
       return false;
     }
     const filePath = this.mcpTokenFilePath(name, config);
-    let existed = false;
-    try { existed = fs.existsSync(filePath); } catch { existed = false; }
+    // fs.existsSync never throws (it returns false on any error), so no guard here.
+    const existed = fs.existsSync(filePath);
     try { fs.rmSync(filePath, { force: true }); } catch { /* best-effort purge */ }
     // A forced re-auth must re-probe, so drop any cached guaranteed-401 marker too.
     this.clearNeedsAuthCache(name);
@@ -2416,7 +2416,8 @@ export class McpManager extends EventEmitter {
   /** Authentication status for a remote (sse/http) server; undefined otherwise. */
   private deriveIsAuthenticated(config: McpServerConfig | undefined, client: McpClient): boolean | undefined {
     if (config?.transport !== 'http' && config?.transport !== 'sse') return undefined;
-    return client.state === 'ready' && (client.tools?.length ?? 0) > 0;
+    // `tools` getter always returns an array (never nullish).
+    return client.state === 'ready' && client.tools.length > 0;
   }
 
   /**
@@ -2472,13 +2473,10 @@ export class McpManager extends EventEmitter {
   }
 
   /** Whether a persisted OAuth token file already exists on disk for `name` (it has
-   *  been authenticated at least once). Best-effort: a stat failure reports `false`. */
+   *  been authenticated at least once). Best-effort: a missing path reports `false`. */
   private hasPersistedOAuthToken(name: string, config: McpServerConfig): boolean {
-    try {
-      return fs.existsSync(this.mcpTokenFilePath(name, config));
-    } catch {
-      return false;
-    }
+    // fs.existsSync never throws (it returns false on any error), so no guard here.
+    return fs.existsSync(this.mcpTokenFilePath(name, config));
   }
 
   private getFullServerStatus(name: string): McpServerStatus {
@@ -2500,7 +2498,8 @@ export class McpManager extends EventEmitter {
     if (this._needsAuthSkipped.has(name) && client.state !== 'ready') {
       return {
         name, state: 'needs-auth', serverInfo: client.serverInfo, toolCount: client.tools.length,
-        resourceCount: client.resources.length, promptCount: client.prompts?.length ?? 0,
+        // `prompts` getter always returns an array (never nullish).
+        resourceCount: client.resources.length, promptCount: client.prompts.length,
         uptime: client.uptime, containerBacked: !!config?.containerConfig, needsAuth: true,
         scope: this._serverScopes.get(name), sourcePath: this._serverSources.get(name),
         ...this.sourceAgentsField(name),
@@ -2513,7 +2512,7 @@ export class McpManager extends EventEmitter {
       serverInfo: client.serverInfo,
       toolCount: client.tools.length,
       resourceCount: client.resources.length,
-      promptCount: client.prompts?.length ?? 0,
+      promptCount: client.prompts.length,
       uptime: client.uptime,
       containerBacked: !!config?.containerConfig,
       isAuthenticated: this.deriveIsAuthenticated(config, client),
@@ -2600,8 +2599,8 @@ export class McpManager extends EventEmitter {
       throw new Error(`MCP server "${name}" is not an OAuth http/sse server — there is no stored login to clear`);
     }
     const tokenPath = this.mcpTokenFilePath(name, config);
-    let hadToken = false;
-    try { hadToken = fs.existsSync(tokenPath); } catch { /* unreadable → treat as absent */ }
+    // fs.existsSync never throws (it returns false on any error), so no guard here.
+    const hadToken = fs.existsSync(tokenPath);
 
     // Best-effort server-side revoke via a live client (no-op for a stopped/pending
     // server, where the local purge below still clears the cached credential).
@@ -2975,7 +2974,7 @@ export class McpManager extends EventEmitter {
       serverInfo: client.serverInfo,
       toolCount: client.tools.length,
       resourceCount: client.resources.length,
-      promptCount: client.prompts?.length ?? 0,
+      promptCount: client.prompts.length,
       uptime: client.uptime,
       isAuthenticated: this.deriveIsAuthenticated(config, client),
       channelPermissionRelay: client.supportsChannelPermissionRelay(),

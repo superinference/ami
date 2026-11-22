@@ -4,7 +4,49 @@ import { resolveConfigDir, journalPathFor } from './reference-journal';
 import { plural } from './utils/string';
 import * as path from 'path';
 import * as os from 'os';
-import { spawn } from 'child_process';
+import { spawn as nodeSpawn } from 'child_process';
+import type { ChildProcess, SpawnOptions } from 'child_process';
+
+/** Injectable spawn seam for command hooks (tests force stdin destroy/write failures). */
+export const hookSpawnHooks: {
+  spawn: (
+    command: string,
+    args: readonly string[],
+    options: SpawnOptions,
+  ) => ChildProcess;
+} = { spawn: nodeSpawn as typeof hookSpawnHooks.spawn };
+
+/**
+ * Injectable journal-path seam for agent-hook transcript scoping. Production
+ * delegates to {@link journalPathFor}; tests inject a throwing resolver to hit
+ * the resolveHookTranscriptPath catch (malformed cwd/session → no scoped Read).
+ */
+export const hookJournalHooks: {
+  journalPathFor: (cwd: string, sessionId: string) => string;
+} = { journalPathFor: (cwd, sessionId) => journalPathFor(cwd, sessionId) };
+
+/**
+ * Injectable plugin-discovery seam for loadFromFile / reloadPluginHooks.
+ * Production defaults to `require('./plugins').discoverPlugins`; tests inject a
+ * throwing discoverer to force the categorized load-failure catch.
+ */
+export const hookPluginDiscoverHooks: {
+  discoverPlugins: (dir: string) => Array<{ name: string; root: string; hooksFile?: string }>;
+} = {
+  discoverPlugins: (dir: string) => {
+    const { discoverPlugins } = require('./plugins');
+    return discoverPlugins(dir);
+  },
+};
+
+/**
+ * Injectable fs seam for plugin-affecting snapshot mtimes (and related best-
+ * effort stats). Production uses real `fs.statSync`; tests inject a throwing
+ * stat to hit the unreadable→mtime 0 catch.
+ */
+export const hookFsHooks: {
+  statSync: (path: string) => { mtimeMs: number };
+} = { statSync: fs.statSync as typeof hookFsHooks.statSync };
 import type { Message, AssistantMessage, ToolMessage } from './types';
 import { log as coreLog } from './logger';
 import { EventEmitter } from 'events';
@@ -3295,7 +3337,7 @@ async function runCommandHookAsync(
     const spawnDesc = args && args.length > 0
       ? { file: args[0], args: args.slice(1) }       // exec form — bypass the shell
       : resolveHookShell(command, shell);            // shell form — per-hook interpreter
-    const proc = spawn(spawnDesc.file, spawnDesc.args, { cwd: safeCwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
+    const proc = hookSpawnHooks.spawn(spawnDesc.file, spawnDesc.args, { cwd: safeCwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
 
     // Capture stdout and stderr SEPARATELY (the reference contract): a command hook's
     // decision JSON is read from stdout, while the human-facing reason comes from
@@ -4197,7 +4239,7 @@ export class HookManager extends EventEmitter {
   private resolveHookTranscriptPath(): string | undefined {
     if (!this._sessionId) return undefined;
     try {
-      return journalPathFor(this._cwd, this._sessionId);
+      return hookJournalHooks.journalPathFor(this._cwd, this._sessionId);
     } catch {
       // A malformed cwd/session id (assertPathWithin reject) just means no scoped
       // transcript access — the agent hook still runs without it.
@@ -4461,13 +4503,12 @@ export class HookManager extends EventEmitter {
   ): Array<{ path: string; source: 'project' | 'user'; kind: HookSourceKind; pluginName: string; pluginRoot: string }> {
     const out: Array<{ path: string; source: 'project' | 'user'; kind: HookSourceKind; pluginName: string; pluginRoot: string }> = [];
     try {
-      const { discoverPlugins } = require('./plugins');
       const pluginDirs: Array<[string, 'user' | 'project']> = [
         [path.join(resolveConfigDir(), 'plugins'), 'user'],
         [path.join(cwd, '.ami', 'plugins'), 'project'],
       ];
       for (const [dir, src] of pluginDirs) {
-        for (const bundle of discoverPlugins(dir)) {
+        for (const bundle of hookPluginDiscoverHooks.discoverPlugins(dir)) {
           // A disabled plugin must NOT contribute executable hooks: skip bundles
           // whose root carries a `.disabled` marker (mirrors skill-manager gating).
           if (fs.existsSync(path.join(bundle.root, '.disabled'))) {
@@ -4732,7 +4773,7 @@ export class HookManager extends EventEmitter {
         // in place (same path, changed content) also changes the snapshot — not just
         // adding/removing a plugin. An unreadable source contributes mtime 0.
         let mtimeMs = 0;
-        try { mtimeMs = fs.statSync(s.path).mtimeMs; } catch { /* unreadable → 0 */ }
+        try { mtimeMs = hookFsHooks.statSync(s.path).mtimeMs; } catch { /* unreadable → 0 */ }
         return `${s.source}:${s.pluginName ?? ''}:${s.path}:${mtimeMs}`;
       })
       .sort();

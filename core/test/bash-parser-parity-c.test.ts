@@ -108,7 +108,12 @@ describe('parity-c: recursion-depth budget (DoS fail-closed)', () => {
     const payload = '('.repeat(3000) + ' echo hi ' + ')'.repeat(3000);
     const r = validateASTCommands(payload);
     assert.equal(r.safe, false);
-    assert.ok(r.message.includes('nesting'));
+    // Prefer the subshell-depth message; under a tight parse budget the same
+    // payload may instead hit PARSE_ABORTED — both are fail-closed.
+    assert.ok(
+      /nesting|too complex|parser aborted|obfuscation/i.test(r.message),
+      `expected a fail-closed nesting/complexity message, got: ${r.message}`,
+    );
   });
 
   it('does not throw on deeply nested command substitutions', () => {

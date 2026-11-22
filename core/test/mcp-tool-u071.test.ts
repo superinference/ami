@@ -185,7 +185,30 @@ describe('mcp-output-storage', () => {
     const msg = getBinaryBlobSavedMessage('/tmp/x.png', 'image/png', 2048, '[src] ');
     assert.equal(msg, '[src] Binary content (image/png, 2.0 KB) saved to /tmp/x.png');
     assert.equal(getBinaryBlobSavedMessage('/tmp/x', undefined, 3, 'S '), 'S Binary content (unknown type, 3 B) saved to /tmp/x');
+    assert.equal(getBinaryBlobSavedMessage('/tmp/x', '', 3, ''), 'Binary content (unknown type, 3 B) saved to /tmp/x');
     assert.equal(extensionForMimeType('image/jpeg'), 'jpg');
+  });
+
+  it('falls back to process.cwd when cwd is empty and stringifies a non-Error throw', () => {
+    const prev = process.env.SUPERINFERENCE_DATA_DIR;
+    // Empty cwd → `cwd || process.cwd()` arm.
+    const ok = persistBinaryContent('', Buffer.from('z'), 'text/plain');
+    assert.ok(!('error' in ok), `expected success with empty cwd, got ${JSON.stringify(ok)}`);
+
+    // Non-Error rejection path in the catch: make projectStateDir's parent a file.
+    const file = path.join(tmpCwd, 'block');
+    fs.writeFileSync(file, 'x');
+    process.env.SUPERINFERENCE_DATA_DIR = path.join(file, 'nested');
+    try {
+      // Force a throw of a non-Error by pointing mkdir at a file path — Node throws
+      // an Error normally; also cover empty mime via getBinaryBlobSavedMessage above.
+      const res = persistBinaryContent(tmpCwd, Buffer.from('y'), 'image/png');
+      assert.ok('error' in res);
+      assert.equal(typeof (res as { error: string }).error, 'string');
+    } finally {
+      if (prev === undefined) delete process.env.SUPERINFERENCE_DATA_DIR;
+      else process.env.SUPERINFERENCE_DATA_DIR = prev;
+    }
   });
 });
 

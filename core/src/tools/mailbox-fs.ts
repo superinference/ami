@@ -43,6 +43,19 @@ export interface FsMailboxLocation {
 /** Team name used when a caller does not specify one (parity: the reference's `'default'`). */
 export const DEFAULT_TEAM_NAME = 'default';
 
+/**
+ * DI seam for the unlink used when {@link takeFsInbox} drains an inbox to empty.
+ * Production uses real `fs.unlinkSync`; tests inject a thrower to cover the
+ * empty-catch race arm without fighting Node's non-configurable `fs` exports.
+ */
+export const _mailboxFsHooks: {
+  unlinkSync: (path: fs.PathLike) => void;
+} = {
+  unlinkSync: (p) => {
+    fs.unlinkSync(p);
+  },
+};
+
 /** Resolve the effective team name for a location, applying the default. */
 function teamOf(loc: FsMailboxLocation): string {
   const t = loc.teamName && loc.teamName.trim() ? loc.teamName.trim() : DEFAULT_TEAM_NAME;
@@ -154,7 +167,13 @@ export function takeFsInbox(
       else keep.push(r);
     }
     if (keep.length) writeAtomic(file, keep);
-    else { try { fs.unlinkSync(file); } catch { /* raced */ } }
+    else {
+      try {
+        _mailboxFsHooks.unlinkSync(file);
+      } catch {
+        /* raced */
+      }
+    }
     return taken;
   });
 }

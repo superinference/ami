@@ -93,7 +93,10 @@ export class FileIndex {
     queryable: Promise<void>;
     done: Promise<void>;
   } {
-    let markQueryable: () => void = () => {};
+    // Assigned synchronously inside the Promise executor before any await, so
+    // the definite-assignment call sites below are always populated — no
+    // unreachable no-op placeholder function.
+    let markQueryable!: () => void;
     const queryable = new Promise<void>(resolve => {
       markQueryable = resolve;
     });
@@ -184,6 +187,7 @@ export class FileIndex {
   search(query: string, limit: number): SearchResult[] {
     if (limit <= 0) return [];
     if (query.length === 0) {
+      // Before any load, topLevelCache is still null — return [] rather than throw.
       if (this.topLevelCache) {
         return this.topLevelCache.slice(0, limit);
       }
@@ -296,8 +300,8 @@ export class FileIndex {
   }
 }
 
-/** Dedupe + drop empty strings, preserving first-seen order (Rust HashSet parity). */
-function dedupe(fileList: string[]): string[] {
+/** Dedupe + drop empty strings, preserving first-seen order (Rust HashSet parity). Exported for coverage. */
+export function dedupe(fileList: string[]): string[] {
   const seen = new Set<string>();
   const paths: string[] = [];
   for (const line of fileList) {
@@ -313,7 +317,8 @@ function dedupe(fileList: string[]): string[] {
  * Boundary/camelCase bonus for a match at `pos` in the original-case `path`.
  * `first` enables the start-of-string bonus (only for needle[0]).
  */
-function scoreBonusAt(path: string, pos: number, first: boolean): number {
+/** Exported for direct unit coverage of the first-char vs boundary bonus arms. */
+export function scoreBonusAt(path: string, pos: number, first: boolean): number {
   if (pos === 0) return first ? BONUS_FIRST_CHAR : 0;
   return boundaryBonus(path, pos);
 }
@@ -329,7 +334,8 @@ export function yieldToEventLoop(): Promise<void> {
  * FileIndex::compute_top_level_entries in the Rust lib — these are the results
  * an empty query returns (the "top level of the tree" affordance).
  */
-function computeTopLevelEntries(
+/** Exported for direct unit coverage of separator / sort / limit arms. */
+export function computeTopLevelEntries(
   paths: string[],
   limit: number,
 ): SearchResult[] {

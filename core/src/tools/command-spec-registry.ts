@@ -88,6 +88,9 @@ export const BUILTIN_COMMAND_SPECS: readonly CommandSpec[] = [
       { name: ['-I', '--include-dir'], description: 'Search directory for included makefiles', args: { name: 'dir' } },
       { name: ['-o', '--old-file', '--assume-old'], description: 'Consider file very old', args: { name: 'file' } },
       { name: ['-W', '--what-if', '--new-file', '--assume-new'], description: 'Consider file infinitely new', args: { name: 'file' } },
+      // Boolean (no-args) flags — valueFlagsForCommand must skip these.
+      { name: ['-n', '--dry-run'], description: 'Print recipes without executing' },
+      { name: '-s', description: 'Silent mode (single-string spelling)' },
     ],
   },
   {
@@ -103,12 +106,48 @@ export const BUILTIN_COMMAND_SPECS: readonly CommandSpec[] = [
       { name: 'run' },
     ],
   },
+  // Spec with options that declare args but use a non-dash alias — exercises the
+  // `name.startsWith('-')` guard so a stray non-flag spelling never becomes a
+  // value-flag. Also covers the string-form `option.name` arm in optionFlagNames.
+  {
+    name: 'nice',
+    description: 'Run a command with adjusted niceness',
+    options: [
+      { name: '-n', description: 'Niceness adjustment', args: { name: 'adjustment' } },
+      { name: 'adjustment', description: 'Positional alias (not a flag)', args: { name: 'adjustment' } },
+    ],
+  },
+  // Spec present but without options — valueFlagsForCommand returns undefined.
+  {
+    name: 'true',
+    description: 'Do nothing, successfully',
+  },
+  // Spec whose options are all boolean (no args) — valueFlags ends empty → undefined.
+  {
+    name: 'time',
+    description: 'Time a command',
+    options: [
+      { name: '-p', description: 'POSIX output format' },
+      { name: ['-v', '--verbose'], description: 'Verbose' },
+    ],
+  },
 ];
 
-/** Normalize an option's `name` (string | string[]) to a flag-spelling array. */
-function optionFlagNames(option: CommandOption): string[] {
+/** Normalize an option's `name` (string | string[]) to a flag-spelling array. Exported for coverage. */
+export function optionFlagNames(option: CommandOption): string[] {
   return Array.isArray(option.name) ? option.name : [option.name];
 }
+
+/**
+ * DI seam for the optional Fig dynamic import so unit tests can drive the
+ * `mod.default ?? (mod.name ? mod : null)` resolution arms without installing
+ * `@withfig/autocomplete`.
+ */
+export const _figImportHooks: {
+  importSpec: (specifier: string) => Promise<{ default?: CommandSpec } & Partial<CommandSpec>>;
+} = {
+  importSpec: (specifier) => import(specifier) as Promise<{ default?: CommandSpec } & Partial<CommandSpec>>,
+};
 
 /**
  * Path-safety validator for a dynamically-imported spec name — mirrors the reference's
@@ -140,8 +179,8 @@ export async function loadFigSpec(command: string): Promise<CommandSpec | null> 
   if (!isSafeCommandSpecName(command)) return null;
   try {
     const specifier = '@withfig/autocomplete/build/' + command + '.js';
-    const mod = (await import(specifier)) as { default?: CommandSpec } & CommandSpec;
-    return mod.default ?? (mod.name ? mod : null);
+    const mod = await _figImportHooks.importSpec(specifier);
+    return mod.default ?? (mod.name ? (mod as CommandSpec) : null);
   } catch {
     return null;
   }

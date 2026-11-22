@@ -118,7 +118,7 @@ before(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lsp-life-'));
   lifeScript = path.join(dir, 'life-server.cjs');
   cfgScript = path.join(dir, 'cfg-server.cjs');
-  recordFile = path.join(dir, 'record.log');
+  // Per-test record paths come from freshLifeServer(); no shared recordFile needed.
   fs.writeFileSync(lifeScript, LIFECYCLE_SERVER);
   fs.writeFileSync(cfgScript, CONFIG_SERVER);
   registerLspServers({

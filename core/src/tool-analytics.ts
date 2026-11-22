@@ -105,7 +105,8 @@ const ADVICE: Record<string, string> = {
   webfetch: 'Fetch only the section you need (narrower URL/prompt) rather than whole pages.',
 };
 
-function toolKey(tool: string): string {
+/** Exported for direct unit coverage of the case-fold key. */
+export function toolKey(tool: string): string {
   return tool.toLowerCase();
 }
 
@@ -113,8 +114,9 @@ function toolKey(tool: string): string {
  * Coerce an untrusted duration into a finite, non-negative millisecond value.
  * Guards the aggregates/percentiles against NaN, ±Infinity, and negative inputs
  * that would otherwise poison totals (NaN avg) or pin `min` below zero.
+ * Exported for direct unit coverage.
  */
-function sanitizeDuration(durationMs: number): number {
+export function sanitizeDuration(durationMs: number): number {
   return Number.isFinite(durationMs) ? Math.max(0, durationMs) : 0;
 }
 

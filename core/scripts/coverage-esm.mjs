@@ -43,7 +43,12 @@ if (shardTotal > 0) {
 }
 
 const cov = [
-  '--test', '--experimental-test-coverage', '--test-force-exit',
+  '--test', '--experimental-test-coverage',
+  // Cap process-isolation concurrency. Skip `--test-force-exit` with process
+  // isolation — Node 26 cancels in-flight children early under that combo.
+  '--test-isolation=process',
+  '--test-concurrency=2',
+  '--test-timeout=120000',
   '--test-coverage-exclude=**/test/**',
   '--test-coverage-exclude=**/node_modules/**',
 ];

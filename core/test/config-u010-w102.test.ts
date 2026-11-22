@@ -223,6 +223,26 @@ describe('addItemToJSONCArray', () => {
     const out = addItemToJSONCArray('[]', { type: 'command', command: './x.sh' });
     assert.deepEqual(parseJsonc(out), [{ type: 'command', command: './x.sh' }]);
   });
+
+  it('handles escape sequences and block comments inside the array document', () => {
+    const src = '/* hdr */\n[\n  "a\\"b",\n  "c" /* mid */\n]\n';
+    const out = addItemToJSONCArray(src, 'd');
+    assert.ok(out.includes('/* hdr */'));
+    assert.deepEqual(parseJsonc(out), ['a"b', 'c', 'd']);
+  });
+
+  it('falls back when content is unparseable or not an array document', () => {
+    // Unclosed array → parse throws → fresh single-element array.
+    assert.deepEqual(parseJsonc(addItemToJSONCArray('["a"', 'b')), ['b']);
+    // Significant non-array token → fresh single-element array.
+    assert.deepEqual(parseJsonc(addItemToJSONCArray('true [1]', 'x')), ['x']);
+  });
+
+  it('skips escaped characters while locating the last value end', () => {
+    const src = '[\n  "end\\\\",\n]\n';
+    const out = addItemToJSONCArray(src, 'z');
+    assert.deepEqual(parseJsonc(out), ['end\\', 'z']);
+  });
 });
 
 // ---------------------------------------------------------------------------

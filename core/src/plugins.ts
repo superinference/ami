@@ -3976,7 +3976,8 @@ export interface PluginKillList {
   entries: PluginKillListEntry[];
 }
 
-function isHttpsAdvisoryUrl(v: unknown): v is string {
+/** Exported for coverage of the advisory-URL protocol gate used by kill-list parsing. */
+export function isHttpsAdvisoryUrl(v: unknown): v is string {
   if (typeof v !== 'string' || v.length > 2_048) return false;
   try {
     return new URL(v).protocol === 'https:';

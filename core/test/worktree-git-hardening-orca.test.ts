@@ -199,6 +199,30 @@ describe('resolveFetchHeadLockKey + resolveCommonGitDir', () => {
     assert.ok(resolveFetchHeadLockKey(['fetch', '--no-write-fetch-head', 'origin', '+refs/heads/*:refs/remotes/origin/*'], main));
     assert.equal(resolveFetchHeadLockKey(['fetch'], path.join(os.tmpdir(), 'not-a-repo-xyz')), null);
   });
+
+  it('honors -C / --git-dir relocation before the subcommand', () => {
+    const expected = resolveFetchHeadLockKey(['fetch', 'origin'], main);
+    assert.ok(expected);
+    // Spaced -C <dir>
+    assert.equal(resolveFetchHeadLockKey(['-C', main, 'fetch', 'origin'], path.dirname(main)), expected);
+    // Glued -Cdir
+    assert.equal(resolveFetchHeadLockKey([`-C${main}`, 'fetch', 'origin'], path.dirname(main)), expected);
+    // --git-dir <path> and --git-dir=path (explicit common dir)
+    const gitDir = fs.realpathSync(path.join(main, '.git'));
+    assert.equal(
+      resolveFetchHeadLockKey(['--git-dir', gitDir, 'fetch', 'origin'], path.dirname(main)),
+      path.join(gitDir, 'FETCH_HEAD'),
+    );
+    assert.equal(
+      resolveFetchHeadLockKey([`--git-dir=${gitDir}`, 'fetch', 'origin'], path.dirname(main)),
+      path.join(gitDir, 'FETCH_HEAD'),
+    );
+    // A valued global option before the subcommand is skipped (consumes next argv).
+    assert.equal(
+      resolveFetchHeadLockKey(['-c', 'advice.detachedHead=false', 'fetch', 'origin'], main),
+      expected,
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

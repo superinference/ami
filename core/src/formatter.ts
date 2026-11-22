@@ -1,5 +1,7 @@
 import { execSync, execFileSync } from 'child_process';
 import * as path from 'path';
+import { errorMessage } from './credential-guard';
+
 
 /** Default timeout (ms) for the availability (`check`) probe. */
 const DEFAULT_CHECK_TIMEOUT_MS = 5000;
@@ -251,7 +253,7 @@ export function formatFile(filePath: string, cwd: string): { formatted: boolean;
     });
     return { formatted: true };
   } catch (err) {
-    return { formatted: false, error: err instanceof Error ? err.message : String(err) };
+    return { formatted: false, error: errorMessage(err) };
   }
 }
 

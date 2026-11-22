@@ -95,6 +95,14 @@ export const shellHooks = {
    */
   getEnvironmentOverrides: ((shellType: ShellType, command: string): Record<string, string> | Promise<Record<string, string>> =>
     getEnvironmentOverrides(shellType, command)),
+  /**
+   * Cap for {@link ExecCommandOptions.persistFullOutput} streaming. Defaults to
+   * {@link MAX_PERSISTED_OUTPUT_BYTES}; tests may lower it so the room≤0 / capped
+   * branch is reachable without writing tens of megabytes.
+   */
+  // Default mirrors {@link MAX_PERSISTED_OUTPUT_BYTES} (defined below); reassigned
+  // after that const so a single source of truth is kept. Tests may lower it.
+  getMaxPersistedOutputBytes: (): number => 64 * 1024 * 1024,
 };
 
 /** Payload handed to {@link shellHooks.onSlowCommand} when a command runs slow. */
@@ -424,6 +432,7 @@ const DEFAULT_STALL_TIMEOUT_MS = 45_000;
  * boundary so a runaway producer can't exhaust the disk.
  */
 export const MAX_PERSISTED_OUTPUT_BYTES = 64 * 1024 * 1024;
+shellHooks.getMaxPersistedOutputBytes = (): number => MAX_PERSISTED_OUTPUT_BYTES;
 
 /**
  * After the shell process itself emits `'exit'`, how long to keep waiting for the
@@ -1624,7 +1633,7 @@ export function execCommand(
           fullOutputFd = shellHooks.openSync(fullOutputPath, 'w');
         }
         const buf = Buffer.from(chunk, 'utf8');
-        const room = MAX_PERSISTED_OUTPUT_BYTES - fullOutputBytes;
+        const room = shellHooks.getMaxPersistedOutputBytes() - fullOutputBytes;
         if (room <= 0) { fullOutputCapped = true; return; }
         const slice = buf.length > room ? buf.subarray(0, room) : buf;
         shellHooks.writeSync(fullOutputFd, slice);

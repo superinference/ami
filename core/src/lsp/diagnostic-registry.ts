@@ -28,6 +28,7 @@
  */
 import { randomUUID } from 'crypto';
 import { log, logError } from '../logger';
+import { errorMessage } from '../credential-guard';
 import {
   capDiagnosticVolumeReport,
   createDiagnosticKey,
@@ -185,7 +186,7 @@ export class LSPDiagnosticRegistry {
           seen.add(key);
           out.diagnostics.push(diag);
         } catch (err) {
-          const detail = err instanceof Error ? err.message : String(err);
+          const detail = errorMessage(err);
           const snippet = (diag.message ?? '').slice(0, 100) || '<no message>';
           logError('lsp', `Failed to dedup diagnostic in ${file.uri}: ${detail}. Message: ${snippet}`);
           // Keep the diagnostic rather than drop it on a key failure.
@@ -223,7 +224,7 @@ export class LSPDiagnosticRegistry {
     try {
       deduped = this.deduplicate(allFiles);
     } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
+      const detail = errorMessage(err);
       logError('lsp', `Failed to dedup LSP diagnostics: ${detail}`);
       deduped = allFiles;
     }
@@ -253,7 +254,7 @@ export class LSPDiagnosticRegistry {
         try {
           this.recordDelivered(normPath, createDiagnosticKey(diag));
         } catch (err) {
-          const detail = err instanceof Error ? err.message : String(err);
+          const detail = errorMessage(err);
           const snippet = (diag.message ?? '').slice(0, 100) || '<no message>';
           logError('lsp', `Failed to track delivered diagnostic in ${file.uri}: ${detail}. Message: ${snippet}`);
         }

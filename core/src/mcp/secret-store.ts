@@ -29,6 +29,8 @@
  * is unit-testable without a real keychain.
  */
 import { execFile } from 'child_process';
+import { errorMessage } from '../credential-guard';
+
 
 /** Which backend a secret reference resolves against. */
 export const SECRET_REF_BACKENDS = ['env', 'keychain'] as const;
@@ -397,7 +399,7 @@ export async function runMcpSecretWriteTransaction(
   } catch (err) {
     return {
       ok: false,
-      error: err instanceof Error ? err.message : String(err),
+      error: errorMessage(err),
       settingsWritten: false,
       cleared: [],
       failed: [],

@@ -10,6 +10,8 @@ import { isLspEnabled } from './tool-gates';
 import { plural } from './tool-utils';
 import { filterGitIgnoredLocations } from './lsp-gitignore-filter';
 import { groupBy } from '../utils/group-by';
+import { errorMessage } from '../credential-guard';
+
 
 /**
  * Position-based semantic LSP tool — parity with the reference's LSPTool.
@@ -513,7 +515,7 @@ export const lspTool: ToolDefinition = {
       const { resultCount, fileCount } = computeLspCounts(operation, result);
       return { output: formatResult(operation, result), metadata: { resultCount, fileCount } };
     } catch (e) {
-      return { output: `Error performing ${operation}: ${e instanceof Error ? e.message : String(e)}`, isError: true };
+      return { output: `Error performing ${operation}: ${errorMessage(e)}`, isError: true };
     }
   },
 };

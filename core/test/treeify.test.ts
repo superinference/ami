@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
-import { treeify, type TreeNode } from '../src/utils/treeify';
+import { treeify, TREE_COLOR_ROLES, type TreeNode } from '../src/utils/treeify';
 
 describe('treeify', () => {
   it('renders a flat object with last/branch glyphs and colons', () => {
@@ -145,5 +145,19 @@ describe('treeify', () => {
     assert.ok(out.includes('leaf: deep'));
     assert.ok(out.includes('[Array(2)]'));
     assert.ok(out.includes('count: 42'));
+  });
+
+  it('exports TREE_COLOR_ROLES for palette consumers', () => {
+    assert.deepEqual([...TREE_COLOR_ROLES], ['treeChar', 'key', 'value']);
+  });
+
+  it('blank separator when colorize strips the tree char (line becomes empty)', () => {
+    // shouldAddColon is false for a whitespace key; when colorize empties the
+    // tree-char, `line` is '' so separator() returns '' (not the spaced form).
+    const out = treeify(
+      { ' ': 5 as unknown as TreeNode[keyof TreeNode] },
+      { colorize: (text, role) => (role === 'treeChar' ? '' : text) },
+    );
+    assert.equal(out, '5');
   });
 });

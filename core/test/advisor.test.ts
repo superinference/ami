@@ -138,6 +138,21 @@ describe('advisorTool — buildTranscriptDigest', () => {
     ]);
     assert.match(d, /## User\nblock one/);
   });
+
+  it('elides the middle of an oversized digest (head + tail kept)', () => {
+    // MAX_DIGEST_CHARS is 200_000; build a transcript that exceeds it so the
+    // head/tail elision arm runs (not just the per-result cap).
+    const chunk = 'Z'.repeat(50_000);
+    const msgs: Message[] = Array.from({ length: 6 }, (_, i) => ({
+      role: 'user' as const,
+      content: `part-${i} ${chunk}`,
+    }));
+    const d = buildTranscriptDigest(msgs);
+    assert.match(d, /middle of conversation elided/i);
+    assert.ok(d.length < 210_000, `elided digest still oversized: ${d.length}`);
+    assert.ok(d.startsWith('## User\npart-0'), 'head (original task) preserved');
+    assert.ok(/part-5/.test(d), 'tail (recent context) preserved');
+  });
 });
 
 describe('advisorTool — execute', () => {

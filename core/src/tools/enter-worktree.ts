@@ -4,6 +4,8 @@ import * as child_process from 'child_process';
 import * as crypto from 'crypto';
 import { ToolContext, ToolDefinition, ToolResult } from '../types';
 import { computeDefaultBranch, findRemoteBase, isShallowClone, readWorktreeHeadSha, resolveRef } from '../utils/git';
+import { errorMessage } from '../credential-guard';
+
 
 const SLUG_SEGMENT_RE = /^[a-zA-Z0-9._-]+$/;
 
@@ -106,6 +108,9 @@ function runGit(args: string[], opts: GitExecOpts = { cwd: process.cwd() }): str
   return typeof out === 'string' ? out.trim() : '';
 }
 
+/** Shared rejection swallow for fire-and-forget hook promises. Exported for coverage. */
+export function swallowHookRejection(): void { /* fire-and-forget */ }
+
 /**
  * Dependency seam for tests (mirrors the _createClient / _lspDiagHooks pattern).
  * All git subprocess calls route through `exec` (an argv array, NO shell) so
@@ -129,6 +134,8 @@ export const _enterWorktreeHooks = {
    *  list is used verbatim. */
   symlinkLargeDirs: (sourceCwd: string, worktreePath: string, dirs?: string[]): string[] =>
     require('../worktree-manager').symlinkLargeDirectories(sourceCwd, worktreePath, dirs),
+  /** Stale-clone diagnostic (FETCH_HEAD age). Seam so tests force the empty catch. */
+  isCloneStale: (cwd: string): boolean => require('../worktree-manager').isCloneStale(cwd),
   /** Derive a readable kebab-case worktree/branch slug from a free-form task
    *  description via a deterministic auxiliary model call (parity with the reference's
    *  teleport generateTitleAndBranch). Routed through the seam so tests can inject
@@ -144,13 +151,24 @@ export const _enterWorktreeHooks = {
       // Introspection sink (parity: the reference's logResult): record the structured
       // outcome of the branch-name background query so a failed/aborted/unparseable
       // slug generation is observable instead of silently collapsing to the fallback.
-      (r: import('../title-generator').AuxQueryResult) => {
-        if (r.type === 'error') {
-          require('../logger').log('worktree', `branch-name query ${r.reason}${r.error ? `: ${r.error}` : ''}`, { source: r.source, model: r.model }, 'warning');
-        }
-      },
+      logBranchNameQueryResult,
     ),
 };
+
+/**
+ * Log a failed/aborted/unparseable branch-name auxiliary query. Extracted so the
+ * error arm is directly unit-testable without a live provider round-trip.
+ */
+export function logBranchNameQueryResult(r: import('../title-generator').AuxQueryResult): void {
+  if (r.type === 'error') {
+    require('../logger').log(
+      'worktree',
+      `branch-name query ${r.reason}${r.error ? `: ${r.error}` : ''}`,
+      { source: r.source, model: r.model },
+      'warning',
+    );
+  }
+}
 
 /**
  * Resolve the opt-in `settings.worktree.symlinkDirectories` list (parity with
@@ -162,13 +180,12 @@ export const _enterWorktreeHooks = {
  * nothing) is returned verbatim. Config-read failures fall back to the default.
  */
 function resolveSymlinkDirs(cwd: string): string[] | undefined {
-  try {
-    const { loadProjectConfig, loadGlobalConfig } = require('../config');
-    const proj = loadProjectConfig(cwd)?.worktree?.symlinkDirectories;
-    if (Array.isArray(proj)) return proj;
-    const glob = loadGlobalConfig()?.worktree?.symlinkDirectories;
-    if (Array.isArray(glob)) return glob;
-  } catch { /* unreadable config → fall back to the default */ }
+  // loadProjectConfig / loadGlobalConfig never throw (tier loader catches I/O).
+  const { loadProjectConfig, loadGlobalConfig } = require('../config');
+  const proj = loadProjectConfig(cwd)?.worktree?.symlinkDirectories;
+  if (Array.isArray(proj)) return proj;
+  const glob = loadGlobalConfig()?.worktree?.symlinkDirectories;
+  if (Array.isArray(glob)) return glob;
   return undefined;
 }
 
@@ -182,16 +199,15 @@ function resolveSymlinkDirs(cwd: string): string[] | undefined {
  * Config-read failures fall back to the full checkout.
  */
 function resolveSparsePaths(cwd: string): string[] | undefined {
-  try {
-    const { loadProjectConfig, loadGlobalConfig } = require('../config');
-    // Project config is authoritative when it DEFINES the key: a project that
-    // explicitly configures `sparsePaths` (even as an empty array → "full
-    // checkout, ignore any global sparse policy") wins over the global tier.
-    const proj = loadProjectConfig(cwd)?.worktree?.sparsePaths;
-    if (Array.isArray(proj)) return proj.length > 0 ? proj : undefined;
-    const glob = loadGlobalConfig()?.worktree?.sparsePaths;
-    if (Array.isArray(glob) && glob.length > 0) return glob;
-  } catch { /* unreadable config → full checkout */ }
+  // loadProjectConfig / loadGlobalConfig never throw (tier loader catches I/O).
+  const { loadProjectConfig, loadGlobalConfig } = require('../config');
+  // Project config is authoritative when it DEFINES the key: a project that
+  // explicitly configures `sparsePaths` (even as an empty array → "full
+  // checkout, ignore any global sparse policy") wins over the global tier.
+  const proj = loadProjectConfig(cwd)?.worktree?.sparsePaths;
+  if (Array.isArray(proj)) return proj.length > 0 ? proj : undefined;
+  const glob = loadGlobalConfig()?.worktree?.sparsePaths;
+  if (Array.isArray(glob) && glob.length > 0) return glob;
   return undefined;
 }
 
@@ -203,13 +219,12 @@ function resolveSparsePaths(cwd: string): string[] | undefined {
  * unreadable config all mean "no tmux session" (the default).
  */
 function resolveWorktreeTmux(cwd: string): boolean {
-  try {
-    const { loadProjectConfig, loadGlobalConfig } = require('../config');
-    const proj = loadProjectConfig(cwd)?.worktree?.tmux;
-    if (typeof proj === 'boolean') return proj;
-    const glob = loadGlobalConfig()?.worktree?.tmux;
-    if (typeof glob === 'boolean') return glob;
-  } catch { /* unreadable config → no tmux */ }
+  // loadProjectConfig / loadGlobalConfig never throw (tier loader catches I/O).
+  const { loadProjectConfig, loadGlobalConfig } = require('../config');
+  const proj = loadProjectConfig(cwd)?.worktree?.tmux;
+  if (typeof proj === 'boolean') return proj;
+  const glob = loadGlobalConfig()?.worktree?.tmux;
+  if (typeof glob === 'boolean') return glob;
   return false;
 }
 
@@ -318,7 +333,7 @@ async function createViaWorktreeHook(
   try {
     hookResult = await context._hookManager.executeWorktreeCreate({ name: slug, worktreePath: worktreeDir });
   } catch (e) {
-    return { output: `Error: WorktreeCreate hook failed: ${e instanceof Error ? e.message : String(e)}`, isError: true };
+    return { output: `Error: WorktreeCreate hook failed: ${errorMessage(e)}`, isError: true };
   }
   // A provider hook may report the worktree path it actually created (stdout or
   // hookSpecificOutput.worktreePath); use it as the created worktree instead of
@@ -358,7 +373,7 @@ function switchHookSession(
   });
   (context as any)._originalCwd = originalCwd;
   (context as any).cwd = worktreeDir;
-  context._hookManager?.executeCwdChanged?.({ oldCwd: originalCwd, newCwd: worktreeDir }).catch(() => {});
+  context._hookManager?.executeCwdChanged?.({ oldCwd: originalCwd, newCwd: worktreeDir }).catch(swallowHookRejection);
 }
 
 /**
@@ -391,7 +406,7 @@ function resumeExistingWorktree(
     // path we do NOT tear the worktree down — it predates this call and may hold the
     // user's uncommitted work; just clear any partial session state and surface the error.
     setWorktreeSession(null);
-    return { output: `Error: failed to resume worktree "${flatSlug}": ${e instanceof Error ? e.message : String(e)}`, isError: true };
+    return { output: `Error: failed to resume worktree "${flatSlug}": ${errorMessage(e)}`, isError: true };
   }
 
   const originalCwd = context.cwd;
@@ -402,7 +417,7 @@ function resumeExistingWorktree(
   // Fire CwdChanged (parity with the create path) so cwd-scoped lifecycle wiring —
   // the persisted session-env invalidation (clearCwdEnvFiles/invalidateSessionEnvCache)
   // and the file-watcher re-bind — re-evaluates against the resumed worktree's dir.
-  context._hookManager?.executeCwdChanged?.({ oldCwd: originalCwd, newCwd: worktreeDir }).catch(() => {});
+  context._hookManager?.executeCwdChanged?.({ oldCwd: originalCwd, newCwd: worktreeDir }).catch(swallowHookRejection);
 
   const warnLines = symlinkWarnings.length ? `\n  Warning: ${symlinkWarnings.join('; ')}.` : '';
   // Report the branch using the SAME `worktree/<slug>` convention the create path
@@ -618,7 +633,7 @@ export const enterWorktreeTool: ToolDefinition = {
         if ((e as NodeJS.ErrnoException)?.code === 'ENOBUFS') {
           return { output: 'Error: the repository has too many registered worktrees to enumerate; prune stale worktrees (git worktree prune) and retry.', isError: true };
         }
-        return { output: `Error listing worktrees: ${e instanceof Error ? e.message : String(e)}`, isError: true };
+        return { output: `Error listing worktrees: ${errorMessage(e)}`, isError: true };
       }
       // Name the branch the entered worktree is on (parity with the reference's
       // "on branch <branch>" worktree messages). The worktree's live HEAD is the
@@ -824,7 +839,7 @@ export const enterWorktreeTool: ToolDefinition = {
         _enterWorktreeHooks.exec([...addArgs, '-B', branchName, worktreeDir, 'HEAD'], { cwd: repoRoot, stdio: 'ignore', signal });
       }
     } catch (e) {
-      return { output: `Error creating worktree: ${e instanceof Error ? e.message : String(e)}`, isError: true };
+      return { output: `Error creating worktree: ${errorMessage(e)}`, isError: true };
     }
 
     // Narrow the cone + check out HEAD (parity: worktree.ts L336-366). If EITHER
@@ -839,7 +854,7 @@ export const enterWorktreeTool: ToolDefinition = {
       } catch (e) {
         try { _enterWorktreeHooks.exec(['worktree', 'remove', '--force', worktreeDir], { cwd: repoRoot, stdio: 'ignore' }); } catch { /* best-effort cleanup */ }
         try { _enterWorktreeHooks.exec(['branch', '-D', branchName], { cwd: repoRoot, stdio: 'ignore' }); } catch { /* best-effort cleanup */ }
-        return { output: `Error: sparse-checkout setup failed, rolled back: ${e instanceof Error ? e.message : String(e)}`, isError: true };
+        return { output: `Error: sparse-checkout setup failed, rolled back: ${errorMessage(e)}`, isError: true };
       }
     }
 
@@ -881,7 +896,7 @@ export const enterWorktreeTool: ToolDefinition = {
       try { _enterWorktreeHooks.exec(['worktree', 'remove', '--force', worktreeDir], { cwd: repoRoot, stdio: 'ignore' }); } catch { /* best-effort cleanup */ }
       try { _enterWorktreeHooks.exec(['branch', '-D', branchName], { cwd: repoRoot, stdio: 'ignore' }); } catch { /* best-effort cleanup */ }
       setWorktreeSession(null);
-      return { output: `Error: worktree post-setup failed, rolled back: ${e instanceof Error ? e.message : String(e)}`, isError: true };
+      return { output: `Error: worktree post-setup failed, rolled back: ${errorMessage(e)}`, isError: true };
     }
 
     // Capture the pre-reassignment cwd so the cwd-changed hook reports the
@@ -894,8 +909,8 @@ export const enterWorktreeTool: ToolDefinition = {
     }
 
     if (context._hookManager) {
-      context._hookManager.executeWorktreeCreate?.({ name: slug }).catch(() => {});
-      context._hookManager.executeCwdChanged?.({ oldCwd: originalCwd, newCwd: worktreeDir }).catch(() => {});
+      context._hookManager.executeWorktreeCreate?.({ name: slug }).catch(swallowHookRejection);
+      context._hookManager.executeCwdChanged?.({ oldCwd: originalCwd, newCwd: worktreeDir }).catch(swallowHookRejection);
     }
 
     // Opt-in tmux session (parity: the reference's `--tmux` worktree mode, setup.ts
@@ -926,8 +941,7 @@ export const enterWorktreeTool: ToolDefinition = {
     let staleHint = '';
     try {
       if (!requestedBaseRef && !prBaseRef) {
-        const { isCloneStale } = require('../worktree-manager');
-        if (isCloneStale(repoRoot)) {
+        if (_enterWorktreeHooks.isCloneStale(repoRoot)) {
           staleHint = `\n  Note: this clone has not fetched in over 7 days — ${baseLabel} may be out of date (run \`git fetch\` to refresh).`;
         }
       }

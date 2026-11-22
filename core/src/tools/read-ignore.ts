@@ -64,12 +64,9 @@ export function matchesReadIgnore(relPath: string, patterns: readonly string[]):
   for (const pattern of patterns) {
     const norm = pattern.replace(/^\/+/, '');
     const core = norm.startsWith('**/') ? norm.slice(3) : norm;
-    let re: RegExp;
-    try {
-      re = new RegExp(`^${globToRegexSource(core)}$`, 's');
-    } catch {
-      continue;
-    }
+    // globToRegexSource always emits a valid RegExp source (metachars escaped),
+    // so RegExp construction cannot throw — no try/catch needed.
+    const re = new RegExp(`^${globToRegexSource(core)}$`, 's');
     if (re.test(normalizedRel) || re.test(base)) return true;
   }
   return false;

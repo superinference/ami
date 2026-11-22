@@ -9,6 +9,16 @@ import { formatSize } from './spill-output';
 import { extensionForMimeType } from './web-fetch';
 
 /**
+ * Mockable fs seam (ESM-safe). The frozen `fs` namespace cannot be patched with
+ * `mock.method`, so production routes mkdir/write through this object and tests
+ * drive the non-Error catch arm by replacing the hooks.
+ */
+export const mcpOutputHooks = {
+  mkdirSync: fs.mkdirSync as typeof fs.mkdirSync,
+  writeFileSync: fs.writeFileSync as typeof fs.writeFileSync,
+};
+
+/**
  * Build the model-facing message describing where a decoded binary blob was
  * saved, mirroring the reference's `getBinaryBlobSavedMessage`
  * (utils/mcpOutputStorage.ts:L181-189):
@@ -52,11 +62,11 @@ export function persistBinaryContent(
 ): PersistBinaryResult {
   try {
     const dir = projectStateDir(cwd || process.cwd(), 'tool-results');
-    fs.mkdirSync(dir, { recursive: true });
+    mcpOutputHooks.mkdirSync(dir, { recursive: true });
     const ext = extensionForMimeType(mimeType);
     const stem = createHash('sha256').update(bytes).digest('hex').slice(0, 16);
     const filepath = path.join(dir, `mcp-blob-${stem}.${ext}`);
-    fs.writeFileSync(filepath, bytes);
+    mcpOutputHooks.writeFileSync(filepath, bytes);
     return { filepath, size: bytes.length, ext };
   } catch (err) {
     return { error: err instanceof Error ? err.message : String(err) };

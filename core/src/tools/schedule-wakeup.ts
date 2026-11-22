@@ -1,6 +1,8 @@
 import { ToolDefinition, ToolResult } from '../types';
 import { getScheduler } from '../cron';
 import { isCronEnabled } from './tool-gates';
+import { errorMessage } from '../credential-guard';
+
 
 /** Hard bounds on the self-paced loop cadence (seconds). A wakeup may fire no
  *  sooner than 60s (abuse floor) and no later than 3600s (so the loop never
@@ -126,7 +128,7 @@ export const scheduleWakeupTool: ToolDefinition = {
       const job = sched.create({ cron: cronExpr, prompt, recurring: false, durable: false });
       jobId = job.id;
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errorMessage(err);
       return {
         output: `Failed to schedule wakeup: ${msg}`,
         isError: true,

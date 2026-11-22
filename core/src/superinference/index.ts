@@ -65,4 +65,4 @@ export { Critic } from './critic';
 export { MemoryGate, type GatedMemoryEntry, type ConsolidationStatus, type MemoryGateOptions } from './memory-gate';
 export { Retriever } from './retriever';
 export type { SuperInferenceConfig, BeliefState, CriticDecision, StopReason } from './types';
-export { DEFAULT_CONFIG } from './types';
+export { DEFAULT_CONFIG, resolveCriticModelLock } from './types';

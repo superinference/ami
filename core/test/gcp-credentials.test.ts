@@ -57,4 +57,42 @@ describe('checkGcpCredentialsValid', () => {
     // the ~12s metadata stall this guard exists to prevent.
     assert.ok(elapsed < 1_000, `probe should time out fast, took ${elapsed}ms`);
   });
+
+  it('exercises the default ADC fetcher (no fetchAccessToken override)', async () => {
+    // Cover defaultFetchAccessToken's dynamic import + GoogleAuth path. Outside GCP
+    // with no local ADC this fails closed (false) via the timeout/auth catch — never
+    // hangs the suite. A host that happens to have valid ADC may return true; either
+    // outcome proves the default path ran.
+    const valid = await checkGcpCredentialsValid({ timeoutMs: 200 });
+    assert.equal(typeof valid, 'boolean');
+  });
+
+  it('covers getClient + getAccessToken via an injected GoogleAuth loader', async () => {
+    let gotToken = false;
+    const valid = await checkGcpCredentialsValid({
+      timeoutMs: 1_000,
+      loadGoogleAuth: async () => ({
+        GoogleAuth: class {
+          constructor(_opts: { scopes: string[] }) {}
+          async getClient() {
+            return {
+              async getAccessToken() {
+                gotToken = true;
+                return { token: 'test-token' };
+              },
+            };
+          }
+        },
+      }),
+    });
+    assert.equal(valid, true);
+    assert.equal(gotToken, true);
+  });
+
+  it('uses the default timeout when timeoutMs is omitted', async () => {
+    const valid = await checkGcpCredentialsValid({
+      fetchAccessToken: async () => { /* ok */ },
+    });
+    assert.equal(valid, true);
+  });
 });

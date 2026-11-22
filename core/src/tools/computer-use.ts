@@ -527,15 +527,18 @@ export async function tryGetInstalledAppNames(
     (timer as { unref?: () => void }).unref?.();
   });
   const installed = await Promise.race([enumP, timeoutP])
-    .catch(() => undefined)
+    .catch(toUndefined)
     .finally(() => clearTimeout(timer));
   if (!installed) {
     // Enumeration continues in the background — swallow any late rejection.
-    void enumP.catch(() => {});
+    void enumP.catch(toUndefined);
     return undefined;
   }
   return installed;
 }
+
+/** Shared rejection→undefined for fire-and-forget enum promises. Exported for coverage. */
+export function toUndefined(): undefined { return undefined; }
 
 // ── Executor (parity: executor.ts createCliExecutor) ─────────────────────────
 
@@ -761,6 +764,14 @@ export function createComputerUseExecutor(
 let cachedExecutor: ComputerUseExecutor | undefined;
 
 /**
+ * DI seam so tests can force {@link getComputerUseExecutor} to throw into the
+ * tool's catch arm without a native backend.
+ */
+export const _computerUseExecutorHooks: {
+  create: typeof createComputerUseExecutor;
+} = { create: createComputerUseExecutor };
+
+/**
  * Process-lifetime executor singleton used by the tool, built from the real
  * injected native backend + the pbcopy/pbpaste clipboard. Parity: hostAdapter.ts
  * `getComputerUseHostAdapter`. Throws the clear platform-unavailability message
@@ -771,12 +782,12 @@ export function getComputerUseExecutor(
 ): ComputerUseExecutor {
   // A per-call signal must not be cached into the singleton; rebuild when supplied.
   if (opts?.signal) {
-    return createComputerUseExecutor({
+    return _computerUseExecutorHooks.create({
       ...opts,
       getMouseAnimationEnabled: () => readComputerUseConfig().mouseAnimation,
     });
   }
-  cachedExecutor ??= createComputerUseExecutor({
+  cachedExecutor ??= _computerUseExecutorHooks.create({
     getMouseAnimationEnabled: () => readComputerUseConfig().mouseAnimation,
   });
   return cachedExecutor;
@@ -784,6 +795,7 @@ export function getComputerUseExecutor(
 /** Test seam: clear the executor singleton. */
 export function resetComputerUseExecutor(): void {
   cachedExecutor = undefined;
+  _computerUseExecutorHooks.create = createComputerUseExecutor;
 }
 
 // ── Tool definition ──────────────────────────────────────────────────────────

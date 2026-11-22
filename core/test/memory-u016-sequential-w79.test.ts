@@ -80,6 +80,28 @@ describe('sequential() async serializer', () => {
     assert.equal(await p, 2);
     assert.deepEqual(order, [1, 2]);
   });
+
+  it('drains items enqueued during a sync thenable resolve in the same loop', async () => {
+    // A thenable that fulfills synchronously and enqueues another call while
+    // processing=true must still be drained by the while loop (the reentrancy
+    // guard no-ops the nested processQueue, then the while condition picks it up).
+    const order: number[] = [];
+    const run = sequential(async (id: number) => {
+      order.push(id);
+      if (id === 1) {
+        return {
+          then(onFulfilled: (v: number) => void) {
+            onFulfilled(1);
+            void run(2);
+          },
+        } as PromiseLike<number>;
+      }
+      return id;
+    });
+    assert.equal(await run(1), 1);
+    await new Promise((r) => setImmediate(r));
+    assert.deepEqual(order, [1, 2]);
+  });
 });
 
 describe('MemoryManager index mutations are serialized', () => {

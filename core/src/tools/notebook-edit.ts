@@ -15,6 +15,8 @@ import {
   convertToLineEnding,
 } from './tool-utils';
 import { describeToolActivity } from './tool-activity-class';
+import { errorMessage } from '../credential-guard';
+
 
 /** Normalize a notebook cell source (string or string[]) to a single string. */
 function cellSourceToString(source: string | string[] | undefined): string {
@@ -325,7 +327,7 @@ export const notebookEditTool: ToolDefinition = {
     try {
       rawBuf = await fs.promises.readFile(resolved);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errorMessage(err);
       if (msg.includes('ENOENT')) {
         return {
           output: `Error: Notebook file not found: ${resolved}`,
@@ -601,7 +603,7 @@ export const notebookEditTool: ToolDefinition = {
       try {
         await fs.promises.unlink(tmpPath);
       } catch { /* temp file never created — nothing to clean up */ }
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = errorMessage(err);
       return {
         output: `Error writing notebook: ${msg}`,
         isError: true,

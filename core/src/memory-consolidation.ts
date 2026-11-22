@@ -41,6 +41,23 @@ export const CONSOLIDATION_DEBUG_COMPONENT = 'autoDream';
 /** Default debug sink — emits each line through the shared logger, namespaced. */
 const defaultDebug: ConsolidationDebug = (message) => log(CONSOLIDATION_DEBUG_COMPONENT, message);
 
+/**
+ * DI seam for lock I/O (ESM `fs` is frozen under Node 26). Production defaults to
+ * real `fs`; tests force the empty mkdir catch / verify-read catch / PID-mismatch
+ * arms by swapping individual methods.
+ */
+export const _consolidationFsHooks: {
+  mkdirSync: typeof fs.mkdirSync;
+  writeFileSync: typeof fs.writeFileSync;
+  readFileSync: typeof fs.readFileSync;
+  statSync: typeof fs.statSync;
+} = {
+  mkdirSync: fs.mkdirSync.bind(fs),
+  writeFileSync: fs.writeFileSync.bind(fs),
+  readFileSync: fs.readFileSync.bind(fs),
+  statSync: fs.statSync.bind(fs),
+};
+
 /** Scheduling knobs for background memory consolidation (parity: the reference's
  *  `AutoDreamConfig` — `minHours` / `minSessions`). */
 export interface AutoDreamConfig {
@@ -93,7 +110,7 @@ export function consolidationLockPath(lockDir: string): string {
  */
 export function readLastConsolidatedAt(lockDir: string): number {
   try {
-    return fs.statSync(consolidationLockPath(lockDir)).mtimeMs;
+    return _consolidationFsHooks.statSync(consolidationLockPath(lockDir)).mtimeMs;
   } catch {
     return 0;
   }
@@ -128,8 +145,8 @@ export function tryAcquireConsolidationLock(
   let mtimeMs: number | undefined;
   let holderPid: number | undefined;
   try {
-    mtimeMs = fs.statSync(p).mtimeMs;
-    const parsed = parseInt(fs.readFileSync(p, 'utf-8').trim(), 10);
+    mtimeMs = _consolidationFsHooks.statSync(p).mtimeMs;
+    const parsed = parseInt(_consolidationFsHooks.readFileSync(p, 'utf-8').trim(), 10);
     holderPid = Number.isFinite(parsed) ? parsed : undefined;
   } catch {
     // ENOENT — no prior lock.
@@ -144,16 +161,16 @@ export function tryAcquireConsolidationLock(
   }
 
   try {
-    fs.mkdirSync(lockDir, { recursive: true });
+    _consolidationFsHooks.mkdirSync(lockDir, { recursive: true });
   } catch {
     // Best effort — the write below surfaces a genuinely unwritable dir.
   }
-  fs.writeFileSync(p, String(process.pid));
+  _consolidationFsHooks.writeFileSync(p, String(process.pid));
 
   // Two reclaimers both write → last wins the PID; the loser bails on re-read.
   let verify: string;
   try {
-    verify = fs.readFileSync(p, 'utf-8');
+    verify = _consolidationFsHooks.readFileSync(p, 'utf-8');
   } catch {
     return null;
   }

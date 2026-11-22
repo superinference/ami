@@ -3,6 +3,8 @@ import * as path from 'path';
 import { ToolDefinition, ToolResult } from '../types';
 import { gitExec, stashToCleanState } from '../worktree-manager';
 import { isPathWithin } from '../utils/path';
+import { errorMessage } from '../credential-guard';
+
 
 /**
  * Every git call in the exit path — reads AND the destructive teardown — runs
@@ -43,12 +45,23 @@ const ALLOWED_KEYS = new Set(['action', 'discard_changes']);
 const FILE_PREVIEW_THRESHOLD = 8;
 const MAX_RESULT_CHARS = 100_000;
 
+/** Shared rejection swallow for fire-and-forget hook promises (one fn, not N arrows). */
+function swallowHookRejection(): void { /* fire-and-forget */ }
+
 function pluralize(n: number, noun: string): string {
   return `${n} ${noun}${n === 1 ? '' : 's'}`;
 }
 
-function cap(text: string): string {
+/**
+ * Truncate an exit_worktree result for the model. Exported so tests can drive the
+ * over-cap arm without constructing a 100k-char live worktree status dump.
+ */
+export function capExitWorktreeResult(text: string): string {
   return text.length > MAX_RESULT_CHARS ? text.slice(0, MAX_RESULT_CHARS) + '\n[... truncated ...]' : text;
+}
+
+function cap(text: string): string {
+  return capExitWorktreeResult(text);
 }
 
 export const exitWorktreeTool: ToolDefinition = {
@@ -218,7 +231,8 @@ export const exitWorktreeTool: ToolDefinition = {
     // the live HEAD; fall back to session metadata only when detached.
     let branch: string | undefined;
     try {
-      const head = gitExec(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: worktreePath });
+      // Routed through the DI seam so tests can force the empty catch without a broken git.
+      const head = _exitWorktreeHooks.exec(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: worktreePath });
       branch = head === 'HEAD' ? undefined : head; // "HEAD" literal == detached
     } catch { /* rev-parse failed */ }
     if (!branch) branch = existing?.worktreeBranch;
@@ -238,7 +252,7 @@ export const exitWorktreeTool: ToolDefinition = {
           // (system-prompt env sections, session-env cache) are invalidated for the
           // restored directory. Without this the exit path is asymmetric and caches
           // populated inside the worktree can leak into the restored session.
-          context._hookManager?.executeCwdChanged?.({ oldCwd: worktreePath, newCwd: session.originalCwd })?.catch(() => {});
+          context._hookManager?.executeCwdChanged?.({ oldCwd: worktreePath, newCwd: session.originalCwd })?.catch(swallowHookRejection);
         }
         setWorktreeSession(null);
       }
@@ -433,7 +447,7 @@ export const exitWorktreeTool: ToolDefinition = {
         // Abort any in-progress merge so the main checkout is left clean.
         try { _exitWorktreeHooks.exec(['merge', '--abort'], { cwd: repoRoot, stdio: 'ignore' }); } catch { /* no merge in progress */ }
         return {
-          output: cap(`Error: merge of ${branch} into ${targetBranch} failed (likely a conflict) and was aborted — the worktree is preserved at ${worktreePath}. Resolve the conflict manually, or use action:"remove" to discard it.\n${e instanceof Error ? e.message : String(e)}`),
+          output: cap(`Error: merge of ${branch} into ${targetBranch} failed (likely a conflict) and was aborted — the worktree is preserved at ${worktreePath}. Resolve the conflict manually, or use action:"remove" to discard it.\n${errorMessage(e)}`),
           isError: true,
         };
       }
@@ -508,13 +522,13 @@ export const exitWorktreeTool: ToolDefinition = {
         // for the restored directory on exit (system-prompt env sections,
         // session-env cache) so state populated inside the worktree cannot leak
         // into the restored session.
-        context._hookManager?.executeCwdChanged?.({ oldCwd: worktreePath, newCwd: activeSession.originalCwd })?.catch(() => {});
+        context._hookManager?.executeCwdChanged?.({ oldCwd: worktreePath, newCwd: activeSession.originalCwd })?.catch(swallowHookRejection);
       }
       setWorktreeSession(null);
     }
     // Only signal removal when the worktree was actually removed.
     if (context._hookManager && !cleanupFailed) {
-      context._hookManager.executeWorktreeRemove?.({ worktreePath }).catch(() => {});
+      context._hookManager.executeWorktreeRemove?.({ worktreePath }).catch(swallowHookRejection);
     }
 
     const originalCwd = activeSession?.originalCwd ?? worktreePath;

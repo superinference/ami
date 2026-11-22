@@ -267,6 +267,18 @@ const FETCH_HEAD_LOCK_STALE_MS = 2 * 60_000;
 const FETCH_HEAD_LOCK_POLL_MS = 100;
 
 /**
+ * Dependency seam for the FETCH_HEAD advisory lock's open/close/unlink calls.
+ * Production defaults to `fs`; tests replace methods to force the best-effort
+ * catch arms (stale-steal race, finally cleanup failures) without depending on
+ * host filesystem races. Mirrors `_tmuxHooks` / `_exitWorktreeHooks`.
+ */
+export const _fetchHeadLockHooks = {
+  openSync: fs.openSync as typeof fs.openSync,
+  closeSync: fs.closeSync as typeof fs.closeSync,
+  unlinkSync: fs.unlinkSync as typeof fs.unlinkSync,
+};
+
+/**
  * Run `fn` while holding a cross-process advisory lock on `<commonDir>/FETCH_HEAD`,
  * so two processes in the SAME repo cannot write FETCH_HEAD concurrently and
  * corrupt a sibling-worktree fetch transaction (parity: Orca runWithGitFetchHeadLock,
@@ -281,7 +293,7 @@ export function withFetchHeadLock<T>(lockKey: string, fn: () => T): T {
   let fd: number | null = null;
   for (;;) {
     try {
-      fd = fs.openSync(lockPath, 'wx');
+      fd = _fetchHeadLockHooks.openSync(lockPath, 'wx');
       break;
     } catch (err) {
       if (errnoCodeOf(err) !== 'EEXIST') {
@@ -291,7 +303,7 @@ export function withFetchHeadLock<T>(lockKey: string, fn: () => T): T {
       }
       const held = mtimeOrUndefined(lockPath);
       if (held !== undefined && (Date.now() - held) > FETCH_HEAD_LOCK_STALE_MS) {
-        try { fs.unlinkSync(lockPath); } catch { /* raced another stealer */ }
+        try { _fetchHeadLockHooks.unlinkSync(lockPath); } catch { /* raced another stealer */ }
         continue;
       }
       if (Date.now() > deadline) {
@@ -305,8 +317,8 @@ export function withFetchHeadLock<T>(lockKey: string, fn: () => T): T {
   try {
     return fn();
   } finally {
-    try { fs.closeSync(fd); } catch { /* best effort */ }
-    try { fs.unlinkSync(lockPath); } catch { /* best effort */ }
+    try { _fetchHeadLockHooks.closeSync(fd!); } catch { /* best effort */ }
+    try { _fetchHeadLockHooks.unlinkSync(lockPath); } catch { /* best effort */ }
   }
 }
 
@@ -390,6 +402,15 @@ export function isSafeRefName(ref: string): boolean {
   if (ref.endsWith('.lock') || ref.endsWith('.')) return false;
   return true;
 }
+
+/**
+ * Injectable safety check used by {@link createWorktreeSession} so tests can
+ * force the unsafe-branch refuse arm without inventing a slug that both passes
+ * {@link validateWorktreeSlug} and fails {@link isSafeRefName}.
+ */
+export const _worktreeSafetyHooks = {
+  isSafeRefName,
+};
 
 /**
  * Memoization cache for {@link resolveGitDir}, keyed by the absolute start path
@@ -727,7 +748,7 @@ export function createWorktreeSession(cwd: string, name: string, opts: { signal?
   const repoRoot = resolveMainRepoRoot(cwd);
   const worktreeDir = path.join(repoRoot, '.ami', 'worktrees', name);
   const branch = worktreeBranchName(name);
-  if (!isSafeRefName(branch)) {
+  if (!_worktreeSafetyHooks.isSafeRefName(branch)) {
     throw new Error(`Refusing to create worktree: unsafe branch name "${branch}".`);
   }
 

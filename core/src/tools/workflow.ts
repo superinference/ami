@@ -78,7 +78,8 @@ export interface WorkflowRunRecord {
   createdAt: string;
 }
 
-function workflowRunsDir(cwd: string): string {
+/** Exported for direct unit coverage of the runs-directory path. */
+export function workflowRunsDir(cwd: string): string {
   return path.join(cwd, '.ami', 'workflows', '.runs');
 }
 

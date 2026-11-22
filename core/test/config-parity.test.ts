@@ -1,4 +1,4 @@
-import { describe, it, beforeEach, afterEach } from 'node:test';
+import { describe, it, beforeEach, afterEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -9,6 +9,13 @@ import {
   validateProjectConfigValues,
   findUnknownConfigKeys,
   KNOWN_CONFIG_KEYS,
+  parseJsonc,
+  loadFlagSettingsConfig,
+  FLAG_SETTINGS_ENV,
+  findMostRecentBackup,
+  backupCorruptConfig,
+  getManagedConfigPaths,
+  fsHooks,
   type ProjectConfig,
 } from '../src/config';
 
@@ -236,6 +243,116 @@ describe('config parity — Gap 2: nested superinference flags are value-validat
       assert.ok(r.diagnostic!.issues!.some(i => i.field === 'superinference.enforcing'));
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('config coverage — parseJsonc LRU eviction + flag settings + strictPluginOnly', () => {
+  it('evicts the oldest parseJsonc cache entry once the entry cap is exceeded', () => {
+    // Fill past JSONC_PARSE_CACHE_MAX_ENTRIES (50) with unique small objects so the
+    // LRU delete arm runs. Re-parsing the first key still returns a clone.
+    for (let i = 0; i < 55; i++) {
+      assert.deepEqual(parseJsonc(`{"n":${i}}`), { n: i });
+    }
+    assert.deepEqual(parseJsonc('{"n":0}'), { n: 0 });
+  });
+
+  it('loadFlagSettingsConfig returns null when unset/blank and loads a real file', () => {
+    assert.equal(loadFlagSettingsConfig({}), null);
+    assert.equal(loadFlagSettingsConfig({ [FLAG_SETTINGS_ENV]: '   ' }), null);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cfg-flag-'));
+    try {
+      const p = path.join(dir, 'flag.json');
+      fs.writeFileSync(p, JSON.stringify({ model: 'flag-model' }));
+      const cfg = loadFlagSettingsConfig({ [FLAG_SETTINGS_ENV]: p });
+      assert.equal(cfg?.model, 'flag-model');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('validateProjectConfigValues rejects a bad strictPluginOnlyCustomization', () => {
+    const badType = validateProjectConfigValues({
+      strictPluginOnlyCustomization: 1 as unknown as boolean,
+    });
+    assert.ok(badType.some((i) => i.field === 'strictPluginOnlyCustomization'));
+    const badEntry = validateProjectConfigValues({
+      strictPluginOnlyCustomization: ['skills', 'nope'] as unknown as ('skills')[],
+    });
+    assert.ok(badEntry.some((i) => i.field === 'strictPluginOnlyCustomization'));
+    assert.equal(
+      validateProjectConfigValues({ strictPluginOnlyCustomization: ['hooks'] }).length,
+      0,
+    );
+  });
+});
+
+describe('config coverage — backup / managed-path edge arms', () => {
+  afterEach(() => mock.restoreAll());
+
+  it('findMostRecentBackup returns null when readdir throws', () => {
+    mock.method(fsHooks, 'readdirSync', () => {
+      throw new Error('EACCES');
+    });
+    assert.equal(findMostRecentBackup('/no/such/config.json'), null);
+  });
+
+  it('backupCorruptConfig skips an unreadable identical-candidate and still writes', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cfg-bk-'));
+    try {
+      const cfg = path.join(dir, 'ami.json');
+      const broken = '{ not json';
+      // Plant a quarantine sibling that will throw on read → skip arm, then write fresh.
+      const planted = `${cfg}.corrupt-1999-01-01T00-00-00-000Z`;
+      fs.writeFileSync(planted, 'other');
+      const realRead = fsHooks.readFileSync.bind(fsHooks);
+      mock.method(fsHooks, 'readFileSync', ((p: fs.PathLike, enc?: BufferEncoding) => {
+        if (String(p) === planted) throw new Error('EIO');
+        return realRead(p, enc as 'utf-8');
+      }) as typeof fsHooks.readFileSync);
+      const out = backupCorruptConfig(cfg, broken);
+      assert.ok(out && out !== planted);
+      assert.equal(fs.readFileSync(out!, 'utf-8'), broken);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('getManagedConfigPaths swallows os.userInfo failures on darwin', () => {
+    const orig = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+    const prev = process.env.SUPERINFERENCE_MANAGED_CONFIG;
+    delete process.env.SUPERINFERENCE_MANAGED_CONFIG;
+    try {
+      const paths = getManagedConfigPaths({
+        userInfo: () => {
+          throw new Error('uid-less sandbox');
+        },
+      });
+      assert.ok(paths.includes('/Library/Managed Preferences/SuperInference/config.json'));
+      // No per-user candidate when userInfo throws.
+      assert.equal(
+        paths.filter(
+          (p) =>
+            p.startsWith('/Library/Managed Preferences/') &&
+            p !== '/Library/Managed Preferences/SuperInference/config.json',
+        ).length,
+        0,
+      );
+      // Empty username also skips the per-user candidate (no throw).
+      const empty = getManagedConfigPaths({ userInfo: () => ({ username: '' }) });
+      assert.equal(
+        empty.filter(
+          (p) =>
+            p.startsWith('/Library/Managed Preferences/') &&
+            p !== '/Library/Managed Preferences/SuperInference/config.json',
+        ).length,
+        0,
+      );
+    } finally {
+      Object.defineProperty(process, 'platform', orig);
+      if (prev === undefined) delete process.env.SUPERINFERENCE_MANAGED_CONFIG;
+      else process.env.SUPERINFERENCE_MANAGED_CONFIG = prev;
     }
   });
 });

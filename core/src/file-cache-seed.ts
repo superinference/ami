@@ -5,6 +5,15 @@ import { FileCache, getFileCache, isFsInaccessible } from './file-cache';
 import { FILE_UNCHANGED_STUB } from './tools/file-read';
 import { decodeBuffer } from './tools/tool-utils';
 
+/** DI seam for disk reads (ESM `fs` is frozen). Tests force the non-ENOENT rethrow. */
+export const _fileCacheSeedHooks: {
+  statSync: typeof fs.statSync;
+  readFileSync: typeof fs.readFileSync;
+} = {
+  statSync: fs.statSync.bind(fs),
+  readFileSync: fs.readFileSync.bind(fs),
+};
+
 /** A file-read/edit/write recovered from the transcript, resolved against disk. */
 export interface SeededFileState {
   /** Absolute path (relative paths expanded against cwd). */
@@ -148,8 +157,8 @@ export function collectReadFileStatesFromTranscript(
 /** Decoded disk content + mtime + encoding, or null when the file is gone/inaccessible. */
 function readDisk(filePath: string): Omit<SeededFileState, 'path'> | null {
   try {
-    const mtime = fs.statSync(filePath).mtimeMs;
-    const { text, encoding } = decodeBuffer(fs.readFileSync(filePath));
+    const mtime = _fileCacheSeedHooks.statSync(filePath).mtimeMs;
+    const { text, encoding } = decodeBuffer(_fileCacheSeedHooks.readFileSync(filePath));
     return { content: text, mtime, encoding };
   } catch (err) {
     if (isENOENTorInaccessible(err)) return null;

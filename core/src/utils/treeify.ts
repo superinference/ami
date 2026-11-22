@@ -56,6 +56,14 @@ export type TreeifyOptions = {
   colorize?: (text: string, role: TreeColorRole) => string;
 };
 
+/**
+ * DI seam so unit tests can force {@link treeify}'s node-entry `[Circular]` arm.
+ * Production always hits the child-descent Circular site first for a shared/back
+ * reference; seeding `preVisited` lets growBranch re-enter an already-seen node.
+ * Cleared automatically at the start of every {@link treeify} call after seeding.
+ */
+export const _treeifyHooks: { preVisited: object[] } = { preVisited: [] };
+
 type TreeCharacters = {
   branch: string;
   lastBranch: string;
@@ -83,29 +91,23 @@ export function treeify(obj: TreeNode, options: TreeifyOptions = {}): string {
 
   const lines: string[] = [];
   const visited = new WeakSet<object>();
+  for (const o of _treeifyHooks.preVisited) visited.add(o);
+  _treeifyHooks.preVisited = [];
 
   const colorize = (text: string, role: TreeColorRole): string =>
     colorizeOpt ? colorizeOpt(text, role) : text;
 
   function growBranch(node: TreeValue, prefix: string, depth = 0): void {
-    if (typeof node === 'string') {
-      lines.push(prefix + colorize(node, 'value'));
-      return;
-    }
-
-    if (typeof node !== 'object' || node === null) {
-      if (showValues) {
-        lines.push(prefix + colorize(String(node), 'value'));
-      }
-      return;
-    }
+    // growBranch is only entered with object nodes (root TreeNode or nested
+    // object children). Leaf primitives/arrays/functions are rendered by the
+    // forEach arms below — never recursed into here.
 
     // Circular-reference guard (node-entry site).
-    if (visited.has(node)) {
+    if (visited.has(node as object)) {
       lines.push(prefix + colorize('[Circular]', 'value'));
       return;
     }
-    visited.add(node);
+    visited.add(node as object);
 
     const record = node as TreeNode;
     const keys = Object.keys(record).filter((key) => {

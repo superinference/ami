@@ -15,6 +15,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { getSymbolAtPosition } from './symbol-context';
+import { errorMessage } from '../credential-guard';
+
 
 /** LSP DiagnosticSeverity enum → human-readable name (1=Error…4=Hint). */
 export const DIAGNOSTIC_SEVERITY_NAMES = ['Error', 'Warning', 'Info', 'Hint'] as const;
@@ -158,7 +160,7 @@ export function validateLspFilePath(filePath: string): LspFilePathOk | LspFilePa
     if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') {
       return { ok: false, message: `File does not exist: ${filePath}`, errorCode: 1 };
     }
-    const detail = err instanceof Error ? err.message : String(err);
+    const detail = errorMessage(err);
     return { ok: false, message: `Cannot access file: ${filePath}. ${detail}`, errorCode: 4 };
   }
   if (!stats.isFile()) {

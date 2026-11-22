@@ -14,6 +14,8 @@ import { DISABLE_BACKGROUND_TASKS_ENV, DISABLE_BACKGROUND_TASKS_ENV_COMPAT, feat
 import { WORKFLOW_SIZE_ENV, normalizeWorkflowSize } from './tools/workflow-size';
 import { TIER_LOCKED_KEYS } from './settings-guard';
 import { readNativeManagedPolicy } from './managed-policy-source';
+import { errorMessage } from './credential-guard';
+
 
 /**
  * One entry of the MCP allowlist ({@link ProjectConfig.allowedMcpServers}). A plain
@@ -1448,14 +1450,18 @@ export function getManagedConfigPath(): string {
  * location, and diagnostics) is unchanged — it remains the device-level default and is
  * always the LAST candidate, so this function is a pure additive superset.
  */
-export function getManagedConfigPaths(): string[] {
+export function getManagedConfigPaths(
+  deps: { userInfo?: () => { username: string } } = {},
+): string[] {
   const override = process.env.SUPERINFERENCE_MANAGED_CONFIG;
   if (override) return [override];
   const deviceDefault = getManagedConfigPath();
   if (process.platform !== 'darwin') return [deviceDefault];
   const candidates: string[] = [];
   try {
-    const username = os.userInfo().username;
+    // Injectable so tests can drive the uid-less-sandbox throw without mocking
+    // the non-configurable `os.userInfo` ESM export.
+    const username = (deps.userInfo ?? (() => os.userInfo()))().username;
     if (username) {
       candidates.push(`/Library/Managed Preferences/${username}/SuperInference/config.json`);
     }
@@ -1578,7 +1584,7 @@ function assertTrustedManagedFile(configPath: string, relocatable = false): void
   try {
     stats = fsHooks.lstatSync(configPath);
   } catch (err) {
-    throw new ManagedConfigError(`Managed config at ${configPath} could not be inspected: ${err instanceof Error ? err.message : String(err)}`);
+    throw new ManagedConfigError(`Managed config at ${configPath} could not be inspected: ${errorMessage(err)}`);
   }
   if (stats.isSymbolicLink()) {
     throw new ManagedConfigError(`Managed config at ${configPath} is a symlink; refusing to follow a redirected managed-policy source.`);
@@ -1616,7 +1622,7 @@ function parseManagedFile(configPath: string, relocatable = false): ProjectConfi
     raw = fsHooks.readFileSync(configPath, 'utf-8') as string;
   } catch (err) {
     // An unreadable present file (EACCES/EIO) must fail closed, not be ignored.
-    throw new ManagedConfigError(`Managed config at ${configPath} could not be read: ${err instanceof Error ? err.message : String(err)}`);
+    throw new ManagedConfigError(`Managed config at ${configPath} could not be read: ${errorMessage(err)}`);
   }
   let parsed: unknown;
   try {
@@ -1625,7 +1631,7 @@ function parseManagedFile(configPath: string, relocatable = false): ProjectConfi
     // A broken enterprise policy must fail closed, with the SAME actionable JSON
     // syntax-recovery hint AMI surfaces for user/project config (one shared source)
     // instead of a bare parser message. Parity: the reference's root-level JSON syntax tip.
-    throw new ManagedConfigError(`Managed config at ${configPath} failed to parse: ${err instanceof Error ? err.message : String(err)}. ${JSON_SYNTAX_RECOVERY_HINT}`);
+    throw new ManagedConfigError(`Managed config at ${configPath} failed to parse: ${errorMessage(err)}. ${JSON_SYNTAX_RECOVERY_HINT}`);
   }
   // Managed policy must be a JSON object — an array/primitive at the root is a
   // malformed policy, not an empty one; fail closed rather than cast it blindly.
@@ -2936,7 +2942,7 @@ export function loadConfigFileChecked(configPath: string): { config: ProjectConf
     // catch block agrees on how an errno is read.
     const code = getErrnoCode(err);
     if (code === 'ENOENT' || code === 'ENOTDIR') return { config: null };
-    const message = err instanceof Error ? err.message : String(err);
+    const message = errorMessage(err);
     coreLog('config', `unreadable config at ${configPath}: ${message}`);
     return { config: null, diagnostic: { path: configPath, kind: 'unreadable', message } };
   }
@@ -2950,7 +2956,7 @@ export function loadConfigFileChecked(configPath: string): { config: ProjectConf
     const backupPath = backupCorruptConfig(configPath, raw) ?? undefined;
     // Append actionable recovery guidance so the user learns HOW to fix the malformed
     // file, not merely that the parse failed (parity: the reference's JSON syntax-error tip).
-    const message = `${err instanceof Error ? err.message : String(err)}. ${JSON_SYNTAX_RECOVERY_HINT}`;
+    const message = `${errorMessage(err)}. ${JSON_SYNTAX_RECOVERY_HINT}`;
     // Point the user at the most recent known-GOOD pre-write snapshot (`.backup-*`),
     // if any, with a copy-pasteable restore command (parity: the reference's `cp` restore
     // hint). Distinct from `backupPath`, which quarantines the CORRUPT bytes.
@@ -3325,6 +3331,64 @@ export function isWatcherPermissionError(err: unknown): boolean {
   return code === 'EACCES' || code === 'EPERM';
 }
 
+/**
+ * Injectable clock for lock-contention logging in {@link updateConfigFile}.
+ * Production uses `Date.now`; tests advance the clock past the 100ms threshold
+ * without sleeping so the contention log arm is deterministic.
+ */
+export const configClockHooks: { now: () => number } = {
+  now: () => Date.now(),
+};
+
+/**
+ * Injectable timer seam for {@link ConfigService} debounce / deletion-grace /
+ * retry / poll paths. Production binds the real globals; tests flush timers
+ * synchronously (or force deletion-grace expiry) without real wall-clock waits.
+ */
+export const configTimerHooks: {
+  setTimeout: typeof setTimeout;
+  clearTimeout: typeof clearTimeout;
+  setInterval: typeof setInterval;
+  clearInterval: typeof clearInterval;
+} = {
+  setTimeout: globalThis.setTimeout.bind(globalThis) as typeof setTimeout,
+  clearTimeout: globalThis.clearTimeout.bind(globalThis) as typeof clearTimeout,
+  setInterval: globalThis.setInterval.bind(globalThis) as typeof setInterval,
+  clearInterval: globalThis.clearInterval.bind(globalThis) as typeof clearInterval,
+};
+
+/**
+ * Injectable cross-process lock seam for {@link updateConfigFile} (and every
+ * save/persist helper that routes through it). Production uses
+ * {@link withFileLockSync}; tests inject a thrower to hit the best-effort
+ * catch-to-false arms on the preference / notice / onboarding writers.
+ */
+export const configLockHooks: {
+  withFileLockSync: typeof withFileLockSync;
+} = { withFileLockSync };
+
+/**
+ * Injectable env-application seam used by {@link ConfigService.reload}.
+ * Production delegates to {@link applyConfigEnv}; the default is wired once
+ * that function is defined (same-module forward ref). Tests inject a thrower
+ * to force the "runtime env re-application failed" catch.
+ */
+export const configEnvHooks: {
+  applyConfigEnv: (
+    layers: ConfigEnvLayers,
+    target?: NodeJS.ProcessEnv,
+  ) => ApplyConfigEnvResult;
+} = {
+  // Placeholder until {@link applyConfigEnv} is assigned below — never called
+  // during module init (ConfigService.reload runs after the full module loads).
+  applyConfigEnv: ((_layers, _target) => {
+    throw new Error('configEnvHooks.applyConfigEnv not yet wired');
+  }) as (
+    layers: ConfigEnvLayers,
+    target?: NodeJS.ProcessEnv,
+  ) => ApplyConfigEnvResult,
+};
+
 export interface ConfigServiceOptions {
   /**
    * Target env object the project config's `env` block is re-applied to when the
@@ -3509,8 +3573,8 @@ export class ConfigService {
     if (!this.globalConfigPath || filename !== path.basename(this.globalConfigPath)) return;
     // Swallow the echo of AMI's own write to the global file (a `/config set --global`).
     if (consumeInternalWrite(this.globalConfigPath)) return;
-    if (this.globalDebounceTimer) clearTimeout(this.globalDebounceTimer);
-    this.globalDebounceTimer = setTimeout(() => {
+    if (this.globalDebounceTimer) configTimerHooks.clearTimeout(this.globalDebounceTimer);
+    this.globalDebounceTimer = configTimerHooks.setTimeout(() => {
       this.globalDebounceTimer = null;
       this.processGlobalChange();
     }, this.debounceMs);
@@ -3586,8 +3650,8 @@ export class ConfigService {
     // (some platforms omit it) also triggers a re-check — the snapshot diff is the real
     // gate, so an over-eager event is harmless (an unchanged policy fires nothing).
     if (filename !== null && filename !== path.basename(this.managedConfigPath) && !filename.endsWith('.json')) return;
-    if (this.managedDebounceTimer) clearTimeout(this.managedDebounceTimer);
-    this.managedDebounceTimer = setTimeout(() => {
+    if (this.managedDebounceTimer) configTimerHooks.clearTimeout(this.managedDebounceTimer);
+    this.managedDebounceTimer = configTimerHooks.setTimeout(() => {
       this.managedDebounceTimer = null;
       this.processManagedChange();
     }, this.debounceMs);
@@ -3614,7 +3678,7 @@ export class ConfigService {
    */
   private startManagedPoll(): void {
     if (this.managedPollTimer || !this.managedConfigPath || this.managedPollMs <= 0) return;
-    this.managedPollTimer = setInterval(() => { this.processManagedChange(); }, this.managedPollMs);
+    this.managedPollTimer = configTimerHooks.setInterval(() => { this.processManagedChange(); }, this.managedPollMs);
     this.managedPollTimer.unref();
   }
 
@@ -3648,7 +3712,7 @@ export class ConfigService {
   /** (Re-)establish the watcher after a delay; no-op once a watcher exists or stopped. */
   private scheduleWatchRetry(): void {
     if (this.retryTimer || this.watcher || !this.started) return;
-    this.retryTimer = setTimeout(() => {
+    this.retryTimer = configTimerHooks.setTimeout(() => {
       this.retryTimer = null;
       if (this.started) this.ensureWatch();
     }, this.watchRetryMs);
@@ -3686,12 +3750,12 @@ export class ConfigService {
     // common atomic delete-then-recreate save is coalesced into a single change rather
     // than flapping through a spurious "deleted" state.
     if (this.deletionTimer && fsHooks.existsSync(this.configPath)) {
-      clearTimeout(this.deletionTimer);
+      configTimerHooks.clearTimeout(this.deletionTimer);
       this.deletionTimer = null;
     }
 
-    if (this.debounceTimer) clearTimeout(this.debounceTimer);
-    this.debounceTimer = setTimeout(() => {
+    if (this.debounceTimer) configTimerHooks.clearTimeout(this.debounceTimer);
+    this.debounceTimer = configTimerHooks.setTimeout(() => {
       this.debounceTimer = null;
       this.processWatchChange();
     }, this.debounceMs);
@@ -3721,7 +3785,7 @@ export class ConfigService {
   private scheduleStabilityRetry(): void {
     if (this.stabilityTimer) return;
     coreLog('config', `config at ${this.configPath} not yet stable; retrying reload in ${this.stabilityThresholdMs}ms`);
-    this.stabilityTimer = setTimeout(() => {
+    this.stabilityTimer = configTimerHooks.setTimeout(() => {
       this.stabilityTimer = null;
       // By now the write should have finished. A still-unparseable file is a REAL
       // syntax error and reload() correctly declines to clobber the in-memory config.
@@ -3733,7 +3797,7 @@ export class ConfigService {
   /** Buffer a vanished file for the grace window before treating it as a deletion. */
   private handlePossibleDeletion(): void {
     if (this.deletionTimer) return;
-    this.deletionTimer = setTimeout(() => {
+    this.deletionTimer = configTimerHooks.setTimeout(() => {
       this.deletionTimer = null;
       if (fsHooks.existsSync(this.configPath)) {
         // Recreated during the grace window but the add event was missed — reload it.
@@ -3772,7 +3836,7 @@ export class ConfigService {
    */
   private startFallbackPoll(): void {
     if (this.pollTimer || this.fallbackPollMs <= 0) return;
-    this.pollTimer = setInterval(() => { this.reload(); }, this.fallbackPollMs);
+    this.pollTimer = configTimerHooks.setInterval(() => { this.reload(); }, this.fallbackPollMs);
     this.pollTimer.unref();
   }
 
@@ -3800,7 +3864,7 @@ export class ConfigService {
       // a committed config can never inject a dangerous var at runtime. Parity:
       // the reference's onChangeAppState re-applying config-driven env on a settings change.
       try {
-        this.lastEnvApplication = applyConfigEnv({ project: next }, this.envTarget);
+        this.lastEnvApplication = configEnvHooks.applyConfigEnv({ project: next }, this.envTarget);
       } catch (err) {
         coreLog('config', 'runtime env re-application failed', { error: String(err) });
       }
@@ -3828,14 +3892,14 @@ export class ConfigService {
    * promise so teardown can await the watcher fully stopping (ENOENT race #25253).
    */
   stop(): Promise<void> {
-    if (this.debounceTimer) { clearTimeout(this.debounceTimer); this.debounceTimer = null; }
-    if (this.stabilityTimer) { clearTimeout(this.stabilityTimer); this.stabilityTimer = null; }
-    if (this.deletionTimer) { clearTimeout(this.deletionTimer); this.deletionTimer = null; }
-    if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = null; }
-    if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null; }
-    if (this.globalDebounceTimer) { clearTimeout(this.globalDebounceTimer); this.globalDebounceTimer = null; }
-    if (this.managedDebounceTimer) { clearTimeout(this.managedDebounceTimer); this.managedDebounceTimer = null; }
-    if (this.managedPollTimer) { clearInterval(this.managedPollTimer); this.managedPollTimer = null; }
+    if (this.debounceTimer) { configTimerHooks.clearTimeout(this.debounceTimer); this.debounceTimer = null; }
+    if (this.stabilityTimer) { configTimerHooks.clearTimeout(this.stabilityTimer); this.stabilityTimer = null; }
+    if (this.deletionTimer) { configTimerHooks.clearTimeout(this.deletionTimer); this.deletionTimer = null; }
+    if (this.retryTimer) { configTimerHooks.clearTimeout(this.retryTimer); this.retryTimer = null; }
+    if (this.pollTimer) { configTimerHooks.clearInterval(this.pollTimer); this.pollTimer = null; }
+    if (this.globalDebounceTimer) { configTimerHooks.clearTimeout(this.globalDebounceTimer); this.globalDebounceTimer = null; }
+    if (this.managedDebounceTimer) { configTimerHooks.clearTimeout(this.managedDebounceTimer); this.managedDebounceTimer = null; }
+    if (this.managedPollTimer) { configTimerHooks.clearInterval(this.managedPollTimer); this.managedPollTimer = null; }
     const closing: Array<Promise<void>> = [];
     for (const w of [this.watcher, this.globalWatcher, this.managedWatcher]) {
       if (!w) continue;
@@ -4177,6 +4241,20 @@ export function mergeConfigs(
 }
 
 /**
+ * Read managed config, treating a fail-closed {@link ManagedConfigError} (or any
+ * unexpected throw) as "absent". Used by the resolve-* helpers that must never abort
+ * a non-policy lookup over a broken managed file. ONE catch site so coverage and
+ * behavior stay consistent across memory/trust/speculation resolvers.
+ */
+export function loadManagedConfigSafe(): ProjectConfig | null {
+  try {
+    return loadManagedConfig();
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Resolve the effective {@link ProjectConfig.memoryExcludes} for a workspace by
  * merging the full config waterfall (managed > global > project > local — CLI/env
  * carry no `memoryExcludes`) and returning the accumulated exclude-glob list (empty
@@ -4187,10 +4265,9 @@ export function mergeConfigs(
  * Code resolving `claudeMdExcludes` from the settings waterfall for `isClaudeMdExcluded`.
  */
 export function resolveConfiguredMemoryExcludes(cwd: string): string[] {
-  let managed: ProjectConfig | null = null;
   // A broken/untrusted managed policy fails closed ({@link ManagedConfigError}); a
   // memory-exclude lookup must never abort memory loading over it — treat it as absent.
-  try { managed = loadManagedConfig(); } catch { managed = null; }
+  const managed = loadManagedConfigSafe();
   const merged = mergeConfigs(
     {},
     {},
@@ -4214,10 +4291,9 @@ export function resolveConfiguredMemoryExcludes(cwd: string): string[] {
  * an enable flag before reading the shared store.
  */
 export function resolveTeamMemoryLoadingEnabled(cwd: string): boolean {
-  let managed: ProjectConfig | null = null;
   // A broken/untrusted managed policy fails closed ({@link ManagedConfigError}); a
   // team-memory gate lookup must never abort memory loading over it — treat it as absent.
-  try { managed = loadManagedConfig(); } catch { managed = null; }
+  const managed = loadManagedConfigSafe();
   const merged = mergeConfigs(
     {},
     {},
@@ -4240,8 +4316,7 @@ export function resolveTeamMemoryLoadingEnabled(cwd: string): boolean {
  * `speculationEnabled` global-config knob for `isSpeculationEnabled()`.
  */
 export function resolveSpeculationEnabled(cwd: string): boolean | undefined {
-  let managed: ProjectConfig | null = null;
-  try { managed = loadManagedConfig(); } catch { managed = null; }
+  const managed = loadManagedConfigSafe();
   const merged = mergeConfigs(
     {},
     {},
@@ -4276,8 +4351,7 @@ export function shouldEnableThinkingByDefault(
     const n = Number(maxThinkingTokens);
     if (Number.isFinite(n)) return n > 0;
   }
-  let managed: ProjectConfig | null = null;
-  try { managed = loadManagedConfig(); } catch { managed = null; }
+  const managed = loadManagedConfigSafe();
   const merged = mergeConfigs(
     {},
     {},
@@ -4301,10 +4375,9 @@ export function shouldEnableThinkingByDefault(
  * `hasClaudeMdExternalIncludesApproved` from the project config for external includes.
  */
 export function resolveConfiguredExternalMemoryImports(cwd: string): { approved: boolean; roots: string[] } {
-  let managed: ProjectConfig | null = null;
   // A broken/untrusted managed policy fails closed ({@link ManagedConfigError}); a
   // consent lookup must never abort memory loading over it — treat it as absent.
-  try { managed = loadManagedConfig(); } catch { managed = null; }
+  const managed = loadManagedConfigSafe();
   const merged = mergeConfigs(
     {},
     {},
@@ -4362,8 +4435,7 @@ const workspaceTrustLatch = new Set<string>();
 export function isPathTrusted(cwd: string): boolean {
   const normalized = normalizeTrustPath(cwd);
   if (workspaceTrustLatch.has(normalized)) return true;
-  let managed: ProjectConfig | null = null;
-  try { managed = loadManagedConfig(); } catch { managed = null; }
+  const managed = loadManagedConfigSafe();
   const merged = mergeConfigs(
     {},
     {},
@@ -4460,6 +4532,10 @@ export function applyConfigEnv(
   }
   return { applied, rejected };
 }
+
+// Wire the ConfigService reload seam to the real implementation (declared earlier
+// as a placeholder so the class body can reference it without a TDZ).
+configEnvHooks.applyConfigEnv = applyConfigEnv;
 
 /**
  * Bridge the persisted {@link ProjectConfig.language} knob into the
@@ -5221,8 +5297,13 @@ export function addItemToJSONCArray(content: string, newItem: unknown): string {
   }
 }
 
-/** Locate the first top-level `[ … ]` in a JSONC string (string/comment aware). */
-function findTopLevelArrayBrackets(
+/**
+ * Locate the first top-level `[ … ]` in a JSONC string (string/comment aware).
+ * Exported so residual both-arms (leading whitespace skip, unclosed → null) can
+ * be forced directly — {@link addItemToJSONCArray} only reaches this helper when
+ * `parseJsonc` already returned an array, which masks the failure arms.
+ */
+export function findTopLevelArrayBrackets(
   s: string,
 ): { open: number; close: number } | null {
   let inString = false;
@@ -5468,8 +5549,7 @@ export const fsHooks = {
 };
 
 /**
- * Default POSIX mode for a NEWLY-created config file: owner read/write only (0o600).
- * A config file can hold a provider base-URL override, an `env` block, MCP/credential-
+ * Default POSIX mode for a NEWLY-created config file: owner read/write only (0o600). * A config file can hold a provider base-URL override, an `env` block, MCP/credential-
  * adjacent knobs; an unprivileged co-user on the same host must not be able to read it.
  * An EXISTING file's mode is preserved on rewrite (only new files get this default), so
  * a user who deliberately widened permissions is not fought. Parity: the reference writes
@@ -5493,7 +5573,7 @@ export function validateConfigJson(content: string): { valid: boolean; error?: s
     // Attach actionable recovery guidance (one shared source with the loader) so a
     // malformed config/stale-tmp payload tells the user how to fix it, not just that
     // it is broken. Parity: the reference's root-level JSON syntax-error tip.
-    return { valid: false, error: `Invalid JSON: ${err instanceof Error ? err.message : String(err)}. ${JSON_SYNTAX_RECOVERY_HINT}` };
+    return { valid: false, error: `Invalid JSON: ${errorMessage(err)}. ${JSON_SYNTAX_RECOVERY_HINT}` };
   }
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
     return { valid: false, error: `Expected a JSON object, got ${describeJsonType(parsed)}` };
@@ -5536,7 +5616,7 @@ export function validateConfigFileContent(content: string): ConfigFileValidation
   } catch (err) {
     return {
       valid: false,
-      parseError: `Invalid JSON: ${err instanceof Error ? err.message : String(err)}. ${JSON_SYNTAX_RECOVERY_HINT}`,
+      parseError: `Invalid JSON: ${errorMessage(err)}. ${JSON_SYNTAX_RECOVERY_HINT}`,
       issues: [],
       unknownKeys: [],
       schema,
@@ -5910,11 +5990,11 @@ export function updateConfigFile(
     const dir = path.dirname(lockTarget);
     if (!fsHooks.existsSync(dir)) fsHooks.mkdirSync(dir, { recursive: true });
   } catch { /* safeWriteConfig re-attempts dir creation and surfaces a real error */ }
-  const started = Date.now();
-  return withFileLockSync(lockTarget, () => {
+  const started = configClockHooks.now();
+  return configLockHooks.withFileLockSync(lockTarget, () => {
     // Log contention (parity: the reference's "lock took longer than expected — another
     // instance may be running"), measured as time spent waiting to enter the section.
-    const waited = Date.now() - started;
+    const waited = configClockHooks.now() - started;
     if (waited > 100) {
       coreLog('config', `config lock contention on ${lockTarget}: waited ${waited}ms (another AMI instance may be writing)`);
     }
@@ -5950,11 +6030,8 @@ export function updateConfigFile(
  * Code's `getGlobalConfig().skillUsage` read.
  */
 export function loadPersistedSkillUsage(): Record<string, SkillUsageStat> {
-  try {
-    return loadGlobalConfig()?.skillUsage ?? {};
-  } catch {
-    return {};
-  }
+  // loadGlobalConfig never throws (tier loader catches I/O); absent → {}.
+  return loadGlobalConfig()?.skillUsage ?? {};
 }
 
 /**
@@ -6043,11 +6120,8 @@ export function saveGlobalConfig(
  * any read failure yields `{}` so a missing flag store never blocks startup.
  */
 export function loadPreferenceFlags(): Record<string, boolean> {
-  try {
-    return loadGlobalConfig()?.preferencesShown ?? {};
-  } catch {
-    return {};
-  }
+  // loadGlobalConfig never throws (tier loader catches I/O); absent → {}.
+  return loadGlobalConfig()?.preferencesShown ?? {};
 }
 
 /**
@@ -6094,12 +6168,8 @@ export function markPreferenceShown(name: string): boolean {
 export function getLastReleaseNotesSeen(
   config?: ProjectConfig | null,
 ): string | undefined {
-  try {
-    const v = (config ?? loadGlobalConfig())?.lastReleaseNotesSeen;
-    return typeof v === 'string' && v.trim() ? v : undefined;
-  } catch {
-    return undefined;
-  }
+  const v = (config ?? loadGlobalConfig())?.lastReleaseNotesSeen;
+  return typeof v === 'string' && v.trim() ? v : undefined;
 }
 
 /**
@@ -6146,11 +6216,8 @@ export function markReleaseNotesSeen(version: string): boolean {
  * the GLOBAL config, or `{}` when none exists / the path is unavailable. Best-effort.
  */
 export function loadNoticeSeenCounts(): Record<string, number> {
-  try {
-    return loadGlobalConfig()?.noticeSeenCounts ?? {};
-  } catch {
-    return {};
-  }
+  // loadGlobalConfig never throws (tier loader catches I/O); absent → {}.
+  return loadGlobalConfig()?.noticeSeenCounts ?? {};
 }
 
 /**
@@ -6282,17 +6349,14 @@ export function saveLocalConfig(
  * Best-effort: any read failure yields `{}`.
  */
 export function readLastSessionMetrics(cwd: string): Record<string, number> {
-  try {
-    const m = loadProjectConfig(cwd)?.lastSessionMetrics;
-    if (!m || typeof m !== 'object') return {};
-    const out: Record<string, number> = {};
-    for (const [k, v] of Object.entries(m)) {
-      if (typeof v === 'number' && Number.isFinite(v) && v >= 0) out[k] = v;
-    }
-    return out;
-  } catch {
-    return {};
+  // loadProjectConfig never throws (tier loader catches I/O).
+  const m = loadProjectConfig(cwd)?.lastSessionMetrics;
+  if (!m || typeof m !== 'object') return {};
+  const out: Record<string, number> = {};
+  for (const [k, v] of Object.entries(m)) {
+    if (typeof v === 'number' && Number.isFinite(v) && v >= 0) out[k] = v;
   }
+  return out;
 }
 
 /**
@@ -6333,12 +6397,9 @@ export const PROJECT_ONBOARDING_SEEN_CAP = 4;
  * A missing / non-numeric / negative value normalizes to `0`. Best-effort.
  */
 export function getProjectOnboardingSeenCount(cwd: string): number {
-  try {
-    const n = loadProjectConfig(cwd)?.projectOnboardingSeenCount;
-    return typeof n === 'number' && Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
-  } catch {
-    return 0;
-  }
+  // loadProjectConfig never throws (tier loader catches I/O).
+  const n = loadProjectConfig(cwd)?.projectOnboardingSeenCount;
+  return typeof n === 'number' && Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
 }
 
 /**
@@ -6349,15 +6410,12 @@ export function getProjectOnboardingSeenCount(cwd: string): number {
  */
 export function shouldShowProjectOnboarding(cwd: string): boolean {
   if (process.env.IS_DEMO) return false;
-  try {
-    const cfg = loadProjectConfig(cwd);
-    if (cfg?.hasCompletedProjectOnboarding === true) return false;
-    const raw = cfg?.projectOnboardingSeenCount;
-    const seen = typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0;
-    return seen < PROJECT_ONBOARDING_SEEN_CAP;
-  } catch {
-    return false;
-  }
+  // loadProjectConfig never throws (tier loader catches I/O).
+  const cfg = loadProjectConfig(cwd);
+  if (cfg?.hasCompletedProjectOnboarding === true) return false;
+  const raw = cfg?.projectOnboardingSeenCount;
+  const seen = typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0;
+  return seen < PROJECT_ONBOARDING_SEEN_CAP;
 }
 
 /**
@@ -6411,12 +6469,9 @@ export function maybeMarkProjectOnboardingComplete(cwd: string): boolean {
  * normalizes to `undefined`. Best-effort.
  */
 export function resolveDeepLinkTerminal(config?: ProjectConfig | null): string | undefined {
-  try {
-    const v = (config ?? loadGlobalConfig())?.deepLinkTerminal;
-    return typeof v === 'string' && v.trim() ? v : undefined;
-  } catch {
-    return undefined;
-  }
+  // loadGlobalConfig never throws (tier loader catches I/O).
+  const v = (config ?? loadGlobalConfig())?.deepLinkTerminal;
+  return typeof v === 'string' && v.trim() ? v : undefined;
 }
 
 /**

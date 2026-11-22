@@ -1,4 +1,6 @@
 import { logError } from '../logger';
+import { errorMessage } from '../credential-guard';
+
 
 /**
  * A single reusable memoization utility family — the canonical home for caching
@@ -120,7 +122,7 @@ export function memoizeWithTTL<Args extends unknown[], Result>(
           }
         })
         .catch((e) => {
-          logError('memoize', e instanceof Error ? e.message : String(e));
+          logError('memoize', errorMessage(e));
           if (cache.get(key) === cached) cache.delete(key);
         });
       return cached.value;
@@ -191,7 +193,7 @@ export function memoizeWithTTLAsync<Args extends unknown[], Result>(
           }
         })
         .catch((e) => {
-          logError('memoize', e instanceof Error ? e.message : String(e));
+          logError('memoize', errorMessage(e));
           if (cache.get(key) === staleEntry) cache.delete(key);
         });
       return cached.value;

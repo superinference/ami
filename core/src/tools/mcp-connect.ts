@@ -1,5 +1,7 @@
 import { ToolDefinition, ToolResult, ToolContext } from '../types';
 import { normalizeMcpNameSegment } from './mcp-tool';
+import { errorMessage } from '../credential-guard';
+
 
 /** Does a (re)connect failure look like the server demanding authentication? */
 export function isAuthRequiredError(message: string): boolean {
@@ -78,7 +80,7 @@ export function createMcpConnectTool(serverName: string, description: string): T
           }
           return aborted();
         }
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorMessage(err);
         // Discriminate a needs-authentication outcome from a hard failure so the
         // model is steered to the authenticate tool instead of blindly retrying.
         if (isAuthRequiredError(message)) {

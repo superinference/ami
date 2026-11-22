@@ -5273,9 +5273,9 @@ export function validatePermissionRule(rule: string): {
     }
   }
   const parsed = permissionRuleValueFromString(rule);
-  if (!parsed.toolName || parsed.toolName.length === 0) {
-    return { valid: false, error: 'Tool name cannot be empty' };
-  }
+  // Empty / whitespace-only rules are rejected above; every remaining input yields a
+  // non-empty `toolName` via `normalizeToolName` (including the `(`…`)` fallback path),
+  // so a second "empty tool name" check was unreachable duplicate validation.
   // MCP-rule validation (before the generic tool checks). An MCP rule scopes a
   // whole server (`mcp__server`), all its tools (`mcp__server__*`), or one tool
   // (`mcp__server__tool`) — it never carries a parenthesized pattern. Check BOTH
@@ -5519,8 +5519,10 @@ export function permissionRuleExtractPrefix(ruleContent: string): string | null 
  * `ls` but NOT `lsof` (a different command that merely shares the leading letters).
  */
 function commandHasRulePrefix(command: string, prefix: string): boolean {
+  // Callers only invoke this when `permissionRuleExtractPrefix` returned a non-null
+  // prefix (which already requires `prefix.length > 0`), so an empty-prefix guard
+  // was unreachable.
   const c = command.trim();
-  if (!prefix) return false;
   return c === prefix || c.startsWith(prefix + ' ');
 }
 
