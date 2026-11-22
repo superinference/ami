@@ -2416,8 +2416,7 @@ export class McpManager extends EventEmitter {
   /** Authentication status for a remote (sse/http) server; undefined otherwise. */
   private deriveIsAuthenticated(config: McpServerConfig | undefined, client: McpClient): boolean | undefined {
     if (config?.transport !== 'http' && config?.transport !== 'sse') return undefined;
-    // `tools` getter always returns an array (never nullish).
-    return client.state === 'ready' && client.tools.length > 0;
+    return client.state === 'ready' && (client.tools?.length ?? 0) > 0;
   }
 
   /**
@@ -2498,8 +2497,7 @@ export class McpManager extends EventEmitter {
     if (this._needsAuthSkipped.has(name) && client.state !== 'ready') {
       return {
         name, state: 'needs-auth', serverInfo: client.serverInfo, toolCount: client.tools.length,
-        // `prompts` getter always returns an array (never nullish).
-        resourceCount: client.resources.length, promptCount: client.prompts.length,
+        resourceCount: client.resources.length, promptCount: client.prompts?.length ?? 0,
         uptime: client.uptime, containerBacked: !!config?.containerConfig, needsAuth: true,
         scope: this._serverScopes.get(name), sourcePath: this._serverSources.get(name),
         ...this.sourceAgentsField(name),
@@ -2512,7 +2510,7 @@ export class McpManager extends EventEmitter {
       serverInfo: client.serverInfo,
       toolCount: client.tools.length,
       resourceCount: client.resources.length,
-      promptCount: client.prompts.length,
+      promptCount: client.prompts?.length ?? 0,
       uptime: client.uptime,
       containerBacked: !!config?.containerConfig,
       isAuthenticated: this.deriveIsAuthenticated(config, client),
@@ -2974,7 +2972,7 @@ export class McpManager extends EventEmitter {
       serverInfo: client.serverInfo,
       toolCount: client.tools.length,
       resourceCount: client.resources.length,
-      promptCount: client.prompts.length,
+      promptCount: client.prompts?.length ?? 0,
       uptime: client.uptime,
       isAuthenticated: this.deriveIsAuthenticated(config, client),
       channelPermissionRelay: client.supportsChannelPermissionRelay(),
