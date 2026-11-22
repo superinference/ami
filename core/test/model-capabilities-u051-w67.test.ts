@@ -23,10 +23,10 @@ describe('normalizeModelStringForAPI', () => {
     assert.equal(normalizeModelStringForAPI('claude-opus-5[2m]'), 'claude-opus-5');
   });
 
-  it('is case-insensitive and strips every occurrence', () => {
+  it('is case-insensitive and strips every occurrence (Claude models)', () => {
     assert.equal(normalizeModelStringForAPI('claude-opus-5[1M]'), 'claude-opus-5');
-    // `.replace(/.../gi)` global — both markers go even if malformed input repeats it.
-    assert.equal(normalizeModelStringForAPI('a[1m]b[2m]'), 'ab');
+    // `.replace(/.../gi)` global — both markers go even if the input repeats them.
+    assert.equal(normalizeModelStringForAPI('claude-opus-5[1m][2m]'), 'claude-opus-5');
   });
 
   it('strips the AMI -1m/_1m suffix forms the local detector also recognizes', () => {
@@ -57,9 +57,11 @@ describe('normalizeModelStringForAPI', () => {
     assert.equal((m as { modelId?: string }).modelId, 'claude-opus-5');
   });
 
-  it('normalizes an OpenAI model id with a marker before the SDK call (end-to-end)', () => {
-    const m = resolveModel({ baseUrl: 'https://api.openai.com/v1', apiKey: 'sk-test', provider: 'openai', model: 'gpt-5.6-luna[1m]' });
-    assert.equal((m as { modelId?: string }).modelId, 'gpt-5.6-luna');
+  it('passes a third-party model id through verbatim (the [1m] may be part of its real name)', () => {
+    assert.equal(normalizeModelStringForAPI('deepseek-v4-pro[1m]'), 'deepseek-v4-pro[1m]');
+    assert.equal(normalizeModelStringForAPI('gpt-5.6-luna[1m]'), 'gpt-5.6-luna[1m]');
+    const m = resolveModel({ baseUrl: 'https://api.deepseek.com/anthropic', apiKey: 'sk-test', provider: 'anthropic', model: 'deepseek-v4-pro[1m]' });
+    assert.equal((m as { modelId?: string }).modelId, 'deepseek-v4-pro[1m]');
   });
 });
 

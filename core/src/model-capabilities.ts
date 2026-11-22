@@ -220,6 +220,11 @@ export function supportsOneMillionContextBeta(modelId: string): boolean {
  */
 export function normalizeModelStringForAPI(modelId: string): string {
   if (typeof modelId !== 'string') return modelId;
+  // The [1m]/[2m]/_-1m suffix is AMI's LOCAL context-window marker, meaningful only
+  // for first-party Claude models. A third-party id may legitimately contain "[1m]"
+  // as part of its real name (e.g. DeepSeek's `deepseek-v4-pro[1m]`), so those pass
+  // through verbatim instead of being mangled into a model the endpoint rejects.
+  if (!/^claude[-_.]/i.test(modelId)) return modelId;
   return modelId.replace(/\[(?:1|2)m\]/gi, '').replace(/[-_]1m\b/gi, '');
 }
 
