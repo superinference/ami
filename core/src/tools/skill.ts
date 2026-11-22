@@ -183,7 +183,7 @@ export interface SkillToolFilterWarning {
  * and shell/process tools are never read-only, so they can't be auto-classified by
  * the flags alone) — mirroring the reference's hard-coded bucket membership.
  */
-import { TOOL_CATEGORYS, type ToolCategory } from './tool-categories';
+import type { ToolCategory } from './tool-categories';
 
 /** Tools that MUTATE files on disk — the "edit" bucket. */
 const EDIT_TOOL_NAMES: ReadonlySet<string> = new Set(['file_edit', 'file_write', 'notebook_edit']);
