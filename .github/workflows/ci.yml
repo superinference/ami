@@ -13,8 +13,11 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  test:
+  # Fast, order-independent checks run ONCE (not per coverage shard).
+  checks:
+    name: Audit, lint, type-check
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -39,14 +42,39 @@ jobs:
         working-directory: ./core
         run: npx tsc --noEmit
 
-      - name: Run tests
-        working-directory: ./core
-        run: npm test
+  # The full suite (~1.8k test files) runs under the accurate native-ESM coverage
+  # harness, file-modulo sharded 12 ways — the same strategy as the superinference/ui
+  # `coverage-core` job. Every test file runs on exactly one shard, so this job IS the
+  # test run (no separate unsharded `npm test`). A single unsharded pass is slow and
+  # can OOM / truncate on a hosted runner; 12 shards plus a larger heap keep each runner
+  # under the memory ceiling and cut wall-clock. Under --shard the harness exercises
+  # the suite and reports test failures; the 99/99/99 threshold + denominator-completeness
+  # gate is the UNSHARDED run (`node scripts/coverage-esm.mjs core --lines 99 --branches 99
+  # --functions 99`), enforced by the pre-push hook in superinference/ui.
+  # tsx/esbuild inflates branch counts with CJS-interop helpers no test can cover, which
+  # is why coverage is measured via native ESM rather than `node --test` under tsx.
+  coverage:
+    name: Tests + coverage (core ${{ matrix.shard }}/12)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    steps:
+      - uses: actions/checkout@v4
 
-      # Accurate 99% coverage gate, measured via the native-ESM harness (NOT tsx,
-      # whose CJS-interop helpers inflate branch counts below a real 99%). This gate
-      # used to live only in the private superinference/ui CI; running it here keeps
-      # core fully validated on every push in this FREE public repo.
-      - name: Coverage gate (native-ESM, 99/99/99)
+      - name: Use Node.js 26
+        uses: actions/setup-node@v4
+        with:
+          node-version: 26
+
+      - name: Install dependencies
         working-directory: ./core
-        run: node scripts/coverage-esm.mjs core --lines 99 --branches 99 --functions 99
+        run: npm ci
+
+      - name: Core tests + coverage (shard ${{ matrix.shard }}/12)
+        working-directory: ./core
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
+        run: node scripts/coverage-esm.mjs core --shard ${{ matrix.shard }}/12
