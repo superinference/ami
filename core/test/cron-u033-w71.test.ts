@@ -254,7 +254,7 @@ describe('cron tools — utc flag end-to-end', () => {
       ctx(dir),
     );
     const res = await cronListTool.execute({}, ctx(dir));
-    assert.match(res.output, /UTC/, 'UTC flag shown in the list');
+    assert.ok(jobFlags(res.output).includes('UTC'), 'UTC flag shown in the job\'s flag list');
   });
 
   it('cron_list omits the UTC flag for a local job', async () => {
@@ -263,6 +263,15 @@ describe('cron tools — utc flag end-to-end', () => {
       ctx(dir),
     );
     const res = await cronListTool.execute({}, ctx(dir));
-    assert.doesNotMatch(res.output, /\bUTC\b/);
+    // Assert on the job's FLAG list only. The "Next: … (local, <tz>)" line carries the
+    // host timezone label, which is legitimately "UTC" on a UTC host (e.g. CI runners).
+    assert.ok(!jobFlags(res.output).includes('UTC'), 'no UTC flag on a local job');
   });
 });
+
+/** The parenthesized flag list on a cron_list job line, e.g. ['recurring', 'session-only', …]. */
+function jobFlags(output: string): string[] {
+  const m = /^\s+cron_\S+: .*\(([^)]*)\)\s*$/m.exec(output);
+  assert.ok(m, `no job line with a flag list in:\n${output}`);
+  return m[1]!.split(',').map((f) => f.trim());
+}

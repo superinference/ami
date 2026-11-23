@@ -680,13 +680,19 @@ describe('wave21 — git residual arms', () => {
     fs.writeFileSync(ggi, '**/*.old\n');
     fs.chmodSync(ggi, 0o000);
     const prevHome = process.env.HOME;
+    const prevXdg = process.env.XDG_CONFIG_HOME;
     process.env.HOME = home;
+    // The global gitignore honors XDG_CONFIG_HOME over $HOME/.config (and CI runners set
+    // it), so pin it to the same fake home or the unreadable file is never consulted.
+    process.env.XDG_CONFIG_HOME = path.join(home, '.config');
     try {
       // Should not throw — outer catch returns false
       assert.equal(addFileGlobRuleToGitignore('secret.local.json', repo), false);
     } finally {
       fs.chmodSync(ggi, 0o644);
       process.env.HOME = prevHome;
+      if (prevXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = prevXdg;
     }
     assert.ok(getGlobalGitignorePath(home).includes('git'));
 

@@ -3906,10 +3906,18 @@ export class ConfigService {
       // A real FSWatcher is an EventEmitter and signals completion via a 'close' event;
       // await it so teardown can know the watcher has fully stopped. (A minimal test
       // fake without `once` simply resolves synchronously — nothing to await.)
-      if (typeof w.once === 'function') {
-        closing.push(new Promise<void>(resolve => { w.once('close', () => resolve()); }));
+      const closed = typeof w.once === 'function'
+        ? new Promise<void>(resolve => { w.once('close', () => resolve()); })
+        : undefined;
+      try {
+        w.close();
+      } catch {
+        // Already dead (same treatment as every other close site in this class). It
+        // will never emit 'close', so do NOT await it — and keep closing the rest, so
+        // one failing watcher can neither abort teardown nor hang stop().
+        continue;
       }
-      w.close();
+      if (closed) closing.push(closed);
     }
     this.watcher = null;
     this.globalWatcher = null;
