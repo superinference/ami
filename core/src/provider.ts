@@ -1071,9 +1071,29 @@ async function readDumpSseChunks(body: ReadableStream<Uint8Array>): Promise<unkn
 }
 
 /** Default JSONL appender: ensure the directory exists, then append one line. */
-async function appendDumpLine(filePath: string, line: string): Promise<void> {
-  await fsMkdir(pathDirname(filePath), { recursive: true });
-  await fsAppendFile(filePath, line + '\n');
+/**
+ * Per-file serializer for the prompt-dump appends. Each line is mkdir + appendFile (two
+ * awaits); issued concurrently, a later line could COMPLETE first, so a `response` line
+ * could land in the file before the `init`/`message` lines of the same request. Every
+ * append to one file now runs strictly after the previous one settles. Returns the
+ * job's own completion; a failed job never blocks later ones.
+ */
+const dumpWriteChains = new Map<string, Promise<void>>();
+
+export function serializedDumpWrite(filePath: string, job: () => Promise<void>): Promise<void> {
+  const prev = dumpWriteChains.get(filePath) ?? Promise.resolve();
+  const next = prev.then(job, job);
+  const settled = next.catch(() => { /* surfaced to this job's caller only */ });
+  dumpWriteChains.set(filePath, settled);
+  void settled.then(() => { if (dumpWriteChains.get(filePath) === settled) dumpWriteChains.delete(filePath); });
+  return next;
+}
+
+function appendDumpLine(filePath: string, line: string): Promise<void> {
+  return serializedDumpWrite(filePath, async () => {
+    await fsMkdir(pathDirname(filePath), { recursive: true });
+    await fsAppendFile(filePath, line + '\n');
+  });
 }
 
 export interface PromptDumpDeps {
