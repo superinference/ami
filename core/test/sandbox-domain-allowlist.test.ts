@@ -6,6 +6,10 @@ import {
   type SandboxConfig,
 } from '../src/tools/bash-sandbox';
 
+import { isolateSandboxGrants } from './_isolate-sandbox-grants';
+
+isolateSandboxGrants();
+
 /** Minimal valid config for wrapWithUnshare tests. */
 function baseCfg(overrides: Partial<SandboxConfig> = {}): SandboxConfig {
   return {

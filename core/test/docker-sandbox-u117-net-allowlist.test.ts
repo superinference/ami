@@ -28,6 +28,10 @@ import { shellHooks } from '../src/utils/shell';
 import { bashTool, _bashHooks } from '../src/tools/bash';
 import type { ToolContext } from '../src/types';
 
+import { isolateSandboxGrants } from './_isolate-sandbox-grants';
+
+isolateSandboxGrants();
+
 let tmpProject: string;
 
 beforeEach(() => {

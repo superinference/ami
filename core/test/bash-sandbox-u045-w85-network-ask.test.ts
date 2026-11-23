@@ -45,6 +45,10 @@ import { webFetchTool } from '../src/tools/web-fetch';
 import type { PermissionPromptHandler, PermissionPromptResult } from '../src/permissions';
 import type { ToolContext } from '../src/types';
 
+import { isolateSandboxGrants } from './_isolate-sandbox-grants';
+
+isolateSandboxGrants();
+
 /** A permission handler that records its prompts and returns a scripted verdict. */
 function handlerReturning(
   action: PermissionPromptResult['action'] | (() => never),

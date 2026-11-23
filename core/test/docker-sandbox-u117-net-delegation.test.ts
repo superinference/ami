@@ -45,6 +45,10 @@ import {
 import { PermissionManager } from '../src/permissions';
 import type { SandboxPolicy } from '../src/types';
 
+import { isolateSandboxGrants } from './_isolate-sandbox-grants';
+
+isolateSandboxGrants();
+
 function tmpProject(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'u117-deleg-'));
 }

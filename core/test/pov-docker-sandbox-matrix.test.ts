@@ -32,6 +32,10 @@ import {
 import { detectContainerEscape } from '../src/tools/bash-security';
 import { shellHooks } from '../src/utils/shell';
 
+import { isolateSandboxGrants } from './_isolate-sandbox-grants';
+
+isolateSandboxGrants();
+
 let tmpProject: string;
 
 beforeEach(() => {

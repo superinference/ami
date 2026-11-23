@@ -11,6 +11,10 @@ import {
   type SandboxPolicy,
 } from '../src/types';
 
+import { isolateSandboxGrants } from './_isolate-sandbox-grants';
+
+isolateSandboxGrants();
+
 // ---------------------------------------------------------------------------
 // UNIT U045 (w83) — ENTERPRISE managed-policy sandbox lockdown parity:
 //   sandbox.network.allowManagedDomainsOnly + managedAllowedHosts
