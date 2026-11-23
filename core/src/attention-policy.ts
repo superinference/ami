@@ -124,31 +124,10 @@ export function resolveAgentLiveness(
  * Every path that can drop a finish WITHOUT marking it unread, each typed so a missing ping is
  * always traceable (parity: Orca `AgentFinishDropCause` — "every path that drops a finish was
  * silent, so a missing unread could not be traced"). Fed to the breadcrumb log and
- * `--introspect` / `/attention-log`.
+ * `--introspect` / `/attention-log`. The const array is the full catalog (the type derives
+ * from it), so `--introspect` discovery and the type can never drift.
  */
-export type AgentFinishDropCause =
-  | 'fresh-active-hook-status'
-  | 'superseded-snapshot'
-  | 'muted-workspace'
-  | 'coordinator-only-news'
-  | 'no-live-session'
-  | 'unknown-surface'
-  | 'superseded-surface'
-  | 'viewed'
-  | 'pane-pruned-before-quiet-window'
-  | 'held-revision-expired'
-  | 'pane-not-live'
-  | 'hook-lane-disabled'
-  | 'turn-end-not-counted'
-  | 'restored-unconfirmed'
-  | 'host-replay-skipped'
-  // AMI-specific causes (the generation guard + replay guard surfaces).
-  | 'replayed-turn'
-  | 'superseded-generation'
-  | 'muted-delivery';
-
-/** The full catalog of drop causes (for `--introspect` discovery). */
-export const AGENT_FINISH_DROP_CAUSES: readonly AgentFinishDropCause[] = [
+export const AGENT_FINISH_DROP_CAUSES = [
   'fresh-active-hook-status',
   'superseded-snapshot',
   'muted-workspace',
@@ -164,10 +143,13 @@ export const AGENT_FINISH_DROP_CAUSES: readonly AgentFinishDropCause[] = [
   'turn-end-not-counted',
   'restored-unconfirmed',
   'host-replay-skipped',
+  // AMI-specific causes (the generation guard + replay guard surfaces).
   'replayed-turn',
   'superseded-generation',
   'muted-delivery',
-];
+] as const;
+
+export type AgentFinishDropCause = (typeof AGENT_FINISH_DROP_CAUSES)[number];
 
 /** An unread marker to write — carried in the decision so a suppressed banner still leaves it. */
 export interface AgentAttentionUnread {

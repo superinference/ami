@@ -21,24 +21,26 @@ export const GRACEFUL_SHUTDOWN_WAIT_MS = 10_000;
  * states, so a non-LLM caller can branch on the result instead of parsing the
  * human-readable message string.
  */
-export type TaskKillReason =
-  | 'invalid_input'
-  | 'manager_unavailable'
-  | 'not_found'
-  | 'already_terminal'
-  | 'killed'
-  | 'kill_failed'
-  | 'interrupted'
-  | 'interrupt_unsupported'
-  | 'shutdown_requested'
-  | 'shutdown_unsupported'
+export const TASK_KILL_REASONS = [
+  'invalid_input',
+  'manager_unavailable',
+  'not_found',
+  'already_terminal',
+  'killed',
+  'kill_failed',
+  'interrupted',
+  'interrupt_unsupported',
+  'shutdown_requested',
+  'shutdown_unsupported',
   // Per-agent workflow recovery (parity: onRetryAgent / onSkipAgent).
-  | 'retried'
-  | 'retry_unsupported'
-  | 'skipped'
-  | 'skip_unsupported'
+  'retried',
+  'retry_unsupported',
+  'skipped',
+  'skip_unsupported',
   // Bulk prune of every idle teammate (parity: TeamsDialog 'p' prune-idle handler).
-  | 'pruned_idle';
+  'pruned_idle',
+] as const;
+export type TaskKillReason = (typeof TASK_KILL_REASONS)[number];
 
 /** Structured result surface (ToolResult.metadata) for task_kill. */
 export interface TaskKillMetadata {

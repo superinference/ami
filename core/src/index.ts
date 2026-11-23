@@ -823,7 +823,7 @@ export * from './tool-output-limits';
 export { SNAPSHOT_ACTIONS } from './agent-memory-snapshot';
 export { AGENT_ATTENTION_BUCKETS, AGENT_STATUS, AGENT_STATUS_TONES, SUBAGENT_LIFECYCLE_STATUS } from './agent-status';
 export { FILE_OPERATION_KINDS, FILE_OPERATION_TOOLS, GIT_OPERATION_NAMES, TELEMETRY_DIAG_LEVELS } from './analytics';
-export { AGENT_LIVENESS } from './attention-policy';
+export { AGENT_LIVENESS, AGENT_FINISH_DROP_CAUSES } from './attention-policy';
 export { AUTO_MODE_CLASSIFIER_RESOLUTIONS } from './auto-mode';
 export { BEDROCK_AUTH_AFFORDANCE_KINDS } from './bedrock';
 export { SECURITY_SEVERITYS } from './code-security-patterns';
@@ -900,3 +900,28 @@ export { LOG_LEVELS } from './logger';
 export { CRON_LIST_STATUS } from './tools/cron-list';
 export { TOOL_CATEGORYS } from './tools/tool-categories';
 export { PLATFORMS } from './utils/platform';
+
+// Const-first enumerations surfaced in the `ami --introspect` manifest
+// (introspectionEnums), re-exported so the manifest reads them from one barrel.
+export { OTEL_HEADERS_HELPER_ENV_VARS, KNOWN_ANALYTICS_MODEL_FAMILIES } from './analytics';
+export { BEDROCK_REGION_PREFIXES } from './bedrock';
+export { STOP_FAILURE_ERROR_CLASSES } from './error-classifier';
+export { SAMPLING_ORIGINS, HOOK_DECISION_CLASSIFICATIONS } from './hooks';
+export { MCP_SCOPE_ORDER } from './mcp/manager';
+export { SENSITIVE_OAUTH_PARAMS } from './mcp/oauth';
+export { EXTERNAL_PERMISSION_MODES } from './permissions';
+export { USER_CONFIG_OPTION_TYPES } from './plugins';
+export { PROVIDER_RESPONSE_REQUEST_ID_HEADERS, EXTRA_BODY_ENV_VARS, METADATA_USER_ID_ENV_VARS, EXTRA_METADATA_ENV_VARS, ALWAYS_ENABLE_EFFORT_ENV_VARS, DISABLE_THINKING_ENV_VARS, DISABLE_ADAPTIVE_THINKING_ENV_VARS } from './provider';
+export { PROJECT_SETTINGS_SOURCES } from './safe-mode';
+export { SYSTEM_PROMPT_MODES } from './skills';
+export { BARE_GIT_REPO_FILES } from './tools/bash-sandbox';
+export { HARDENED_PWSH_FLAGS } from './tools/bash';
+export { COMPUTER_USE_ACTIONS } from './tools/computer-use';
+export { EXPLORE_THOROUGHNESS_LEVELS } from './tools/task';
+export { TEAM_ROLES } from './tools/team';
+export { SAVE_ACKNOWLEDGEMENTS } from './tools/write-memory';
+export { IMAGE_MEDIA_TYPES, AGENT_TURN_STOP_REASONS } from './types';
+export { SYSTEM_CA_NODE_OPTIONS } from './utils/mtls';
+export { DEFAULT_TIMEOUT_ENV } from './utils/shell';
+export { KNOWN_PACKAGE_MANAGERS, KNOWN_JS_RUNTIMES } from './utils/which';
+export { TASK_KILL_REASONS } from './tools/task-kill';
