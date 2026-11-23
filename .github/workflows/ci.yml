@@ -1,12 +1,9 @@
 name: Core CI
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-  # Allow superinference/ui to dispatch this (free, public) CI on the pinned core
-  # sha instead of re-running core tests on billed private minutes.
+  # Dispatch-only, like every superinference workflow: run on demand with
+  # `gh workflow run ci.yml`, or via superinference/ui's `trigger-ami` job. Devs get the
+  # equivalent gate for free via the ui repo's local .githooks/pre-push hook.
   workflow_dispatch:
 
 env:
