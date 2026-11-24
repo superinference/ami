@@ -72,3 +72,6 @@ venv/
 
 .env
 
+
+# Per-run native-ESM build trees from core/scripts/esm-build.mjs (coverage/test-esm); removed after each run
+.esm-build-*/
