@@ -49,6 +49,7 @@
     "eslint": "^10.13.0",
     "eslint-plugin-security": "^4.2.0",
     "jscpd": "^5.4.1",
+    "pdf-parse": "^2.4.5",
     "tsx": "^4.23.15",
     "typescript": "^5.9.3"
   },

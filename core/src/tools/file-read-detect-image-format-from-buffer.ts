@@ -6,6 +6,7 @@ import { createRequire } from 'module';
 import { ToolContext, ImageContent } from '../types';
 import { resolveFilePath, isBlockedPath } from './tool-utils';
 import { log } from '../logger';
+import { resolveConfigDir } from '../reference-journal';
 
 export const DEFAULT_LIMIT = 2000;
 
@@ -40,21 +41,46 @@ export const pdfHooks: {
   }),
   // Indirection seam for the pdf-parse module. Tests swap this to exercise the
   // page-count guard / error-classification branches without a real multi-page
-  // PDF; production resolves pdf-parse from the working directory.
-  loadPdfParse: () => createRequire(path.join(process.cwd(), '_'))('pdf-parse'),
+  // PDF; production resolves pdf-parse from the working directory, then from AMI's
+  // own optional-deps folder (where the agent may install it — see optionalDepInstallCommand).
+  loadPdfParse: () => createRequire(optionalDepRoot('pdf-parse'))('pdf-parse'),
   // Capability probe: whether the optional `pdf-parse` dependency RESOLVES from
   // the working directory (resolve-only — never executes the module). Mirrors the
   // same resolution root as loadPdfParse so the advertised capability matches the
   // runtime read path. Tests swap this to assert the capability-gated description.
   isPdfParseResolvable: (): boolean => {
     try {
-      createRequire(path.join(process.cwd(), '_')).resolve('pdf-parse');
+      createRequire(optionalDepRoot('pdf-parse')).resolve('pdf-parse');
       return true;
     } catch {
       return false;
     }
   },
 };
+
+/**
+ * AMI's own folder for OPTIONAL runtime packages (e.g. pdf-parse for PDF reads). The
+ * agent installs a missing optional package HERE — never into the user's project, whose
+ * package.json must not change as a side effect of reading a file.
+ */
+export function optionalDepsDir(env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(resolveConfigDir(env), 'optional-deps');
+}
+
+/** The exact command that installs an optional package into {@link optionalDepsDir}. */
+export function optionalDepInstallCommand(pkg: string, env: NodeJS.ProcessEnv = process.env): string {
+  return `npm install --prefix ${JSON.stringify(optionalDepsDir(env))} ${pkg}`;
+}
+
+/**
+ * The require root an optional package resolves from: the working directory (the
+ * project's own install) when it has the package, else AMI's optional-deps folder.
+ */
+export function optionalDepRoot(pkg: string, cwd: string = process.cwd(), env: NodeJS.ProcessEnv = process.env): string {
+  const fromCwd = path.join(cwd, '_');
+  try { createRequire(fromCwd).resolve(pkg); return fromCwd; } catch { /* not in the project */ }
+  return path.join(optionalDepsDir(env), '_');
+}
 
 /**
  * Whether the runtime can actually extract PDF text — i.e. the optional

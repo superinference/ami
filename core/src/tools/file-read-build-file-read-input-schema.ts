@@ -3,7 +3,7 @@ import { ToolDefinition, ToolResult, ImageContent } from '../types';
 import { sliceToReadTokenBudget, fileReadTokenBudgetMessage } from '../token-estimator';
 import { getFileReadPromptFlags, type FileReadPromptFlags, type LineNumberStyle } from './file-read-limits';
 import { readFileRange, tailFile } from './read-file-range';
-import { FILE_IMAGES_KINDS, isPDFSupported } from './file-read-detect-image-format-from-buffer';
+import { FILE_IMAGES_KINDS, isPDFSupported, optionalDepInstallCommand } from './file-read-detect-image-format-from-buffer';
 import type { FileImagesKind } from './file-read-detect-image-format-from-buffer';
 
 /**
@@ -361,7 +361,11 @@ export function classifyPdfError(message: string): string {
     case 'too_large':
       return `Error: ${message}`;
     case 'unavailable':
-      return `Error: PDF support is unavailable: ${message}`;
+      // Actionable: a missing optional package can be installed by the agent (with the
+      // user's approval for the command) into AMI's own folder, then the read retried.
+      return /pdf-parse/.test(message)
+        ? `Error: PDF support is unavailable: ${message}\nTo enable PDF reading, install the optional pdf-parse package into AMI's own folder (not the project) and retry the read:\n  ${optionalDepInstallCommand('pdf-parse')}`
+        : `Error: PDF support is unavailable: ${message}`;
     default:
       return `Error reading PDF: ${message}`;
   }

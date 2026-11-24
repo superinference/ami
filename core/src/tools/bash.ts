@@ -2,6 +2,7 @@ import * as fs from 'fs';
 
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult, ImageContent, ToolInputSchema } from '../types';
+import type { ToolValidationResult } from '../types';
 import { detectCommandChaining } from '../permissions';
 import { getSessionEnvironmentScript } from '../session-environment';
 import { sessionEnvOverrides } from '../session-env-vars';
@@ -846,6 +847,79 @@ export function buildBashDescription(backgroundDisabled: boolean, gitDisabled = 
   return withBg + describeOutputTruncation();
 }
 
+/** The model-facing refusal for a nuclear-blocklist command (shared by execute + validateInput). */
+function nuclearBlockOutput(nuclear: { reason?: string; suggestion?: string }, command: string): string {
+  const lines = [
+    `Error: BLOCKED — ${nuclear.reason}.`,
+    `Command: ${command.length > 200 ? command.slice(0, 200) + '...' : command}`,
+    '',
+    'This command is on the nuclear blocklist and is NEVER allowed, regardless of',
+    'permission mode (including --yolo). These are commands that can cause',
+    'unrecoverable system-wide damage (filesystem destruction, disk wipe, fork bomb).',
+    '',
+  ];
+  if (nuclear.suggestion) {
+    lines.push(`Suggestion: ${nuclear.suggestion}`);
+  } else {
+    lines.push('If you need to delete files, target a specific directory instead of root paths.');
+  }
+  return lines.join('\n');
+}
+
+/** The model-facing refusal for `git commit` via bash (shared by execute + validateInput). */
+function gitCommitBlockOutput(commitKind: string): string {
+  // Parity: distinguish an amend (history rewrite) from a plain commit so the
+  // guidance can call it out specifically (the reference gitOperationTracking CommitKind).
+  const amendNote =
+    commitKind === 'amended'
+      ? '\n\nNote: `git commit --amend` rewrites the last commit; amending via bash is especially not allowed. ' +
+        'Make a fresh commit with the git_commit tool instead, and never amend unless the user explicitly asks.'
+      : '';
+  return (
+    'Error: Use the git_commit tool instead of running git commit via bash. ' +
+    'The git_commit tool ensures proper Co-Authored-By attribution is always included.\n\n' +
+    'Example: git_commit({ message: "your commit message", files: ["file1.ts", "file2.ts"] })' +
+    amendNote
+  );
+}
+
+/**
+ * The refusal execute() would return for this command from its COMMAND-ONLY hard blocks
+ * (nuclear list, git commit via bash, self-kill, code-loading env, argv0/BASHPID, force
+ * push to a protected branch, the bash security validators, credential / transcript
+ * writes, data exfiltration), or null. Pure: no cwd recovery, no filesystem probes —
+ * those environment checks stay in execute(). Run from validateInput so a command that
+ * will be refused is refused BEFORE the permission prompt, never after the user
+ * approved it. Same normalization, same order and same messages as execute().
+ */
+export function bashPreflightBlock(rawCommand: unknown, context: ToolContext): string | null {
+  if (typeof rawCommand !== 'string' || rawCommand.trim().length === 0) return null;
+  const command = normalizeBashInput(joinLineContinuations(rawCommand), context.cwd);
+  const nuclear = detectNuclearCommand(command);
+  if (nuclear.blocked) return nuclearBlockOutput(nuclear, command);
+  const commitKind = detectGitCommitKind(command);
+  if (commitKind) return gitCommitBlockOutput(commitKind);
+  const selfKill = detectSelfKill(command);
+  if (selfKill) return `Error: ${selfKill} Use kill <pid> with the specific child process PID instead.`;
+  const codeLoadCheck = detectCodeLoadingEnvSet(command);
+  if (codeLoadCheck.blocked) return `Error: Setting ${codeLoadCheck.variable} is blocked — it can load arbitrary code into child processes.`;
+  const argv0Check = detectBashArgv0Assignment(command);
+  if (argv0Check.blocked) return `Error: ${argv0Check.reason}`;
+  const bashpidCheck = detectBashpidAssignment(command);
+  if (bashpidCheck.blocked) return `Error: ${bashpidCheck.reason}`;
+  const forcePush = detectForcePushToProtected(command);
+  if (forcePush) return `Error: ${forcePush}`;
+  const secCheck = validateBashSecurity(command, { detachedMode: context.detachedMode, cwd: context.cwd });
+  if (!secCheck.safe) return `Error: ${secCheck.message}`;
+  const credWrite = detectCredentialPathWrite(command);
+  if (credWrite.blocked) return `Error: blocked — ${credWrite.description} (credential path, not allowed)`;
+  const sessionWrite = detectSessionTranscriptWrite(command);
+  if (sessionWrite.blocked) return `Error: blocked — ${sessionWrite.description} (session transcript is protected)`;
+  const exfil = _bashHooks.detectDataExfiltration(command);
+  if (exfil.blocked) return `Error: blocked — ${exfil.reason} (data exfiltration risk)`;
+  return null;
+}
+
 export const bashTool: ToolDefinition = {
   name: 'bash',
   // Getters so the env knob is read at advertise-time (every access), keeping the
@@ -880,6 +954,16 @@ export const bashTool: ToolDefinition = {
     return resolveBashTimeout(input?.timeout);
   },
 
+  // Refuse a command that execute() would hard-block BEFORE the permission prompt, so the
+  // user is never asked to approve something that will be refused anyway (the card used
+  // to show, the user said yes, and only then was the command blocked).
+  async validateInput(input: Record<string, unknown>, context: ToolContext): Promise<ToolValidationResult> {
+    const blocked = bashPreflightBlock(input.command, context);
+    return blocked === null
+      ? { result: true }
+      : { result: false, message: blocked.replace(/^Error: /, ''), errorCode: 1 };
+  },
+
   async execute(
     input: Record<string, unknown>,
     context: ToolContext,
@@ -909,21 +993,7 @@ export const bashTool: ToolDefinition = {
     // No flag, mode, or env var can disable this. Even --yolo cannot override it.
     const nuclear = detectNuclearCommand(command);
     if (nuclear.blocked) {
-      const lines = [
-        `Error: BLOCKED — ${nuclear.reason}.`,
-        `Command: ${command.length > 200 ? command.slice(0, 200) + '...' : command}`,
-        '',
-        'This command is on the nuclear blocklist and is NEVER allowed, regardless of',
-        'permission mode (including --yolo). These are commands that can cause',
-        'unrecoverable system-wide damage (filesystem destruction, disk wipe, fork bomb).',
-        '',
-      ];
-      if (nuclear.suggestion) {
-        lines.push(`Suggestion: ${nuclear.suggestion}`);
-      } else {
-        lines.push('If you need to delete files, target a specific directory instead of root paths.');
-      }
-      return { output: lines.join('\n'), isError: true };
+      return { output: nuclearBlockOutput(nuclear, command), isError: true };
     }
 
     // TOCTOU-safe working-directory resolution with delete-recovery: realpath the
@@ -955,21 +1025,7 @@ export const bashTool: ToolDefinition = {
 
     const commitKind = detectGitCommitKind(command);
     if (commitKind) {
-      // Parity: distinguish an amend (history rewrite) from a plain commit so the
-      // guidance can call it out specifically (the reference gitOperationTracking CommitKind).
-      const amendNote =
-        commitKind === 'amended'
-          ? '\n\nNote: `git commit --amend` rewrites the last commit; amending via bash is especially not allowed. ' +
-            'Make a fresh commit with the git_commit tool instead, and never amend unless the user explicitly asks.'
-          : '';
-      return {
-        output:
-          'Error: Use the git_commit tool instead of running git commit via bash. ' +
-          'The git_commit tool ensures proper Co-Authored-By attribution is always included.\n\n' +
-          'Example: git_commit({ message: "your commit message", files: ["file1.ts", "file2.ts"] })' +
-          amendNote,
-        isError: true,
-      };
+      return { output: gitCommitBlockOutput(commitKind), isError: true };
     }
 
     if (context.detachedMode) {
