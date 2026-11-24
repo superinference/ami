@@ -3,330 +3,18 @@ import { isTerminalTaskStatus } from '../process-manager';
 import { normalizePermissionMode, PermissionMode, PERMISSION_MODES } from '../permissions';
 import { isTeammatesEnabled } from './tool-gates';
 import { processSandboxPermissionResponse } from './sandbox-permission-registry';
-import { log as coreLog } from '../logger';
-
-// --- Gated lifecycle diagnostic trace ---------------------------------------
-// The teammate mailbox is a multi-agent coordination surface where "my message
-// never arrived" / "the shutdown wasn't re-sent" failures are otherwise invisible.
-// Mirrors the reference's InProcessBackend `logForDebugging('[InProcessBackend] ...')`
-// opt-in lifecycle trace (utils/swarm/backends/InProcessBackend.ts): every delivery
-// and handshake transition emits one terse, prefixed line through AMI's CANONICAL
-// logger (reused — not a second logging facility, per the no-duplication rule) at
-// VERBOSE level, so it is OFF by default (the logger's default min level is 'debug')
-// and only surfaces when a developer/CI sets AMI_DEBUG_LOG_LEVEL=verbose (optionally
-// narrowed with AMI_DEBUG_COMPONENTS=teammate-mailbox). No-op cost beyond the
-// logger's leading level check when disabled.
-const MAILBOX_TRACE_COMPONENT = 'teammate-mailbox';
-
-/**
- * Emit one gated, verbose lifecycle-trace line for a mailbox transition. Always
- * routes through the canonical {@link coreLog} (which performs the level/component
- * gating); callers never guard it, so each transition is a single terse statement.
- */
-function traceMailbox(event: string, data?: Record<string, unknown>): void {
-  coreLog(MAILBOX_TRACE_COMPONENT, event, data, 'verbose');
-}
-
-export interface AgentMessage {
-  /**
-   * Stable per-message identifier, assigned at enqueue. It is the ack handle for
-   * crash-safe at-least-once delivery: a consumer peeks (reads without removing),
-   * processes, then acks by id (markMailboxDelivered). An unacked message is NOT
-   * removed, so it is redelivered on the next peek — a consumer that crashes mid-
-   * processing never drops the message, and acking by id (not index) is immune to
-   * a concurrent enqueue arriving between the peek and the ack.
-   *
-   * Optional only at the type level: the single canonical append site
-   * (appendCapped) assigns one when absent, so every message actually sitting in a
-   * mailbox always has an id.
-   */
-  id?: string;
-  from: string;
-  to: string;
-  content: string;
-  summary?: string;
-  timestamp: number;
-  /**
-   * Origin category of the message, classified at the single canonical delivery
-   * site (enqueue) so every queued/handed-off message carries it. Lets a consumer
-   * filter/route by where a message came from (e.g. relay 'teammate' chatter but
-   * drain 'system'/'task' control traffic differently) without re-parsing the
-   * content. Mirrors the reference's mailbox `Message.source` (MessageSource). Set
-   * automatically — a caller never supplies it.
-   */
-  source?: MessageSource;
-  /**
-   * The sender's assigned display color, resolved from the trusted team roster at
-   * the single canonical delivery site (enqueue) — NOT model-supplied. Lets a
-   * consumer render an incoming teammate/peer message in that teammate's own color
-   * so concurrent agents stay visually distinguishable. Mirrors the reference's
-   * per-message `color` (teammateMailbox TeammateMessage.color / UserTeammateMessage),
-   * sourced from the same round-robin palette team.ts assigns on spawn. Undefined
-   * when the sender is not a colored roster member (e.g. the bare lead session).
-   */
-  color?: string;
-  /**
-   * Urgency discriminator for a plain-text message: `proactive` marks an unsolicited
-   * surfacing the recipient needs to see NOW (a blocker, a completion while it was
-   * away) rather than a `normal` reply. Mirrors the reference's BriefTool
-   * `status: 'normal' | 'proactive'` (tools/BriefTool/BriefTool.ts) — AMI's send_message
-   * IS the model→teammate/user channel, so the same discriminator rides here. Stamped
-   * from the model-supplied `status` at the single canonical delivery site; absent
-   * (treated as `normal`) when the sender does not set it. Consumed by
-   * {@link drainMailboxPrioritized} (a proactive peer message drains ahead of ordinary
-   * peer chatter so it is not starved) and surfaced on the send result's metadata so a
-   * frontend can special-case it (e.g. a notification). Only meaningful on plain text —
-   * a structured control message carries its own lifecycle semantics.
-   */
-  status?: MessageStatus;
-  /**
-   * Receive-side marker set when a message was delivered from the FILE-BACKED
-   * cross-process inbox ({@link ./mailbox-fs}) — i.e. it originated in a SEPARATE
-   * OS process / session of the same swarm, not this process's in-memory mailbox.
-   * Mirrors the reference wrapping an inbound out-of-session message as
-   * `<cross-session-message from=...>` so the recipient knows the message crossed a
-   * session boundary. Never persisted (stripped before the message is written to the
-   * durable inbox); stamped only on the drained copy a local consumer receives.
-   */
-  crossSession?: boolean;
-}
-
-/**
- * Urgency discriminator for a plain-text teammate/user message. Mirrors the reference
- * Code's BriefTool status enum:
- * - `normal`    — an ordinary reply to something just said (the default).
- * - `proactive` — an unsolicited surfacing the recipient needs to see now (a
- *                 blocker, a completion while it was away, an unprompted update).
- */
-export const MESSAGE_STATUS = ['normal', 'proactive'] as const;
-export type MessageStatus = (typeof MESSAGE_STATUS)[number];
+import '../logger';
+import { TEAM_LEAD_NAME, coerceApprove, compactInput, formatTaskCompleted, generateRequestId, traceMailbox } from './send-message-agent-message';
+import type { AgentMessage, IdleNotification, IncomingRelay, MessageSource, MessageStatus, StructuredMessage, TeamPermissionUpdate, TeammateTerminated } from './send-message-agent-message';
+import { MAX_MAILBOX, MAX_MESSAGE_CHARS, MAX_OUTBOUND_DM_HISTORY, coerceMessageContent, deriveSummary, fsMailboxEnabled, parseAddress, requestCorrelation, requestOriginTag, responseCorrelation, sendToUdsSocket, validationError } from './send-message-send-to-uds-socket';
+import type { DeliveryWarning, DirectMessageResult, MailboxWaiter, OutboundDm } from './send-message-send-to-uds-socket';
+export { MAX_INPUT_PREVIEW_CHARS, MESSAGE_SOURCES, MESSAGE_STATUS, TEAM_LEAD_NAME, compactInput, generateRequestId } from './send-message-agent-message';
+export type { AgentMessage, IdleNotification, IncomingRelay, MessageSource, MessageStatus, ModeSetRequest, PermissionRequest, PermissionResponse, PlanApprovalRequest, PlanApprovalResponse, SandboxPermissionRequest, SandboxPermissionResponse, ShutdownRequest, ShutdownResponse, StructuredMessage, TaskAssignment, TeamPermissionUpdate, TeammateTerminated } from './send-message-agent-message';
+export { DELIVERY_WARNINGS, MAX_MAILBOX, MAX_MESSAGE_CHARS, MAX_OUTBOUND_DM_HISTORY, MAX_SUMMARY_PREVIEW_CHARS, SEND_MESSAGE_VALIDATION_ERROR_CODE, coerceMessageContent, deriveSummary, describeDeliveryHold, parseAddress, parseRequestId, sendToUdsSocket, shouldSuppressSendMessageTranscript } from './send-message-send-to-uds-socket';
+export type { DeliveryWarning, DirectMessageResult, PeerAddress, SendMessageCorrelation } from './send-message-send-to-uds-socket';
 
 /** The accepted {@link MessageStatus} values, for input validation. */
 const MESSAGE_STATUSES = new Set<MessageStatus>(['normal', 'proactive']);
-
-/**
- * The origin category of a mailbox message. Mirrors the reference's
- * utils/mailbox.ts `MessageSource`:
- * - `user`     — authored by the user-facing lead/main session.
- * - `teammate` — plain conversational text from another agent.
- * - `system`   — a structured control-plane message (shutdown/plan/permission/mode).
- * - `task`     — a work-lifecycle control message (task_assignment / idle_notification).
- * - `tick`     — reserved for timer/heartbeat-injected messages (not produced by
- *                send_message itself; kept for schema parity with consumers).
- */
-export const MESSAGE_SOURCES = ['user', 'teammate', 'system', 'tick', 'task'] as const;
-export type MessageSource = (typeof MESSAGE_SOURCES)[number];
-
-/**
- * The canonical name of the team lead / main session. Control messages
- * (shutdown/plan/permission responses) are authorized against and routed to
- * this identity. Mirrors the reference's `TEAM_LEAD_NAME`.
- */
-export const TEAM_LEAD_NAME = 'main';
-
-// --- Typed structured-message protocol -------------------------------------
-// A discriminated union of control messages that ride over the same mailbox as
-// plain text. Each is validated structurally before routing so a malformed
-// control message is rejected rather than silently delivered as opaque text.
-
-export interface ShutdownRequest {
-  type: 'shutdown_request';
-  reason?: string;
-  // Optional on the wire: a model may omit it and send_message auto-generates a
-  // structured id (generateRequestId) before queueing so the recipient always
-  // receives one to echo back. Mirrors the reference's SendMessageTool, which
-  // never requires the caller to invent a request id for a *request*.
-  requestId?: string;
-  // The requesting agent's identity, stamped from the trusted sender at send
-  // time so the shutdown payload is self-contained (the recipient knows who
-  // asked without reading the envelope). Mirrors the reference's
-  // ShutdownRequestMessage `from` field (createShutdownRequestMessage).
-  from?: string;
-}
-export interface ShutdownResponse {
-  type: 'shutdown_response';
-  requestId: string;
-  approve: boolean;
-  reason?: string;
-  // Teardown-routing hints echoed back to the lead so it can tear down the right
-  // backend/pane for the exiting teammate without a lookup. Both optional (an
-  // in-process teammate has neither). Mirrors the reference's
-  // ShutdownApprovedMessage `paneId` / `backendType`.
-  paneId?: string;
-  backendType?: string;
-}
-export interface PlanApprovalRequest {
-  type: 'plan_approval_request';
-  // Optional on the wire — auto-generated before queueing when omitted.
-  requestId?: string;
-  planContent: string;
-  planFilePath?: string;
-}
-export interface PlanApprovalResponse {
-  type: 'plan_approval_response';
-  requestId: string;
-  approve: boolean;
-  feedback?: string;
-  // The permission mode the approving lead grants the teammate to inherit once
-  // its plan is approved (plan→default, else the lead's current mode). Carried on
-  // the response so the approved worker can exit plan-mode into the right posture
-  // without a second round-trip. Mirrors the reference's PlanApprovalResponseMessage
-  // `permissionMode` (validated via PermissionModeSchema).
-  permissionMode?: PermissionMode;
-}
-export interface PermissionRequest {
-  type: 'permission_request';
-  // Optional on the wire — auto-generated before queueing when omitted.
-  requestId?: string;
-  tool: string;
-  description: string;
-  /**
-   * The tool_use id of the worker's pending call the lead is being asked to
-   * approve. Lets the resolver correlate the decision back to the exact blocked
-   * invocation (not just the worker). Mirrors the reference's SwarmPermissionRequest
-   * `toolUseId` (utils/swarm/permissionSync.ts). Optional — a forward that predates
-   * a concrete tool_use id omits it.
-   */
-  toolUseId?: string;
-  /**
-   * The arguments of the worker's pending tool call, so the lead can inspect WHAT
-   * the worker wants to run (e.g. the exact bash command / file path) before
-   * approving, and optionally return an edited `updatedInput`. Mirrors the reference
-   * Code's SwarmPermissionRequest `input`. Must be a plain object; a non-object is
-   * dropped (the request still forwards with its tool/description).
-   */
-  input?: Record<string, unknown>;
-}
-export interface PermissionResponse {
-  type: 'permission_response';
-  requestId: string;
-  approve: boolean;
-  /**
-   * Human-readable rejection reason the resolver attaches when denying, carried
-   * back to the worker so it understands WHY the request was refused (not just
-   * that it was). Mirrors the reference's SwarmPermissionResolution `feedback`
-   * (utils/swarm/permissionSync.ts) round-tripped via pollForResponse.
-   */
-  feedback?: string;
-  /**
-   * The resolver's edited tool input: a leader may approve a worker's tool call
-   * but modify its arguments first (e.g. tighten a glob, redact a flag) and the
-   * worker must run the EDITED input, not its original. Carried on the response so
-   * the worker's permission path can substitute it. Mirrors the reference's
-   * SwarmPermissionResolution `updatedInput`.
-   */
-  updatedInput?: Record<string, unknown>;
-  /**
-   * Who resolved the forwarded request: the team `leader` (the normal path — a
-   * worker forwarded its prompt up and the lead decided) or the `worker` itself
-   * (it un-blocked locally, e.g. a timeout/self-approval fallback). Lets a consumer
-   * attribute the decision. Mirrors the reference's SwarmPermissionResolution
-   * `resolvedBy` enum. Optional; absent defaults to a leader-originated decision.
-   */
-  resolvedBy?: 'leader' | 'worker';
-}
-/**
- * A lifecycle notice that a teammate has terminated (exited or was force-killed),
- * surfaced so a consumer can release the dead agent's work and stop routing to it.
- * `message` is an optional human-readable note. Mirrors the reference's
- * teammate_terminated mailbox message (killTeammate injects it into the lead's
- * inbox; UserTeammateMessage filters it out of the model-facing render — it is a
- * silent control-plane signal, never conversational chatter).
- */
-export interface TeammateTerminated {
-  type: 'teammate_terminated';
-  message?: string;
-}
-/**
- * A worker asks the lead to approve network egress to a specific host that the
- * sandbox blocked. Routed to the lead (like permission_request). Mirrors the reference
- * Code's SandboxPermissionRequestMessage — AMI flattens the reference's `hostPattern`
- * to a bare `host` and derives the worker identity from the trusted sender
- * rather than carrying workerId/workerName on the wire.
- */
-export interface SandboxPermissionRequest {
-  type: 'sandbox_permission_request';
-  // Optional on the wire — auto-generated before queueing when omitted.
-  requestId?: string;
-  host: string;
-}
-/**
- * The lead's decision on a worker's blocked-host egress request, routed back to
- * the named worker. Mirrors the reference's SandboxPermissionResponseMessage
- * (requestId / host / allow).
- */
-export interface SandboxPermissionResponse {
-  type: 'sandbox_permission_response';
-  requestId: string;
-  host: string;
-  allow: boolean;
-}
-/**
- * The lead broadcasts (or directs) a permission-rule change to teammates so the
- * whole team adopts an "always allow/deny/ask" decision without re-prompting
- * each worker. Lead-only. Mirrors the reference's TeamPermissionUpdateMessage
- * (permissionUpdate.rules/behavior + directoryPath + toolName), flattened to the
- * fields AMI's permission layer consumes.
- */
-export interface TeamPermissionUpdate {
-  type: 'team_permission_update';
-  toolName: string;
-  behavior: 'allow' | 'deny' | 'ask';
-  rule?: string;
-  directoryPath?: string;
-}
-/**
- * A lead assigns a unit of work to a teammate. Routed to the named teammate (not
- * broadcast). `assignedBy` is auto-filled from the trusted sender when omitted so
- * the recipient always knows who assigned it. Mirrors the reference's
- * teammateMailbox TaskAssignmentMessage.
- */
-export interface TaskAssignment {
-  type: 'task_assignment';
-  taskId: string;
-  subject: string;
-  description?: string;
-  assignedBy?: string;
-}
-/**
- * A teammate reports it has gone idle / finished its turn, surfaced to the lead so
- * the lead can reassign work without polling. Mirrors the reference's
- * IdleNotificationMessage (idleReason / completedTaskId / completedStatus /
- * failureReason / summary — all optional).
- */
-export interface IdleNotification {
-  type: 'idle_notification';
-  idleReason?: 'available' | 'interrupted' | 'failed';
-  summary?: string;
-  completedTaskId?: string;
-  completedStatus?: 'resolved' | 'blocked' | 'failed';
-  failureReason?: string;
-}
-/**
- * A lead requests a teammate switch to a given permission mode. Lead-only; routed
- * to the named teammate. The mode is validated through the single canonical
- * acceptance boundary (normalizePermissionMode). Mirrors the reference's
- * ModeSetRequestMessage / createModeSetRequestMessage.
- */
-export interface ModeSetRequest {
-  type: 'mode_set_request';
-  mode: PermissionMode;
-}
-
-export type StructuredMessage =
-  | ShutdownRequest
-  | ShutdownResponse
-  | PlanApprovalRequest
-  | PlanApprovalResponse
-  | PermissionRequest
-  | PermissionResponse
-  | SandboxPermissionRequest
-  | SandboxPermissionResponse
-  | TeamPermissionUpdate
-  | TaskAssignment
-  | IdleNotification
-  | ModeSetRequest
-  | TeammateTerminated;
 
 const STRUCTURED_TYPES = new Set([
   'shutdown_request', 'shutdown_response', 'plan_approval_request',
@@ -340,16 +28,6 @@ const STRUCTURED_TYPES = new Set([
 const IDLE_REASONS = new Set(['available', 'interrupted', 'failed']);
 const COMPLETED_STATUSES = new Set(['resolved', 'blocked', 'failed']);
 const PERMISSION_BEHAVIORS = new Set(['allow', 'deny', 'ask']);
-
-/**
- * Providers sometimes serialize booleans as strings; accept both. The decision
- * key is read as either `approve` (AMI) or `approved` (the reference's field name)
- * so a response authored to either convention parses identically.
- */
-function coerceApprove(o: Record<string, unknown>): boolean {
-  const v = o.approve ?? o.approved;
-  return v === true || v === 'true';
-}
 
 /**
  * Parse+validate a structured control message from raw content. Returns the
@@ -594,26 +272,6 @@ export function getShutdownMessageSummary(content: string, from?: string): strin
 }
 
 /**
- * Upper bound (chars) on the compact one-line projection of a permission request's
- * pending tool `input`, so a large args blob never bloats the leader-facing summary.
- */
-export const MAX_INPUT_PREVIEW_CHARS = 120;
-
-/**
- * Compact one-line, length-bounded projection of a tool-call input object for the
- * leader-facing permission-request summary. Collapses whitespace in the JSON and
- * caps it at {@link MAX_INPUT_PREVIEW_CHARS} (with an ellipsis) so the lead sees the
- * shape of the pending args without a multi-line blob. Falls back to '{…}' if the
- * object cannot be stringified (e.g. a cyclic structure).
- */
-export function compactInput(input: Record<string, unknown>): string {
-  let s: string;
-  try { s = JSON.stringify(input); } catch { return '{…}'; }
-  s = s.replace(/\s+/g, ' ').trim();
-  return s.length > MAX_INPUT_PREVIEW_CHARS ? s.slice(0, MAX_INPUT_PREVIEW_CHARS - 1) + '…' : s;
-}
-
-/**
  * A concise, human/model-readable one-line summary of any structured control
  * message, used to relay it into context WITHOUT exposing the raw JSON. Returns
  * null for plain text or a malformed protocol payload (nothing meaningful to
@@ -723,36 +381,6 @@ export function toAutoClassifierInput(content: string, to: string): string {
   }
 }
 
-// --- Receive-side relay router ----------------------------------------------
-// A consumer draining a mailbox must NOT feed every message verbatim into the
-// model's context. the reference runs an ordered router over each incoming teammate
-// message (components/messages/UserTeammateMessage.tsx L62-136): it pre-filters
-// exit/lifecycle signals (shutdown-approved, teammate_terminated), silently drops
-// `idle_notification`, renders a completed task as a terse `✓ Completed task #id`
-// line, and summarizes every other structured control message — only plain text
-// is relayed verbatim. This is the single canonical receive-side equivalent.
-
-/**
- * The verdict for relaying ONE incoming mailbox message into a consumer's
- * context, produced by the canonical receive-side router {@link relayIncomingMessage}.
- * `drop: true` marks a lifecycle control signal that is processed silently and
- * MUST NOT be surfaced to the model; otherwise `text` is the concise body to relay.
- */
-export interface IncomingRelay {
-  drop: boolean;
-  text?: string;
-}
-
-/**
- * Terse one-line completion marker for a finished task, mirroring the reference's
- * `✓ Completed task #id (subject)` render (UserTeammateMessage L117-136). The
- * subject is parenthesized only when present.
- */
-function formatTaskCompleted(taskId: string | undefined, subject?: string): string {
-  const subj = subject ? ` (${subject})` : '';
-  return `✓ Completed task #${taskId ?? '?'}${subj}`;
-}
-
 /**
  * Ordered receive-side router: given a raw mailbox message, decide whether it is
  * relayed into the consumer's context and, if so, as what concise body. Mirrors
@@ -820,165 +448,7 @@ export function relayIncomingMessage(content: string, from?: string): IncomingRe
   return { drop: false, text: content };
 }
 
-// --- Structured request identifiers ----------------------------------------
-// A request id is self-describing: `{requestType}-{timestamp}@{agentId}`, e.g.
-// `shutdown-1702500000000@researcher`. It encodes who the request is about and
-// when it was raised, so a response can be correlated back without a side table
-// and a stale/replayed id is detectable. Mirrors the reference's utils/agentId.ts
-// (generateRequestId / parseRequestId) so ids are interchangeable across the two
-// implementations.
-
-/** Format a request id as `{requestType}-{timestamp}@{agentId}`. */
-export function generateRequestId(requestType: string, agentId: string): string {
-  return `${requestType}-${Date.now()}@${agentId}`;
-}
-
-/**
- * Parse a request id back into its parts, with defensive guards: returns null if
- * the `@` separator is missing, the `{type}-{timestamp}` prefix has no `-`, or
- * the timestamp is not a number. A caller can therefore trust a non-null result
- * and treat null as "not one of our ids" rather than crashing on a malformed one.
- */
-export function parseRequestId(
-  requestId: string,
-): { requestType: string; timestamp: number; agentId: string } | null {
-  const atIndex = requestId.indexOf('@');
-  if (atIndex === -1) return null;
-  const prefix = requestId.slice(0, atIndex);
-  const agentId = requestId.slice(atIndex + 1);
-  const lastDash = prefix.lastIndexOf('-');
-  if (lastDash === -1) return null;
-  const requestType = prefix.slice(0, lastDash);
-  const timestamp = parseInt(prefix.slice(lastDash + 1), 10);
-  if (Number.isNaN(timestamp)) return null;
-  return { requestType, timestamp, agentId };
-}
-
-/**
- * Build a short " [re: <type> request for <agent>]" annotation for a response
- * message when its echoed request id is one of our structured ids. Returns ''
- * for a free-form/foreign id (parseRequestId returns null), so a response that
- * doesn't carry a self-describing id is simply unannotated rather than rejected.
- */
-function requestOriginTag(requestId: string): string {
-  const origin = parseRequestId(requestId);
-  return origin ? ` [re: ${origin.requestType} request for ${origin.agentId}]` : '';
-}
-
-/**
- * Structured-output correlation fields attached to a control-message send result,
- * riding the ToolResult `metadata` channel (the same programmatic-contract channel
- * {@link DeliveryWarning}/`errorCode` use). Mirrors the reference's
- * SendMessageToolOutput discriminators (tools/SendMessageTool/UI.tsx L21-26):
- *  - a REQUEST send carries `request_id` + `target` so a later response can be
- *    correlated back to the exact request and recipient;
- *  - a RESPONSE send additionally carries `routing: true`, marking it a
- *    fire-and-forward routed reply a consumer can correlate and suppress from the
- *    transcript (the reference's `routing` null-render branch).
- * ADDITIVE only — delivery behavior is unchanged; this is a structured hint a
- * programmatic consumer reads off the result.
- */
-export interface SendMessageCorrelation {
-  request_id: string;
-  target: string;
-  routing?: true;
-}
-
-/** Correlation metadata for a REQUEST-type send (no routing marker). */
-function requestCorrelation(requestId: string, target: string): SendMessageCorrelation {
-  return { request_id: requestId, target };
-}
-
-/** Correlation metadata for a RESPONSE-type send (fire-and-forward, suppressible). */
-function responseCorrelation(requestId: string, target: string): SendMessageCorrelation {
-  return { routing: true, request_id: requestId, target };
-}
-
-/**
- * Decide whether a send_message result's human confirmation should be ABSORBED
- * from the transcript (rendered as nothing) rather than echoed as a dim line. The
- * exact mirror of the reference's renderToolResultMessage two null-render branches
- * (tools/SendMessageTool/UI.tsx L21-26), keyed on the SAME {@link SendMessageCorrelation}
- * shape AMI stamps onto a control-send's `metadata`:
- *  - a truthy `routing` field → a fire-and-forward / hub-routed RESPONSE send
- *    (shutdown/plan/permission/sandbox response) a consumer correlates and suppresses;
- *  - both `request_id` AND `target` present → an async REQUEST/response correlation
- *    shape (a forwarded request awaiting a correlated reply).
- * A plain DM or broadcast carries neither (only `status`/`deliveryWarning`), so it
- * still falls through to be displayed — matching the reference, where only a bare
- * `result.message` is rendered. Purely a UI-noise decision; the model still receives
- * the tool_result in context. Returns false for absent/foreign metadata.
- */
-export function shouldSuppressSendMessageTranscript(metadata: Record<string, unknown> | undefined): boolean {
-  if (!metadata) return false;
-  if (metadata.routing) return true;
-  if (metadata.request_id !== undefined && metadata.target !== undefined) return true;
-  return false;
-}
-
-// --- Recipient address schemes ---------------------------------------------
-// A `to` value is normally a bare teammate name, but it may be a scheme-qualified
-// cross-session address: `uds:<socket-path>` for a local peer process, or
-// `bridge:<session-id>` for a Remote Control peer. A bare absolute path is a
-// legacy UDS form. Everything else is an in-session teammate name ('other').
-// Mirrors the reference's utils/peerAddress.ts parseAddress.
-
-export type PeerAddress = { scheme: 'uds' | 'bridge' | 'other'; target: string };
-
-/** Parse a URI-style recipient address into scheme + target. */
-export function parseAddress(to: string): PeerAddress {
-  if (to.startsWith('uds:')) return { scheme: 'uds', target: to.slice(4) };
-  if (to.startsWith('bridge:')) return { scheme: 'bridge', target: to.slice(7) };
-  // Legacy bare socket path → UDS (so replies to an old-style sender route to
-  // the socket, not into teammate name resolution). No bare-session-id fallback:
-  // a prefix-less id would hijack real teammate names.
-  if (to.startsWith('/')) return { scheme: 'uds', target: to };
-  return { scheme: 'other', target: to };
-}
-
-/**
- * Deliver a payload to a local peer over a Unix-domain socket (one connect →
- * write one newline-delimited JSON frame → close). Resolves when the frame is
- * flushed and the socket closes; rejects on any connection/write error so the
- * caller can report an out-of-process delivery failure instead of silently
- * dropping it. Mirrors the reference's udsClient.sendToUdsSocket.
- */
-export function sendToUdsSocket(socketPath: string, payload: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const done = (err?: Error) => {
-      if (settled) return;
-      settled = true;
-      if (err) reject(err); else resolve();
-    };
-    // Lazy require keeps `net` out of tool-enumeration import cost.
-    const net = require('net') as typeof import('net');
-    const sock = net.createConnection(socketPath);
-    sock.on('error', (e: Error) => done(e));
-    sock.on('connect', () => {
-      const frame = payload.endsWith('\n') ? payload : payload + '\n';
-      sock.write(frame, () => sock.end());
-    });
-    sock.on('close', () => done());
-  });
-}
-
 const mailboxes = new Map<string, AgentMessage[]>();
-
-// --- Cross-process (file-backed) mailbox transport --------------------------
-// The in-memory `mailboxes` Map reaches only teammates spawned IN this process.
-// When `AMI_MAILBOX_FS` is set AND a team directory is established, a durable,
-// per-team file inbox ({@link ./mailbox-fs}) ALSO carries each delivery so a
-// teammate running as a SEPARATE OS process in the same swarm is reachable. The
-// Map stays the default/fallback transport; the file inbox is purely additive.
-// Resolution is lazy (and env-gated first) so the common no-team / disabled path
-// pays nothing and pulls in no fs/lock machinery.
-function fsMailboxEnabled(): boolean {
-  const v = process.env.AMI_MAILBOX_FS;
-  if (!v) return false;
-  const lc = v.toLowerCase();
-  return lc !== '0' && lc !== 'false' && lc !== 'off' && lc !== 'no';
-}
 
 /**
  * The active cross-process mailbox binding, or null when the feature is disabled or
@@ -1014,57 +484,7 @@ export function listCrossSessionPeers(): string[] {
   if (!active) return [];
   try { return active.mod.listInboxPeers(active.loc); } catch { return []; }
 }
-
-// --- Last outbound peer-DM tracking -----------------------------------------
-// When a teammate goes idle it should tell the lead what it was last coordinating
-// on, WITHOUT the model having to restate it. the reference derives that from the
-// conversation (utils/teammateMailbox.ts getLastPeerDmSummary: backward-scan the
-// turn for the last SendMessage tool_use whose `to` is a peer — not "*" and not
-// the team lead — formatted as `[to <name>] <summary>`). AMI has no raw
-// conversation here, so the equivalent is captured at the send site: every plain-
-// text DM a sender emits is recorded, and the idle path scans that record
-// backward for the most recent PEER DM. A non-destructive, predicate-filtered
-// read (never mutates the record) — the mailbox is untouched.
-/**
- * Upper bound (chars) on a derived plain-text preview — a short, 5-10 word UI hint,
- * not the full message. Mirrors the reference's `message.slice(0, 80)` preview length.
- */
-export const MAX_SUMMARY_PREVIEW_CHARS = 80;
-
-/**
- * Derive a short, whitespace-collapsed UI preview from a plain-text message. the reference
- * Code REQUIRES a `summary` on every string message (SendMessageTool validateInput)
- * so the UI always has a 5-10 word preview; AMI keeps the send working (superset —
- * no hard reject that would break the engine's plain-text teammate relay) and instead
- * DEFAULTS this preview onto the stored message when the model omits one. Collapses
- * runs of whitespace, keeps at most ~10 words, and caps the result at
- * {@link MAX_SUMMARY_PREVIEW_CHARS}. Returns '' for blank content.
- */
-export function deriveSummary(content: string): string {
-  const collapsed = content.replace(/\s+/g, ' ').trim();
-  if (!collapsed) return '';
-  const words = collapsed.split(' ').slice(0, 10).join(' ');
-  return words.length > MAX_SUMMARY_PREVIEW_CHARS
-    ? words.slice(0, MAX_SUMMARY_PREVIEW_CHARS).trimEnd()
-    : words;
-}
-
-interface OutboundDm {
-  /** The recipient's bare name. */
-  to: string;
-  /** The model-supplied summary, else a truncation of the message content. */
-  summary: string;
-  /** True when `to` is a peer (not "*" and not the team lead). */
-  peer: boolean;
-}
 const outboundDms = new Map<string, OutboundDm[]>();
-
-/**
- * Bound on how many recent outbound DMs we retain per sender. Only the most
- * recent peer DM is ever read (getLastPeerDmSummary), so a small window is ample;
- * the cap keeps the record from growing without bound for a long-lived sender.
- */
-export const MAX_OUTBOUND_DM_HISTORY = 50;
 
 /**
  * Record one plain-text direct message a sender emitted, so the idle path can
@@ -1178,18 +598,6 @@ export function notifyLeadTeammateTerminated(agentName: string, message?: string
   });
   return true;
 }
-
-// --- Predicate-filtered + blocking consumption (Mailbox parity) -------------
-// Mirrors the reference's utils/mailbox.ts Mailbox: in addition to the drain-all
-// pollMailbox and the non-destructive peek/ack, a caller can SELECT a single
-// message by an arbitrary predicate (pollMessage) and AWAIT a matching one that
-// has not arrived yet (receiveMessage). A pending receiveMessage registers a
-// Waiter; the canonical delivery site (enqueue) scans waiters first and, on a
-// match, resolves that promise DIRECTLY — the message is handed off and never
-// enqueued (bypassing the queue, so it is not also drained later). This lets a
-// requester correlate a specific response (by requestId) without draining
-// unrelated traffic.
-type MailboxWaiter = { fn: (msg: AgentMessage) => boolean; resolve: (msg: AgentMessage) => void };
 const mailboxWaiters = new Map<string, MailboxWaiter[]>();
 
 /**
@@ -1209,27 +617,6 @@ let messageSeq = 0;
 function nextMessageId(): string {
   return `m${++messageSeq}-${Date.now().toString(36)}`;
 }
-
-/**
- * Hard upper bound on how many undelivered messages a single agent's mailbox may
- * retain. Without a cap a never-draining (crashed/evicted) recipient that keeps
- * being written to grows the buffer without limit — a memory-exhaustion DoS.
- * Mirrors the reference's appendCappedMessage (InProcessTeammateTask/types.ts):
- * append is bounded by dropping the OLDEST entries, keeping the newest MAX. The
- * cap is generous (a real drain happens every tool round) so legitimate traffic
- * is never lost in practice; it only engages on a pathological backlog.
- */
-export const MAX_MAILBOX = 1000;
-
-/**
- * Hard upper bound on the size (in characters) of a single message's content.
- * Complements MAX_MAILBOX: the mailbox cap bounds the *count* of retained
- * messages, this bounds the *size* of each one, so a single oversized payload
- * (or a broadcast of one, fanned into every mailbox) cannot exhaust memory.
- * The limit is generous — far larger than any legitimate coordination message —
- * so it only engages on a pathological/abusive payload.
- */
-export const MAX_MESSAGE_CHARS = 100_000;
 
 /**
  * Hard upper bound on how long (ms) an undelivered message may sit in a mailbox
@@ -1838,26 +1225,6 @@ export function readDeliveryHold(toRaw: string, to: string, context: ToolContext
 }
 
 /**
- * Render a {@link DeliveryHold} into a one-line, honest "Queued. …" receipt naming
- * WHY the message waits, so the sender can reason about the peer's state. Mirrors
- * Orca's describeMailboxDeliveryHold per-kind wording.
- */
-export function describeDeliveryHold(recipient: string, hold: DeliveryHold): string {
-  switch (hold.kind) {
-    case 'busy':
-      return `Queued. ${recipient} is busy (running, not settled at its prompt); it will pick this up at its next tool round.`;
-    case 'blocked':
-      return `Queued. ${recipient} is blocked (${hold.reason}); delivery is held until that clears.`;
-    case 'detached':
-      return `Queued. ${recipient} is not attached/online yet; delivery waits until it comes up.`;
-    case 'failed-turn':
-      return `Queued. ${recipient}'s last turn failed; delivery waits for its next turn rather than being dropped.`;
-    case 'unreachable':
-      return `Queued. No live agent answers to "${hold.recipient}" (check the name); delivery waits in case it comes online.`;
-  }
-}
-
-/**
  * Deliver a message the durable parked mailbox ({@link common/src/mailbox}) has
  * decided is now settled, routing it through the SAME canonical in-session
  * {@link enqueue} primitive a direct send uses — so a redriven parked message is
@@ -1926,67 +1293,6 @@ function knownRecipientNames(exclude?: string): string[] {
 }
 
 /**
- * Machine-readable error code carried on every input-SHAPE validation rejection of
- * a send_message call — empty `to`, an empty scheme-address target, an `@` in a bare
- * `to`, or empty content. Mirrors the reference's SendMessageTool.validateInput, which
- * returns `errorCode: 9` for exactly these input-shape rejections. AMI validates
- * inline in execute() rather than a separate validateInput pass, so the code rides on
- * the ToolResult `metadata` channel (the same structured-hints field cron-delete uses
- * for its `errorCode`), letting a programmatic consumer distinguish a malformed-input
- * rejection from a downstream routing/permission error.
- */
-export const SEND_MESSAGE_VALIDATION_ERROR_CODE = 9;
-
-/**
- * Machine-readable classification of a SOFT delivery warning on a plain-text send,
- * carried on the ToolResult `metadata.deliveryWarning` channel ALONGSIDE the human
- * warning string (the same structured-hints channel {@link SEND_MESSAGE_VALIDATION_ERROR_CODE}
- * rides on). Mirrors the reference's sendDirectMemberMessage typed error discriminants
- * (utils/directMemberMessage.ts DirectMessageResult.error):
- *  - `unknown_recipient` — a team roster IS established but the recipient is not a
- *    member of it (a likely typo / stale name);
- *  - `no_team_context`   — no roster is established, but other agents are live this
- *    session and the recipient is not among them.
- * AMI still QUEUES the message (its deliberate queue-to-coming-online superset — never
- * a hard reject that would break a teammate that is still spawning), so this is an
- * ADDITIVE structured hint: a programmatic consumer gets the same classification
- * the reference surfaces as a hard failure, without regressing AMI's delivery behavior.
- */
-export const DELIVERY_WARNINGS = ['unknown_recipient', 'no_team_context'] as const;
-export type DeliveryWarning = (typeof DELIVERY_WARNINGS)[number];
-
-/** Build an input-shape validation error carrying {@link SEND_MESSAGE_VALIDATION_ERROR_CODE}. */
-function validationError(message: string): ToolResult {
-  return { output: `Error: ${message}`, isError: true, metadata: { errorCode: SEND_MESSAGE_VALIDATION_ERROR_CODE } };
-}
-
-// --- User-facing @agent-name direct message (bypasses the model) ------------
-// A human can hand a message straight to a named teammate's mailbox from the
-// prompt box WITHOUT spending a model turn, mirroring the reference's
-// utils/directMemberMessage.ts (parseDirectMemberMessage + sendDirectMemberMessage).
-// AMI exposes teammate messaging to the MODEL via send_message; this is the
-// complementary USER fast path. The parsing/detection lives in common
-// (direct-member-mode.ts, the input-mode convention); THIS is the real mailbox
-// delivery leg, reusing the canonical in-session transport (enqueue +
-// recordOutboundDm + isReachable/roster), so there is no second messaging path.
-
-/**
- * Result of a user-initiated direct member message. Mirrors the reference's
- * DirectMessageResult discriminants:
- *  - `success` — delivered to the named teammate's mailbox (from the lead/user);
- *  - `no_team_context`  — no team roster is established and no agent is live, so
- *    there is nobody to direct-message;
- *  - `unknown_recipient` — a team IS active but the name is not a reachable member
- *    (a likely typo). Unlike the MODEL tool (which soft-queues to a coming-online
- *    teammate), the user fast path HARD-fails an unknown name: the CLI then falls
- *    through to a normal model turn, so AMI's `@agent-<name>` composer mention is
- *    never hijacked by this shortcut.
- */
-export type DirectMessageResult =
-  | { success: true; recipientName: string; from: string }
-  | { success: false; error: 'no_team_context' | 'unknown_recipient'; recipientName?: string };
-
-/**
  * Deliver a user-typed `@agent-name message` straight to that teammate's mailbox,
  * bypassing the model. The sender is the lead/user ({@link TEAM_LEAD_NAME}) — the
  * human drives the lead session — so the message classifies as a `user` source and
@@ -2027,33 +1333,6 @@ export function deliverDirectMemberMessage(recipientName: string, message: strin
   recordOutboundDm(from, to, summary || body.slice(0, 80));
   traceMailbox('direct-member', { to, from });
   return { success: true, recipientName: to, from };
-}
-
-/**
- * Normalize the model-supplied message payload to the canonical string content the
- * rest of the tool operates on. A model (or a cross-framework the reference peer) may
- * pass the message as EITHER a plain string OR a discriminated structured OBJECT —
- * the reference's SendMessage `Input.message` is a typed object carrying a `type`
- * discriminator plus payload fields (e.g. `approve`) with `to` as a sibling
- * (tools/SendMessageTool/UI.tsx). AMI routes structured control messages by JSON-
- * parsing the string content (parseStructuredMessage), so an object form is simply
- * serialized to that same JSON here — the single canonical coercion both execute()
- * and isReadOnlyForInput() use, so the string and object forms take IDENTICAL paths
- * (no parallel structured-input path). Precedence matches execute's historical
- * `message ?? content` alias. Returns:
- *  - the string verbatim when a string is supplied,
- *  - the JSON serialization when an object is supplied,
- *  - undefined when neither is present, the value is a non-string primitive, or the
- *    object cannot be serialized (e.g. a cyclic structure) — the caller then reports
- *    the normal empty-content validation error rather than crashing on `.trim()`.
- */
-export function coerceMessageContent(input: Record<string, unknown>): string | undefined {
-  const raw = input.message ?? input.content;
-  if (typeof raw === 'string') return raw;
-  if (raw && typeof raw === 'object') {
-    try { return JSON.stringify(raw); } catch { return undefined; }
-  }
-  return undefined;
 }
 
 export const sendMessageTool: ToolDefinition = {

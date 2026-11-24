@@ -1,16 +1,13 @@
 import { describe, it, after } from 'node:test';
 import * as assert from 'node:assert/strict';
-import * as fs from 'fs';
 import * as path from 'path';
 import { McpManager } from '../src/mcp/manager';
+import { readModuleSource } from './_module-source';
 import type { McpServerConfig, McpServerState, PendingServerInfo } from '../src/mcp/manager';
 
 after(() => { setTimeout(() => process.exit(0), 200); });
 
-const managerSrc = fs.readFileSync(
-  path.resolve(__dirname, '../src/mcp/manager.ts'),
-  'utf-8',
-);
+const managerSrc = readModuleSource(path.resolve(__dirname, '../src/mcp/manager.ts'));
 
 // ---------------------------------------------------------------------------
 // McpServerState type

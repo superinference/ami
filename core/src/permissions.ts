@@ -12,14 +12,14 @@ import { DEFAULT_MAX_PATTERN_LENGTH } from './safe-regex';
 import { atomicWriteFileSync, OWNER_ONLY_FILE_MODE } from './utils/fs-atomic';
 import { addFileGlobRuleToGitignore } from './utils/git';
 import { extractCommandPaths, commandTargetsCredentialPath, commandTargetsSystemDir, isCredentialPath, detectUnsafeHelpCommand, detectArchiveExtractionWithGit, detectSymlinkCreateCompound, detectCdSensitiveDesync, isReadOnlySedCommand, stripHeredocBodies, WRAPPER_VALUE_FLAGS, SRUN_VALUE_FLAGS } from './tools/bash-security';
-import { isPowerShellNeverSuggest, isReadOnlyPowerShellCommand, isAcceptEditsPowerShellWrite, POWERSHELL_ACCEPT_EDITS_WRITE_CMDLETS, canonicalizePowerShellCommandName } from './tools/powershell-security';
+import { isPowerShellNeverSuggest, isReadOnlyPowerShellCommand, isAcceptEditsPowerShellWrite, canonicalizePowerShellCommandName } from './tools/powershell-security';
 import { deobfuscateEnvExpansion } from './tools/command-normalize';
 import { valueFlagsForCommand } from './tools/command-spec-registry';
 import { getCommandSpec as getArgCommandSpec, buildSpecPrefix, isScopedModulePrefix } from './tools/bash-command-specs';
 import { unwrapWrapperChain, collapseCompoundPrefixes } from './tools/command-prefix';
 import { detectPromptInjection } from './tools/input-sanitizer';
 import { isDangerousCodeExecPrefix } from './dangerous-code-exec';
-import { getManagedConfigPath } from './config';
+import './config';
 import { classifyAutoModeUnavailableReason, type AutoModeUnavailableReason } from './auto-mode';
 import { evaluateToolCeiling, type ToolCapabilityCeiling } from './tools/scoped-permissions';
 import { isReadOnlyBashCommand } from './tools/bash-cache';
@@ -35,18 +35,40 @@ import {
   type SpeculativeBashClassifier,
 } from './speculative-classifier';
 import type { SandboxPolicy } from './types';
-import type { PermissionContentBlock } from './permission-content-blocks';
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-// Each mode is a DISTINCT permission semantic (names mix AMI-native kebab and
-// the reference wire-names — that is intentional, we match CC semantics, not a naming
-// convention). `dontAsk` was removed: it was a semantic DUPLICATE of `deny-all` (both
-// deny every tool call); normalizePermissionMode maps the legacy spelling to deny-all.
-export const PERMISSION_MODES = ['ask', 'auto', 'auto-allow', 'deny-all', 'acceptEdits', 'bypassPermissions', 'plan'] as const;
-export type PermissionMode = (typeof PERMISSION_MODES)[number];
+import { EXTERNAL_PERMISSION_MODES, PERMISSION_MODES, PERMISSION_MODE_ALIASES, coercePermissionRuleSource, isDefaultMode, isManagedPermissionSource, isPermissivePermissionMode, isSharedSettingSource, managedPermissionsPath, permissionDestinationPath, permissionRuleSourceDisplayString } from './permissions-permission-mode-aliases';
+import type { AutoModeSafetyVerdict, BashClassification, DetectUnreachableRulesOptions, ExternalPermissionMode, PermissionMode, PermissionModeChange, PermissionModeChangeListener, PermissionRule, PermissionRuleSource, PermissionUpdateDestination, ShadowType, UnreachableRule } from './permissions-permission-mode-aliases';
+import { BASH_CLASSIFICATION_RISK, collectToolInputText, createPermissionRequestMessage, extractBashCommandText } from './permissions-permission-prompt-result';
+import type { AutoModeSafetyClassifier, AutoModeScreen, DenyCheckResult, PermissionDecisionReason, PermissionExplanation, PermissionPromptToolType, RecentDenial } from './permissions-permission-prompt-result';
+import { BASE64_ARG_TYPES, CHECKSUM_ARG_TYPES, FD_ARG_TYPES, FLAG_PATTERN, GREP_ARG_TYPES, PYRIGHT_ARG_TYPES, SENSITIVE_SAFETY_PATHS, detectPathExpansionHazard, isUnvalidatableReadGlob, normalizeCaseForComparison, pathExpansionHazardReason, stripPathObscuring } from './permissions-permission-verdict';
+import type { SafeCommandFlagDef } from './permissions-permission-verdict';
+import { DESTRUCTIVE_SQL_PATTERNS, HARDLINE_PATTERNS, containsShellSubstitution, dockerReadOnlyFlagsSafe, hasUnbalancedQuotes, isJqDangerous, isScriptOneLinerSafe, validateTypedCommandFlags } from './permissions-contains-shell-substitution';
+import type { DefaultPermissionPatterns } from './permissions-contains-shell-substitution';
+import { AGENT_CONFIG_DIR_SEGMENTS, BUILD_CONFIG_PATH_PATTERNS, GIT_CLEAN_FORCE_RE, MAX_COMMAND_PARSE_DEPTH, SYSTEM_DIRECTORIES, WINDOWS_DRIVE_ROOT_REGEX, _REALPATH_MISS, detectHardlineCommand, findMatchingParen, getAutoAllowedPowerShellCmdlets, getPathsForPermissionCheck, ghArgsTargetForeignHost, hasSuspiciousPathPattern, isDangerousRemovalPath, isGitReadOnlyCommandSafe, isNormalizedGitCommand, unwrapShellControlStructures } from './permissions-get-paths-for-permission-check';
+import type { DestructivePattern } from './permissions-get-paths-for-permission-check';
+import { ENV_VAR_ASSIGN_RE, MAX_SUBCOMMANDS_FOR_SECURITY_CHECK, SUBCOMMAND_SHAPE_RE, commandHasCdWriteDesync, countDirectoryChanges, extractCommandSubstitutions, isDisguisedBareGitRepo, normalizeCommandForMatching, patternWithRoot, skipGlobalFlags, splitCompoundCommand, stripOutputRedirections } from './permissions-strip-output-redirections';
+import type { BashCommandSpec } from './permissions-strip-output-redirections';
+import { AGENT_TOOL_NAME, LEGACY_AGENT_TOOL_NAME, MAX_SUGGESTED_RULES_FOR_COMPOUND, TOOL_PATTERN_CLASS, countUnescapedChar, findFirstUnescapedChar, findLastUnescapedChar, isEscapedAt, isHelpCommand, matchConfigFolderRoot, mcpInfoFromString, permissionRuleValueToString, unescapeRuleContent, validatePermissionUpdate } from './permissions-validate-permission-update';
+import type { DangerousPermissionInfo, FileOperationType, PermissionRuleValue, PermissionUpdate, ToolPatternClass } from './permissions-validate-permission-update';
+import { TOOL_CONTENT_VALIDATORS, createPermissionRetryMessage, createReadRuleSuggestion, describeRule, dynamicAllowPatternToken, formatPermissionRuleError, getSkillScopeRule, managedRuleReadOnlyNotice, permissionRuleExtractPrefix } from './permissions-get-skill-scope-rule';
+import type { ToolContentValidator } from './permissions-get-skill-scope-rule';
+import { PolicyMemo, commandHasRulePrefix, denialKey, stripSingleQuotedSpans } from './permissions-policy-memo';
+export { BASH_CLASSIFICATIONS, EXTERNAL_PERMISSION_MODES, OUT_OF_WORKSPACE_PATH_DISPOSITIONS, PERMISSION_MODES, PERMISSION_MODE_ALIASES, PERMISSION_MODE_CYCLE, PERMISSION_RULE_SOURCES, PERMISSION_UPDATE_DESTINATIONS, SHADOW_TYPES, coercePermissionRuleSource, cyclePermissionMode, isDefaultMode, isManagedPermissionSource, isPermissivePermissionMode, isSharedSettingSource, managedPermissionsPath, outOfWorkspacePathDisposition, permissionDestinationPath, permissionRuleSourceDisplayString } from './permissions-permission-mode-aliases';
+export type { AutoModeSafetyContext, AutoModeSafetyVerdict, BashClassification, DetectUnreachableRulesOptions, ExternalPermissionMode, OutOfWorkspacePathDisposition, PermissionMode, PermissionModeChange, PermissionModeChangeListener, PermissionRule, PermissionRuleSource, PermissionUpdateDestination, ShadowType, UnreachableRule } from './permissions-permission-mode-aliases';
+export { PERMISSION_GRANT_TIERS, PERMISSION_PROMPT_TOOL_TYPES, RISK_LEVELS, SAFETY_CHECK_KINDS, SESSION_GRANT_SCOPES, createPermissionRequestMessage, getRuleBehaviorDescription, isSessionOnlyGrant, permissionGrantTier, riskLevelRank } from './permissions-permission-prompt-result';
+export type { AutoModeSafetyClassifier, AutoModeScreen, DenyCheckResult, PermissionDecisionReason, PermissionExplanation, PermissionGrantTier, PermissionPromptHandler, PermissionPromptResult, PermissionPromptToolType, RecentDenial, RiskLevel, SafetyCheckKind, SessionGrantScope } from './permissions-permission-prompt-result';
+export { GLOB_PATTERN_REGEX, PATH_EXPANSION_HAZARDS, containsGlobPattern, containsPathTraversal, detectPathExpansionHazard, holdsOver, isUnvalidatableReadGlob, mostRestrictiveVerdict, normalizeCaseForComparison, pathExpansionHazardReason, stripPathObscuring, validateFlagArgument, verdictRank } from './permissions-permission-verdict';
+export type { FlagArgType, PathExpansionHazard, PermissionVerdict } from './permissions-permission-verdict';
+export { containsShellSubstitution, containsUnquotedExpansion, hasUnbalancedQuotes } from './permissions-contains-shell-substitution';
+export type { DefaultPermissionPatterns } from './permissions-contains-shell-substitution';
+export { MAX_COMMAND_PARSE_DEPTH, detectCommandChaining, detectHardlineCommand, getAutoAllowedPowerShellCmdlets, getPathsForPermissionCheck, ghArgsTargetForeignHost, hasSuspiciousPathPattern, isDangerousRemovalPath, isGitReadOnlyCommandSafe, isNormalizedCdCommand, isNormalizedGitCommand, unwrapShellControlStructures } from './permissions-get-paths-for-permission-check';
+export { MAX_SUBCOMMANDS_FOR_SECURITY_CHECK, commandHasCdWriteDesync, countDirectoryChanges, isDisguisedBareGitRepo, normalizeLineContinuations, patternWithRoot, stripLeadingNoopCd, stripOutputRedirections } from './permissions-strip-output-redirections';
+export type { BashCommandSpec } from './permissions-strip-output-redirections';
+export { AGENT_TOOL_NAME, CONFIG_FOLDER_SCOPES, FILE_OPERATION_TYPES, LEGACY_AGENT_TOOL_NAME, MAX_SUGGESTED_RULES_FOR_COMPOUND, PERMISSION_BEHAVIORS, TOOL_PATTERN_CLASS, TOOL_PATTERN_CLASSES, escapeRuleContent, isHelpCommand, mcpInfoFromString, permissionRuleValueToString, resolveConfigFolderScope, unescapeRuleContent, validatePermissionUpdate } from './permissions-validate-permission-update';
+export type { ConfigFolderScope, DangerousPermissionInfo, FileOperationType, PermissionBehavior, PermissionRuleValue, PermissionUpdate, ToolPatternClass } from './permissions-validate-permission-update';
+export { MAX_ALLOWED_PROMPT_LENGTH, PROMPT_RULE_PREFIX, TOOL_CONTENT_VALIDATORS, createPermissionRetryMessage, createPromptRuleContent, createReadRuleSuggestion, describeRule, dynamicAllowPatternToken, extractPromptDescription, formatPermissionRuleError, getSkillScopeRule, isPromptRuleContent, managedRuleReadOnlyNotice, partitionAllowedPromptRules, permissionRuleExtractPrefix, validateAllowedPromptRule } from './permissions-get-skill-scope-rule';
+export type { PermissionRuleValidationResult, ToolContentValidator } from './permissions-get-skill-scope-rule';
+export { PolicyMemo } from './permissions-policy-memo';
 
 /**
  * Zod enum over the canonical {@link PERMISSION_MODES}. The single VALIDATION
@@ -60,38 +82,6 @@ export type PermissionMode = (typeof PERMISSION_MODES)[number];
  * sites so a settings validator gets a typed {@link PermissionMode} back.
  */
 export const permissionModeSchema = z.enum(PERMISSION_MODES);
-
-/**
- * Non-canonical permission-mode spellings → the canonical {@link PermissionMode}
- * they denote. This is purely ADDITIVE acceptance: it widens the set of strings
- * {@link normalizePermissionMode} will ACCEPT, it never changes what a canonical
- * mode means and never maps anything to a MORE-permissive default (unknown stays
- * `null`). Keys are matched exactly first, then case-insensitively.
- *
- * Parity note: the reference's interactive default mode is named `default`; AMI
- * names that same semantic `ask`. A the reference settings.json (`"defaultMode":
- * "default"`) or `--permission-mode default` must therefore resolve to `ask`
- * rather than be rejected. The kebab/camel/lowercase variants let a rule file
- * authored against either naming convention load without a spelling mismatch
- * (the mode names deliberately mix AMI-kebab and CC-camel, see above).
- */
-export const PERMISSION_MODE_ALIASES: Record<string, PermissionMode> = {
-  // Legacy removed duplicate (both denied every tool call) — kept for back-compat.
-  dontAsk: 'deny-all',
-  // the reference's canonical name for the interactive default.
-  default: 'ask',
-  normal: 'ask',
-  interactive: 'ask',
-  // Case/kebab-insensitive spellings of the mixed-naming canonical modes.
-  acceptedits: 'acceptEdits',
-  'accept-edits': 'acceptEdits',
-  bypasspermissions: 'bypassPermissions',
-  'bypass-permissions': 'bypassPermissions',
-  bypass: 'bypassPermissions',
-  denyall: 'deny-all',
-  autoallow: 'auto-allow',
-  'plan-mode': 'plan',
-};
 
 /**
  * The single acceptance boundary for a permission-mode string (discovery-driven: the
@@ -112,106 +102,6 @@ export function normalizePermissionMode(raw: string): PermissionMode | null {
   // Exact alias (preserves camel spellings like `dontAsk`), then case-insensitive.
   return PERMISSION_MODE_ALIASES[m] ?? PERMISSION_MODE_ALIASES[m.toLowerCase()] ?? null;
 }
-
-/**
- * The ordered set of permission modes a user cycles through interactively (the
- * the reference shift-tab cycle: default → accept-edits → plan → default). The
- * blanket modes (`deny-all`, `auto-allow`, `bypassPermissions`) are deliberately
- * EXCLUDED so an accidental keypress can never silently drop into a mode that
- * allows or denies everything — those are reachable only via an explicit flag.
- */
-export const PERMISSION_MODE_CYCLE: readonly PermissionMode[] = ['ask', 'acceptEdits', 'plan'];
-
-/**
- * Advance the permission mode one step around {@link PERMISSION_MODE_CYCLE}
- * (parity with the reference's shift-tab mode toggle). `forward` mirrors shift-tab,
- * `backward` the reverse. If `current` is a flag-only blanket mode outside the
- * cycle, re-enter at the safe interactive default (`forward`) or the last cycle
- * entry (`backward`) — a user-initiated cycle never auto-widens a blanket deny
- * into a permissive blanket mode; it lands on a rule-evaluated mode.
- */
-export function cyclePermissionMode(
-  current: PermissionMode,
-  direction: 'forward' | 'backward' = 'forward',
-): PermissionMode {
-  const n = PERMISSION_MODE_CYCLE.length;
-  const idx = PERMISSION_MODE_CYCLE.indexOf(current);
-  if (idx === -1) {
-    return direction === 'forward' ? PERMISSION_MODE_CYCLE[0]! : PERMISSION_MODE_CYCLE[n - 1]!;
-  }
-  const next = direction === 'forward' ? (idx + 1) % n : (idx - 1 + n) % n;
-  return PERMISSION_MODE_CYCLE[next]!;
-}
-
-/**
- * True when `mode` is the neutral/default permission mode — AMI's default is `ask`
- * — OR is unset (`undefined`). Centralizes the "is this the default?" branch so the
- * undefined-vs-default equivalence lives in ONE place instead of being re-derived as
- * scattered `?? 'ask'` coalescing at each call site (which invites drift when the
- * default changes). Mirrors the reference's `isDefaultMode` (utils/permissions/PermissionMode.ts),
- * which likewise treats both the default string and `undefined` as the default.
- */
-export function isDefaultMode(mode: PermissionMode | undefined): boolean {
-  return mode === undefined || mode === 'ask';
-}
-
-/**
- * The permission modes that RELAX the default prompt-on-everything gate: edits are
- * auto-accepted (`acceptEdits`), or approval is blanket (`auto-allow`, the YOLO
- * alias, and `bypassPermissions`). Centralizes the "is this a more-permissive
- * mode?" predicate so the transition-time rule-cleanup in {@link PermissionManager}
- * and any UI that warns on escalation share ONE definition. The screened-autonomy
- * `auto` mode is NOT included: it still risk-screens every call, so it is not a
- * blanket relaxation. Mirrors the reference's set of modes that trigger
- * `transitionPermissionMode` cleanup (getNextPermissionMode.ts).
- */
-export function isPermissivePermissionMode(mode: PermissionMode | undefined): boolean {
-  return mode === 'acceptEdits' || mode === 'auto-allow' || mode === 'bypassPermissions';
-}
-
-/**
- * How a given permission {@link PermissionMode} disposes of a tool path that
- * resolves OUTSIDE the workspace (launch cwd + user-granted roots) but is not a
- * forbidden credential/system path:
- *   - `'grant'`    — silently allow + register the containing dir for the session.
- *                    Only the blanket auto-approval modes (`auto-allow`/YOLO and
- *                    `bypassPermissions`) do this: the operator opted into waving
- *                    everything through.
- *   - `'deny'`     — hard-refuse (no mutation/escape permitted): `deny-all` and
- *                    `plan`.
- *   - `'classify'` — subject the path to normal consent: prompt the user when an
- *                    interactive channel exists, else fail-closed deny. `ask`, the
- *                    screened-autonomy `auto` mode, AND `acceptEdits`.
- *
- * The `acceptEdits` placement is the parity-critical case. `acceptEdits`
- * auto-accepts edits WITHIN the cwd (via the edit-tool fast-path in {@link
- * PermissionManager.check}), but an edit/read whose path lands OUTSIDE the cwd is
- * CLASSIFIED, not blanket-granted — mirroring the reference's acceptEdits scoping
- * ("allowed in CWD, classified outside CWD"; classifierDecision.ts safe-set doc +
- * modeValidation CWD fast-path). This is the SINGLE source of truth for the
- * out-of-workspace disposition so the executor's path-boundary guard can never
- * drift from the mode semantics. (In-workspace paths never reach this function —
- * they classify as 'allow' before the boundary check.)
- */
-export const OUT_OF_WORKSPACE_PATH_DISPOSITIONS = ['grant', 'deny', 'classify'] as const;
-export type OutOfWorkspacePathDisposition = (typeof OUT_OF_WORKSPACE_PATH_DISPOSITIONS)[number];
-export function outOfWorkspacePathDisposition(mode: PermissionMode | undefined): OutOfWorkspacePathDisposition {
-  if (mode === 'auto-allow' || mode === 'bypassPermissions') return 'grant';
-  if (mode === 'deny-all' || mode === 'plan') return 'deny';
-  // 'ask' / 'auto' / 'acceptEdits' (and any unset mode) → require consent.
-  return 'classify';
-}
-
-/**
- * The reduced permission-mode vocabulary exposed to EXTERNAL / SDK consumers. A
- * superset consumer should not have to understand AMI's richer internal set
- * (`auto-allow`, `deny-all`); those collapse onto an external equivalent via
- * {@link toExternalPermissionMode}. Mirrors the reference's `EXTERNAL_PERMISSION_MODES`
- * (the internal set minus vendor-only modes), with AMI's neutral mode surfaced as
- * the canonical `default` label.
- */
-export const EXTERNAL_PERMISSION_MODES = ['default', 'acceptEdits', 'bypassPermissions', 'plan'] as const;
-export type ExternalPermissionMode = (typeof EXTERNAL_PERMISSION_MODES)[number];
 
 /** Zod enum over {@link EXTERNAL_PERMISSION_MODES} — the validation primitive for
  *  the reduced external/SDK mode vocabulary (parity: the reference's
@@ -247,161 +137,6 @@ export function toExternalPermissionMode(mode: PermissionMode | undefined): Exte
 }
 
 /**
- * The payload delivered to a {@link PermissionModeChangeListener} whenever the
- * permission mode is mutated through {@link PermissionManager}'s single choke point.
- * Carries both the raw internal modes and their externalized forms so a listener can
- * audit the security-critical transition (e.g. into `bypassPermissions`/`auto-allow`)
- * without re-deriving the external label. `reason` names the mutation path that
- * triggered it. Parity: the reference's `notifyPermissionModeChanged` single-choke-point
- * notification (state/onChangeAppState.ts, utils/sessionState.ts) — every path that
- * changes the mode fires this, so no path can silently escalate privileges.
- */
-export interface PermissionModeChange {
-  /** Mode in effect before this change. */
-  previousMode: PermissionMode;
-  /** Mode now in effect. */
-  mode: PermissionMode;
-  /** {@link toExternalPermissionMode} of `previousMode`. */
-  previousExternalMode: ExternalPermissionMode;
-  /** {@link toExternalPermissionMode} of `mode`. */
-  externalMode: ExternalPermissionMode;
-  /** The mutation path that triggered the change (`setMode`, `exitPlanMode`,
-   *  `deserialize`, `init`), for audit provenance. */
-  reason: string;
-}
-
-/** A listener invoked on every real permission-mode transition. */
-export type PermissionModeChangeListener = (change: PermissionModeChange) => void;
-
-/**
- * Where a permission rule/update is persisted, in precedence order (later wins at
- * runtime; earlier is broader scope). Mirrors the reference's PermissionUpdateDestination:
- * - `userSettings`   — global (~/.ami), applies everywhere;
- * - `projectSettings`— shared per-project, committed (cwd/.ami);
- * - `localSettings`  — per-project but gitignored (cwd/.ami, *.local.json);
- * - `session`        — in-memory only, this run;
- * - `cliArg`         — supplied via a command-line flag.
- */
-export const PERMISSION_UPDATE_DESTINATIONS = [
-  'userSettings', 'projectSettings', 'localSettings', 'session', 'cliArg',
-] as const;
-export type PermissionUpdateDestination = (typeof PERMISSION_UPDATE_DESTINATIONS)[number];
-
-/**
- * The full set of tiers a permission rule can ORIGINATE from — a superset of the
- * writable {@link PERMISSION_UPDATE_DESTINATIONS}. It adds three read-only sources
- * that a rule can be loaded/evaluated from but can NEVER be persisted to:
- *  - `policySettings` — managed/enterprise rules (admin-owned, highest precedence);
- *  - `flagSettings`   — rules injected from a settings file named by a launch flag;
- *  - `command`        — rules contributed at runtime by a slash command / tool.
- * Mirrors the reference's `PermissionRuleSource` (types/permissions.ts L54-63), which is
- * deliberately wider than its writable `PermissionUpdateDestination` set.
- */
-export const PERMISSION_RULE_SOURCES = [
-  'userSettings', 'projectSettings', 'localSettings', 'session', 'cliArg',
-  'policySettings', 'flagSettings', 'command',
-] as const;
-export type PermissionRuleSource = (typeof PERMISSION_RULE_SOURCES)[number];
-
-/**
- * Validate an arbitrary value against the known {@link PERMISSION_RULE_SOURCES},
- * returning the typed source or `undefined`. Lets a persisted rule carry its own
- * `source` tag (e.g. a managed/flag file that bundles rules from several origins)
- * while a bogus value falls back to the loader's default tier.
- */
-export function coercePermissionRuleSource(raw: unknown): PermissionRuleSource | undefined {
-  return typeof raw === 'string' && (PERMISSION_RULE_SOURCES as readonly string[]).includes(raw)
-    ? (raw as PermissionRuleSource)
-    : undefined;
-}
-
-/** A rule source is managed/enterprise-owned iff it is `policySettings`. Under the
- *  {@link PermissionManager}'s managed-rules-only lockdown, ONLY these are honored. */
-export function isManagedPermissionSource(source: PermissionRuleSource | undefined): boolean {
-  return source === 'policySettings';
-}
-
-/**
- * Is a rule's {@link PermissionRuleSource} SHARED (visible to / imposed on other
- * users) rather than PERSONAL to this machine/run? Shared tiers are committed or
- * pushed to the whole team: `projectSettings` (committed to git), `policySettings`
- * (enterprise-managed), and `command` (slash-command frontmatter). Personal tiers
- * (`userSettings`, `localSettings`, `cliArg`, `session`, `flagSettings`) only
- * affect the current user. An undefined source is treated as personal (the safe
- * default — it is never attributed to the team). Mirrors the reference's
- * `isSharedSettingSource` (utils/permissions/shadowedRuleDetection.ts L61-67); it
- * gates whether the sandbox-auto-allow shadow carve-out applies (a personal ask
- * rule a user's own sandbox would auto-allow is NOT reported as shadowing, but a
- * shared one still warns because teammates may lack the sandbox).
- */
-export function isSharedSettingSource(source: PermissionRuleSource | undefined): boolean {
-  return source === 'projectSettings' || source === 'policySettings' || source === 'command';
-}
-
-/** Human-readable prose for each {@link PermissionRuleSource}, for naming WHERE a
- *  rule came from in `/permissions` shadow warnings, `/doctor` findings, and fix
- *  suggestions (an opaque token like `localSettings` is unreadable). Mirrors
- *  the reference's `permissionRuleSourceDisplayString`. */
-const PERMISSION_RULE_SOURCE_DISPLAY: Record<PermissionRuleSource, string> = {
-  userSettings: 'user settings',
-  projectSettings: 'project settings',
-  localSettings: 'local settings',
-  session: 'session rules',
-  cliArg: 'command-line arguments',
-  policySettings: 'enterprise managed settings',
-  flagSettings: 'flag settings',
-  command: 'slash command',
-};
-
-/** Prose label for a rule source ('project settings', …); 'an unknown source'
- *  when the rule carries no source tag. Used in shadow-detection reasons/fixes. */
-export function permissionRuleSourceDisplayString(source: PermissionRuleSource | undefined): string {
-  return source ? PERMISSION_RULE_SOURCE_DISPLAY[source] : 'an unknown source';
-}
-
-export interface PermissionRule {
-  tool: string;       // tool name or '*'
-  pattern?: string;   // glob pattern for args (e.g., "git *")
-  /** Glob match on named input params, e.g. { model: 'opus*' } for Tool(param:value). */
-  paramPattern?: Record<string, string>;
-  action: 'allow' | 'deny' | 'ask';
-  reason?: string;    // optional reason for deny rules
-  /** Tier this rule originated from (set when loaded from a source file). */
-  source?: PermissionRuleSource;
-}
-
-/**
- * Plain-language, one-line preview of what a {@link PermissionRule} does, for
- * showing the user — under a pattern input while they type, and in the "Rule
- * added" confirmation — what they are about to grant/deny BEFORE it takes effect.
- * Parity: the reference's `PermissionRuleDescription`. Reads behavior + tool + scope +
- * (optionally) origin tier, e.g.:
- *   `Allow bash commands matching "git status"`
- *   `Deny edits to files matching "/etc/**" (from enterprise managed settings)`
- *   `Ask before any web_fetch call`
- */
-export function describeRule(rule: PermissionRule): string {
-  const verb = rule.action === 'allow' ? 'Allow' : rule.action === 'deny' ? 'Deny' : 'Ask before';
-  const tool = rule.tool === '*' ? 'any tool' : rule.tool;
-  const origin = rule.source ? ` (from ${permissionRuleSourceDisplayString(rule.source)})` : '';
-  // Natural-language prompt rules describe an action in prose, not a glob — render
-  // them as the description so the preview reads naturally.
-  const promptDescription = extractPromptDescription(rule.pattern);
-  if (promptDescription) {
-    return `${verb} ${tool} commands described as "${promptDescription}"${origin}`;
-  }
-  let scope: string;
-  if (rule.pattern && rule.pattern !== '*') {
-    scope = ` matching "${rule.pattern}"`;
-  } else if (rule.paramPattern && Object.keys(rule.paramPattern).length > 0) {
-    scope = ` with ${Object.entries(rule.paramPattern).map(([k, v]) => `${k}="${v}"`).join(', ')}`;
-  } else {
-    scope = ' calls';
-  }
-  return `${verb} ${tool}${scope}${origin}`;
-}
-
-/**
  * The SINGLE canonical "is this an overly-broad bash allow?" predicate (shared by
  * core {@link PermissionManager}'s load-time strip and cli config-resolver's
  * warning/opt-in strip — no second definition, cf. No-Duplication Rule). True when
@@ -423,26 +158,6 @@ export function isOverlyBroadBashAllowRule(rule: PermissionRule): boolean {
   if (!targetsBash) return false;
   const p = rule.pattern;
   return p === undefined || p === '' || p.trim() === '*';
-}
-
-/**
- * Structured description of an active permission rule that is effectively
- * equivalent to YOLO / bypass-permissions, for a UI/`/doctor` warning. Mirrors
- * the reference's `DangerousPermissionInfo` (utils/permissions/permissionSetup.ts): a
- * display string for the rule and a human-readable string for where it came from,
- * so the warning can say exactly which rule from which source grants full
- * autonomy. `ruleValue`/`source` are kept for callers that want to remediate
- * (remove/narrow) the rule, not just display it.
- */
-export interface DangerousPermissionInfo {
-  /** The parsed rule value (`{toolName, ruleContent?}`) for programmatic removal. */
-  ruleValue: PermissionRuleValue;
-  /** The rule's origin tier (or `'cliArg'` for a `--allow` flag spec). */
-  source: PermissionRuleSource;
-  /** Display form of the rule, e.g. `bash(*)`. */
-  ruleDisplay: string;
-  /** Human-readable origin, e.g. `project settings` or `--allow`. */
-  sourceDisplay: string;
 }
 
 /** True when a PARSED rule value (a `Tool(content)` spec, as from a `--allow`
@@ -498,368 +213,6 @@ export function findOverlyBroadBashPermissions(
 }
 
 /**
- * How a higher-priority rule makes a lower one unreachable:
- *  - `deny` — the allow is COMPLETELY blocked (a tool-wide deny always wins); the
- *    more severe case.
- *  - `ask`  — the allow is never reached because a preceding tool-wide ask always
- *    prompts first (it still "fires", just never silently allows).
- * Mirrors the reference's `ShadowType` (utils/permissions/shadowedRuleDetection.ts).
- */
-export const SHADOW_TYPES = ['deny', 'ask'] as const;
-export type ShadowType = (typeof SHADOW_TYPES)[number];
-
-/**
- * A permission rule that can never fire because a higher-priority rule shadows it,
- * with a human-readable {@link reason} naming the shadowing rule + its source and a
- * concrete {@link fix} telling the user which rule to remove to make it reachable.
- * Returned by {@link PermissionManager.detectShadowedRules}. Mirrors the reference's
- * `UnreachableRule`.
- */
-export interface UnreachableRule {
-  /** The shadowed (unreachable) allow rule. */
-  rule: PermissionRule;
-  /** The higher-priority rule that shadows it. */
-  shadowedBy: PermissionRule;
-  /** Whether the shadow is a hard block (`deny`) or an always-prompt (`ask`). */
-  shadowType: ShadowType;
-  /** Human sentence: `Blocked by "bash" deny rule (from project settings)`, etc. */
-  reason: string;
-  /** Actionable remediation naming the exact rules + sources to change. */
-  fix: string;
-}
-
-/**
- * Options for {@link PermissionManager.detectShadowedRules}. When
- * `sandboxAutoAllowEnabled` is true, a tool-wide Bash *ask* rule from PERSONAL
- * settings is NOT reported as shadowing a specific Bash allow — sandboxed commands
- * are auto-allowed so the ask never actually gates them for this user (shared-source
- * ask rules still warn, since teammates may lack the sandbox). Mirrors the reference's
- * `DetectUnreachableRulesOptions`. Omitted → derived from the manager's own sandbox
- * policy.
- */
-export interface DetectUnreachableRulesOptions {
-  sandboxAutoAllowEnabled?: boolean;
-}
-
-/**
- * Resolve the on-disk file a permission destination maps to, or null for the
- * in-memory tiers (`session`, `cliArg`). `userSettings` is global (~/.ami);
- * `projectSettings`/`localSettings` are per-project under `cwd/.ami` (local is
- * the gitignored `.local.json` variant). Mirrors the reference's per-destination
- * settings-file resolution.
- */
-export function permissionDestinationPath(
-  cwd: string,
-  destination: PermissionUpdateDestination,
-): string | null {
-  switch (destination) {
-    case 'userSettings':
-      return path.join(os.homedir(), '.ami', 'permissions.json');
-    case 'projectSettings':
-      return path.join(cwd, '.ami', 'permissions.json');
-    case 'localSettings':
-      return path.join(cwd, '.ami', 'permissions.local.json');
-    case 'session':
-    case 'cliArg':
-      return null; // in-memory only — never persisted
-  }
-}
-
-/**
- * The managed/enterprise permission-rules file (`policySettings` source). It lives
- * beside the managed config (`SUPERINFERENCE_MANAGED_CONFIG` env override, else
- * `/etc/superinference/config.json`) as `permissions.json`, so one admin-owned
- * location holds both managed config and managed permission policy. Admin-owned and
- * read-only to the agent: these rules can be loaded/evaluated but never persisted to.
- * Mirrors the reference's `policySettings` managed-settings tier.
- */
-export function managedPermissionsPath(): string {
-  return path.join(path.dirname(getManagedConfigPath()), 'permissions.json');
-}
-
-export const BASH_CLASSIFICATIONS = ['safe', 'unsafe', 'destructive'] as const;
-export type BashClassification = (typeof BASH_CLASSIFICATIONS)[number];
-
-/**
- * Context handed to an {@link AutoModeSafetyClassifier} for a tool call the
- * deterministic engine would otherwise auto-approve in an autonomous mode.
- * `staticDecision` is always `'allow'` (the classifier is only consulted on the
- * auto-approve path), carried so a classifier can key off it and so the shape can
- * grow without a breaking change.
- */
-export interface AutoModeSafetyContext {
-  toolName: string;
-  input: Record<string, unknown>;
-  /** The autonomous mode that produced the auto-approval. */
-  mode: PermissionMode;
-  /** The deterministic verdict the classifier is being asked to confirm (always `allow`). */
-  staticDecision: 'allow';
-}
-
-/**
- * A classifier's verdict on a would-be auto-approval. `allow` (or returning
- * `undefined` from the classifier) leaves the deterministic auto-approval intact;
- * `ask` downgrades it to an interactive prompt and `deny` blocks the call outright,
- * each carrying an optional human-readable `reason` recorded against the denial log.
- */
-export interface AutoModeSafetyVerdict {
-  /**
-   * `allow` confirms the deterministic auto-approval; `ask` downgrades it to a
-   * prompt; `deny` blocks it. `passthrough` is an explicit ABSTAIN ("no opinion —
-   * defer to the deterministic decision"), the first-class spelling of what a
-   * classifier previously could only express by returning `undefined`. It lets a
-   * composable/layered classifier decline to weigh in without being read as a
-   * positive `allow`. Mirrors the reference's `PermissionResult.behavior:
-   * 'passthrough'` and consolidates with the {@link PermissionVerdict} /
-   * {@link HookVerdict} `passthrough` abstain vocabulary (one canonical word for
-   * "defer" across the engine). Treated identically to `allow`/`undefined` by
-   * {@link PermissionManager.check}: the deterministic auto-approval stands and no
-   * downgrade reason or denial is recorded.
-   */
-  decision: 'allow' | 'ask' | 'deny' | 'passthrough';
-  /** Why the classifier downgraded the approval (recorded for the UI / denial log). */
-  reason?: string;
-}
-
-/**
- * Optional, injectable safety classifier consulted by {@link PermissionManager.check}
- * on the AUTONOMOUS auto-approve path (`auto-allow` / `bypassPermissions` / inherited
- * plan-bypass / screened `auto`) BEFORE a tool call is silently allowed. It can
- * DOWNGRADE an auto-approval to a prompt (`ask`) or a block (`deny`) with a recorded
- * reason — it can never UPGRADE an `ask`/`deny` to `allow`. Mirrors the reference's
- * transcript/"auto-mode" safety classifier (`classifierApprovals.ts` /
- * `useCanUseTool` yolo classifier): a model- or rule-backed check that gates
- * autonomous approvals. The deterministic engine is the floor; this seam only ever
- * TIGHTENS it. Returning `undefined`, resolving to `allow`, or throwing all FAIL OPEN
- * to the deterministic auto-approval (the static classifier remains authoritative),
- * matching the reference's "classifier error → fall back to the static decision" behavior.
- * The common/engine layer injects a concrete classifier via
- * {@link PermissionManager.setAutoModeSafetyClassifier}; unset → the seam is inert and
- * autonomous behavior is byte-for-byte unchanged.
- */
-export type AutoModeSafetyClassifier = (
-  ctx: AutoModeSafetyContext,
-) => AutoModeSafetyVerdict | undefined | Promise<AutoModeSafetyVerdict | undefined>;
-
-/** Scope for an `allow_session` grant on the agent's own config folder. */
-export const SESSION_GRANT_SCOPES = ['config-folder', 'global-config-folder'] as const;
-export type SessionGrantScope = (typeof SESSION_GRANT_SCOPES)[number];
-
-export interface PermissionPromptResult {
-  /**
-   * The user's decision. The two GRANT tiers are deliberately distinct — see
-   * {@link permissionGrantTier} for the single canonical classifier the executor
-   * and UI share instead of re-deriving the tier inline:
-   *   - `allow_once`    — approve THIS call only; no standing rule is created, the
-   *                       next matching call prompts again (the reference's user_temporary).
-   *   - `allow_session` — a standing allow rule for the REST OF THIS SESSION only:
-   *                       kept in memory and NEVER written to disk, even when an
-   *                       on-disk persist destination is configured. The "scoped
-   *                       session accept" that is explicitly distinct from a
-   *                       persisted "allow always" (the reference's `accept-session`).
-   *   - `allow_pattern` — a standing allow rule the user means to KEEP: persisted to
-   *                       the configured on-disk settings tier when one is set
-   *                       (the reference's persisted "don't ask again" / user_permanent).
-   *   - `deny` / `cancelled` — refuse / abandon (not a grant).
-   */
-  action: 'allow_once' | 'allow_pattern' | 'allow_session' | 'deny' | 'cancelled';
-  pattern?: string;
-  /** Session-grant scope (for `allow_session` self-config edits). */
-  scope?: SessionGrantScope;
-  /**
-   * Free-text the user attached when DENYING ("tell the model what to do
-   * differently") — routed back to the model so it can steer the next turn.
-   */
-  feedback?: string;
-  /**
-   * Free-text the user attached when APPROVING ("tell the model what to do
-   * next") — extra guidance delivered alongside the allowed result.
-   */
-  acceptFeedback?: string;
-  /**
-   * Tool input the user EDITED at the prompt (or an IDE "apply changes" flow
-   * rewrote) before approving — applied in place of the model's original input
-   * when the decision is an allow. Honored only on `allow_once` / `allow_pattern`;
-   * ignored on deny/cancelled. The executor validates it against the tool schema
-   * (dropping undeclared keys) before substituting it, so the UI cannot smuggle
-   * unknown parameters. Mirrors the reference's `onAllow(updatedInput)` /
-   * `ideDiffSupport.applyChanges` (the permission dialog returns the user's
-   * modified edits instead of a plain allow).
-   */
-  updatedInput?: Record<string, unknown>;
-  /**
-   * Rich content blocks a hook or the permission prompt attaches to the decision,
-   * flowing back to the model ALONGSIDE the permission result — e.g. a structured
-   * text block, an image (a screenshot the user pasted into the deny dialog), or a
-   * document. Text blocks are folded into the model-facing feedback; image blocks
-   * are delivered as real multimodal content (queued like a tool-result image);
-   * document blocks are surfaced as a short naming note. Carried on both approve
-   * (`allow_once`/`allow_pattern`) and refuse (`deny`/`cancelled`) decisions so the
-   * model never receives ONLY a plain-text line when richer context was provided.
-   * Split into delivery channels by `splitPermissionContentBlocks`. Mirrors the reference's
-   * `PermissionDecision.contentBlocks` (PermissionContext `buildAllow` /
-   * `cancelAndAbort` / `handleUserAllow`), using AMI's own content-block union.
-   */
-  contentBlocks?: PermissionContentBlock[];
-}
-
-/**
- * The persistence TIER a permission decision requests — the single canonical
- * discriminator distinguishing a SESSION-ONLY grant from a PERSISTED-ALWAYS grant,
- * so the tool-executor and the UI never re-derive it with an inline `=== 'allow_…'`
- * check that could drift:
- *   - `'once'`      — approve this call only; no standing rule.
- *   - `'session'`   — a standing rule for the rest of THIS session; in-memory,
- *                     NEVER written to disk even when a persist destination is set.
- *   - `'always'`    — a standing rule the user means to keep; persisted to the
- *                     configured on-disk settings tier when one is set.
- *   - `'deny'` / `'cancelled'` — not a grant.
- * Mirrors the reference's accept-session vs persisted "don't ask again" distinction
- * (FilePermissionDialog `accept-session` vs the persisted rule). Pure.
- *
- * REGRESSION LOCK: if `allow_session` ever maps to `'always'` (or `allow_pattern`
- * to `'session'`) the scoped session accept would silently start PERSISTING grants
- * to disk (over-grant) — the permissions unit test asserts this mapping exactly.
- */
-export const PERMISSION_GRANT_TIERS = ['once', 'session', 'always', 'deny', 'cancelled'] as const;
-export type PermissionGrantTier = (typeof PERMISSION_GRANT_TIERS)[number];
-
-export function permissionGrantTier(
-  action: PermissionPromptResult['action'],
-): PermissionGrantTier {
-  switch (action) {
-    case 'allow_once':
-      return 'once';
-    case 'allow_session':
-      return 'session';
-    case 'allow_pattern':
-      return 'always';
-    case 'deny':
-      return 'deny';
-    case 'cancelled':
-      return 'cancelled';
-  }
-}
-
-/**
- * True when the decision adds a standing SESSION-ONLY rule that must NEVER be
- * flushed to disk — the discriminator the tool-executor uses to SKIP the on-disk
- * persist step for an `allow_session` grant while still honoring it for a persisted
- * `allow_pattern` grant. Pure.
- */
-export function isSessionOnlyGrant(action: PermissionPromptResult['action']): boolean {
-  return permissionGrantTier(action) === 'session';
-}
-
-export interface PermissionPromptHandler {
-  showPrompt(
-    toolName: string,
-    inputSummary: string,
-    classification?: BashClassification,
-    /**
-     * Optional request abort signal. When it fires while the prompt is pending
-     * the handler should resolve `{ action: 'cancelled' }` so a cancelled turn
-     * doesn't leave a permission dialog hanging.
-     */
-    abortSignal?: AbortSignal,
-  ): Promise<PermissionPromptResult>;
-}
-
-/**
- * Structured reason a permission decision needs confirmation/was denied. The
- * `type` discriminator lets the UI explain WHY approval is required instead of a
- * bare "needs approval". Mirrors the reference's permissionResult.decisionReason union.
- */
-export type PermissionDecisionReason =
-  | { type: 'hardline'; description: string }
-  | {
-      type: 'rule';
-      action: 'allow' | 'deny' | 'ask';
-      ruleValue?: string;
-      /** Free-text attribution shown inline ("from <source>") — the rule's own
-       *  reason/label, NOT the tier it came from. */
-      source?: string;
-      /**
-       * The originating settings TIER of the matched rule ({@link PermissionRuleSource}).
-       * Distinct from the free-text {@link source}: this is the machine-readable
-       * provenance used to decide whether a remediation hint applies — a rule from the
-       * enterprise-managed `policySettings` tier is admin-owned and cannot be changed by
-       * the user, so the "update your rules" hint is suppressed for it (parity with
-       * the reference's `decisionReason.rule.source === 'policySettings'` branch in
-       * PermissionRuleExplanation.tsx).
-       */
-      ruleSource?: PermissionRuleSource;
-    }
-  | { type: 'mode'; mode: PermissionMode }
-  | { type: 'safetyCheck'; check: SafetyCheckKind; message: string }
-  | { type: 'classifier'; name?: string; reason?: string }
-  /**
-   * The action targets a path OUTSIDE the agent's workspace (launch cwd + granted
-   * read roots), so it needs explicit consent. Mirrors the reference's `workingDir`
-   * decisionReason. `path` is the offending target; `reason` is the human sentence.
-   */
-  | { type: 'workingDir'; path: string; reason: string }
-  /**
-   * A hook (PreToolUse / PermissionRequest) asked for or denied confirmation.
-   * Mirrors the reference's `hook` decisionReason (hookName + optional reason + source tag).
-   * `behavior` is the decision the hook actually returned (allow/deny/ask) when it
-   * made one, so the message can read "<hook> allowed/denied/asked for confirmation
-   * for this action" (parity with the reference's toolHooks `getRuleBehaviorDescription`
-   * phrasing) instead of the generic "requires approval".
-   */
-  | { type: 'hook'; hookName: string; reason?: string; hookSource?: string; behavior?: 'allow' | 'deny' | 'ask' }
-  /**
-   * The call opted out of the sandbox (`dangerouslyDisableSandbox`), so it must be
-   * explicitly authorized to run unsandboxed. Mirrors the reference's `sandboxOverride`
-   * decisionReason ("Requires permission to bypass sandbox").
-   */
-  | { type: 'sandboxOverride' }
-  | { type: 'other'; message?: string };
-
-export const SAFETY_CHECK_KINDS = [
-  'credential', 'systemDir', 'suspiciousPath', 'agentConfig', 'buildConfig', 'destructive', 'codeExec', 'toctou', 'argLeak',
-] as const;
-export type SafetyCheckKind = (typeof SAFETY_CHECK_KINDS)[number];
-
-/**
- * Map a permission BEHAVIOR enum (`allow`/`deny`/`ask`) to its grammatical past-tense
- * prose, so a decision can be narrated in a sentence — "<hook> allowed this action",
- * "<rule> denied this action", "<hook> asked for confirmation for this action".
- * Mirrors the reference's `getRuleBehaviorDescription` (utils/permissions/PermissionResult.ts),
- * where `ask` (the default) reads "asked for confirmation for". A single canonical
- * mapping so callers never hand-roll the allow→"allowed" / deny→"denied" conversion.
- *
- * The parameter is intentionally widened to `string` so this is a FAIL-SAFE boundary:
- * any value outside `allow`/`deny` — including a future/unknown behavior a newer
- * settings file might carry — degrades to the most conservative "asked for
- * confirmation for" prose rather than throwing or mislabeling it as an allow (parity
- * with the reference's `getRuleBehaviorDescription` `default` arm).
- */
-export function getRuleBehaviorDescription(behavior: string): string {
-  switch (behavior) {
-    case 'allow':
-      return 'allowed';
-    case 'deny':
-      return 'denied';
-    default:
-      return 'asked for confirmation for';
-  }
-}
-
-/**
- * The CATEGORY of a tool for permission-prompt phrasing, mirroring the reference's
- * PermissionRuleExplanation `toolType` (`'tool' | 'command' | 'edit' | 'read'`):
- * it shapes the NOUN in a confirmation/denial message ("…for this command" vs
- * "…for this edit"/"…for this read") so the prompt reads naturally for the tool
- * being gated instead of always saying "command"/"action". Distinct from the
- * tool-search {@link getToolCategory} taxonomy, which classifies tools for
- * discovery and takes a full tool object — this one keys off the tool NAME alone
- * so it is usable anywhere a permission decision is narrated.
- */
-export const PERMISSION_PROMPT_TOOL_TYPES = ['command', 'edit', 'read', 'tool'] as const;
-export type PermissionPromptToolType = (typeof PERMISSION_PROMPT_TOOL_TYPES)[number];
-
-/**
  * Classify a tool by name into its {@link PermissionPromptToolType} for prompt
  * wording. Reuses the permission engine's own read/mutating tool-name sets (no
  * parallel list, cf. No-Duplication Rule): bash → `'command'`, an editing/writing
@@ -874,89 +227,6 @@ export function permissionPromptToolType(toolName: string): PermissionPromptTool
   return 'tool';
 }
 
-/** The noun a permission message uses for a {@link PermissionPromptToolType}
- *  (`'tool'` → "tool call", every other category verbatim). */
-function permissionPromptToolNoun(toolType: PermissionPromptToolType): string {
-  return toolType === 'tool' ? 'tool call' : toolType;
-}
-
-/**
- * Build a human-readable explanation from a structured decision reason. When a
- * {@link PermissionPromptToolType} is supplied, the generic noun is phrased per
- * tool category ("for this edit" / "for this read" / "for this tool call") —
- * parity with the reference's PermissionRuleExplanation, which interpolates the tool
- * category into every message. Omitting it preserves the default "command"
- * (rule) / "action" (mode/hook/other) wording for callers that have no tool
- * context.
- */
-export function createPermissionRequestMessage(
-  reason: PermissionDecisionReason,
-  toolType?: PermissionPromptToolType,
-): string {
-  const ruleNoun = toolType ? permissionPromptToolNoun(toolType) : 'command';
-  const genericNoun = toolType ? permissionPromptToolNoun(toolType) : 'action';
-  switch (reason.type) {
-    case 'hardline':
-      return `Blocked: ${reason.description}`;
-    case 'rule': {
-      const from = reason.source ? ` from ${reason.source}` : '';
-      const which = reason.ruleValue ? ` "${reason.ruleValue}"` : '';
-      return `Permission rule${which}${from} requires ${reason.action === 'deny' ? 'denial' : 'approval'} for this ${ruleNoun}`;
-    }
-    case 'mode':
-      return `Current permission mode (${reason.mode}) requires approval for this ${genericNoun}`;
-    case 'safetyCheck':
-      return reason.message;
-    case 'classifier':
-      return `The safety classifier${reason.name ? ` (${reason.name})` : ''} flagged this action${reason.reason ? `: ${reason.reason}` : ''}`;
-    case 'workingDir':
-      return reason.reason;
-    case 'hook': {
-      const verb = reason.behavior ? getRuleBehaviorDescription(reason.behavior) : 'requires approval for';
-      return `Hook "${reason.hookName}" ${verb} this ${genericNoun}${reason.reason ? `: ${reason.reason}` : ''}`;
-    }
-    case 'sandboxOverride':
-      return 'This action requires permission to bypass the sandbox';
-    case 'other':
-      return reason.message ?? `This ${genericNoun} requires approval`;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Deterministic permission risk explainer (RiskLevel / PermissionExplanation)
-// ---------------------------------------------------------------------------
-
-/** Risk tier of a pending tool call, ordered LOW < MEDIUM < HIGH. */
-export const RISK_LEVELS = ['LOW', 'MEDIUM', 'HIGH'] as const;
-export type RiskLevel = (typeof RISK_LEVELS)[number];
-
-/** Numeric severity of a {@link RiskLevel} (LOW=1, MEDIUM=2, HIGH=3), for ordering
- *  and analytics bucketing. Parity: the reference's `RISK_LEVEL_NUMERIC` map. */
-export function riskLevelRank(level: RiskLevel): number {
-  return RISK_LEVELS.indexOf(level) + 1;
-}
-
-/**
- * A plain-language risk assessment of a pending tool call, surfaced on the
- * permission prompt so the user can make an informed allow/deny decision and
- * attached to denial records for later review. Parity: the reference's
- * `PermissionExplanation` (utils/permissions/permissionExplainer.ts). the reference
- * generates this with an LLM side-query; AMI computes it DETERMINISTICALLY from the
- * same command-classification primitives the permission engine already uses
- * ({@link PermissionManager.classifyBashCommand}, {@link detectHardlineCommand}),
- * so it needs no extra model round-trip and is stable and unit-testable.
- */
-export interface PermissionExplanation {
-  /** Overall risk: LOW (safe dev workflow), MEDIUM (recoverable change), HIGH (dangerous/irreversible). */
-  riskLevel: RiskLevel;
-  /** What the tool call does (1-2 sentences). */
-  explanation: string;
-  /** Why it is being run, model-voiced (starts with "I"). */
-  reasoning: string;
-  /** What could go wrong, concisely. */
-  risk: string;
-}
-
 /** Tool names (canonical) that only READ state and are therefore always low risk. */
 const READ_ONLY_RISK_TOOLS = new Set([
   'file_read', 'read', 'grep', 'glob', 'ls', 'list', 'web_search', 'notebook_read',
@@ -966,13 +236,6 @@ const MUTATING_RISK_TOOLS = new Set([
   'file_edit', 'file_write', 'notebook_edit', 'write', 'edit',
 ]);
 
-/** Map a {@link BashClassification} to its {@link RiskLevel}. */
-const BASH_CLASSIFICATION_RISK: Record<BashClassification, RiskLevel> = {
-  safe: 'LOW',
-  unsafe: 'MEDIUM',
-  destructive: 'HIGH',
-};
-
 /** Lazily-created manager reused only for its static bash classifier, so
  *  {@link classifyPermissionRisk} reuses the canonical classification (no duplicate
  *  destructive/safe tables) without allocating per call. */
@@ -980,15 +243,6 @@ let _riskClassifierManager: PermissionManager | undefined;
 function classifyBashForRisk(command: string): BashClassification {
   _riskClassifierManager ??= new PermissionManager();
   return _riskClassifierManager.classifyBashCommand(command);
-}
-
-function extractBashCommandText(input: unknown): string {
-  if (typeof input === 'string') return input;
-  if (input && typeof input === 'object' && 'command' in input) {
-    const c = (input as { command?: unknown }).command;
-    if (typeof c === 'string') return c;
-  }
-  return '';
 }
 
 /**
@@ -1075,29 +329,6 @@ export function classifyPermissionRisk(toolName: string, input: unknown): Permis
   };
 }
 
-// ---------------------------------------------------------------------------
-// 'auto' permission mode — screened autonomy (parity: the reference's AutoMode)
-// ---------------------------------------------------------------------------
-
-/**
- * The verdict of the per-call screen the `auto` permission mode applies to EVERY
- * tool call: `allow` runs it without a prompt, `deny` blocks it (the engine
- * reports the block to the model, which may try a different approach — the reference's
- * "block what is judged risky" fallback). This is a middle ground between `ask`
- * (prompt on everything) and `auto-allow` (run everything except hardline): an
- * autonomous run proceeds without prompts yet is bounded by a per-call risk +
- * prompt-injection screen.
- */
-export interface AutoModeScreen {
-  decision: 'allow' | 'deny';
-  /** Deterministic risk level of the call (reuses {@link classifyPermissionRisk}). */
-  riskLevel: RiskLevel;
-  /** True when a prompt-injection pattern was found in the tool input. */
-  injection: boolean;
-  /** Human-readable justification for the decision (surfaced in the denial log). */
-  reason: string;
-}
-
 /**
  * Swarm/agent-coordination tools that the `auto` permission-mode screen treats as
  * safe-to-run WITHOUT re-screening. These tools do not themselves touch the
@@ -1130,22 +361,6 @@ export const AUTO_MODE_SAFE_TOOLS: ReadonlySet<string> = new Set([
  */
 export function isAutoModeSafeTool(toolName: string): boolean {
   return AUTO_MODE_SAFE_TOOLS.has(normalizeToolName(toolName));
-}
-
-/**
- * Gather the string-valued fields of a tool input into one blob so a
- * prompt-injection scan can inspect everything the model proposed to execute
- * (the bash `command`, an edit's `content`/`new_string`, a URL, etc.) rather than
- * just one well-known field. Non-string values are ignored.
- */
-function collectToolInputText(input: unknown): string {
-  if (typeof input === 'string') return input;
-  if (!input || typeof input !== 'object') return '';
-  const parts: string[] = [];
-  for (const v of Object.values(input as Record<string, unknown>)) {
-    if (typeof v === 'string') parts.push(v);
-  }
-  return parts.join('\n');
 }
 
 /**
@@ -1199,118 +414,6 @@ export function screenAutoModeToolCall(toolName: string, input: unknown): AutoMo
   };
 }
 
-export interface DenyCheckResult {
-  denied: boolean;
-  reason?: string;
-}
-
-/** A recency-ordered record of a denied action, for user review (`/permissions`). */
-export interface RecentDenial {
-  /** Human-readable command / summary of the denied action. */
-  display: string;
-  /** What produced the denial. */
-  source: 'rule' | 'hardline' | 'classifier' | 'mode';
-  /**
-   * When `source === 'classifier'`, WHICH classifier produced it — `'bash'` for the
-   * deterministic bash command classifier, `'auto-mode'` for the injected autonomous
-   * safety classifier. Lets `/permissions` show HOW a call was gated (parity with
-   * the reference's `ClassifierApproval.classifier` discriminant). Absent for non-classifier
-   * sources.
-   */
-  classifier?: 'bash' | 'auto-mode';
-  /** Optional explanation. */
-  reason?: string;
-  /** Deterministic risk tier of the denied action, so a reviewer can triage the
-   *  recent-denials list by severity. Computed from {@link classifyPermissionRisk}
-   *  when `recordDenial` is given a display string. */
-  riskLevel?: RiskLevel;
-  timestamp: number;
-}
-
-// ---------------------------------------------------------------------------
-// Permission verdict hold-over
-// ---------------------------------------------------------------------------
-
-export interface PermissionVerdict {
-  /**
-   * The outcome of a single permission evaluator.
-   *
-   * `passthrough` is a FOURTH, NEUTRAL outcome distinct from a terminal
-   * `allow`/`deny`/`ask`: a layered/composable evaluator can observe a tool call
-   * and DECLINE to decide ("no opinion — defer to the next evaluator"), without
-   * pinning the result to `allow`. It is the identity element of the
-   * {@link mostRestrictiveVerdict} lattice — a `passthrough` never overrides a
-   * real verdict and is always overridden by one, so a chain of evaluators can
-   * abstain until one of them actually decides. Mirrors the reference's
-   * `PermissionResult.behavior: 'passthrough'` (types/permissions.ts) and
-   * consolidates with the {@link HookVerdict} `passthrough` state in
-   * `hook-protection.ts` (one canonical abstain vocabulary across the engine).
-   */
-  decision: 'allow' | 'deny' | 'ask' | 'passthrough';
-  rule?: string;
-  source?: string;
-  reason?: string;
-  /**
-   * Which classifier produced this verdict, when it came from one (vs a static
-   * rule): `'bash'` for the deterministic bash command classifier, `'auto-mode'`
-   * for the injected autonomous-safety classifier. Lets a UI explain HOW a tool
-   * use was gated/approved — parity with the reference's `ClassifierApproval.classifier`
-   * discriminant (utils/classifierApprovals.ts). Absent for static-rule verdicts.
-   */
-  classifier?: 'bash' | 'auto-mode';
-  /**
-   * For a `'bash'`-classifier verdict, the specific matched rule/pattern the
-   * classifier decided under (parity: `ClassifierApproval.matchedRule`), so a
-   * reviewer can answer "which rule approved this command". Absent otherwise.
-   */
-  matchedRule?: string;
-}
-
-export function verdictRank(decision: string): number {
-  switch (decision) {
-    case 'deny': return 3;
-    case 'modify': return 2;
-    case 'ask': return 2;
-    case 'allow': return 1;
-    // `passthrough` (abstain / "no opinion") is the lattice's neutral element:
-    // strictly below `allow`, so it never holds over a real verdict and is always
-    // overridden by one. An unknown decision shares this floor (fail-neutral).
-    case 'passthrough': return 0;
-    default: return 0;
-  }
-}
-
-export function holdsOver(held: PermissionVerdict, answer: PermissionVerdict): boolean {
-  const heldRank = verdictRank(held.decision);
-  const answerRank = verdictRank(answer.decision);
-  if (answerRank > heldRank) return false;
-  if (heldRank > answerRank) return true;
-  const heldHasAttribution = held.rule !== undefined || held.source !== undefined;
-  const answerHasAttribution = answer.rule !== undefined || answer.source !== undefined;
-  return heldHasAttribution && !answerHasAttribution;
-}
-
-/**
- * Combine a chain of layered permission evaluators into one decision under the
- * strictest-wins lattice. `passthrough` (abstain) is the neutral element: it never
- * holds over a real verdict and is always overridden by one, so a chain of
- * evaluators can defer until one actually decides. When EVERY evaluator abstains
- * (all `passthrough`) the result is itself `passthrough` — "no layer had an
- * opinion", which the caller resolves against its own default (parity with
- * the reference's passthrough falling through to the normal permission flow). An empty
- * chain is treated as abstain for the same reason.
- */
-export function mostRestrictiveVerdict(verdicts: PermissionVerdict[]): PermissionVerdict {
-  if (verdicts.length === 0) return { decision: 'passthrough' };
-  let best = verdicts[0];
-  for (let i = 1; i < verdicts.length; i++) {
-    if (holdsOver(verdicts[i], best)) {
-      best = verdicts[i];
-    }
-  }
-  return best;
-}
-
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -1354,123 +457,6 @@ const SAFE_COMMANDS = new Set([
 ]);
 
 /**
- * Per-flag argument-type classification (mirrors the reference's `FlagArgType`,
- * readOnlyCommandValidation.ts). It tells the flag validator exactly how many
- * tokens a flag consumes and how to validate the value, closing the parser
- * differential where a flag's VALUE (or a bundled arg-taking flag's next token)
- * is mis-read as a positional/target.
- */
-export type FlagArgType =
-  | 'none'   // takes no argument (e.g. --hidden, -H)
-  | 'number' // integer argument (e.g. --max-depth 3)
-  | 'string' // any string argument (e.g. --type file)
-  | 'char'   // a single character (e.g. a delimiter)
-  | '{}'     // the literal "{}" only
-  | 'EOF';   // the literal "EOF" only
-
-/** Flag-shaped token detector, matching the reference's FLAG_PATTERN. */
-const FLAG_PATTERN = /^-[a-zA-Z0-9_-]/;
-
-/**
- * Validate a flag's argument value against its declared {@link FlagArgType}.
- * Mirrors the reference's `validateFlagArgument`. 'none' always returns false —
- * it must never be called for a flag that takes no argument.
- */
-export function validateFlagArgument(value: string, argType: FlagArgType): boolean {
-  switch (argType) {
-    case 'none': return false;
-    case 'number': return /^\d+$/.test(value);
-    case 'string': return true;
-    case 'char': return value.length === 1;
-    case '{}': return value === '{}';
-    case 'EOF': return value === 'EOF';
-    default: return false;
-  }
-}
-
-/**
- * Arg-type map for `fd`/`fdfind` (shared). Depth flags are numeric, type/
- * extension/exclude/glob/search-path flags are strings, the rest are no-arg.
- * Modeled on the reference's FD_SAFE_FLAGS so the validator consumes the right number
- * of tokens per flag and validates each value.
- */
-const FD_ARG_TYPES: Record<string, FlagArgType> = {
-  '-H': 'none', '--hidden': 'none', '-I': 'none', '--no-ignore': 'none',
-  '-d': 'number', '--max-depth': 'number',
-  '-t': 'string', '--type': 'string',
-  '-e': 'string', '--extension': 'string',
-  '-E': 'string', '--exclude': 'string',
-  '-g': 'string', '-p': 'string',
-};
-
-/**
- * Arg-type map for `base64`. Decode/mode flags take no argument; the line-length
- * flags are numeric; `-i`/`--input` names a file to READ (never a write). Mirrors
- * the reference's base64 safeFlags (readOnlyValidation.ts). macOS base64 ignores POSIX
- * `--`, hence respectsDoubleDash:false on the entry below.
- */
-const BASE64_ARG_TYPES: Record<string, FlagArgType> = {
-  '-d': 'none', '-D': 'none', '--decode': 'none',
-  '-b': 'number', '--break': 'number', '-w': 'number', '--wrap': 'number',
-  '-i': 'string', '--input': 'string',
-  '--ignore-garbage': 'none',
-  '-h': 'none', '--help': 'none', '--version': 'none',
-};
-
-/**
- * Arg-type map shared by the checksum commands (`sha256sum`/`sha1sum`/`md5sum`).
- * Every flag only selects an input mode, a verification mode, or an output
- * format — none write anything. Mirrors the reference's checksum safeFlags.
- */
-const CHECKSUM_ARG_TYPES: Record<string, FlagArgType> = {
-  '-b': 'none', '--binary': 'none', '-t': 'none', '--text': 'none',
-  '-c': 'none', '--check': 'none', '--ignore-missing': 'none',
-  '--quiet': 'none', '--status': 'none', '--strict': 'none',
-  '-w': 'none', '--warn': 'none',
-  '--tag': 'none', '-z': 'none', '--zero': 'none',
-  '--help': 'none', '--version': 'none',
-};
-
-/**
- * Arg-type map for `grep`. Pattern/file flags take a string value, the rest are
- * no-arg mode selectors. Strict: any flag outside this set (notably the
- * preprocessor/exec-adjacent flags blocked below) falls through to a prompt.
- * Mirrors the reference's grep safeFlags.
- */
-const GREP_ARG_TYPES: Record<string, FlagArgType> = {
-  '-e': 'string', '--regexp': 'string', '-f': 'string', '--file': 'string',
-  '-F': 'none', '--fixed-strings': 'none', '-G': 'none', '--basic-regexp': 'none',
-  '-E': 'none', '--extended-regexp': 'none', '-P': 'none', '--perl-regexp': 'none',
-  '-i': 'none', '--ignore-case': 'none', '-v': 'none', '--invert-match': 'none',
-  '-n': 'none', '--line-number': 'none', '-c': 'none', '--count': 'none',
-  '-l': 'none', '--files-with-matches': 'none', '-L': 'none', '--files-without-match': 'none',
-  '-o': 'none', '--only-matching': 'none', '-w': 'none', '--word-regexp': 'none',
-  '-x': 'none', '--line-regexp': 'none', '-r': 'none', '-R': 'none', '--recursive': 'none',
-  '-h': 'none', '--no-filename': 'none', '-H': 'none', '--with-filename': 'none',
-  '-A': 'number', '--after-context': 'number', '-B': 'number', '--before-context': 'number',
-  '-C': 'number', '--context': 'number', '-m': 'number', '--max-count': 'number',
-  '-s': 'none', '--no-messages': 'none', '-a': 'none', '--text': 'none',
-  '-q': 'none', '--quiet': 'none', '--color': 'string', '--colour': 'string',
-  '--include': 'string', '--exclude': 'string', '--exclude-dir': 'string',
-  '-V': 'none', '--version': 'none',
-};
-
-/**
- * Arg-type map for `pyright`. Project/version/level flags take a string value;
- * stats/verbosity/version flags are no-arg. Strict: unknown flags prompt. The
- * long-running `--watch`/`-w` is blocked via dangerousArgs below. pyright treats
- * `--` as a FILE path (not end-of-options), so respectsDoubleDash:false keeps the
- * validator scanning past it. Mirrors the reference's PYRIGHT_READ_ONLY_COMMANDS.
- */
-const PYRIGHT_ARG_TYPES: Record<string, FlagArgType> = {
-  '--outputjson': 'none', '--project': 'string', '-p': 'string',
-  '--pythonversion': 'string', '--pythonplatform': 'string',
-  '--typeshedpath': 'string', '--venvpath': 'string', '--level': 'string',
-  '--stats': 'none', '--verbose': 'none', '--version': 'none',
-  '--dependencies': 'none', '--warnings': 'none',
-};
-
-/**
  * `dotnet` top-level flags that are purely read-only SDK queries. Any other
  * invocation (build/run/test/…) must prompt. Mirrors the reference's
  * DOTNET_READ_ONLY_FLAGS / isDotnetSafe.
@@ -1489,31 +475,6 @@ function isDotnetSafe(args: string[]): boolean {
   if (args.length === 0) return false;
   return args.every(a => DOTNET_READ_ONLY_FLAGS.has(a.toLowerCase()));
 }
-
-/**
- * Flag policy for a {@link SAFE_COMMANDS} entry (U003 fail-closed model).
- *  - `allowed`/`blocked` — the read-only / never-safe flag sets.
- *  - `strict` — reject any flag outside `allowed` (fall through to a prompt).
- *  - `argTypes` — getopt-accurate per-flag value typing (see {@link validateTypedCommandFlags}).
- *  - `dangerousArgs` — custom per-command danger predicate.
- *  - `respectsDoubleDash` — whether POSIX `--` ends option scanning (default true).
- *  - `allowAllFlags` — the command's ENTIRE flag surface is read-only, so every flag
- *    except those in `blocked` is accepted. This is the EXPLICIT opt-in that the reference's
- *    CommandConfig model requires (readOnlyValidation.ts L39-56): a SAFE command must
- *    now declare its flag policy, and a command with no entry is positional-only
- *    (fail-closed), rather than the old fail-OPEN where a missing entry waved every
- *    flag through. Marks genuinely all-flags-safe read utilities (ls/cat/df/…) so the
- *    inverted default never regresses them.
- */
-type SafeCommandFlagDef = {
-  allowed: Set<string>;
-  blocked: Set<string>;
-  strict?: boolean;
-  argTypes?: Record<string, FlagArgType>;
-  dangerousArgs?: (args: string[]) => boolean;
-  respectsDoubleDash?: boolean;
-  allowAllFlags?: boolean;
-};
 
 const SAFE_COMMAND_FLAGS: Record<string, SafeCommandFlagDef> = {
   // ── All-flags-safe read-only utilities (U003 allowAllFlags opt-in) ────────────
@@ -1654,180 +615,6 @@ const SAFE_COMMAND_FLAGS: Record<string, SafeCommandFlagDef> = {
   pyright: { allowed: new Set(Object.keys(PYRIGHT_ARG_TYPES)), blocked: new Set([]), strict: true, argTypes: PYRIGHT_ARG_TYPES, respectsDoubleDash: false, dangerousArgs: (args) => args.some(a => a === '--watch' || a === '-w') },
 };
 
-/**
- * Sensitive config/credential path fragments that must still prompt even under
- * the blanket-allow modes (yolo/auto-allow and bypassPermissions). A write or
- * edit to any of these is a self-reconfig / credential-exposure vector.
- */
-const SENSITIVE_SAFETY_PATHS = [
-  '.git/', '.ami/', '.bashrc', '.zshrc', '.profile', '.gitconfig',
-  '.vscode/', '.ssh/', '.gnupg/', '.aws/', '.config/',
-];
-
-/**
- * Case-fold a path for a security boundary comparison, but ONLY on case-insensitive
- * filesystems (macOS/Windows), where `/Users/x/.SSH/id_rsa` and `/Users/x/.ssh/id_rsa`
- * name the SAME file yet differ byte-for-byte. On a case-sensitive FS (Linux) the
- * casings are genuinely distinct files, so this is a no-op to avoid wrongly merging
- * them. Mirrors the reference's normalizeCaseForComparison (filesystem.ts L81-92), closing
- * the fail-open where a differently-cased sensitive path slips a containment/safety
- * guard on macOS/Windows.
- */
-export function normalizeCaseForComparison(p: string): string {
-  return (process.platform === 'darwin' || process.platform === 'win32')
-    ? p.toLowerCase()
-    : p;
-}
-
-/**
- * A path token that survives permission validation as a LITERAL string but is
- * expanded differently by the shell at execution time — a TOCTOU gap where the
- * boundary check and the actual filesystem target disagree:
- *   - `shell-expansion`: `$VAR` / `${VAR}` / `$(cmd)` (Unix), `%VAR%` (Windows),
- *     or a leading `=` (zsh equals-expansion, e.g. `=rg` → `/usr/bin/rg`).
- *   - `tilde-variant`:   an unsupported `~` form (`~user`, `~+`, `~-`, `~N`) that
- *     `expandPath` leaves for the shell (it resolves only bare `~`, `~/`, `~\`).
- *   - `network-path`:    a UNC / network-share path (`//server`, `\\server`) or a
- *     WebDAV credential-leak marker (`@SSL@`, `DavWWWRoot`). Resolving one can leak
- *     NTLM/host credentials to a remote server, and its real target lives off the
- *     local filesystem where the workspace/forbidden guards cannot reason about it.
- *   - `command-substitution`: a backtick (`` ` ``) escape embedded in the path —
- *     the shell runs the backticked text as a command at execution time, so the
- *     validated literal and the real target diverge (a TOCTOU gap `$(...)` already
- *     covers under `shell-expansion`, but backtick substitution has no `$`).
- */
-export const PATH_EXPANSION_HAZARDS = ['shell-expansion', 'tilde-variant', 'network-path', 'command-substitution'] as const;
-export type PathExpansionHazard = (typeof PATH_EXPANSION_HAZARDS)[number];
-
-/**
- * Classify a raw (un-expanded) path token for shell-expansion / tilde-variant
- * TOCTOU hazards. Mirrors the reference's pathValidation blanket-reject (pathValidation.ts
- * L393-L436): such a path is never silently auto-allowed — it is kept literal here
- * but the shell rewrites it at run time, so the permission decision and the real
- * target can diverge. Returns the hazard kind, or `null` when the path is inert.
- *
- * Tilde variants are detected on the RAW token because AMI's {@link expandPath}
- * resolves an unsupported `~user`/`~+` against cwd (→ `/cwd/~user`), so the `~`
- * no longer leads the expanded string.
- */
-export function detectPathExpansionHazard(rawPath: string): PathExpansionHazard | null {
-  const trimmed = rawPath.trim();
-  if (trimmed.startsWith('~') && trimmed !== '~'
-      && !trimmed.startsWith('~/') && !trimmed.startsWith('~\\')) {
-    return 'tilde-variant';
-  }
-  // UNC / network-share prefix (`//server`, `\\server`) or a WebDAV credential-leak
-  // marker (`@SSL@`, `DavWWWRoot`). A normal POSIX path begins with a SINGLE slash,
-  // so a leading double slash/backslash is the UNC shape the reference blocks before
-  // resolution (pathValidation.ts L1098-L1114) — resolving it can leak NTLM/host
-  // credentials to a remote server and its target lives off the local filesystem.
-  if (/^(?:\/\/|\\\\)/.test(trimmed) || /@SSL@|DavWWWRoot/i.test(trimmed)) {
-    return 'network-path';
-  }
-  // A backtick escape runs the backticked text as a command at execution time
-  // (`/project/`whoami`/x`), so the validated literal and the real target diverge.
-  // `$(...)` substitution is already caught below by the `$` test.
-  if (trimmed.includes('`')) {
-    return 'command-substitution';
-  }
-  if (trimmed.includes('$') || trimmed.includes('%') || trimmed.startsWith('=')) {
-    return 'shell-expansion';
-  }
-  return null;
-}
-
-/**
- * Best-effort strip of the shell-expansion / command-substitution constructs that
- * make a path {@link detectPathExpansionHazard unvalidatable}, yielding a plain
- * LITERAL "guess" of what the path might resolve to. Used ONLY to run a
- * deny-side (forbidden-path) re-check over an obscured path before it is routed to
- * a prompt — never to grant access. Mirrors the reference's `checkDenyRuleForGuessedPath`
- * (PowerShellTool/pathValidation.ts L984-L1008): an obscured path must not be able
- * to DOWNGRADE a hard credential/system deny into a mere "ask" by hiding the
- * forbidden segment behind a backtick / `$(…)` / `${VAR}` / `$VAR` / `%VAR%` /
- * leading-`=` construct — which, in an auto-allow session, an "ask" verdict would
- * then silently grant.
- *
- * Removes (in order): backtick-delimited runs, `$(…)` substitutions, `${…}` and
- * `$VAR` variable refs, `%VAR%` (Windows) refs, and a single leading `=`
- * (zsh equals-expansion). Returns the collapsed remainder. Pure, no I/O. This is a
- * guess heuristic, never a security boundary — the authoritative gate is still the
- * hazard→prompt fall-through for anything the guess does not catch.
- */
-export function stripPathObscuring(rawPath: string): string {
-  return rawPath
-    // Backtick command substitution: `` `whoami` `` → removed entirely.
-    .replace(/`[^`]*`/g, '')
-    // `$(…)` substitution (single level is enough for a best-effort guess).
-    .replace(/\$\([^)]*\)/g, '')
-    // `${VAR}` references.
-    .replace(/\$\{[^}]*\}/g, '')
-    // Bare `$VAR` references.
-    .replace(/\$[A-Za-z_][A-Za-z0-9_]*/g, '')
-    // Windows `%VAR%` references.
-    .replace(/%[^%]*%/g, '')
-    // zsh equals-expansion: a single leading `=`.
-    .replace(/^=/, '');
-}
-
-/**
- * Glob metacharacters (`*`, `?`, `[`, `]`) in a filesystem-path token. Parity:
- * the reference's GLOB_PATTERN_REGEX (pathValidation.ts L50). A path token carrying
- * one of these is a glob pattern whose runtime filesystem expansion cannot be
- * statically validated.
- */
-export const GLOB_PATTERN_REGEX = /[*?[\]]/;
-
-/** True if `p` contains a glob metacharacter (`* ? [ ]`). */
-export function containsGlobPattern(p: string): boolean {
-  return GLOB_PATTERN_REGEX.test(p);
-}
-
-/**
- * True if `p` contains a `..` path-traversal segment. Parity: the reference's
- * containsPathTraversal (utils/path.ts L133). A traversal glob such as
- * `/project/[star]/../../etc/shadow` is resolved-and-revalidated rather than
- * blindly gated, because collapsing the `..` segments pins down a concrete target
- * the forbidden/workspace guards can then inspect.
- */
-export function containsPathTraversal(p: string): boolean {
-  return /(?:^|[\\/])\.\.(?:[\\/]|$)/.test(p);
-}
-
-/**
- * Whether a read-path token is a glob that cannot be statically validated and must
- * therefore be forced to manual approval. Parity: the reference's pathValidation glob
- * handling (pathValidation.ts L1199-L1241, "finding #15"): a plain read glob's
- * pre-glob base is the only segment that gets realpath'd, so a symlink MATCHED
- * inside the expansion (e.g. `/project/[star]/passwd` with `/project/link → /etc`)
- * is never examined while the literal glob string still prefix-matches the
- * workspace. A traversal glob is excluded here (returns false) so it falls through
- * to normal resolve-and-revalidate, where its `..`-collapsed target is checked.
- */
-export function isUnvalidatableReadGlob(rawPath: string): boolean {
-  return containsGlobPattern(rawPath) && !containsPathTraversal(rawPath);
-}
-
-/**
- * Human-readable, user-facing reason for why an expansion-hazard path requires
- * manual approval, worded to match the reference's distinct messages so the user
- * understands why an otherwise-valid-looking path was gated.
- */
-export function pathExpansionHazardReason(hazard: PathExpansionHazard): string {
-  switch (hazard) {
-    case 'tilde-variant':
-      return 'Tilde expansion variants (~user, ~+, ~-) in paths require manual approval';
-    case 'network-path':
-      return 'UNC / remote network-share paths require manual approval (they can leak '
-        + 'credentials to a remote server and resolve outside the local filesystem)';
-    case 'command-substitution':
-      return 'Backtick command substitution in paths requires manual approval';
-    case 'shell-expansion':
-    default:
-      return 'Shell expansion syntax in paths requires manual approval';
-  }
-}
-
 /** Safe target commands for xargs — only these can follow xargs. */
 const XARGS_SAFE_TARGETS = new Set([
   // `printf`, like `echo`, only writes to stdout (no filesystem mutation), so an
@@ -1871,88 +658,6 @@ export function validateCommandFlags(cmd: string, args: string[]): boolean {
     }
   }
   return true;
-}
-
-/**
- * Getopt-accurate flag walk for a command whose flags carry {@link FlagArgType}
- * metadata. Mirrors the reference's `validateFlags`:
- *  - `--flag=value` validates the inline value (and rejects a value on a 'none' flag);
- *  - an arg-taking flag consumes the NEXT token as its value (rejecting a missing
- *    arg, a dash-led 'string' value — type confusion — and an invalid typed value);
- *  - a bundled short cluster (e.g. `-He`) is only safe when EVERY member is a
- *    known no-arg flag — a bundled arg-taking flag would consume the next token in
- *    GNU getopt, a differential the validator cannot model, so it is rejected.
- * Blocked flags always win. Unknown flags fall back to the allowed/strict rules.
- */
-function validateTypedCommandFlags(
-  flagDef: SafeCommandFlagDef,
-  args: string[],
-): boolean {
-  const argTypes = flagDef.argTypes!;
-  let i = 0;
-  while (i < args.length) {
-    const token = args[i]!;
-    // POSIX `--` end-of-options: stop treating later tokens as flags (unless the
-    // command ignores `--`). Keeps the typed walker aligned with the real binary.
-    if (token === '--' && flagDef.respectsDoubleDash !== false) break;
-    if (!FLAG_PATTERN.test(token)) { i++; continue; } // positional
-    const hasEquals = token.includes('=');
-    const flag = token.split('=')[0]!;
-    const inlineValue = token.slice(flag.length + 1);
-    const bare = flag.replace(/^--?/, '');
-    if (flagDef.blocked.has(token) || flagDef.blocked.has(flag) || flagDef.blocked.has(bare)) return false;
-
-    const argType = argTypes[flag];
-    if (argType === undefined) {
-      // A short cluster like `-He` — safe only if every member is a known no-arg
-      // flag. Any arg-taking or unknown member means we cannot safely model the
-      // token consumption, so reject (conservative, matches the reference).
-      if (/^-[a-zA-Z0-9]{2,}$/.test(flag)) {
-        for (const ch of flag.slice(1)) {
-          if (argTypes['-' + ch] !== 'none') return false;
-        }
-        i++; continue;
-      }
-      // Unknown single flag: honor the strict allowlist like the untyped path.
-      if (flagDef.strict && !flagDef.allowed.has(flag)) return false;
-      i++; continue;
-    }
-
-    if (argType === 'none') {
-      if (hasEquals) return false; // a no-arg flag given `=value`
-      i++; continue;
-    }
-
-    // Arg-taking flag: resolve its value (inline after `=` or the next token).
-    let value: string;
-    if (hasEquals) {
-      value = inlineValue;
-      i++;
-    } else {
-      const next = args[i + 1];
-      if (next === undefined || (next.length > 1 && FLAG_PATTERN.test(next))) return false; // missing arg
-      value = next;
-      i += 2;
-    }
-    if (argType === 'string' && value.startsWith('-')) return false; // type confusion
-    if (!validateFlagArgument(value, argType)) return false;
-  }
-  return true;
-}
-
-/**
- * Check whether a jq/yq expression contains dangerous constructs.
- * Blocks `-f`, `--rawfile`, `--slurpfile`, `-L` flags and `system()` calls.
- */
-function isJqDangerous(args: string[]): boolean {
-  const dangerousFlags = ['-f', '--rawfile', '--slurpfile', '-L', '--library-path', '--from-file'];
-  for (const arg of args) {
-    if (dangerousFlags.includes(arg)) return true;
-  }
-  // Check for system() call in jq expression
-  const expr = args.find(a => !a.startsWith('-'));
-  if (expr && /\bsystem\b/.test(expr)) return true;
-  return false;
 }
 
 /** xargs short flags that CONSUME an argument (their value is either inline —
@@ -2011,196 +716,10 @@ function isXargsSafe(command: string): boolean {
   return XARGS_SAFE_TARGETS.has(target);
 }
 
-/**
- * Check whether a python3 -e/-c one-liner is read-only.
- * Blocks imports of os, subprocess, shutil which can mutate state.
- */
-function isScriptOneLinerSafe(lang: string, code: string): boolean {
-  if (lang === 'python3' || lang === 'python') {
-    return !/\bimport\s+(os|subprocess|shutil)\b/.test(code) &&
-           !/\bfrom\s+(os|subprocess|shutil)\b/.test(code);
-  }
-  if (lang === 'node') {
-    return !/\brequire\s*\(\s*['"](?:child_process|fs)['"]\s*\)/.test(code) &&
-           !/\bimport\b.*\bfrom\s+['"](?:child_process|fs)['"]/.test(code);
-  }
-  if (lang === 'ruby') {
-    return !/\bsystem\b/.test(code) && !/\bexec\b/.test(code) &&
-           !/`/.test(code) && !/\bIO\.popen\b/.test(code);
-  }
-  if (lang === 'perl') {
-    return !/\bsystem\b/.test(code) && !/\bexec\b/.test(code) &&
-           !/`/.test(code) && !/\bqx\b/.test(code);
-  }
-  return false;
-}
-
-/**
- * Strip quoted sections from a command to analyze unquoted content.
- */
-function stripQuotedSections(command: string): string {
-  // Remove double-quoted sections
-  let result = command.replace(/"[^"]*"/g, '');
-  // Remove single-quoted sections
-  result = result.replace(/'[^']*'/g, '');
-  return result;
-}
-
-/**
- * True when a command cannot be tokenized by a real shell because a quote is left
- * open — an UNBALANCED single or double quote. A single-pass quote-state walker with
- * bash escape semantics: `\` escapes the next char OUTSIDE single quotes (inside
- * `'…'` a backslash is literal and cannot escape the closing quote); double quotes
- * are inert inside single quotes and vice-versa. If the scan ends still inside a
- * quote, the shell's own tokenizer would error — so the naive whitespace/regex
- * splitting AMI's classifier uses would see a DIFFERENT token stream than the shell.
- *
- * The permission classifier calls this to FAIL CLOSED: an unparseable command is
- * classified `'unsafe'` (→ an explicit prompt) rather than being split with naive
- * regexes and possibly auto-allowed. Mirrors the reference's "parse first, return
- * passthrough / require-permission when parsing fails" gate (BashTool
- * readOnlyValidation.ts: tryParseShellCommand → requires permission on failure).
- */
-export function hasUnbalancedQuotes(command: string): boolean {
-  let inSingle = false;
-  let inDouble = false;
-  let escaped = false;
-  for (let i = 0; i < command.length; i++) {
-    const c = command[i]!;
-    if (escaped) { escaped = false; continue; }
-    // A backslash escapes the next char everywhere EXCEPT inside single quotes,
-    // where it is a literal (bash: single quotes have no escape mechanism).
-    if (c === '\\' && !inSingle) { escaped = true; continue; }
-    if (c === "'" && !inDouble) { inSingle = !inSingle; continue; }
-    if (c === '"' && !inSingle) { inDouble = !inDouble; continue; }
-  }
-  return inSingle || inDouble;
-}
-
-/**
- * Check whether a command contains unquoted variable expansions or glob
- * patterns that could be exploited for injection.
- *
- * Uses a single-pass quote-state walker (NOT a regex over quote-stripped text) so
- * single-quote escape semantics are correct — in bash `\` is a literal no-op inside
- * single quotes, so a stray `'\'` cannot desync the tracker and drop a later
- * expansion. It also covers EVERY `$`-expansion shape: a following variable-name
- * char, a `${...}`/`$(...)` substitution start, OR a special parameter
- * (`$@ $* $# $? $! $$ $- $0-$9`) that the old `\$[A-Za-z_{(]` regex missed — plus
- * the unquoted glob metacharacters `* ? [` (filename expansion / injection vectors).
- * Mirrors the reference's containsUnquotedExpansion char-walk (readOnlyValidation.ts).
- */
-export function containsUnquotedExpansion(command: string): boolean {
-  let inSingle = false;
-  let inDouble = false;
-  let escaped = false;
-  for (let i = 0; i < command.length; i++) {
-    const c = command[i]!;
-    if (escaped) { escaped = false; continue; }
-    if (c === '\\' && !inSingle) { escaped = true; continue; }
-    if (c === "'" && !inDouble) { inSingle = !inSingle; continue; }
-    if (c === '"' && !inSingle) { inDouble = !inDouble; continue; }
-    if (inSingle || inDouble) continue; // quoted content is inert
-    if (c === '$') {
-      const next = command[i + 1];
-      // variable-name char, `${`/`$(` substitution, or a special parameter.
-      if (next && /[A-Za-z_@*#?!$0-9({-]/.test(next)) return true;
-    }
-    // Unquoted glob metacharacters (`*`, `?`, bracket expression `[`).
-    if (c === '*' || c === '?' || c === '[') return true;
-  }
-  return false;
-}
-
-/**
- * Check whether a command contains unquoted shell substitutions ($VAR,
- * ${VAR}, $(cmd)) but tolerate glob patterns (* ? [...]).
- * Used for safe read-only commands where globs are harmless filename expansion.
- */
-export function containsShellSubstitution(command: string): boolean {
-  // A quote-tracking scan (not a regex over quote-stripped text) so single-quote
-  // escape semantics are correct AND every `$`-expansion shape is covered. In
-  // bash a `\` is a NO-OP inside single quotes (literal), so escapes are only
-  // honored OUTSIDE single quotes — otherwise `'\'` desyncs the tracker and the
-  // scanner stays "in a quote" for the rest of the command, missing later
-  // expansions (the reference's containsUnquotedExpansion single-quote guard).
-  let inSingle = false;
-  let inDouble = false;
-  let escaped = false;
-  for (let i = 0; i < command.length; i++) {
-    const c = command[i]!;
-    if (escaped) { escaped = false; continue; }
-    if (c === '\\' && !inSingle) { escaped = true; continue; }
-    if (c === "'" && !inDouble) { inSingle = !inSingle; continue; }
-    if (c === '"' && !inSingle) { inDouble = !inDouble; continue; }
-    if (inSingle || inDouble) continue; // quoted — AMI tolerates `$VAR`/`"$f"` here
-    // UNQUOTED `$`: match a following variable-name char, a special parameter
-    // ($@ $* $# $? $! $$ $0-9 $-), or the start of a ${...} / $(...) substitution.
-    // AMI deliberately tolerates `$` inside quotes (single AND double) so the
-    // for-loop-with-glob perk (`for f in *.ts; do cat "$f"; done`) stays auto-safe
-    // — an intentional superset divergence from the reference; this adds the previously
-    // missed UNQUOTED special-parameter shapes ($@/$*/$?/…) to the parser-
-    // differential defense without regressing that perk.
-    if (c === '$') {
-      const next = command[i + 1];
-      if (next && /[A-Za-z_@*#?!$0-9({-]/.test(next)) return true;
-    }
-  }
-  return false;
-}
-
 /** Safe read-only docker subcommands. */
 const DOCKER_SAFE_SUBCOMMANDS = new Set([
   'ps', 'images', 'logs', 'inspect', 'stats', 'top', 'port', 'version', 'info',
 ]);
-
-/**
- * Typed safe-flag allowlists for the read-only docker subcommands that still take
- * flags. A subcommand match alone is NOT enough to auto-allow `docker logs` /
- * `docker inspect`: an unrecognized flag can smuggle behavior (and `--format` /
- * `-f` meanings differ per subcommand), so each known flag is pinned to its
- * arity — `'none'` (a boolean switch) or `'string'` (consumes one value). Any
- * flag NOT in the map falls through to a prompt (conservative). Subcommands absent
- * here (`ps`, `images`, `stats`, …) keep their existing name-only auto-allow.
- * Mirrors the reference's `DOCKER_READ_ONLY_COMMANDS` safeFlags
- * (utils/shell/readOnlyCommandValidation.ts).
- */
-const DOCKER_SAFE_SUBCOMMAND_FLAGS: Record<string, Record<string, 'none' | 'string'>> = {
-  logs: {
-    '--follow': 'none', '-f': 'none',
-    '--tail': 'string', '-n': 'string',
-    '--timestamps': 'none', '-t': 'none',
-    '--since': 'string', '--until': 'string',
-    '--details': 'none',
-  },
-  inspect: {
-    '--format': 'string', '-f': 'string',
-    '--type': 'string',
-    '--size': 'none', '-s': 'none',
-  },
-};
-
-/**
- * True when every flag passed to a read-only docker subcommand is in its typed
- * safe-flag allowlist (positional args — container names/IDs — are always fine).
- * A `--flag=value` form carries its own value; a `'string'` flag in `--flag value`
- * form consumes the following token. Returns true for subcommands with no
- * flag constraints. See {@link DOCKER_SAFE_SUBCOMMAND_FLAGS}.
- */
-function dockerReadOnlyFlagsSafe(sub: string, args: string[]): boolean {
-  const allow = DOCKER_SAFE_SUBCOMMAND_FLAGS[sub];
-  if (!allow) return true;
-  for (let i = 0; i < args.length; i++) {
-    const tok = args[i]!;
-    if (!tok.startsWith('-')) continue; // positional (container/id) — allowed
-    const eq = tok.indexOf('=');
-    const name = eq >= 0 ? tok.slice(0, eq) : tok;
-    const kind = allow[name];
-    if (kind === undefined) return false; // unknown flag → not auto-safe
-    if (kind === 'string' && eq < 0) i++; // consumes the next token as its value
-  }
-  return true;
-}
 
 /** Compound safe prefixes: "command subcommand" pairs that are safe. */
 /**
@@ -2275,20 +794,6 @@ const DESTRUCTIVE_COMMANDS = new Set([
   'redirect-to-system-path',
 ]);
 
-/** SQL statements that are destructive. */
-const DESTRUCTIVE_SQL_PATTERNS = [
-  /\bDROP\s+TABLE\b/i,
-  /\bDROP\s+DATABASE\b/i,
-  // `DROP SCHEMA public CASCADE` destroys an entire schema and everything in it;
-  // the reference's SQL pattern covers DROP of TABLE/DATABASE/SCHEMA alike
-  // (destructiveCommandWarning.ts L71-74). Without this arm a schema drop is not
-  // classified destructive by the SQL branch.
-  /\bDROP\s+SCHEMA\b/i,
-  /\bDELETE\s+FROM\b/i,
-  /\bTRUNCATE\s+TABLE\b/i,
-  /\bTRUNCATE\b/i,
-];
-
 /**
  * Env vars that are safe to pass through / strip before allow-rule matching. The
  * allowlist deliberately EXCLUDES PATH, LD_*, DYLD_*, PYTHONPATH, NODE_OPTIONS,
@@ -2330,69 +835,6 @@ export function stripSafeEnvVars(command: string): string {
 }
 
 /**
- * Hardline patterns — blocked unconditionally, even in auto-allow mode.
- * These prevent catastrophic system damage regardless of settings.
- */
-const HARDLINE_PATTERNS: Array<{ pattern: RegExp; description: string }> = [
-  // Match `rm … /` targeting the filesystem root, including a trailing token/
-  // redirect (`rm -rf / 2>/dev/null`) and the catastrophic glob (`rm -rf /*`).
-  // The arg run is `[^;&|]*` so it cannot span a command separator and
-  // false-positive on a later bare `/` (e.g. `rm x.txt && ls /`).
-  { pattern: /\brm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+|[^;&|]*\s+)\/(?=\s|$|[;&|><*])/,  description: 'rm -r on filesystem root' },
-  { pattern: /\brm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+|[^;&|]*\s+)\/(home|etc|usr|var|bin|sbin|boot|lib|lib64|Volumes|mnt|media)\b/, description: 'rm -r on system directory' },
-  { pattern: /\brm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+|[^;&|]*\s+)\/private\/(etc|var|tmp|home)\b/, description: 'rm -r on macOS system directory (/private/*)' },
-  { pattern: /\bmkfs\b/, description: 'filesystem format' },
-  { pattern: /\bdd\b.*\bof\s*=\s*\/dev\/[sh]d/, description: 'dd to block device' },
-  { pattern: /:\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:/, description: 'fork bomb' },
-  { pattern: /\b(shutdown|reboot|halt|poweroff)\b/, description: 'system power control' },
-  { pattern: /\binit\s+[06]\b/, description: 'init level change' },
-  { pattern: /\bsystemctl\s+(poweroff|reboot|halt)\b/, description: 'systemctl power control' },
-  { pattern: />\s*\/dev\/[sh]d/, description: 'redirect to block device' },
-  { pattern: /\bchmod\b.{0,20}777\s+\//, description: 'chmod 777 on system path' },
-  { pattern: /\bcurl\b.*\|\s*(ba|z|da|fi|k|c|tc)?sh\b/, description: 'pipe curl to shell' },
-  { pattern: /\bwget\b.*\|\s*(ba|z|da|fi|k|c|tc)?sh\b/, description: 'pipe wget to shell' },
-  { pattern: /\bpkill\b.*\bnode\b/, description: 'pkill node would kill AMI — use kill <pid> to target a specific process' },
-  { pattern: /\bkillall\b.*\bnode\b/, description: 'killall node would kill AMI — use kill <pid> to target a specific process' },
-  { pattern: /\bpkill\b.*\btsx\b/, description: 'pkill tsx would kill AMI — use kill <pid> to target a specific process' },
-  { pattern: /\bkillall\b.*\btsx\b/, description: 'killall tsx would kill AMI — use kill <pid> to target a specific process' },
-  { pattern: /\bpkill\b.*\bsuperinference\b/i, description: 'would kill AMI — use kill <pid> to target a specific process' },
-  { pattern: /\b(curl|wget|fetch|nc|ncat|http|https)\b[^\n]*(?:\b(?:169\.254\.169\.254|metadata\.google\.internal|metadata\.google\.com|100\.100\.100\.200|instance-data)\b|fd00:ec2::254)/i, description: 'cloud instance-metadata credential fetch (SSRF/credential-exfil vector)' },
-  // PowerShell power-control / disk-format cmdlets — the Windows equivalents of
-  // the POSIX shutdown/reboot/mkfs hardlines above (AMI runs PowerShell on Windows).
-  { pattern: /\b(Stop-Computer|Restart-Computer)\b/i, description: 'PowerShell power control' },
-  { pattern: /\bClear-RecycleBin\b/i, description: 'PowerShell empties the recycle bin (irreversible)' },
-  { pattern: /\b(Format-Volume|Clear-Disk)\b/i, description: 'PowerShell disk format / wipe' },
-  // Same-UID heap/credential scraping vectors. A prompt-injected command running
-  // as AMI's own UID can attach a debugger/tracer to the agent (or a peer) process
-  // and read provider API keys (ANTHROPIC_API_KEY / Bearer tokens) straight out of
-  // its heap, or read them via /proc/<pid>/mem. the reference closes this by calling
-  // prctl(PR_SET_DUMPABLE,0) via Bun FFI (upstreamproxy.ts); AMI runs on the Node
-  // runtime (no libc FFI), so it blocks the attach vectors unconditionally at the
-  // permission boundary instead — the hardline block overrides every mode.
-  { pattern: /\bgdb\b[^\n]*\s--?p(?:id)?\b/, description: 'gdb attach to a live process (in-memory credential scraping vector)' },
-  { pattern: /\blldb\b[^\n]*\s(?:-p|--pid|--attach-pid|--attach-name|-n)\b/, description: 'lldb attach to a live process (in-memory credential scraping vector)' },
-  { pattern: /\b(?:strace|ltrace)\b[^\n]*\s-p\b/, description: 'strace/ltrace attach to a live process (in-memory credential scraping vector)' },
-  { pattern: /\/proc\/(?:\d+|self|\$\{?[\w}$]*)\/mem\b/, description: 'reading /proc/<pid>/mem (process-memory / credential scraping vector)' },
-  { pattern: /\bprocess_vm_readv\b/, description: 'process_vm_readv cross-process memory read (credential scraping vector)' },
-];
-
-/** Serializable snapshot of the built-in (default) permission patterns. */
-export interface DefaultPermissionPatterns {
-  /** Bash commands auto-classified SAFE (read-only) — never prompt. */
-  autoAllowBashCommands: string[];
-  /** Unconditionally BLOCKED command patterns (hardline deny — interrupts). */
-  hardlineDenied: Array<{ pattern: string; description: string }>;
-  /** Commands classified DESTRUCTIVE (irreversible) — require confirmation. */
-  destructiveCommands: string[];
-  /** SQL statement patterns classified DESTRUCTIVE. */
-  destructiveSqlPatterns: string[];
-  /** Bash base-commands `acceptEdits` mode auto-approves without a prompt. */
-  acceptEditsAutoAllowedCommands: string[];
-  /** PowerShell write cmdlets `acceptEdits` mode auto-approves without a prompt. */
-  acceptEditsAutoAllowedPowerShellCmdlets: string[];
-}
-
-/**
  * Return the built-in (default) permission classifier patterns as a serializable
  * structure — the auto-allow safe-command list, the unconditional hardline-deny
  * patterns, and the destructive-command/SQL sets. Surfaced by `/permissions
@@ -2412,112 +854,6 @@ export function getDefaultPermissionPatterns(): DefaultPermissionPatterns {
     acceptEditsAutoAllowedPowerShellCmdlets: [...getAutoAllowedPowerShellCmdlets('acceptEdits')],
   };
 }
-
-/**
- * Expand two documented evasions of the unconditional hardline guard so the
- * patterns still fire: (a) a catastrophic base built via a bare assignment and
- * referenced by variable (`c=rm; $c -rf /`), and (b) a quoted payload inside
- * `sh -c '...'` / `bash -c "..."` / `eval '...'` where the trailing quote
- * defeats the end-anchored patterns. Returns the original command augmented with
- * the normalized/unwrapped forms (newline-joined) so pattern matching sees both.
- */
-const HARDLINE_BASES = 'rm|dd|mkfs|shutdown|reboot|halt|poweroff|chmod|curl|wget|pkill|killall';
-
-function normalizeForHardline(command: string): string {
-  let out = command;
-
-  // (a) Substitute variable references with their assigned values. Covers both a
-  // bare dangerous base (`name=rm`) and a full quoted command (`c='rm -rf /'`),
-  // so `eval "$c"` is normalized to the real command.
-  // Optional assignment-prefix keywords (export/declare/typeset/readonly/local)
-  // must not let `export c=rm; $c -rf /` bypass the variable-indirection guard.
-  const ASSIGN_PREFIX = `(?:(?:export|declare|typeset|readonly|local)\\s+)?`;
-  const assigns = new Map<string, string>();
-  const baseAssignRe = new RegExp(
-    `(?:^|;|&&|\\|\\||\\n)\\s*${ASSIGN_PREFIX}([A-Za-z_][A-Za-z0-9_]*)=(?:\\/[^\\s"';|&]*\\/)?(${HARDLINE_BASES})(?=\\s|;|&|\\||$)`,
-    'g',
-  );
-  let a: RegExpExecArray | null;
-  while ((a = baseAssignRe.exec(command)) !== null) assigns.set(a[1], a[2]);
-  const quotedAssignRe = new RegExp(
-    `(?:^|;|&&|\\|\\||\\n)\\s*${ASSIGN_PREFIX}([A-Za-z_][A-Za-z0-9_]*)=(['"])([\\s\\S]*?)\\2`,
-    'g',
-  );
-  let q: RegExpExecArray | null;
-  while ((q = quotedAssignRe.exec(command)) !== null) assigns.set(q[1], q[3]);
-  // Multiple space-separated assignments on one statement, e.g.
-  // `export a=1 c=rm` — scan every name=BASE pair within each statement
-  // (prefixed by export/declare/… or a bare assignment run). Split first to
-  // keep the per-pair regex simple and ReDoS-safe.
-  const pairRe = new RegExp(`\\b([A-Za-z_][A-Za-z0-9_]*)=(?:\\/[^\\s"';|&]*\\/)?(${HARDLINE_BASES})(?=\\s|$|[|&])`, 'g');
-  for (const rawSeg of command.split(/[;\n]|&&|\|\|/)) {
-    const seg = rawSeg.replace(/^\s*(?:export|declare|typeset|readonly|local)\s+/, '');
-    let pr: RegExpExecArray | null;
-    pairRe.lastIndex = 0;
-    while ((pr = pairRe.exec(seg)) !== null) assigns.set(pr[1], pr[2]);
-  }
-  if (assigns.size) {
-    out = out.replace(/\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?/g, (full, name) =>
-      assigns.has(name) ? assigns.get(name)! : full);
-  }
-
-  // (b) Expose command-substitution-built bases: $(echo rm)/`which rm` -> rm.
-  out = out.replace(/\$\(\s*(?:echo|which|command\s+-v)\s+([^)]*)\)/g, '$1');
-  out = out.replace(/`\s*(?:echo|which|command\s+-v)\s+([^`]*)`/g, '$1');
-
-  // (c) Recursively unwrap sh/bash/eval -c quoted payloads (handles nesting),
-  // appending each inner script as its own line so end-anchored patterns match.
-  for (let depth = 0; depth < 5; depth++) {
-    const wrapRe = /\b(?:sh|bash|zsh|dash|ksh|eval)\b[^'"]*(['"])([\s\S]*?)\1/g;
-    const inners: string[] = [];
-    let w: RegExpExecArray | null;
-    while ((w = wrapRe.exec(out)) !== null) {
-      if (w[2] && !out.includes('\n' + w[2])) inners.push(w[2]);
-    }
-    if (!inners.length) break;
-    out += '\n' + inners.join('\n');
-  }
-  return out;
-}
-
-export function detectHardlineCommand(command: string): { blocked: boolean; description: string | null } {
-  // Collapse quote/expansion/backslash obfuscation (r""m, r$()m, r\m → rm) so a
-  // split command word cannot evade the hardline patterns.
-  const deobfuscated = deobfuscateEnvExpansion(command);
-  const normalized = normalizeForHardline(deobfuscated);
-  // Test the original, the deobfuscated form, the whole normalized string, AND
-  // each normalized line, so an end-anchored pattern (e.g. `rm -rf /$`) still
-  // matches a catastrophic statement that is not the last token of a
-  // multi-statement command.
-  const candidates = [command, deobfuscated, normalized, ...normalized.split('\n')];
-  for (const { pattern, description } of HARDLINE_PATTERNS) {
-    for (const candidate of candidates) {
-      if (pattern.test(candidate)) return { blocked: true, description };
-    }
-  }
-  return { blocked: false, description: null };
-}
-
-/**
- * A single destructive-command signature: a {@link RegExp} and the
- * human-readable {@link warning} shown for it. Mirrors the reference's
- * `DestructivePattern` (utils/.../destructiveCommandWarning.ts, bash variant).
- */
-interface DestructivePattern {
-  pattern: RegExp;
-  warning: string;
-}
-
-/**
- * `git clean` is only destructive when it actually removes files: it requires an
- * `-f`/`--force` and must NOT be a `-n`/`--dry-run` preview (which only lists what
- * WOULD be deleted — read-only). Shared by the informational warning engine AND
- * {@link PermissionManager.classifyBashCommand} so a dry-run is never escalated to a
- * destructive-approval prompt in either path (one canonical regex, no duplication).
- * Mirrors the reference's git-clean negative-lookahead on `-n`/`--dry-run` plus the
- * required `-f` (destructiveCommandWarning.ts L67-71).
- */
-const GIT_CLEAN_FORCE_RE = /\bgit\s+clean\b(?![^;&|\n]*(?:-[a-zA-Z]*n|--dry-run))[^;&|\n]*-[a-zA-Z]*f/;
 
 /**
  * Ordered bash destructive-command signatures, MOST-SPECIFIC-FIRST so the first
@@ -2605,17 +941,6 @@ export function getDestructiveCommandWarning(command: string): string | null {
   return null;
 }
 
-export function detectCommandChaining(command: string): { chained: boolean; operators: string[]; count: number } {
-  const stripped = command.replace(/"[^"]*"|'[^']*'/g, '');
-  const operators: string[] = [];
-  if (/&&/.test(stripped)) operators.push('&&');
-  if (/\|\|/.test(stripped)) operators.push('||');
-  if (/;/.test(stripped)) operators.push(';');
-
-  const segments = stripped.split(/\s*(?:&&|\|\||;)\s*/).filter(s => s.trim());
-  return { chained: operators.length > 0, operators, count: segments.length };
-}
-
 // ---------------------------------------------------------------------------
 // Build-configuration file guard (supply-chain attack surface)
 // ---------------------------------------------------------------------------
@@ -2658,31 +983,6 @@ const BUILD_CONFIG_BASENAMES = new Set([
 ]);
 
 /**
- * Path patterns (checked against the full normalized path) for build config
- * files whose identity depends on directory context, not just the basename.
- */
-const BUILD_CONFIG_PATH_PATTERNS: RegExp[] = [
-  // GitHub Actions workflows
-  /\/\.github\/workflows\/[^/]+\.ya?ml$/,
-  // CircleCI
-  /\/\.circleci\/config\.ya?ml$/,
-  // Husky git hooks
-  /\/\.husky\//,
-  // Git hooks directory — writing here runs code on git operations
-  /\/\.git\/hooks\//,
-  // SSH directory — authorized_keys, config, known_hosts, private keys
-  /\/\.ssh\//,
-  // GPG keys and config
-  /\/\.gnupg\//,
-  // AWS credentials and config
-  /\/\.aws\//,
-  // Kubernetes configs
-  /\/\.kube\//,
-  // Docker credentials and config
-  /\/\.docker\//,
-];
-
-/**
  * Return true if `filePath` names a build-configuration file that should
  * require explicit approval even in `acceptEdits` mode.
  */
@@ -2698,20 +998,6 @@ export function isBuildConfigFile(filePath: string): boolean {
 
   return false;
 }
-
-// ---------------------------------------------------------------------------
-// Agent-own-config guard — edits to the agent's own settings/config dirs need
-// explicit approval even in acceptEdits (prompt-injection / self-reconfig vector)
-// ---------------------------------------------------------------------------
-
-/**
- * Config/IDE directory segments that must never be silently auto-edited: the
- * agent's own settings (`.ami`, `.ami-plugin`, `.claude`), IDE config (`.vscode`,
- * `.idea`) and the git metadata dir (`.git`). Writing into these can reconfigure
- * the agent, add hooks/commands/skills, or weaponize IDE tasks. Mirrors the reference's
- * DANGEROUS_DIRECTORIES + isClaudeConfigFilePath guards.
- */
-const AGENT_CONFIG_DIR_SEGMENTS = ['.ami', '.ami-plugin', '.claude', '.vscode', '.idea', '.git'];
 
 /** Settings/config basenames that are sensitive wherever they live. */
 const AGENT_CONFIG_BASENAMES = new Set([
@@ -2733,110 +1019,6 @@ export function isAgentConfigPath(filePath: string): boolean {
   if (AGENT_CONFIG_BASENAMES.has(path.basename(normalized))) return true;
   return false;
 }
-
-// ---------------------------------------------------------------------------
-// Suspicious path-pattern detection (canonicalization-bypass vectors)
-// ---------------------------------------------------------------------------
-
-/** UNC path (`\\server\share` or `//server/share`) — remote-resource / creds vector. */
-function isUncPath(p: string): boolean {
-  if (/^\\\\[^\\]/.test(p)) return true;      // \\server
-  if (/^\/\/[^/]/.test(p)) return true;       // //server
-  return false;
-}
-
-/**
- * Detect path-canonicalization bypass vectors that string-based blocklists miss,
- * applied on ALL platforms (NTFS can be mounted on Linux/macOS via ntfs-3g):
- * - NTFS Alternate Data Streams (`file.txt::$DATA`, `.bashrc:$DATA`);
- * - 8.3 short names (`GIT~1`, `SETTIN~1.JSON`);
- * - long-path prefixes (`\\?\`, `\\.\`, `//?/`, `//./`);
- * - trailing dots/spaces Windows strips (`.git.`, `settings.json `);
- * - DOS device-name suffixes (`.git.CON`, `settings.json.PRN`);
- * - triple-dot path components (`/.../`);
- * - UNC paths.
- *
- * The ADS colon check is restricted to the explicit `:$`/`::` stream markers so
- * legitimate colons in POSIX filenames are not false-positived (a deliberate
- * tightening of the reference's platform-gated "any colon after the drive letter" rule).
- * Mirrors the reference's hasSuspiciousWindowsPathPattern.
- */
-export function hasSuspiciousPathPattern(p: string): boolean {
-  if (!p) return false;
-  // NTFS ADS stream markers (explicit, to stay cross-platform safe).
-  if (/::|:\$/.test(p)) return true;
-  // 8.3 short names.
-  if (/~\d/.test(p)) return true;
-  // Long-path prefixes.
-  if (p.startsWith('\\\\?\\') || p.startsWith('\\\\.\\') || p.startsWith('//?/') || p.startsWith('//./')) {
-    return true;
-  }
-  // Trailing dots / spaces.
-  if (/[.\s]+$/.test(p)) return true;
-  // DOS device-name suffixes.
-  if (/\.(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i.test(p)) return true;
-  // Triple-dot path component.
-  if (/(^|[/\\])\.{3,}([/\\]|$)/.test(p)) return true;
-  // UNC path.
-  if (isUncPath(p)) return true;
-  return false;
-}
-
-/**
- * Walk the FULL symlink chain for `filePath` hop-by-hop and return the original
- * path, every intermediate symlink target, AND the final resolved path — so a
- * deny/boundary check matches at ANY hop (e.g. `test.txt → /etc/passwd` yields
- * both, closing the symlink-escape vector where only the final realpath is
- * checked). Bounded by `maxDepth` (SYMLOOP_MAX=40) with a visited-set loop guard.
- * Mirrors the reference's getPathsForPermissionCheck. Non-existent / unreadable hops stop
- * the walk gracefully and still return what was collected.
- *
- * `precomputedPathsToCheck` — when the caller ALREADY holds the canonical, fully
- * symlink-resolved form of `filePath` (e.g. the output of `fs.realpathSync`), the
- * hop list is trivially those paths and the lstat/readlink chain can be skipped
- * entirely. Passing it returns a copy directly, saving up to `maxDepth` syscalls
- * per inner check. Parity with the reference's `isPathAllowed(…, precomputedPathsToCheck)`
- * canonical fast-path (utils/permissions/pathValidation.ts L139-146). Do NOT pass
- * it for a non-canonical path (a nonexistent target, a path with unresolved
- * symlink components) — parent-directory symlink resolution is still required there.
- */
-export function getPathsForPermissionCheck(
-  filePath: string,
-  maxDepth = 40,
-  precomputedPathsToCheck?: readonly string[],
-): string[] {
-  if (precomputedPathsToCheck) return [...precomputedPathsToCheck];
-  const results: string[] = [];
-  const visited = new Set<string>();
-  let current = filePath;
-  for (let depth = 0; depth < maxDepth; depth++) {
-    const abs = path.isAbsolute(current) ? current : path.resolve(current);
-    const norm = path.normalize(abs);
-    if (visited.has(norm)) break; // circular symlink loop
-    visited.add(norm);
-    if (!results.includes(norm)) results.push(norm);
-    let target: string;
-    try {
-      const stat = fs.lstatSync(norm);
-      if (!stat.isSymbolicLink()) break;
-      target = fs.readlinkSync(norm);
-    } catch {
-      break; // non-existent or unreadable — stop, keep what we have
-    }
-    // Resolve a relative link target against the link's own directory.
-    current = path.isAbsolute(target) ? target : path.resolve(path.dirname(norm), target);
-  }
-  return results;
-}
-
-/**
- * Sentinel used by the session-stable base-realpath memo to represent "realpath
- * failed" — the empty string is never a valid absolute realpath, and
- * {@link memoizeWithLRU} cannot store `null`/`undefined` (its `Result` is
- * `NonNullable`). A miss is NEVER retained (see
- * {@link resolveSessionStableBaseRealpath}) so a base created later re-resolves.
- */
-const _REALPATH_MISS = '';
 
 /**
  * LRU-memoized `fs.realpathSync` for SESSION-STABLE permission bases — the launch
@@ -2900,58 +1082,6 @@ export function clearSessionStableBaseRealpathCache(): void {
  *  For tests/diagnostics only. */
 export function hasSessionStableBaseRealpath(base: string): boolean {
   return _baseRealpathMemo.cache.has(base);
-}
-
-/** System directories that should never be written to. */
-const SYSTEM_DIRECTORIES = [
-  '/etc', '/usr', '/bin', '/sbin', '/var',
-  '/sys', '/proc', '/dev', '/boot', '/lib', '/lib64',
-  '/opt', '/Volumes', '/mnt', '/media', '/run/media',
-];
-
-const WINDOWS_DRIVE_ROOT_REGEX = /^[A-Za-z]:\/?$/;
-const WINDOWS_DRIVE_CHILD_REGEX = /^[A-Za-z]:\/[^/]+$/;
-
-/**
- * Is an ALREADY-RESOLVED path a catastrophic target for a removal (`rm`/`rmdir`)?
- * Generalizes the enumerated system-directory HARDLINE list to EVERY direct child
- * of the filesystem root (so `/srv`, `/root`, `/run` — not just the hardcoded
- * `/etc`/`/usr`/… — are caught) plus the whole-directory wildcard, the root
- * itself, the home directory, and Windows drive roots / their direct children.
- * Pure string predicate (no fs access) so it can run on an unvalidated path.
- *
- * Dangerous when the resolved path is:
- * - the bare wildcard `*` or any path ending in `/*` (wipes a whole directory);
- * - the filesystem root `/`;
- * - a Windows drive root (`C:\`, `D:/`);
- * - the user's home directory;
- * - a direct child of root (`/usr`, `/tmp`, `/opt`, `/srv`, …) — but NOT a
- *   grandchild (`/usr/local` is left to the normal flow);
- * - a direct child of a Windows drive root (`C:\Windows`, `C:\Users`).
- *
- * Mirrors the reference's `isDangerousRemovalPath` (utils/permissions/pathValidation.ts).
- */
-export function isDangerousRemovalPath(resolvedPath: string): boolean {
-  // Collapse mixed/duplicated separators so `C:\\Windows` (valid in PowerShell)
-  // and `//srv` don't slip past the drive-child / root-child checks.
-  const forwardSlashed = resolvedPath.replace(/[\\/]+/g, '/');
-
-  if (forwardSlashed === '*' || forwardSlashed.endsWith('/*')) return true;
-
-  const normalizedPath =
-    forwardSlashed === '/' ? forwardSlashed : forwardSlashed.replace(/\/$/, '');
-
-  if (normalizedPath === '/') return true;
-  if (WINDOWS_DRIVE_ROOT_REGEX.test(normalizedPath)) return true;
-
-  const normalizedHome = os.homedir().replace(/[\\/]+/g, '/');
-  if (normalizedPath === normalizedHome) return true;
-
-  // Direct children of root: /usr, /tmp, /etc (but not /usr/local).
-  if (path.posix.dirname(normalizedPath) === '/') return true;
-  if (WINDOWS_DRIVE_CHILD_REGEX.test(normalizedPath)) return true;
-
-  return false;
 }
 
 /**
@@ -3023,70 +1153,6 @@ const SHELL_WRAPPERS = new Set([
   'srun',
   'watch', 'ionice', 'setarch', 'taskset', 'chrt', 'strace', 'ltrace',
 ]);
-
-/**
- * Unwrap shell control structures (for/while/until/if/case) so that the
- * body commands are what gets classified, not the keywords themselves.
- *
- * for f in *.ts; do cat "$f"; done  →  cat "$f"
- * while read l; do echo "$l"; done  →  echo "$l"
- * if test -f x; then cat x; else echo no; fi  →  cat x\necho no
- *
- * Operates recursively — nested loops are unwrapped.
- */
-export function unwrapShellControlStructures(command: string): string {
-  let result = command;
-  // For/while/until loops: extract body between do...done
-  // Handles: for ...; do BODY; done | while ...; do BODY; done
-  const loopRe = /\b(?:for|while|until)\b[^;]*;\s*do\b([\s\S]*?)\bdone\b/g;
-  let prev = '';
-  while (prev !== result) {
-    prev = result;
-    result = result.replace(loopRe, (_match, body: string) => body.trim());
-  }
-  // If/then/else/elif/fi: extract bodies from then/else/elif branches
-  const ifRe = /\bif\b[^;]*;\s*then\b([\s\S]*?)\bfi\b/g;
-  prev = '';
-  while (prev !== result) {
-    prev = result;
-    result = result.replace(ifRe, (_match, body: string) => {
-      // Split on else/elif to get all branch bodies
-      return body.replace(/\b(?:elif\b[^;]*;\s*then|else)\b/g, ';').trim();
-    });
-  }
-  return result;
-}
-
-/**
- * Extract all command names from a shell string.
- * Handles: pipes, semicolons, &&/||, command substitution $(...),
- * subshells (...), shell wrappers (env, sudo, bash -c),
- * shell control structures (for/while/if), and
- * environment variable assignments as prefixes.
- */
-function findMatchingParen(s: string, start: number): number {
-  let depth = 1;
-  for (let i = start; i < s.length; i++) {
-    if (s[i] === '(') depth++;
-    if (s[i] === ')') { depth--; if (depth === 0) return i; }
-  }
-  return -1;
-}
-
-/**
- * Hard cap on how deep the recursive command decomposition
- * ({@link extractBaseCommands} into `$(...)`/backticks/subshells/`-c` payloads and
- * {@link extractCommandSubstitutions}'s nested-substitution walk) may descend
- * before it stops. A maliciously deep nesting chain
- * (`$( $( $( … rm -rf / … ) ) )`) would otherwise recurse unbounded and blow the
- * call stack (RangeError) or hang permission evaluation — a denial-of-service on
- * the safety layer itself. Mirrors the reference's `recursionDepth > 10` boundary in
- * `utils/bash/prefix.ts`. Beyond the cap the decomposition returns what it has
- * collected so far; the width guard ({@link MAX_SUBCOMMANDS_FOR_SECURITY_CHECK})
- * independently fails compound commands closed, so a command too deep to fully
- * analyze still can never be *proven* safe.
- */
-export const MAX_COMMAND_PARSE_DEPTH = 10;
 
 function extractBaseCommands(command: string, depth = 0): string[] {
   const commands: string[] = [];
@@ -3355,110 +1421,6 @@ export function getAutoAllowedCommands(mode: PermissionMode): readonly string[] 
 }
 
 /**
- * Introspection accessor: the PowerShell edit-adjacent write CMDLETS a given
- * permission {@link PermissionMode} auto-approves without a prompt, SORTED for
- * stable display — the PowerShell counterpart of {@link getAutoAllowedCommands}
- * (which lists only bash base-commands). Only `acceptEdits` auto-allows a fixed
- * set (the SAME canonical {@link POWERSHELL_ACCEPT_EDITS_WRITE_CMDLETS} the runtime
- * {@link isAcceptEditsPowerShellWrite} gate uses — no duplicate table); every
- * other mode returns an empty list. Surfaced through
- * {@link getDefaultPermissionPatterns} (→ `/permissions defaults`) so a user can
- * see the PowerShell cmdlets acceptEdits waves through, alongside the bash set.
- */
-export function getAutoAllowedPowerShellCmdlets(mode: PermissionMode): readonly string[] {
-  return mode === 'acceptEdits' ? [...POWERSHELL_ACCEPT_EDITS_WRITE_CMDLETS].sort() : [];
-}
-
-
-/**
- * Canonical, reusable command-identity predicates for the two command roots the
- * compound-command guards recognize specially: a directory change (`cd`) and a
- * `git` invocation. Before this, each guard ({@link isGitReadOnlyCommandSafe},
- * {@link countDirectoryChanges}, {@link commandHasCdWriteDesync},
- * {@link commandInvokesGit}) open-coded its own `cmd === 'cd' || cmd === 'pushd'
- * || …` / `cmd === 'git'` test, and the sets had DRIFTED (one counted `popd` but
- * not `set-location`; the others the reverse) so the same command was recognized
- * as a directory change by one guard and not another. These are the single
- * canonical identity checks every guard now shares, mirroring the reference's injectable
- * `CommandIdentityCheckers` (isNormalizedCdCommand / isNormalizedGitCommand,
- * bashCommandHelpers.ts) so directory-change / git recognition is consistent and
- * independently testable.
- *
- * `isNormalizedCdCommand` recognizes every directory-change verb: the POSIX
- * `cd`/`chdir`/`pushd`/`popd` (lowercase, as a real shell spells them) and the
- * PowerShell `Set-Location` cmdlet (case-insensitive, as PowerShell resolves it).
- */
-export function isNormalizedCdCommand(token: string | undefined): boolean {
-  if (!token) return false;
-  return token === 'cd' || token === 'chdir' || token === 'pushd' || token === 'popd'
-    || token.toLowerCase() === 'set-location';
-}
-
-/** `isNormalizedGitCommand` recognizes a bare `git` base token (env-var prefixes
- *  and `sudo`/`env` wrappers are peeled by {@link extractBaseCommands} before this
- *  predicate sees the token, so it only needs to match the normalized base word). */
-export function isNormalizedGitCommand(token: string | undefined): boolean {
-  return token === 'git';
-}
-
-/**
- * Whole-command git read-only guard for the bash classifier. Splits a (possibly
- * compound) command into segments, validates every git invocation via
- * isGitInvocationReadOnly, and refuses a compound that changes directory before
- * running git (`cd /attacker && git status`) — a sandbox escape where git runs
- * attacker-planted .git/hooks from the new cwd (the reference's cd+git guard).
- */
-export function isGitReadOnlyCommandSafe(command: string): boolean {
-  const unwrapped = unwrapShellControlStructures(command);
-  const segments = unwrapped.split(/\s*(?:\|\||&&|[|;])\s*/).filter(s => s.trim());
-  let hasCd = false;
-  let hasGit = false;
-  for (const seg of segments) {
-    const tokens = seg.trim().split(/\s+/);
-    let i = 0;
-    while (i < tokens.length && /^[A-Za-z_]\w*=/.test(tokens[i]!)) i++;
-    const cmd = tokens[i];
-    if (isNormalizedCdCommand(cmd)) hasCd = true;
-    if (isNormalizedGitCommand(cmd)) {
-      hasGit = true;
-      if (!isGitInvocationReadOnly(tokens.slice(i))) return false;
-    }
-  }
-  if (hasCd && hasGit) return false;
-  return true;
-}
-
-/**
- * HOST/OWNER/REPO exfiltration guard for `gh` read-only commands. A normal repo
- * spec is `OWNER/REPO` (exactly one `/`). Any token (or `--flag=value` inline
- * value) that names a FOREIGN host — a URL scheme (`https://`, `git://`, …), an
- * SSH-style `git@host:owner/repo`, or a 3+-segment `host/owner/repo` (2+ slashes)
- * — redirects the read at an attacker-chosen remote and must NOT be auto-approved.
- * Mirrors the reference's `ghIsDangerousCallback` (readOnlyCommandValidation.ts).
- * `args` is the token list AFTER the `gh <group> <subcommand>` pair.
- */
-export function ghArgsTargetForeignHost(args: string[]): boolean {
-  for (const token of args) {
-    if (!token) continue;
-    // For a flag token, only its inline `=value` can carry a repo spec; a bare
-    // flag (its value is the NEXT token) is inspected on that next iteration.
-    let value = token;
-    if (token.startsWith('-')) {
-      const eqIdx = token.indexOf('=');
-      if (eqIdx === -1) continue;
-      value = token.slice(eqIdx + 1);
-      if (!value) continue;
-    }
-    if (!value.includes('/') && !value.includes('://') && !value.includes('@')) continue;
-    if (value.includes('://')) return true; // explicit URL scheme
-    if (value.includes('@')) return true;   // ssh-style git@host:owner/repo
-    const slashCount = (value.match(/\//g) || []).length;
-    if (slashCount >= 2) return true;        // host/owner/repo (3+ segments)
-  }
-  return false;
-}
-
-/**
  * Is a single `gh` invocation (tokens beginning at the `gh` token) a genuinely
  * read-only form? True only when the leading `<group> <subcommand>` pair is in
  * {@link GH_READ_ONLY_SUBCOMMANDS} AND no argument targets a foreign host
@@ -3519,139 +1481,6 @@ export function commandInvokesGit(command: string): boolean {
 }
 
 /**
- * Detect that `cwd` is (or has been manipulated to look like) a BARE git repo, so
- * that running any git command from it would make git treat `cwd` as the git dir
- * and execute attacker-planted hooks (`hooks/pre-commit`, …) — a sandbox-escape
- * vector. Git's `is_git_directory()` (setup.c) treats a directory as a git dir when
- * it holds a valid `HEAD` ref plus `objects/` and `refs/`. The attack: plant
- * `HEAD` + `objects/` + `refs/` + `hooks/pre-commit` in `cwd` and remove/corrupt
- * `.git/HEAD` so git falls back to cwd discovery and runs the hook.
- *
- * Returns true when `cwd` has bare-repo indicators WITHOUT a valid `.git/HEAD`:
- * - `.git` is a regular FILE → worktree/submodule gitdir reference → SAFE (false).
- * - `.git` is a directory with a regular-file `HEAD` → normal repo → SAFE (false).
- * - otherwise, flag if any of `HEAD` (file), `objects/` (dir), `refs/` (dir) exist
- *   directly in `cwd`.
- *
- * Each indicator is stat'd under its own try/catch so one stat error can't mask
- * another. Pure + synchronous (a permission-eval boundary check). Mirrors the reference's
- * `isCurrentDirectoryBareGitRepo` (utils/git.ts). `cwd` defaults to the process cwd.
- */
-export function isDisguisedBareGitRepo(cwd: string = process.cwd()): boolean {
-  const gitPath = path.join(cwd, '.git');
-  try {
-    const stats = fs.statSync(gitPath);
-    if (stats.isFile()) return false; // worktree/submodule gitdir reference
-    if (stats.isDirectory()) {
-      try {
-        // An attacker creating .git/HEAD as a DIRECTORY passes a bare statSync but
-        // git rejects a non-file HEAD and falls back to cwd discovery — so only a
-        // regular-file HEAD proves a normal repo.
-        if (fs.statSync(path.join(gitPath, 'HEAD')).isFile()) return false;
-      } catch { /* .git exists but no HEAD — fall through to bare-repo check */ }
-    }
-  } catch { /* no .git — fall through to bare-repo indicator check */ }
-
-  // No valid .git/HEAD — flag if cwd itself carries bare-repo indicators.
-  try { if (fs.statSync(path.join(cwd, 'HEAD')).isFile()) return true; } catch { /* none */ }
-  try { if (fs.statSync(path.join(cwd, 'objects')).isDirectory()) return true; } catch { /* none */ }
-  try { if (fs.statSync(path.join(cwd, 'refs')).isDirectory()) return true; } catch { /* none */ }
-  return false;
-}
-
-/**
- * Identity ("no-op") `cd` targets that resolve to the CURRENT working directory,
- * so a leading `cd <target>` changes nothing. Models routinely prepend `cd $PWD`
- * (or `cd .`) before the real command; that segment must not be treated as a real
- * directory change by the cwd-desync / multiple-cd guards. Covers the portable
- * identity forms (`.`, `$PWD`, `${PWD}`, quoted variants, `$(pwd)`, `` `pwd` ``)
- * and the Windows `%CD%` spelling.
- */
-const NOOP_CWD_TARGET_RE =
-  /^(?:\.|\$PWD|\$\{PWD\}|"\$PWD"|'\$PWD'|"\$\{PWD\}"|\$\(pwd\)|`pwd`|%CD%)$/;
-
-/**
- * Strip a SINGLE leading no-op `cd <cwd>` subcommand from a (possibly compound)
- * command, returning the remainder. A model-prepended identity cd (`cd $PWD &&
- * real-cmd`, `cd . ; real-cmd`) is a no-op, so counting it toward the multiple-cd
- * guard or the cd+redirect desync guard would spuriously escalate an otherwise
- * benign command to an explicit prompt. Only an IDENTITY target is peeled — a
- * `cd` into a real directory shifts the resolution base for later relative paths
- * and is never stripped. Mirrors the reference's BashTool prefix normalization, which
- * removes a leading `cd <cwd>` subcommand before counting cd commands / running
- * per-subcommand permission evaluation.
- */
-export function stripLeadingNoopCd(command: string): string {
-  const m = command.match(/^\s*([^\n;&|]+?)\s*(?:&&|;|\|\||\||&)\s*([\s\S]+)$/);
-  if (!m) return command;
-  const first = m[1]!.trim();
-  const rest = m[2]!;
-  const toks = first.split(/\s+/).filter(Boolean);
-  const base = (toks[0] ?? '').toLowerCase();
-  if (base !== 'cd' && base !== 'chdir' && base !== 'pushd' && base !== 'set-location') {
-    return command;
-  }
-  // The segment must be exactly `cd <single-identity-target>` (no flags, no extra
-  // operands) so `cd . file` or `cd $PWD extra` is left intact for scrutiny.
-  const operands = toks.slice(1);
-  if (operands.length !== 1 || !NOOP_CWD_TARGET_RE.test(operands[0]!)) return command;
-  return rest;
-}
-
-/**
- * Detect a compound command that changes directory (`cd`/`pushd`/`chdir`/
- * PowerShell `Set-Location`) AND then performs a file-writing output redirection
- * (`>`/`>>` to a file, not an fd-dup like `2>&1`). The validator classifies the
- * redirect target against the launch cwd, but at runtime it resolves against the
- * NEW cwd — a path-resolution/TOCTOU desync that can write outside the workspace
- * (`cd /outside && echo payload > config`). the reference requires manual approval for
- * this shape (pathValidation.ts cd+write guard, PowerShell Set-Location desync).
- */
-export function commandHasCdWriteDesync(command: string): boolean {
-  // Drop a model-prepended identity `cd <cwd>` (a no-op) so it can't be mistaken
-  // for a real directory change before a redirect.
-  const unwrapped = unwrapShellControlStructures(stripLeadingNoopCd(command));
-  const segments = unwrapped.split(/\s*(?:\|\||&&|[|;])\s*/).filter(s => s.trim());
-  let hasCd = false;
-  let hasRedirect = false;
-  for (const seg of segments) {
-    const tokens = seg.trim().split(/\s+/);
-    let i = 0;
-    while (i < tokens.length && /^[A-Za-z_]\w*=/.test(tokens[i]!)) i++;
-    const cmd = tokens[i];
-    if (isNormalizedCdCommand(cmd)) hasCd = true;
-    // A file redirect: optional leading fd, `>`/`>>`, then a target that is not
-    // an fd-dup (`&1`). Quoted sections are stripped so `echo "a > b"` is ignored.
-    const unquoted = stripQuotedSections(seg);
-    if (/\d*>>?\s*(?![&\s])\S/.test(unquoted)) hasRedirect = true;
-  }
-  return hasCd && hasRedirect;
-}
-
-/**
- * Count the directory-change segments (`cd`/`pushd`/`chdir`/PowerShell
- * `Set-Location`) in a (possibly compound) command. More than one directory
- * change in a single command is an unusual navigation pattern that defeats
- * cwd-relative path validation and must require approval (the reference's multi-cd
- * guard, bashCommandHelpers.ts).
- */
-export function countDirectoryChanges(command: string): number {
-  // A model-prepended identity `cd <cwd>` is a no-op and must not count toward the
-  // multiple-cd guard (which escalates any command with more than one real cd).
-  const unwrapped = unwrapShellControlStructures(stripLeadingNoopCd(command));
-  const segments = unwrapped.split(/\s*(?:\|\||&&|[|;])\s*/).filter(s => s.trim());
-  let count = 0;
-  for (const seg of segments) {
-    const tokens = seg.trim().split(/\s+/);
-    let i = 0;
-    while (i < tokens.length && /^[A-Za-z_]\w*=/.test(tokens[i]!)) i++;
-    const cmd = tokens[i];
-    if (isNormalizedCdCommand(cmd)) count++;
-  }
-  return count;
-}
-
-/**
  * Match a simple glob-like pattern against a string.
  * Supports '*' as a wildcard for any sequence of characters.
  */
@@ -3684,7 +1513,6 @@ export function wildcardMatch(pattern: string, value: string, caseInsensitive = 
   return matchPattern(pattern, value, caseInsensitive);
 }
 
-
 function matchPattern(pattern: string, value: string, caseInsensitive = false): boolean {
   if (pattern.includes('\x00') || value.includes('\x00')) return false;
   // Length cap (shared with the untrusted-regex pre-validator): a permission/
@@ -3702,43 +1530,6 @@ function matchPattern(pattern: string, value: string, caseInsensitive = false): 
     : pattern === value) return true;
 
   return _compilePattern((caseInsensitive ? 'i' : 's') + pattern).test(value);
-}
-
-/**
- * Resolve a FILE permission-rule pattern to its `(relativePattern, root)` pair,
- * mirroring the reference's `patternWithRoot`
- * (references/claude/claude-code-main/src/utils/permissions/filesystem.ts L852-917).
- *
- * The pattern's leading sigil chooses the directory it is anchored to, so the SAME
- * rule string resolves to the SAME file regardless of which settings tier it came
- * from. AMI previously matched file rules as raw globs against the literal path
- * string, so a root-relative rule (`//etc/**`), a home-relative rule (`~/.ssh/**`)
- * or a project-relative rule (`/src/**`) silently never matched a real absolute
- * path — AMI even generates `//abs/**` suggestions via {@link createReadRuleSuggestion}
- * that could not match. This restores per-root resolution:
- *  - `//x`  → root `/` (filesystem-root-relative); one leading slash is dropped.
- *  - `~/x`  → root = the NFC-normalized home directory.
- *  - `/x`   → root = `sourceRoot` (the directory the rule's settings tier lives in,
- *             i.e. the project root for project/local settings).
- *  - bare `x` / `./x` → root `null` (root-agnostic); a leading `./` is stripped so
- *    `./.env` matches `.env`.
- */
-export function patternWithRoot(
-  pattern: string,
-  sourceRoot: string,
-  home: string = os.homedir(),
-): { relativePattern: string; root: string | null } {
-  if (pattern.startsWith('//')) {
-    return { relativePattern: pattern.slice(1), root: '/' };
-  }
-  if (pattern.startsWith('~/')) {
-    return { relativePattern: pattern.slice(1), root: home.normalize('NFC') };
-  }
-  if (pattern.startsWith('/')) {
-    return { relativePattern: pattern, root: sourceRoot };
-  }
-  const normalized = pattern.startsWith('./') ? pattern.slice(2) : pattern;
-  return { relativePattern: normalized, root: null };
 }
 
 /**
@@ -3774,121 +1565,6 @@ export function matchRootedFileRulePattern(
     if (ci ? candidate.toLowerCase() === base.toLowerCase() : candidate === base) return true;
   }
   return matchPattern(absPattern, candidate, ci);
-}
-
-/**
- * Normalize line continuations (backslash + newline) in a bash command.
- * Bash treats `\<newline>` as a line join — stripping it reveals the
- * actual command that will execute, preventing pattern-bypass via
- * multi-line splitting.
- */
-export function normalizeLineContinuations(cmd: string): string {
-  // A `\<newline>` is a true line-continuation ONLY when the backslash run
-  // immediately before the newline is ODD (the last backslash escapes the
-  // newline). With an EVEN run the backslashes pair up as literal escapes and
-  // the newline is a REAL command separator that must be KEPT — otherwise
-  // `echo \\<newline>rm -rf /` would be mis-joined into one command and the
-  // second statement could slip past an end-anchored pattern. Mirrors the reference's
-  // odd/even backslash-count discrimination (utils/bash/commands.ts L96-139).
-  let out = '';
-  for (let i = 0; i < cmd.length; i++) {
-    if (cmd[i] === '\n') {
-      let bs = 0;
-      let j = out.length - 1;
-      while (j >= 0 && out[j] === '\\') { bs++; j--; }
-      if (bs % 2 === 1) {
-        out = out.slice(0, out.length - 1); // drop the escaping backslash, join lines
-        continue; // and drop the newline
-      }
-      out += '\n'; // even run (or none) — real separator, keep it
-      continue;
-    }
-    out += cmd[i];
-  }
-  return out;
-}
-
-/**
- * Prepare a raw command for compound-splitting / rule-matching in the SECURITY
- * ordering the reference relies on: extract (strip) heredoc BODIES *before* joining
- * `\<newline>` line-continuations, then join. Order matters for correctness AND
- * security — joining continuations first can shift a heredoc's closing delimiter
- * (`x\<newline>DELIM` → `xDELIM`) so that a real post-heredoc statement such as
- * `> /etc/passwd` gets swallowed INTO the heredoc body and never reaches the
- * sub-command matcher, letting an `allow` rule auto-approve a command whose
- * dangerous tail it never saw. {@link stripHeredocBodies} removes those bodies up
- * front (matching the reference's `extractHeredocs`-before-join invariant in
- * utils/bash/commands.ts L642-683), so the continuation-join and the subsequent
- * {@link splitCompoundCommand} only ever operate on the real COMMAND text.
- *
- * This is the single canonical "normalize a command for matching" entry point —
- * every permission-matching/compound-split consumer (rule matching, arg-leak
- * scanning) uses it so the heredoc-before-join guarantee holds uniformly.
- */
-function normalizeCommandForMatching(command: string): string {
-  return normalizeLineContinuations(stripHeredocBodies(command));
-}
-
-const COMPOUND_SPLIT_RE = /\s*(?:\|\||&&|[;|])\s*/;
-
-/**
- * Split a compound bash command into individual sub-commands.
- * First unwraps shell control structures (for/while/if), then splits
- * on &&, ||, ;, and | operators.
- */
-function splitCompoundCommand(cmd: string): string[] {
-  const unwrapped = unwrapShellControlStructures(cmd);
-  return unwrapped.split(COMPOUND_SPLIT_RE).map(s => s.trim()).filter(s => s.length > 0);
-}
-
-/**
- * Cap on how many sub-commands a single compound command may fan out into before
- * the per-subcommand safety analysis (classification + rule matching) is run.
- * Above the cap we FAIL CLOSED — the command is treated as unsafe and an allow
- * rule cannot auto-approve it, so it falls back to a prompt. A pathologically
- * wide `a && b && c && …` chain otherwise runs the full validator set per segment
- * and can starve the event loop (the reference's MAX_SUBCOMMANDS_FOR_SECURITY_CHECK,
- * CC-643). Fifty is generous — legitimate user commands do not split that wide.
- */
-export const MAX_SUBCOMMANDS_FOR_SECURITY_CHECK = 50;
-
-/**
- * Extract the inner command string(s) from `$(...)` command substitutions and
- * `` `...` `` backticks, recursively (nested substitutions included).
- *
- * Used ONLY for deny/ask matching (M1): a DENIED command must not be able to hide
- * inside a substitution (e.g. `echo $(rm -rf x)` or `` echo `rm -rf x` ``). Allow
- * matching never consults this — decomposition can only ADD denies, never broaden
- * an allow.
- */
-function extractCommandSubstitutions(command: string): string[] {
-  const results: string[] = [];
-  const walk = (s: string, depth: number): void => {
-    // Bounded recursion: a deeply-nested substitution chain must not blow the
-    // stack or hang deny-matching (DoS). Mirrors the reference's recursionDepth>10 guard.
-    if (depth > MAX_COMMAND_PARSE_DEPTH) return;
-    for (let i = 0; i < s.length; i++) {
-      if (s[i] === '$' && i + 1 < s.length && s[i + 1] === '(') {
-        const end = findMatchingParen(s, i + 2);
-        if (end !== -1) {
-          const inner = s.slice(i + 2, end);
-          results.push(inner);
-          walk(inner, depth + 1); // nested $(...) / backticks
-          i = end;
-        }
-      } else if (s[i] === '`') {
-        const end = s.indexOf('`', i + 1);
-        if (end !== -1) {
-          const inner = s.slice(i + 1, end);
-          results.push(inner);
-          walk(inner, depth + 1);
-          i = end;
-        }
-      }
-    }
-  };
-  walk(command, 0);
-  return results;
 }
 
 /**
@@ -3951,17 +1627,6 @@ export function stripEnvVarPrefix(cmd: string, safeEnvOnly = false): string {
   }
   return stripped;
 }
-
-// ---------------------------------------------------------------------------
-// Scoped command-prefix derivation for "allow always" permission rules
-// ---------------------------------------------------------------------------
-
-const ENV_VAR_ASSIGN_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
-// Subcommand shape: lowercase alnum, hyphen-separated (e.g. `commit`, `rev-parse`).
-// The `[a-z0-9]*` run and the `-[a-z0-9]+` groups start with disjoint chars
-// (alnum vs `-`), so there is no ambiguous overlap / ReDoS backtracking.
-// eslint-disable-next-line security/detect-unsafe-regex
-const SUBCOMMAND_SHAPE_RE = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
 
 /**
  * Bare single-word prefixes that must NEVER be offered as an "allow always"
@@ -4027,40 +1692,6 @@ const INTERPRETER_SPEC_NAMES: ReadonlySet<string> = new Set([
   'python', 'python3', 'node', 'ruby', 'perl',
 ]);
 
-/**
- * Minimal command-spec model for prefix extraction. For a subcommand-aware CLI
- * it declares the global option flags that CONSUME the following token as their
- * value (so `git -C /repo status` / `kubectl -n kube-system get pods` skip the
- * flag+value to reach the real subcommand) and an optional `depth` — how many
- * words the scoped prefix should extend to (default 2). Mirrors the reference's fig-spec
- * `options[].args` "does this flag take a value" (utils/shell/specPrefix.ts) and
- * its `DEPTH_RULES` per-command default depth table (utils/powershell/staticPrefix.ts).
- *
- * This is a static, parser-free analogue of the reference's dynamically-imported fig
- * specs — the specs those builds cannot load at runtime are exactly the ones
- * the reference hardcodes in DEPTH_RULES, so AMI hardcodes the same shallow table here.
- */
-export interface BashCommandSpec {
-  /** Global flags (long or short) that consume the next token as their value. */
-  valueFlags: ReadonlySet<string>;
-  /** Scoped-prefix depth in words (command + subcommands). Defaults to 2. */
-  depth?: number;
-  /**
-   * Per-FIRST-SUBCOMMAND depth overrides, keyed by the lowercased first subcommand
-   * word. A deep subcommand tree under one group needs a larger prefix than the
-   * command's default `depth` to reach a meaningful leaf (e.g. `gcloud compute
-   * instances describe` needs depth 6, while `gcloud config list` is fine at 4).
-   * When the first subcommand after the command matches a key here, that value
-   * REPLACES `depth` for this invocation. Mirrors the reference's `DEPTH_RULES` COMPOUND
-   * keys (`${command} ${firstSubcommand}` → depth), e.g. `gcloud compute`:6,
-   * `gcloud beta`:6 (utils/shell/specPrefix.ts DEPTH_RULES / staticPrefix.ts
-   * calculateDepth, which consults the `${command} ${sub}` key before the bare
-   * command key). Keyed on the first subcommand only (not arbitrary pairs) because
-   * that is the sole compound form the reference's table uses.
-   */
-  subcommandDepth?: Readonly<Record<string, number>>;
-}
-
 export const BASH_COMMAND_SPECS: Record<string, BashCommandSpec> = {
   git: { valueFlags: new Set(['-C', '-c', '--git-dir', '--work-tree', '--exec-path', '--namespace']) },
   docker: { valueFlags: new Set(['-H', '--host', '--context', '--config', '-l', '--log-level']), depth: 3 },
@@ -4089,13 +1720,6 @@ export const BASH_COMMAND_SPECS: Record<string, BashCommandSpec> = {
   cargo: { valueFlags: new Set(['-Z', '--color', '--config']) },
 };
 
-/** Does `flag` consume the following token as its value, per `spec`? */
-function flagTakesValue(flag: string, spec: BashCommandSpec | undefined): boolean {
-  // Strip an inline `--flag=value` form — that carries its own value.
-  if (flag.includes('=')) return false;
-  return spec?.valueFlags.has(flag) ?? false;
-}
-
 /**
  * Resolve the {@link BashCommandSpec} for a command: the hand-maintained
  * {@link BASH_COMMAND_SPECS} table first, then — for a command the table does not
@@ -4109,26 +1733,6 @@ function bashSpecFor(cmd: string): BashCommandSpec | undefined {
   if (existing) return existing;
   const valueFlags = valueFlagsForCommand(cmd);
   return valueFlags ? { valueFlags } : undefined;
-}
-
-/**
- * Advance past leading global flags (and the values `spec` says they consume)
- * starting at `tokens[start]`, returning the index of the first non-flag token —
- * the real subcommand. `git -C /repo status` → the index of `status`;
- * `docker -D ps` → the index of `ps`. This is the canonical spec-driven
- * flag-value skip shared by prefix suggestion (getSimpleCommandPrefix), base
- * extraction (extractBaseCommands) and classification (allSegmentsKnown + the
- * docker read-only check), so a global flag before the subcommand can no longer
- * defeat SAFE_PREFIXES / DOCKER_SAFE_SUBCOMMANDS matching. Mirrors the reference's
- * findFirstSubcommand + flagTakesArg (utils/shell/specPrefix.ts L40-137).
- */
-function skipGlobalFlags(tokens: string[], start: number, spec: BashCommandSpec | undefined): number {
-  let i = start;
-  while (i < tokens.length && tokens[i]!.startsWith('-')) {
-    if (flagTakesValue(tokens[i]!, spec)) i++;
-    i++;
-  }
-  return i;
 }
 
 /**
@@ -4217,100 +1821,6 @@ export function getFirstWordPrefix(command: string): string | null {
   return cmd;
 }
 
-/**
- * Strip shell output/input redirection clauses (`> out.txt`, `>>log`, `2>&1`,
- * `&> both`, `< in`, `<<<here`) from a command so a redirect *target filename*
- * never leaks into a derived permission-rule prefix (turning `npm test > out.txt`
- * into a bogus `Bash(out.txt)` rule). Quote-aware: a `>` inside single/double
- * quotes is preserved. Mirrors the reference's `commandTransform` hook on
- * `generateShellSuggestionsLabel` (shellPermissionHelpers: "Bash strips output
- * redirections so filenames don't show as commands"). Best-effort for display /
- * rule derivation only — it never participates in a security decision.
- */
-export function stripOutputRedirections(command: string): string {
-  let out = '';
-  let i = 0;
-  let quote: string | null = null;
-  const n = command.length;
-  while (i < n) {
-    const ch = command[i]!;
-    if (quote) {
-      out += ch;
-      if (ch === quote && command[i - 1] !== '\\') quote = null;
-      i++;
-      continue;
-    }
-    if (ch === '"' || ch === "'") { quote = ch; out += ch; i++; continue; }
-    // Optional leading file-descriptor digits (`2>`, `1>>`), then an operator.
-    let j = i;
-    while (j < n && command[j]! >= '0' && command[j]! <= '9') j++;
-    // `>&`/`<&` and `&>` must be tried before the plain `>>?`/`<<?<?` so
-    // `2>&1` is consumed as one operator (not `>` + leftover `&1`).
-    const op = /^(?:>&|<&|&>>?|>>?|<<?<?)/.exec(command.slice(j));
-    // Require a real redirection: either fd digits were consumed (`2>`), or the
-    // char itself is a redirection lead (`<`/`>`/`&>`). A lone `&`/`&&` (control
-    // operator) and digits that are just an argument are left untouched.
-    if (op && (j > i || ch === '<' || ch === '>' || (ch === '&' && op[0].startsWith('&')))) {
-      i = j + op[0].length;
-      while (i < n && /\s/.test(command[i]!)) i++;          // skip whitespace
-      while (i < n && !/[\s|;&<>()]/.test(command[i]!)) i++; // skip target token
-      if (out && !out.endsWith(' ')) out += ' ';
-      continue;
-    }
-    out += ch;
-    i++;
-  }
-  return out.replace(/\s+/g, ' ').trim();
-}
-
-/**
- * Derive a narrow, scoped "allow always" prefix for a bash command, or null if
- * none is safe to suggest (the caller then falls back to the exact command).
- * Prefers the two-word `command subcommand` form; falls back to the first word
- * ONLY when that root is neither subcommand-aware nor a shell/interpreter/
- * wrapper. This is the single canonical prefix-derivation helper — it replaces
- * ad-hoc "first N words" heuristics and enforces the bare-root + NEVER_SUGGEST
- * guards in one place. Output redirections are stripped first so a redirect
- * target filename never becomes the suggested rule prefix.
- */
-/**
- * Is `command` a plain `--help` invocation (`python --help`, `git commit --help`)
- * that is read-only and safe to allow AS-IS? Such a command should be allowed by
- * its FULL text rather than collapsed to a broad prefix (`python:*`), which would
- * grant arbitrary code execution through the interpreter. True only when:
- * - the command ends with `--help`;
- * - it carries no quotes (a quote could smuggle an argument past the check);
- * - `--help` is the ONLY flag; and
- * - every non-flag token is a bare alphanumeric identifier (no paths, operators,
- *   substitutions or redirections).
- *
- * `--help` forms that route through an unsafe help backend (`man -l`,
- * `git help --web`, …) are excluded — those are not simple `--help` at all and
- * are caught here via {@link detectUnsafeHelpCommand}. Mirrors the reference's
- * `isHelpCommand` (utils/bash/commands.ts), which bypasses prefix extraction so a
- * help command is allowed in full instead of as a too-broad prefix.
- */
-export function isHelpCommand(command: string): boolean {
-  const trimmed = command.trim();
-  if (!trimmed.endsWith('--help')) return false;
-  // Quotes could hide an injected argument — reject outright.
-  if (trimmed.includes('"') || trimmed.includes("'")) return false;
-  // A help form that reaches an unsafe backend is never a "simple" help command.
-  if (detectUnsafeHelpCommand(trimmed)) return false;
-  const words = trimmed.split(/\s+/).filter(Boolean);
-  let foundHelp = false;
-  const alphanumeric = /^[a-zA-Z0-9]+$/;
-  for (const word of words) {
-    if (word.startsWith('-')) {
-      if (word === '--help') foundHelp = true;
-      else return false; // any other flag disqualifies it
-    } else if (!alphanumeric.test(word)) {
-      return false; // paths, operators, substitutions, etc.
-    }
-  }
-  return foundHelp;
-}
-
 export function suggestAllowPrefix(command: string): string | null {
   const cleaned = stripOutputRedirections(command);
   // A simple `--help` command is read-only and safe: offer the FULL command as
@@ -4349,33 +1859,6 @@ export function suggestAllowPrefix(command: string): string | null {
   return null;
 }
 
-/**
- * Per-subcommand scoped "allow always" prefixes for a (possibly compound)
- * command. A single command returns `[prefix]` (or `[]` when no safe prefix can
- * be derived). A compound command (`cd src && git status && npm test`) is split
- * into subcommands; each subcommand the caller marks via `excludeSubcommand`
- * (typically read-only / already-auto-allowed commands such as `cd`/`git
- * status`) is DROPPED, and a scoped prefix is derived for each remaining one.
- * Prefixes sharing a root word are collapsed via word-aligned LCP so a chain of
- * `git fetch && git worktree add` yields a single `git` rule rather than two.
- *
- * This is the compound-aware counterpart to {@link suggestAllowPrefix}: callers
- * seeding "allow always" rules for a compound command MUST use this so a rule is
- * scoped to each mutating subcommand instead of the misleading two-word prefix of
- * the whole chain (e.g. `cd src`). Mirrors the reference's
- * `getCompoundCommandPrefixesStatic` (utils/bash/prefix.ts) + per-subcommand
- * rule derivation (BashPermissionRequest `subcommandResults`).
- */
-/**
- * Upper bound on how many per-subcommand "allow always" rules a single compound
- * command's permission prompt may suggest. A wide chain (`a && b && c && … && j`)
- * otherwise produces a 10+ rule dump the user has to read through; capping keeps
- * the prompt legible — the user can still allow the rest by re-running or granting
- * a broader rule. Mirrors the reference's `MAX_SUGGESTED_RULES_FOR_COMPOUND` (default 5,
- * bashPermissions.ts). Applied in {@link buildPermissionSuggestions}.
- */
-export const MAX_SUGGESTED_RULES_FOR_COMPOUND = 5;
-
 export function getCompoundCommandPrefixes(
   command: string,
   excludeSubcommand?: (subcommand: string) => boolean,
@@ -4404,30 +1887,6 @@ export function getCompoundCommandPrefixes(
   // getCompoundCommandPrefixesStatic (staticPrefix.ts L246-284).
   return collapseCompoundPrefixes(prefixes, root => SUBCOMMAND_AWARE_ROOTS.has(root));
 }
-
-// ---------------------------------------------------------------------------
-// Permission-rule string format — `Tool` / `Tool(specifier)`
-// ---------------------------------------------------------------------------
-
-/** Parsed form of a canonical permission-rule string. */
-export interface PermissionRuleValue {
-  toolName: string;
-  ruleContent?: string;
-}
-
-/**
- * Canonical the reference wire name for the subagent/delegation tool (its current
- * tool name is `Agent`). AMI's own tool is `task`; a permission rule, hook, or
- * imported the reference settings file that names `Agent(...)` must therefore resolve to
- * AMI's `task` tool. Mirrors the reference's `AGENT_TOOL_NAME` (AgentTool/constants.ts).
- */
-export const AGENT_TOOL_NAME = 'Agent';
-/**
- * Legacy the reference wire name for the same tool, kept so a rule written against
- * the OLD spelling still matches (parity: the reference's `LEGACY_AGENT_TOOL_NAME = 'Task'`,
- * retained "for backward compat (permission rules, hooks, resumed sessions)").
- */
-export const LEGACY_AGENT_TOOL_NAME = 'Task';
 
 /**
  * Legacy / cross-framework tool-name aliases → AMI canonical tool names. A
@@ -4474,28 +1933,6 @@ export function getLegacyToolNames(canonicalName: string): string[] {
   return result.sort();
 }
 
-/** The pattern-syntax class a tool's permission-rule content is written in:
- *  `file` tools take filesystem GLOBS (`*.ts`, `src/**`); `bash` tools take a
- *  command string with free `*` wildcards plus the legacy `command:*` prefix
- *  form. Mirrors the reference's toolValidationConfig split (filePatternTools vs
- *  bashPrefixTools) that drives which pattern syntax is legal per tool. */
-export const TOOL_PATTERN_CLASSES = ['file', 'bash'] as const;
-export type ToolPatternClass = (typeof TOOL_PATTERN_CLASSES)[number];
-
-/** Canonical-tool-name → pattern-class map (single source of truth for
- *  {@link isFilePatternTool}/{@link isBashPrefixTool}). Keyed by AMI canonical
- *  names; callers pass raw rule tool names through {@link normalizeToolName}
- *  first, so a reference-spelled `Edit`/`Glob` classifies the same as `file_edit`/
- *  `glob`. Tools absent from the map (`web_fetch`, `web_search`, MCP, `grep`,
- *  …) use their own content validators, not glob/bash-wildcard syntax. Exposed
- *  for the permission introspection surface. */
-export const TOOL_PATTERN_CLASS: Readonly<Record<string, ToolPatternClass>> = {
-  // File-glob tools (parity: Read/Write/Edit/Glob/NotebookRead/NotebookEdit).
-  file_read: 'file', file_edit: 'file', glob: 'file', notebook_edit: 'file',
-  // Bash wildcard + legacy `:*` prefix tool.
-  bash: 'bash',
-};
-
 /** The pattern class of a tool's permission-rule content, or `undefined` for a
  *  tool that uses a custom content validator (not file-glob / bash-wildcard). */
 export function toolPatternClass(toolName: string): ToolPatternClass | undefined {
@@ -4512,38 +1949,6 @@ export function isFilePatternTool(toolName: string): boolean {
  *  (free `*` plus the legacy `command:*` prefix form). */
 export function isBashPrefixTool(toolName: string): boolean {
   return toolPatternClass(toolName) === 'bash';
-}
-
-/** True if `str[index]` is escaped (preceded by an odd number of backslashes). */
-function isEscapedAt(str: string, index: number): boolean {
-  let backslashCount = 0;
-  let j = index - 1;
-  while (j >= 0 && str[j] === '\\') { backslashCount++; j--; }
-  return backslashCount % 2 !== 0;
-}
-
-function findFirstUnescapedChar(str: string, char: string): number {
-  for (let i = 0; i < str.length; i++) {
-    if (str[i] === char && !isEscapedAt(str, i)) return i;
-  }
-  return -1;
-}
-
-function findLastUnescapedChar(str: string, char: string): number {
-  for (let i = str.length - 1; i >= 0; i--) {
-    if (str[i] === char && !isEscapedAt(str, i)) return i;
-  }
-  return -1;
-}
-
-/** Escape backslashes then parentheses so rule content survives round-tripping. */
-export function escapeRuleContent(content: string): string {
-  return content.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
-}
-
-/** Inverse of {@link escapeRuleContent} (parens first, then backslashes). */
-export function unescapeRuleContent(content: string): string {
-  return content.replace(/\\\(/g, '(').replace(/\\\)/g, ')').replace(/\\\\/g, '\\');
 }
 
 /**
@@ -4568,168 +1973,6 @@ export function permissionRuleValueFromString(ruleString: string): PermissionRul
   if (rawContent === '' || rawContent === '*') return { toolName: normalizeToolName(toolName) };
   return { toolName: normalizeToolName(toolName), ruleContent: unescapeRuleContent(rawContent) };
 }
-
-/** Serialize a {@link PermissionRuleValue} back to its canonical string form. */
-export function permissionRuleValueToString(ruleValue: PermissionRuleValue): string {
-  if (!ruleValue.ruleContent) return ruleValue.toolName;
-  return `${ruleValue.toolName}(${escapeRuleContent(ruleValue.ruleContent)})`;
-}
-
-/**
- * Parse an `mcp__server[__tool]` permission-rule tool name into its parts, or
- * `null` when the name is not an MCP rule. Mirrors the reference's `mcpInfoFromString`
- * (services/mcp/mcpStringUtils.ts): the first two `__`-delimited segments are
- * the `mcp` marker and the server name; everything after is re-joined so a tool
- * name containing `__` survives (`mcp__srv__a__b` → tool `a__b`). A missing
- * server segment (`mcp__`, `mcp`) is not a valid MCP rule and returns `null`.
- */
-export function mcpInfoFromString(
-  toolString: string,
-): { serverName: string; toolName: string | undefined } | null {
-  const parts = toolString.split('__');
-  const [mcpPart, serverName, ...toolNameParts] = parts;
-  if (mcpPart !== 'mcp' || !serverName) return null;
-  return {
-    serverName,
-    toolName: toolNameParts.length > 0 ? toolNameParts.join('__') : undefined,
-  };
-}
-
-/** Count unescaped occurrences of `char` in `str` (odd preceding backslash run
- *  = escaped). Shared by the MCP rule validator so `mcp__srv\(x\)` is inspected
- *  as a literal, not a pattern. Mirrors the reference's `countUnescapedChar`. */
-function countUnescapedChar(str: string, char: string): number {
-  let count = 0;
-  for (let i = 0; i < str.length; i++) {
-    if (str[i] === char && !isEscapedAt(str, i)) count++;
-  }
-  return count;
-}
-
-/** The three behaviors a permission rule can carry. Mirrors the reference's
- *  `permissionBehavior` enum; identical to {@link PermissionRule.action}. */
-export const PERMISSION_BEHAVIORS = ['allow', 'deny', 'ask'] as const;
-export type PermissionBehavior = (typeof PERMISSION_BEHAVIORS)[number];
-
-/**
- * A structured, declarative mutation of a {@link PermissionManager}'s live rule
- * set / mode / workspace boundary — the canonical representation of "what to
- * change" that a permission prompt, slash command, or hook can hand back as a
- * one-click SUGGESTION (or a batch of them). Mirrors the reference's
- * `PermissionUpdate` discriminated union (utils/permissions/PermissionUpdate.ts
- * + PermissionUpdateSchema.ts):
- *  - `addRules`        — append allow/deny/ask rules to a destination tier;
- *  - `replaceRules`    — atomically swap ALL rules of a (behavior, destination);
- *  - `removeRules`     — drop rules (normalized parse→serialize match, so a
- *                         `Bash(*)` suggestion removes a stored tool-wide `Bash`);
- *  - `setMode`         — change the permission mode;
- *  - `addDirectories`/`removeDirectories` — widen/shrink the read-access boundary.
- *
- * `destination` tags which trust tier the change belongs to (the rule `source`,
- * or the directory grant's origin). It is a parity-faithful subset of
- * {@link PERMISSION_UPDATE_DESTINATIONS}. Applying an update is purely in-memory
- * (matching the reference's context transform); persistence is a separate step
- * ({@link PermissionManager.saveRulesToDestination}).
- */
-export type PermissionUpdate =
-  | { type: 'addRules'; rules: PermissionRuleValue[]; behavior: PermissionBehavior; destination?: PermissionUpdateDestination }
-  | { type: 'replaceRules'; rules: PermissionRuleValue[]; behavior: PermissionBehavior; destination?: PermissionUpdateDestination }
-  | { type: 'removeRules'; rules: PermissionRuleValue[]; behavior: PermissionBehavior; destination?: PermissionUpdateDestination }
-  | { type: 'setMode'; mode: PermissionMode; destination?: PermissionUpdateDestination }
-  | { type: 'addDirectories'; directories: string[]; destination?: PermissionUpdateDestination }
-  | { type: 'removeDirectories'; directories: string[]; destination?: PermissionUpdateDestination };
-
-/**
- * Validate an UNTRUSTED {@link PermissionUpdate} at a trust boundary before it is
- * applied. Permission updates can arrive from less-trusted surfaces — a delegated
- * permission-prompt tool's JSON reply (an MCP server), a hook process's
- * `updatedPermissions`, or a settings file — where TypeScript's compile-time union
- * does NOT hold at runtime. A malformed mutation (unknown `type`, a missing/invalid
- * `behavior`, a non-array `rules`, a rule whose `ruleContent` is not a string, an
- * empty tool name, a `destination` outside the writable tiers, a bogus `setMode`
- * mode, or a non-string directory) must be REJECTED whole rather than partially
- * applied — a single acceptance boundary mirroring the reference's
- * `PermissionUpdateSchema` Zod `discriminatedUnion` with its enum `behavior` /
- * `destination` and typed rule/directory arrays
- * (references/claude/claude-code-main/src/utils/permissions/PermissionUpdateSchema.ts
- * L27-L77).
- *
- * Returns `{ valid: true }` for a well-formed update, else `{ valid: false, error }`
- * naming the first problem. Pure + synchronous; the enforcement point is
- * {@link PermissionManager.applyUpdate}, which drops an invalid update fail-closed
- * (grants nothing) instead of partially applying it or throwing mid-turn.
- */
-export function validatePermissionUpdate(update: unknown): { valid: boolean; error?: string } {
-  if (update === null || typeof update !== 'object' || Array.isArray(update)) {
-    return { valid: false, error: 'permission update must be an object' };
-  }
-  const u = update as Record<string, unknown>;
-  // `destination` is optional, but when present it is a hard boundary: a rule or
-  // directory grant may only be routed to a WRITABLE tier (read-only sources like
-  // policySettings/flagSettings/command can never be a persistence target).
-  const dest = u.destination;
-  if (dest !== undefined &&
-      !(typeof dest === 'string' && (PERMISSION_UPDATE_DESTINATIONS as readonly string[]).includes(dest))) {
-    return { valid: false, error: `invalid destination: ${JSON.stringify(dest)}` };
-  }
-  switch (u.type) {
-    case 'addRules':
-    case 'replaceRules':
-    case 'removeRules': {
-      if (u.behavior !== 'allow' && u.behavior !== 'deny' && u.behavior !== 'ask') {
-        return { valid: false, error: `${u.type} requires behavior "allow" | "deny" | "ask"` };
-      }
-      if (!Array.isArray(u.rules)) {
-        return { valid: false, error: `${u.type}.rules must be an array` };
-      }
-      for (const rv of u.rules) {
-        if (rv === null || typeof rv !== 'object' || Array.isArray(rv)) {
-          return { valid: false, error: `${u.type}.rules entries must be objects` };
-        }
-        const r = rv as Record<string, unknown>;
-        if (typeof r.toolName !== 'string' || r.toolName === '') {
-          return { valid: false, error: `${u.type}.rules entries require a non-empty string toolName` };
-        }
-        if (r.ruleContent !== undefined && typeof r.ruleContent !== 'string') {
-          return { valid: false, error: `${u.type}.rules ruleContent must be a string when present` };
-        }
-      }
-      return { valid: true };
-    }
-    case 'setMode': {
-      if (typeof u.mode !== 'string' || !(PERMISSION_MODES as readonly string[]).includes(u.mode)) {
-        return { valid: false, error: `setMode requires a valid mode (${PERMISSION_MODES.join(', ')})` };
-      }
-      return { valid: true };
-    }
-    case 'addDirectories':
-    case 'removeDirectories': {
-      if (!Array.isArray(u.directories)) {
-        return { valid: false, error: `${u.type}.directories must be an array` };
-      }
-      for (const d of u.directories) {
-        if (typeof d !== 'string' || d === '') {
-          return { valid: false, error: `${u.type}.directories entries must be non-empty strings` };
-        }
-      }
-      return { valid: true };
-    }
-    default:
-      return { valid: false, error: `unknown permission update type: ${JSON.stringify(u.type)}` };
-  }
-}
-
-/**
- * The kind of filesystem access a tool call represents — mirrors the reference's
- * `FileOperationType` (components/permissions/FilePermissionDialog/permissionOptions.tsx):
- * a read-only access, an edit of pre-existing content (`write`), or the creation of
- * a brand-new file (`create`). It drives OPERATION-AWARE permission affordances: a
- * `read` widens the read boundary by directory, a `write`/`create` offers a path
- * allow rule, and only a non-`read` op targeting the agent's own config folder gets
- * the "allow editing its own settings this session" grant.
- */
-export const FILE_OPERATION_TYPES = ['read', 'write', 'create'] as const;
-export type FileOperationType = (typeof FILE_OPERATION_TYPES)[number];
 
 /** Read-shaped canonical tools: they access content without mutating the tree. */
 const READ_SHAPED_FILE_TOOLS = new Set(['file_read', 'glob', 'grep', 'list_dir']);
@@ -4770,122 +2013,6 @@ export function resolveFileOperationType(
 }
 
 /**
- * Which of the agent's own config folders a path lives in: the PROJECT config
- * folder (`<cwd>/.ami` | `.ami-plugin` | `.claude`) or the GLOBAL one
- * (`~/.ami` | `~/.ami-plugin` | `~/.claude`). Mirrors the reference's `isInClaudeFolder` /
- * `isInGlobalClaudeFolder` scope distinction.
- */
-export const CONFIG_FOLDER_SCOPES = ['project-config-folder', 'global-config-folder'] as const;
-export type ConfigFolderScope = (typeof CONFIG_FOLDER_SCOPES)[number];
-
-/** Directory names that are a genuine AMI *settings root* the agent may self-grant
- *  (NOT the IDE/git dirs in {@link AGENT_CONFIG_DIR_SEGMENTS}, which are not AMI's
- *  own config to offer a self-edit grant for). */
-const CONFIG_FOLDER_NAMES = ['.ami', '.ami-plugin', '.claude'] as const;
-
-/** True when the already-absolute `child` is `root` itself or nested within it,
- *  case-folded on win32 (case-insensitive FS) like the reference's normalizeCaseForComparison. */
-function pathIsWithinDir(child: string, root: string): boolean {
-  const fold = (p: string) => (process.platform === 'win32' ? p.toLowerCase() : p);
-  const c = fold(path.normalize(child));
-  const r = fold(path.normalize(root));
-  return c === r || c.startsWith(r.endsWith(path.sep) ? r : r + path.sep);
-}
-
-/**
- * Resolve the config-folder {@link ConfigFolderScope} + matched root dir for
- * `filePath`, or `null` when it is outside every config folder. The PROJECT folder
- * wins when the two overlap (cwd under $HOME). Shared matcher behind
- * {@link resolveConfigFolderScope} and the config-folder permission suggestion — one
- * matching implementation, no per-caller duplication.
- */
-function matchConfigFolderRoot(
-  filePath: string,
-  cwd: string,
-): { scope: ConfigFolderScope; root: string } | null {
-  if (!filePath) return null;
-  const abs = path.resolve(cwd, expandPath(filePath));
-  for (const name of CONFIG_FOLDER_NAMES) {
-    const root = path.resolve(cwd, name);
-    if (pathIsWithinDir(abs, root)) return { scope: 'project-config-folder', root };
-  }
-  const home = os.homedir();
-  for (const name of CONFIG_FOLDER_NAMES) {
-    const root = path.join(home, name);
-    if (pathIsWithinDir(abs, root)) return { scope: 'global-config-folder', root };
-  }
-  return null;
-}
-
-/**
- * Resolve whether `filePath` lives inside the agent's own config folder (project or
- * global), returning the {@link ConfigFolderScope} or `null`. Mirrors the reference's
- * `isInClaudeFolder` / `isInGlobalClaudeFolder`; used to offer a config-folder-scoped
- * "allow editing own settings this session" grant at permission-decision time.
- */
-export function resolveConfigFolderScope(
-  filePath: string,
-  cwd: string = process.cwd(),
-): ConfigFolderScope | null {
-  return matchConfigFolderRoot(filePath, cwd)?.scope ?? null;
-}
-
-/** Config folders that host a `skills/` subdir. `.ami-plugin` is excluded — plugin
- *  bundles are not user-authored skills, so they get no skill-scoped grant. */
-const SKILL_CONFIG_FOLDER_NAMES = ['.ami', '.claude'] as const;
-
-/**
- * When a write targets a file inside `<configRoot>/skills/<name>/…` (project or
- * global), return that ONE skill's name plus a NARROW, least-privilege session rule
- * scoped to just that skill dir — instead of the broad `<configRoot>/*` grant that
- * would also hand over settings.json, hooks/, and every OTHER skill. Lets a user
- * iterate on a single skill without granting blanket config-folder access. Mirrors
- * the reference's `getClaudeSkillScope` (utils/permissions/filesystem.ts L101-157), widened
- * to AMI's config folders (`.ami`, `.claude`) and both project + global skill dirs.
- *
- * Returns `null` (caller falls back to the broad config-folder grant) when the path
- * is not inside a skill dir, is a loose file directly under `skills/` (no skill
- * segment), or the skill segment is UNSAFE: empty, `.`, contains `..` (traversal), or
- * carries a glob metacharacter (`* ? [ ]`) that would widen the pattern to ALL skills
- * or enable pattern injection.
- */
-export function getSkillScopeRule(
-  filePath: string,
-  cwd: string = process.cwd(),
-): { skillName: string; skillDir: string; ruleContent: string } | null {
-  if (!filePath) return null;
-  const abs = path.resolve(cwd, expandPath(filePath));
-  const absFolded = normalizeCaseForComparison(abs);
-  const home = os.homedir();
-  const bases: string[] = [];
-  for (const name of SKILL_CONFIG_FOLDER_NAMES) {
-    bases.push(path.resolve(cwd, name, 'skills'));
-    bases.push(path.join(home, name, 'skills'));
-  }
-  for (const base of bases) {
-    const baseFolded = normalizeCaseForComparison(base);
-    if (!absFolded.startsWith(baseFolded + path.sep)) continue;
-    // Slice the ORIGINAL (un-folded) path so the skill name keeps its real case —
-    // downstream path-glob matching is case-sensitive on POSIX.
-    const rest = abs.slice(base.length + path.sep.length);
-    const sepIdx = rest.indexOf(path.sep);
-    // Require a separator: the file must be INSIDE the skill dir, not a loose file
-    // directly under skills/ (which gets no skill scope).
-    if (sepIdx <= 0) return null;
-    const skillName = rest.slice(0, sepIdx);
-    // Reject empty/`.`/traversal (`..`) — a traversal segment would escape the skill
-    // dir and the broad-grant fallback is safer than a bad narrow rule.
-    if (!skillName || skillName === '.' || skillName.includes('..')) return null;
-    // Reject glob metacharacters: a skill literally named `*` (valid on POSIX) would
-    // produce `…/skills/*/*` and match EVERY skill, defeating the narrowing.
-    if (/[*?[\]]/.test(skillName)) return null;
-    const skillDir = path.join(base, skillName);
-    return { skillName, skillDir, ruleContent: `${skillDir}${path.sep}*` };
-  }
-  return null;
-}
-
-/**
  * Compute the pre-baked {@link PermissionUpdate} *suggestions* to attach to an
  * ask/deny permission decision — the "always allow X" candidates a prompt can
  * offer for one-click acceptance (the reference's `permissionResult.suggestions`, parsed
@@ -4916,96 +2043,6 @@ export function deriveWebFetchDomainRuleContent(input: Record<string, unknown>):
   } catch {
     return null;
   }
-}
-
-/**
- * Prefix that marks a permission rule's content as a natural-language "prompt
- * rule" — a human-written DESCRIPTION of what to auto-approve (e.g. "running the
- * test suite"), as opposed to a glob prefix (`git:*`). Parity: the reference's
- * `PROMPT_PREFIX` (`utils/permissions/bashClassifier.ts`).
- */
-export const PROMPT_RULE_PREFIX = 'prompt:';
-
-/**
- * Encode a free-text description as prompt-rule content (`prompt: <description>`).
- * This is the canonical rule body saved when a user approves a bash command via
- * the "yes, and don't ask again — described as …" classifier path, so the grant
- * is remembered as a reusable natural-language rule rather than a one-off glob.
- * Parity: the reference's `createPromptRuleContent(description)`.
- *
- * DISTINCT from {@link validateAllowedPromptRule}, which guards plan-mode
- * `allowedPrompts` that AMI stores directly AS glob patterns — this codec names
- * the separate `prompt:`-prefixed classifier-rule format and never produces a glob.
- */
-export function createPromptRuleContent(description: string): string {
-  return `${PROMPT_RULE_PREFIX} ${description.trim()}`;
-}
-
-/** Whether a rule's content string is prompt-rule content (carries the
- *  {@link PROMPT_RULE_PREFIX}); tolerant of leading whitespace. */
-export function isPromptRuleContent(content: string | undefined): boolean {
-  return typeof content === 'string' && content.trimStart().startsWith(PROMPT_RULE_PREFIX);
-}
-
-/**
- * Recover the human-readable description from prompt-rule content, or `null` when
- * the content is not a prompt rule or carries no description after the prefix.
- * Round-trips {@link createPromptRuleContent}. Parity: the reference's
- * `extractPromptDescription(ruleContent)`.
- */
-export function extractPromptDescription(content: string | undefined): string | null {
-  if (typeof content !== 'string') return null;
-  const trimmed = content.trimStart();
-  if (!trimmed.startsWith(PROMPT_RULE_PREFIX)) return null;
-  const description = trimmed.slice(PROMPT_RULE_PREFIX.length).trim();
-  return description.length > 0 ? description : null;
-}
-
-/**
- * The read-only detail notice shown for a permission rule that originates from
- * managed/enterprise policy ({@link isManagedPermissionSource}) — such a rule
- * cannot be edited or removed by the user. Returns `null` for every
- * user-editable source, so a caller can branch on "is this rule locked". Parity:
- * the reference's PermissionRuleList "Rule details" view for `policySettings` rules.
- */
-export function managedRuleReadOnlyNotice(source: PermissionRuleSource | undefined): string | null {
-  if (!isManagedPermissionSource(source)) return null;
-  return (
-    'This rule is configured by managed settings and cannot be modified.\n' +
-    'Contact your system administrator for more information.'
-  );
-}
-
-/**
- * Turn a granted DIRECTORY into a persistable `file_read` allow rule (parity:
- * the reference's `createReadRuleSuggestion`), so "I pointed the agent at this dir" can be
- * saved as a normal, scoped permission rule rather than only a runtime read root.
- * Two algorithmic subtleties are mirrored exactly:
- *  - the filesystem root `/` is rejected as far too broad (returns `undefined`); and
- *  - an ABSOLUTE path gets an extra leading slash to form the root-anchored
- *    `//path/**` pattern, while a relative path becomes `path/**`.
- * The path is POSIX-normalized first so a Windows path produces a forward-slash glob.
- * `destination` defaults to `'session'` (ephemeral) — the caller opts into a
- * persisted tier explicitly.
- */
-export function createReadRuleSuggestion(
-  dirPath: string,
-  destination: PermissionUpdateDestination = 'session',
-): PermissionUpdate | undefined {
-  // POSIX-normalize for pattern matching (collapse Windows separators).
-  const pathForPattern = dirPath.replace(/\\/g, '/');
-  // The filesystem root is too broad to be a reasonable permission target.
-  if (pathForPattern === '/') return undefined;
-  // Absolute paths get an extra leading slash → the `//path/**` root-anchored form.
-  const ruleContent = pathForPattern.startsWith('/')
-    ? `/${pathForPattern}/**`
-    : `${pathForPattern}/**`;
-  return {
-    type: 'addRules',
-    behavior: 'allow',
-    destination,
-    rules: [{ toolName: 'file_read', ruleContent }],
-  };
 }
 
 export function buildPermissionSuggestions(
@@ -5093,130 +2130,6 @@ export function buildPermissionSuggestions(
   }
   return [];
 }
-
-/**
- * Build the model-facing "grant-and-retry" message for a set of just-approved,
- * previously-denied commands, so the agent knows it may re-attempt them. Mirrors
- * the reference's `createPermissionRetryMessage` (utils/messages.ts): the content is
- * `Allowed <cmd>, <cmd>, …`. Returns an empty-but-valid notice when the list is
- * empty so callers never have to special-case it.
- */
-export function createPermissionRetryMessage(commands: string[]): string {
-  if (commands.length === 0) return 'No denied commands to retry';
-  return `Allowed ${commands.join(', ')}`;
-}
-
-/**
- * Does a would-be PERSISTENT bash `allow` pattern contain a shell-DYNAMIC construct
- * that must never be baked into a reusable rule? Returns the offending token kind, or
- * `null` when the pattern is a safe static prefix/glob.
- *
- * Rationale (parity: the reference's `staticPrefix.ts` sanitization, L55-140): a persisted
- * allow rule is matched against FUTURE commands, so a dynamic token makes the rule
- * match MORE — or different — commands than the user actually saw and approved:
- *  - a command/arithmetic substitution (`$(...)`, backtick, `${...}`) or a variable
- *    expansion (`$VAR`, `$@`, …) means the real executed command is computed at run
- *    time, so "allow `deploy $(cat target)`" would silently authorize anything the
- *    substitution expands to;
- *  - a backslash path fragment (`C:\…`, `foo\bar`) is an escape/quoting hazard that
- *    the glob matcher does not interpret the way a shell would, so the rule can
- *    over-match.
- * Glob metacharacters (`*`, `?`, `[`) are intentionally TOLERATED — they are the
- * legitimate way an allow pattern scopes arguments (`git *`). Pure + side-effect
- * free. The enforcement point is {@link PermissionManager.addRule}, which refuses to
- * persist such a rule instead of silently granting an over-broad one.
- */
-export function dynamicAllowPatternToken(pattern: string | undefined): 'substitution' | 'variable' | 'backslash' | null {
-  if (!pattern) return null;
-  for (let i = 0; i < pattern.length; i++) {
-    const c = pattern[i]!;
-    // A backslash is an escape/quoting hazard in a persisted glob (the reference rejects
-    // backslash path fragments). A trailing lone backslash counts too.
-    if (c === '\\') return 'backslash';
-    // Backtick command substitution.
-    if (c === '`') return 'substitution';
-    if (c === '$') {
-      const next = pattern[i + 1];
-      // `$(` command / `$((` arithmetic substitution.
-      if (next === '(') return 'substitution';
-      // `${...}` parameter expansion, or a `$NAME` / special-parameter expansion
-      // ($@ $* $# $? $! $$ $- $0-$9). A bare `$` at end-of-string or before a
-      // non-expansion char (e.g. a literal `price$`) is not dynamic.
-      if (next === '{') return 'variable';
-      if (next && /[A-Za-z_@*#?!$0-9-]/.test(next)) return 'variable';
-    }
-  }
-  return null;
-}
-
-/** The shape every permission-rule validator (built-in or per-tool custom)
- *  returns — a boolean verdict plus optional actionable guidance. */
-export interface PermissionRuleValidationResult {
-  valid: boolean;
-  error?: string;
-  suggestion?: string;
-  examples?: string[];
-}
-
-/**
- * A per-tool content validator: given the rule's parenthesized CONTENT (never the
- * tool name), return whether it is a well-formed pattern for that specific tool.
- * This is AMI's analogue of the reference's `toolValidationConfig[tool].customValidation`
- * (utils/settings/toolValidationConfig.ts) — a pluggable hook consulted by
- * {@link validatePermissionRule} BEFORE the generic bash/file checks, so a tool
- * whose patterns follow neither bash-prefix nor file-glob syntax (WebFetch domains,
- * WebSearch terms, …) can reject a malformed pattern with tailored guidance.
- */
-export type ToolContentValidator = (content: string) => PermissionRuleValidationResult;
-
-/**
- * Registry of per-tool content validators, keyed by AMI CANONICAL tool name (post
- * {@link normalizeToolName}). Previously these checks lived as hardcoded `if
- * (toolName === 'web_search')` / `'web_fetch'` branches inside
- * {@link validatePermissionRule}; consolidating them into one pluggable table is
- * the extensibility surface the reference exposes as `getCustomValidation` and AMI lacked
- * — a new tool's pattern rules are added HERE, in one place, instead of growing the
- * validator with another special case. Consumed via {@link getCustomValidation}.
- */
-export const TOOL_CONTENT_VALIDATORS: Readonly<Record<string, ToolContentValidator>> = {
-  // WebSearch: patterns are allowed/blocked search TERMS — wildcards are
-  // meaningless and silently never match. Reject them with guidance.
-  web_search: (content) => {
-    if (content.includes('*') || content.includes('?')) {
-      return {
-        valid: false, error: 'WebSearch patterns cannot contain wildcards',
-        suggestion: 'Use a plain search term (wildcards are not supported for WebSearch)',
-        examples: ['web_search(weather)', 'web_search(stock prices)'],
-      };
-    }
-    return { valid: true };
-  },
-  // WebFetch: patterns match a DOMAIN, not a full URL or a URL with a path. AMI
-  // uses BARE-domain syntax (`web_fetch(example.com)`) — a deliberate divergence
-  // from the reference's required `domain:` prefix — so a domain that merely starts with
-  // "http" (e.g. `httpbin.org`) stays valid; only a `scheme://` at the start OR a
-  // stray `://` ANYWHERE (a malformed URL whose scheme isn't a clean leading token,
-  // e.g. `3http://x`) is rejected, AND a bare domain carrying a `/path` component
-  // (`example.com/api/*`) is rejected because matching is domain-only so the path
-  // silently never applies. Mirrors the reference's WebFetch validator (toolValidationConfig.ts).
-  web_fetch: (content) => {
-    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(content) || content.includes('://')) {
-      return {
-        valid: false, error: 'WebFetch patterns must be a domain, not a URL',
-        suggestion: 'Drop the scheme and path — match on the domain only',
-        examples: ['web_fetch(example.com)', 'web_fetch(*.github.com)'],
-      };
-    }
-    if (content.includes('/')) {
-      return {
-        valid: false, error: 'WebFetch patterns match a domain, not a path',
-        suggestion: 'Drop the path — a WebFetch rule scopes a host, matching every path on it',
-        examples: ['web_fetch(example.com)', 'web_fetch(*.github.com)'],
-      };
-    }
-    return { valid: true };
-  },
-};
 
 /**
  * The pluggable per-tool content validator for `toolName`, or `undefined` when the
@@ -5369,30 +2282,6 @@ export function validatePermissionRule(rule: string): {
 }
 
 /**
- * Compose the structured result of {@link validatePermissionRule} into a SINGLE
- * human-readable sentence: `error. suggestion. Examples: ex1, ex2`. This is the
- * canonical rejection-text formatter so every surface that shows a dropped/invalid
- * rule (settings loader warnings, the `/permissions` validate command, a config
- * UI) renders it identically — error, then the suggestion (if any), then the
- * examples (if any). Mirrors the reference's `PermissionRuleSchema` superRefine message
- * composition (utils/settings/permissionValidation.ts L244-262), which previously
- * had no AMI equivalent: AMI composed only `error. suggestion` and silently
- * dropped the examples. Returns the bare error for a result with no suggestion or
- * examples; returns an empty string for a `valid` result (nothing to format).
- */
-export function formatPermissionRuleError(result: {
-  valid: boolean; error?: string; suggestion?: string; examples?: string[];
-}): string {
-  if (result.valid || !result.error) return '';
-  let message = result.error;
-  if (result.suggestion) message += `. ${result.suggestion}`;
-  if (result.examples && result.examples.length > 0) {
-    message += `. Examples: ${result.examples.join(', ')}`;
-  }
-  return message;
-}
-
-/**
  * Fault-tolerant filter over a raw array of permission-rule STRINGS (the
  * `permissions.{allow,deny,ask}` settings.json form). Drops every entry that is
  * not a string or that fails {@link validatePermissionRule}, keeping the rest so
@@ -5421,109 +2310,6 @@ export function filterInvalidPermissionRules(
     warnings.push(`Invalid permission rule "${entry}" was skipped: ${formatPermissionRuleError(result)}`);
   }
   return { kept, warnings };
-}
-
-/**
- * Upper bound on the length of a model-supplied plan-mode `allowedPrompts` entry.
- * A legitimate scoped action description / command prefix is short; anything far
- * longer is either junk or an attempt to smuggle a huge rule, so it is refused.
- */
-export const MAX_ALLOWED_PROMPT_LENGTH = 1000;
-
-/**
- * Validate a single MODEL-supplied plan-mode `allowedPrompts` entry before it is
- * persisted as an `allow` permission rule on plan-mode exit.
- *
- * the reference's ExitPlanMode tool treats `allowedPrompts` as SCOPED action
- * descriptions (`tool: z.enum(['Bash'])`, e.g. "run tests") — never a match-all
- * glob. AMI stores each entry's text directly as a rule pattern
- * (`addRule({ tool, pattern: prompt, action: 'allow' })`), so without this guard
- * a crafted or prompt-injected entry such as `*`, ``, or `**` would become a
- * blanket `bash(*)` allow-EVERYTHING rule — a privilege-escalation vector that
- * silently auto-approves every subsequent command.
- *
- * Returns `{ safe:false, reason }` for a non-string, an empty/whitespace-only
- * value, a pattern that collapses to "match everything" (only glob
- * metacharacters: `*`, `**`, `.*`, `*:*`, a lone `:*`, `?*`, …), or a value
- * longer than {@link MAX_ALLOWED_PROMPT_LENGTH}; otherwise `{ safe:true }`.
- */
-export function validateAllowedPromptRule(prompt: unknown): { safe: boolean; reason?: string } {
-  if (typeof prompt !== 'string') return { safe: false, reason: 'prompt must be a string' };
-  const trimmed = prompt.trim();
-  if (!trimmed) return { safe: false, reason: 'prompt is empty' };
-  if (trimmed.length > MAX_ALLOWED_PROMPT_LENGTH) {
-    return { safe: false, reason: `prompt exceeds ${MAX_ALLOWED_PROMPT_LENGTH} characters` };
-  }
-  // A pattern made up ONLY of glob/wildcard metacharacters matches every command
-  // (the glob matcher treats `*`/`?`/`.*`/`:*` as "anything"), so it is too broad
-  // to auto-allow. Whitespace is irrelevant to the match, so collapse it first.
-  const stripped = trimmed.replace(/\s+/g, '');
-  if (/^[*?.:]+$/.test(stripped)) {
-    return { safe: false, reason: 'pattern matches all commands (too broad to auto-allow)' };
-  }
-  return { safe: true };
-}
-
-/**
- * Partition an array of model-supplied plan-mode `allowedPrompts` entries into the
- * ones safe to persist as `allow` rules and the ones refused by
- * {@link validateAllowedPromptRule}, preserving each entry's full shape (so the
- * caller keeps its `tool`). The rejected list carries the refusal reason so the
- * caller can surface WHICH prompts were dropped and WHY (introspection).
- */
-export function partitionAllowedPromptRules<T extends { prompt?: unknown }>(
-  entries: readonly T[],
-): { valid: T[]; rejected: Array<{ entry: T; reason: string }> } {
-  const valid: T[] = [];
-  const rejected: Array<{ entry: T; reason: string }> = [];
-  for (const entry of entries) {
-    const result = validateAllowedPromptRule(entry.prompt);
-    if (result.safe) valid.push(entry);
-    else rejected.push({ entry, reason: result.reason ?? 'invalid prompt' });
-  }
-  return { valid, rejected };
-}
-
-/**
- * Match a single bash sub-command against a rule pattern.
- *
- * For deny/ask rules we ALSO test a de-obfuscated form (r""m, r''m, "rm", r\m →
- * rm) so a command-word split with empty quotes / backslashes / quotes cannot
- * slip a real command past a user deny or ask rule (S3). Allow rules stay
- * STRICT — they only match the literal stripped form — so de-obfuscation can
- * never *broaden* an allow into auto-approving an obfuscated command.
- */
-/**
- * Extract the COMMAND PREFIX from a bash rule content written in the reference's `:*`
- * prefix convention (`git commit:*` → `git commit`, `npm:*` → `npm`), or `null`
- * when the content is not a prefix rule (no trailing `:*`, or nothing before it).
- * Mirrors the reference's `permissionRuleExtractPrefix` (shellPermissionHelpers.ts
- * L76-84). AMI's rule validator already BLESSES this form
- * ({@link validatePermissionRule} accepts `bash(git:*)` and even suggests it as
- * the canonical example) and {@link permissionRuleValueFromString} preserves the
- * `:*` content verbatim — but the raw glob matcher treats the `:` literally, so a
- * `git:*` rule never matched `git status`. This extractor lets {@link matchBashSub}
- * honor the convention: a `prefix:*` rule matches a command that IS the prefix or
- * begins with `prefix` followed by its arguments ({@link commandHasRulePrefix}).
- */
-export function permissionRuleExtractPrefix(ruleContent: string): string | null {
-  if (!ruleContent.endsWith(':*')) return null;
-  const prefix = ruleContent.slice(0, -2).trim();
-  return prefix.length > 0 ? prefix : null;
-}
-
-/**
- * True when `command` is covered by a rule prefix (the reference's `:*` convention): the
- * command equals the prefix exactly, or starts with the prefix followed by a space
- * (its arguments). Anchored on a word boundary so `ls:*` matches `ls -la` and bare
- * `ls` but NOT `lsof` (a different command that merely shares the leading letters).
- */
-function commandHasRulePrefix(command: string, prefix: string): boolean {
-  // Callers only invoke this when `permissionRuleExtractPrefix` returned a non-null
-  // prefix (which already requires `prefix.length > 0`), so an empty-prefix guard
-  // was unreachable.
-  const c = command.trim();
-  return c === prefix || c.startsWith(prefix + ' ');
 }
 
 function matchBashSub(pattern: string, sub: string, ruleAction: 'allow' | 'deny' | 'ask'): boolean {
@@ -5627,21 +2413,6 @@ export function matchBashPattern(pattern: string, command: string, ruleAction: '
   return false;
 }
 
-/** Strip single-quoted spans — in bash their contents are fully literal (no
- *  `$`/backtick/`$(…)` expansion), so a `$SECRET` inside `'…'` is inert. Double
- *  quotes are kept because they DO expand. Single quotes cannot be escaped in
- *  bash, so no backslash handling is needed. */
-function stripSingleQuotedSpans(s: string): string {
-  let out = '';
-  let inSingle = false;
-  for (let i = 0; i < s.length; i++) {
-    const c = s[i]!;
-    if (c === "'") { inSingle = !inSingle; continue; }
-    if (!inSingle) out += c;
-  }
-  return out;
-}
-
 /** True when a single argument token carries a VARIABLE expansion whose value
  *  an allow rule never vetted: a reference `$NAME` / `${NAME}` / `$env:NAME`
  *  whose name is not a vetted {@link SAFE_ENV_VARS} entry. Arithmetic `$((…))`
@@ -5722,18 +2493,6 @@ export function bashCommandArgLeaksValue(command: string): boolean {
     }
   }
   return false;
-}
-
-/**
- * Build a denial key from a tool name and its input for deduplication.
- */
-function denialKey(toolName: string, input: Record<string, unknown>): string {
-  const inputStr = typeof input.command === 'string'
-    ? input.command
-    : typeof input.file_path === 'string'
-      ? input.file_path
-      : JSON.stringify(input);
-  return `${toolName}::${inputStr}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -9322,82 +6081,5 @@ export class PermissionManager {
     if (typeof input.command === 'string') return input.command;
     if (typeof input.file_path === 'string') return input.file_path;
     return JSON.stringify(input);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// PolicyMemo — memoize permission decisions across bursts of tool calls
-// ---------------------------------------------------------------------------
-
-const POLICY_MEMO_MAX_ENTRIES = 1000;
-
-interface MemoEntry {
-  decision: 'allow' | 'deny' | 'ask';
-  expiresAt: number;
-  lastAccess: number;
-}
-
-export class PolicyMemo {
-  private readonly _ttlMs: number;
-  private readonly _cache = new Map<string, MemoEntry>();
-
-  constructor(ttlMs: number = 5000) {
-    this._ttlMs = ttlMs;
-  }
-
-  get(toolName: string, inputHash: string): 'allow' | 'deny' | 'ask' | null {
-    const key = `${toolName}:${inputHash}`;
-    const entry = this._cache.get(key);
-    if (!entry) return null;
-    if (Date.now() > entry.expiresAt) {
-      this._cache.delete(key);
-      return null;
-    }
-    entry.lastAccess = Date.now();
-    return entry.decision;
-  }
-
-  set(toolName: string, inputHash: string, decision: 'allow' | 'deny' | 'ask'): void {
-    const key = `${toolName}:${inputHash}`;
-    this._cache.set(key, {
-      decision,
-      expiresAt: Date.now() + this._ttlMs,
-      lastAccess: Date.now(),
-    });
-    if (this._cache.size > POLICY_MEMO_MAX_ENTRIES) {
-      this._evictLRU();
-    }
-  }
-
-  clear(): void {
-    this._cache.clear();
-  }
-
-  size(): number {
-    return this._cache.size;
-  }
-
-  prune(): number {
-    const now = Date.now();
-    let removed = 0;
-    for (const [key, entry] of this._cache) {
-      if (now > entry.expiresAt) {
-        this._cache.delete(key);
-        removed++;
-      }
-    }
-    return removed;
-  }
-
-  private _evictLRU(): void {
-    let oldestKey: string | null = null;
-    let oldestAccess = Infinity;
-    for (const [key, entry] of this._cache) {
-      if (entry.lastAccess < oldestAccess) {
-        oldestAccess = entry.lastAccess;
-        oldestKey = key;
-      }
-    }
-    if (oldestKey) this._cache.delete(oldestKey);
   }
 }

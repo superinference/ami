@@ -1,8 +1,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { execFile } from 'child_process';
-import { createRequire } from 'module';
+import 'child_process';
+import 'module';
 import { ToolDefinition, ToolContext, ToolResult, ImageContent } from '../types';
 import { getFileCache } from '../file-cache';
 import { resolveFilePath, detectEncoding, decodeBuffer, isBlockedPath, validateFilePath, normalizePathForComparison } from './tool-utils';
@@ -11,14 +11,12 @@ import { spillToolText } from './spill-output';
 import { compactTestLog, looksLikeSuiteLog } from './test-log';
 import { suggestSimilarPaths, suggestPathUnderCwd, suggestPathCorrection } from './path-suggest';
 import { formatFileSize } from '../utils/format';
-import { estimateReadTokensForFileType, sliceToReadTokenBudget, fileReadTokenBudgetMessage } from '../token-estimator';
+import { estimateReadTokensForFileType } from '../token-estimator';
 import { memoryFreshnessReminder } from '../memory';
-import { getFileReadingLimits, getFileReadPromptFlags, getLineNumberStyle, getFileReadErrorOnBudget, type FileReadPromptFlags, type LineNumberStyle } from './file-read-limits';
-import { readFileInRange, FileTooLargeError, FAST_PATH_MAX_SIZE, readFileRange, tailFile } from './read-file-range';
+import { getFileReadingLimits, getLineNumberStyle, getFileReadErrorOnBudget } from './file-read-limits';
+import { readFileInRange, FileTooLargeError, FAST_PATH_MAX_SIZE } from './read-file-range';
 import { log } from '../logger';
 import { KNOWN_BINARY_EXTENSIONS, isBinaryByExtension, checkBinaryContent } from '../utils/binary';
-
-const DEFAULT_LIMIT = 2000;
 /**
  * Hard OOM backstop for a FULL (un-ranged) text read, even when `allow_large`
  * bypasses the 256KB partial-view cap. A read above this is rejected with a
@@ -27,13 +25,6 @@ const DEFAULT_LIMIT = 2000;
  * read path (utils/readFileInRange.ts).
  */
 const MAX_FULL_READ_BYTES = 50 * 1024 * 1024; // 50 MB
-/**
- * Per-cell combined-output size (chars of text + image base64) above which a
- * notebook cell's outputs are replaced with a `jq` escape-hatch hint instead of
- * being inlined — a DoS / context-budget guard. Mirrors the reference's
- * LARGE_OUTPUT_THRESHOLD (utils/notebook.ts).
- */
-const NOTEBOOK_LARGE_OUTPUT_THRESHOLD = 10_000;
 /** Raw-size cap for PDFs, read into memory whole for text extraction (DoS guard). */
 const PDF_TARGET_RAW_SIZE = 20 * 1024 * 1024; // 20 MB
 /**
@@ -46,8 +37,13 @@ const PDF_TARGET_RAW_SIZE = 20 * 1024 * 1024; // 20 MB
  */
 export { API_PDF_MAX_PAGES } from '../media-limits';
 import { API_PDF_MAX_PAGES } from '../media-limits';
-/** Max PDF pages to render to images when falling back to pdftoppm (context guard). */
-const MAX_PDF_RENDER_PAGES = 10;
+import { CYBER_RISK_MITIGATION_REMINDER, DEFAULT_LIMIT, IMAGE_MAX_HEIGHT, IMAGE_MAX_WIDTH, ImageResizeError, MAX_PDF_RENDER_PAGES, MEDIA_TYPES, NOTEBOOK_LARGE_OUTPUT_THRESHOLD, buildFileImagesOutput, createImageMetadataText, detectImageFormatFromBuffer, fsHooks, isUNCPath, loadImageProcessor, normalizeMacScreenshotPath, pdfHooks, readPngDimensions, resolveAlternateScreenshotPath, stripForgedSystemReminders } from './file-read-detect-image-format-from-buffer';
+import type { CompressedImage, ImageDimensions } from './file-read-detect-image-format-from-buffer';
+import { FILE_NOT_FOUND_CWD_NOTE, FILE_UNCHANGED_STUB, SUITE_LOG_MAX_BYTES, applyReadTokenBudget, buildFileReadDescription, buildFileReadInputSchema, classifyPdfError, coerceReadLineParam, convertLeadingTabsToSpaces, formatLineNumber, parsePageRange, readSuiteHeadAndTail, resolveFileReadDescriptionOptions } from './file-read-build-file-read-input-schema';
+export { CYBER_RISK_MITIGATION_REMINDER, FILE_IMAGES_KINDS, IMAGE_MAX_HEIGHT, IMAGE_MAX_WIDTH, ImageResizeError, buildFileImagesOutput, createImageMetadataText, detectImageFormatFromBase64, detectImageFormatFromBuffer, fsHooks, getAlternateScreenshotPath, imageHooks, isPDFSupported, loadImageProcessor, parseImageToolOutput, pdfHooks, stripForgedSystemReminders, unwrapDefault } from './file-read-detect-image-format-from-buffer';
+export type { CompressedImage, FileImagesKind, ImageDimensions } from './file-read-detect-image-format-from-buffer';
+export { FILE_NOT_FOUND_CWD_NOTE, FILE_UNCHANGED_STUB, PDF_ERROR_REASONS, applyReadTokenBudget, buildFileReadDescription, buildFileReadInputSchema, classifyPdfError, classifyPdfErrorReason, coerceReadLineParam, convertLeadingTabsToSpaces, formatLineNumber, parseFileImagesOutput, parseImageToolMetadata, parsePageRange, resolveFileReadDescriptionOptions } from './file-read-build-file-read-input-schema';
+export type { FileReadDescriptionOptions, PdfErrorReason } from './file-read-build-file-read-input-schema';
 
 /**
  * Process-lifetime cache of whether the `pdftoppm` binary (poppler-utils) is
@@ -59,53 +55,6 @@ let pdftoppmAvailable: boolean | undefined;
 /** Reset the pdftoppm availability cache (tests only). */
 export function resetPdftoppmCache(): void {
   pdftoppmAvailable = undefined;
-}
-
-/**
- * Indirection seam for the pdftoppm child process (poppler-utils). Tests swap
- * `execFile` to exercise the availability probe + page-render branches without a
- * real poppler install. Production spawns the real binary.
- */
-export const pdfHooks: {
-  execFile: (cmd: string, args: string[], opts: { timeout: number }) => Promise<{ code: number | null; stdout: string; stderr: string }>;
-  loadPdfParse: () => { PDFParse: new (opts: { data: Buffer }) => { getText: (o?: Record<string, unknown>) => Promise<{ text?: string; total?: number }>; destroy: () => Promise<void> } };
-  isPdfParseResolvable: () => boolean;
-} = {
-  execFile: (cmd, args, opts) => new Promise((resolve) => {
-    execFile(cmd, args, { timeout: opts.timeout, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
-      const code = err
-        ? (typeof (err as { code?: number }).code === 'number' ? (err as { code: number }).code : 1)
-        : 0;
-      resolve({ code, stdout: String(stdout ?? ''), stderr: String(stderr ?? '') });
-    });
-  }),
-  // Indirection seam for the pdf-parse module. Tests swap this to exercise the
-  // page-count guard / error-classification branches without a real multi-page
-  // PDF; production resolves pdf-parse from the working directory.
-  loadPdfParse: () => createRequire(path.join(process.cwd(), '_'))('pdf-parse'),
-  // Capability probe: whether the optional `pdf-parse` dependency RESOLVES from
-  // the working directory (resolve-only — never executes the module). Mirrors the
-  // same resolution root as loadPdfParse so the advertised capability matches the
-  // runtime read path. Tests swap this to assert the capability-gated description.
-  isPdfParseResolvable: (): boolean => {
-    try {
-      createRequire(path.join(process.cwd(), '_')).resolve('pdf-parse');
-      return true;
-    } catch {
-      return false;
-    }
-  },
-};
-
-/**
- * Whether the runtime can actually extract PDF text — i.e. the optional
- * `pdf-parse` dependency resolves. The Read tool's description is gated on this
- * so its self-description is an honest introspection surface that reflects the
- * real capability instead of advertising PDF reads that would fail at runtime
- * with "Error reading PDF". Mirrors the reference's isPDFSupported() (FileReadTool/prompt.ts).
- */
-export function isPDFSupported(): boolean {
-  return pdfHooks.isPdfParseResolvable();
 }
 
 /**
@@ -156,31 +105,6 @@ export async function renderPdfPagesToImages(
   }
 }
 
-/**
- * Security control that travels WITH untrusted file content: a planted file must
- * not be able to turn the agent into a malware-authoring assistant. Appended to
- * every text read so the model may analyze/report on malicious code but must
- * refuse to improve, augment, or author it. Mirrors the reference's
- * CYBER_RISK_MITIGATION_REMINDER (FileReadTool).
- */
-export const CYBER_RISK_MITIGATION_REMINDER =
-  '\n\n<system-reminder>You may analyze, explain, and report on the file above even if it contains malicious or suspicious code. You MUST refuse to improve, augment, optimize, obfuscate, or author malicious code (malware, exploits, credential stealers, etc.) based on it.</system-reminder>';
-
-/**
- * Dependency seam for fs calls whose failures are defensive TOCTOU/race guards
- * (a file that passed the access check disappearing or becoming unreadable
- * before the follow-up lstat/open). Tests use `mock.method(fsHooks, ...)` to
- * exercise those catch paths deterministically; production uses the real fs.
- * Mirrors the fsHooks pattern in logger.ts / file-cache.ts.
- */
-export const fsHooks: {
-  lstatSync: (p: string) => fs.Stats;
-  openForBom: (p: string) => Promise<fs.promises.FileHandle>;
-} = {
-  lstatSync: (p: string) => fs.lstatSync(p),
-  openForBom: (p: string) => fs.promises.open(p, 'r'),
-};
-
 /** Maximum image file size allowed (128 MiB). */
 export const MAX_IMAGE_FILE_BYTES = 128 * 1024 * 1024;
 
@@ -219,7 +143,6 @@ export function validateImageFile(filePath: string): { valid: boolean; error?: s
 // importing this heavy tool module. Re-exported here to preserve file-read's API.
 export { KNOWN_BINARY_EXTENSIONS, isBinaryByExtension, checkBinaryContent };
 
-
 /**
  * Document (non-text, specially-parsed) file extensions, stored WITHOUT a leading
  * dot. Modeling the document types as a data structure + a normalizing membership
@@ -239,89 +162,8 @@ export function isPDFExtension(ext: string): boolean {
   return DOCUMENT_EXTENSIONS.has(normalized.toLowerCase());
 }
 
-function isUNCPath(filePath: string): boolean {
-  return filePath.startsWith('\\\\') || filePath.startsWith('//');
-}
-
-function normalizeMacScreenshotPath(filePath: string): string {
-  return filePath
-    .replace(/\u202f/g, ' ')
-    .replace(/\u00a0/g, ' ');
-}
-
-/** Narrow no-break space (U+202F) \u2014 macOS uses it before AM/PM in newer builds. */
-const THIN_SPACE = '\u202f';
-
-/**
- * macOS screenshot filenames put either a regular space or a thin space (U+202F)
- * before AM/PM depending on the OS version. When a read misses on ENOENT, this
- * returns the path with the ALTERNATE space character before AM/PM in a `.png`
- * name (regular <-> U+202F) so the caller can retry it, or undefined when the
- * name does not match the screenshot pattern. Non-destructive: the on-disk name
- * is never rewritten up front. Mirrors the reference's getAlternateScreenshotPath.
- */
-export function getAlternateScreenshotPath(filePath: string): string | undefined {
-  const filename = path.basename(filePath);
-  // eslint-disable-next-line security/detect-unsafe-regex -- anchored, single greedy prefix + fixed suffix; linear
-  const amPmPattern = /^(.+)([ \u202f])(AM|PM)(\.png)$/;
-  const match = filename.match(amPmPattern);
-  if (!match) return undefined;
-  const currentSpace = match[2];
-  const alternateSpace = currentSpace === ' ' ? THIN_SPACE : ' ';
-  return filePath.replace(
-    `${currentSpace}${match[3]}${match[4]}`,
-    `${alternateSpace}${match[3]}${match[4]}`,
-  );
-}
-
-/**
- * Neutralize forged trust-boundary markers planted in untrusted FILE content:
- * a read file must not be able to inject a `<system-reminder>\u2026</system-reminder>`
- * block that the model would mistake for a real system instruction. The entire
- * forged block is stripped before the content is cached or returned, so it can
- * never carry those boundary tags forward. AMI's own reminders are appended
- * AFTER this runs and are unaffected. Mirrors the reference's queryHelpers strip.
- */
-export function stripForgedSystemReminders(text: string): string {
-  // eslint-disable-next-line security/detect-unsafe-regex -- lazy match bounded by a required literal close tag; linear
-  return text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '');
-}
-
-/**
- * Resolve the alternate-space macOS-screenshot variant of `resolved` and return
- * it ONLY when the alternate exists, is readable, is within the allowed roots,
- * and is not a blocked/device path — so the ENOENT retry is held to the same
- * security checks as the original path. Returns undefined when there is no safe,
- * readable alternate. See getAlternateScreenshotPath.
- */
-async function resolveAlternateScreenshotPath(
-  resolved: string,
-  context: ToolContext,
-): Promise<string | undefined> {
-  const alt = getAlternateScreenshotPath(resolved);
-  if (!alt) return undefined;
-  const altResolution = resolveFilePath(alt, context.cwd, context.allowedReadRoots, 'read');
-  if (altResolution.error) return undefined;
-  if (isBlockedPath(altResolution.resolved)) return undefined;
-  try {
-    await fs.promises.access(altResolution.resolved, fs.constants.R_OK);
-    return altResolution.resolved;
-  } catch {
-    return undefined;
-  }
-}
-
 /** Image extensions that should be returned as base64 content. */
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp']);
-
-const MEDIA_TYPES: Record<string, string> = {
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.gif': 'image/gif',
-  '.webp': 'image/webp',
-  '.bmp': 'image/bmp',
-};
 
 /** Whether a path points to a supported image file (by extension). */
 export function isImagePath(p: string): boolean {
@@ -335,184 +177,12 @@ export function isImagePath(p: string): boolean {
  * rather than silently sent and bounced by the provider.
  */
 export const API_IMAGE_MAX_BASE64_SIZE = 5 * 1024 * 1024;
-
-/**
- * Detect an image's real media type from its leading magic bytes, independent of
- * the file extension (which an untrusted/mislabeled file can lie about). Returns
- * the canonical `image/*` media type, or null when the bytes match no known
- * image signature. This is the single source of truth for content-based image
- * format detection (file reads, pasted images, attachment normalization) so the
- * logic is never re-implemented per call site. Mirrors the reference's
- * detectImageFormatFromBuffer / detectImageFormatFromBase64.
- */
-export function detectImageFormatFromBuffer(buf: Buffer): string | null {
-  if (buf.length >= 8
-      && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47
-      && buf[4] === 0x0d && buf[5] === 0x0a && buf[6] === 0x1a && buf[7] === 0x0a) {
-    return 'image/png';
-  }
-  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) {
-    return 'image/jpeg';
-  }
-  // "GIF87a" / "GIF89a"
-  if (buf.length >= 6
-      && buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x38
-      && (buf[4] === 0x37 || buf[4] === 0x39) && buf[5] === 0x61) {
-    return 'image/gif';
-  }
-  // "RIFF"...."WEBP"
-  if (buf.length >= 12
-      && buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46
-      && buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50) {
-    return 'image/webp';
-  }
-  // "BM" — Windows bitmap (WSL2/Windows clipboard emits these; the API rejects BMP).
-  if (buf.length >= 2 && buf[0] === 0x42 && buf[1] === 0x4d) {
-    return 'image/bmp';
-  }
-  return null;
-}
-
-/** Detect an image's media type from a base64 payload via its decoded magic bytes. */
-export function detectImageFormatFromBase64(data: string): string | null {
-  // Only the leading bytes are needed; decode a short prefix to avoid materializing
-  // a large buffer just to read a signature.
-  const prefix = data.slice(0, 24);
-  let head: Buffer;
-  try {
-    head = Buffer.from(prefix, 'base64');
-  } catch {
-    return null;
-  }
-  return detectImageFormatFromBuffer(head);
-}
-
-/**
- * Normalize a possibly-`{default}`-wrapped module to the underlying value. Module
- * interop differs by resolution mode — an ESM build of a drop-in replacement may
- * resolve as `{ default: fn }` while CommonJS resolves to the callable directly —
- * so unwrap a `.default` when the top-level export is not itself callable. Mirrors
- * the reference's unwrapDefault (imageProcessor.ts).
- */
-export function unwrapDefault<T>(mod: T | { default: T }): T {
-  if (typeof mod === 'function') return mod as T;
-  if (mod && typeof mod === 'object' && 'default' in (mod as { default?: T })) {
-    return (mod as { default: T }).default;
-  }
-  return mod as T;
-}
-
-/**
- * Indirection seam for the optional native `sharp` dependency. Production loads
- * the real module via require; tests swap it to exercise the compression branch
- * deterministically (sharp is an optional dep that may be absent). The require
- * result is passed through {@link unwrapDefault} so an ESM-published sharp (or a
- * drop-in replacement wrapped in `{default}`) resolves to the callable factory
- * instead of crashing with "sharp is not a function". Behavior is unchanged when
- * sharp resolves as plain CommonJS.
- */
-export const imageHooks: {
-  loadSharp: () => any;
-  /**
-   * Optional ORDERED chain of image-processor loaders, tried in order by
-   * {@link loadImageProcessor} with the first one that loads winning. A bundled
-   * build can prepend a faster native processor (e.g. an `image-processor-napi`
-   * loader) and keep `loadSharp` as the portable fallback, so a packaged
-   * distribution whose native binding is missing on a given platform still
-   * downscales images instead of only being able to pass raw bytes. When unset,
-   * the chain defaults to `[loadSharp]` (unchanged single-engine behavior).
-   * Mirrors the reference's getImageProcessor() native-first ordered fallback.
-   */
-  loaders?: Array<() => any>;
-} = {
-  loadSharp: () => unwrapDefault(require('sharp')),
-};
-
-/**
- * Load an image processor from the ordered {@link imageHooks.loaders} chain,
- * returning the first loader that succeeds. Each loader's failure is tolerated
- * (the next is tried); only when EVERY loader fails does the last error
- * propagate, so the caller's existing sharp-unavailable fallback still runs. When
- * no chain is configured, the single canonical `loadSharp` loader is used — so a
- * default build behaves exactly as before and a test that mocks `imageHooks.loadSharp`
- * is still honored. Mirrors the reference's getImageProcessor() (native-first, sharp fallback).
- */
-export function loadImageProcessor(): any {
-  const chain = imageHooks.loaders && imageHooks.loaders.length > 0
-    ? imageHooks.loaders
-    : [imageHooks.loadSharp];
-  let lastErr: unknown;
-  for (const loader of chain) {
-    try {
-      const processor = loader();
-      if (processor) return processor;
-    } catch (err) {
-      lastErr = err;
-      // Try the next processor in the chain. Surface the degrade at debug level so
-      // an operator tracing a slow/raw-bytes image read can see which processor
-      // tier failed to load. Mirrors the reference's getImageProcessor() warn-and-fallthrough.
-      log('file-read', `Image processor loader failed, trying next: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-  throw lastErr instanceof Error
-    ? lastErr
-    : new Error('No image processor available');
-}
-
-/**
- * Max pixel dimensions the provider accepts for an image. Larger images are
- * downscaled (aspect-preserving) before encoding. Mirrors the reference's
- * IMAGE_MAX_WIDTH / IMAGE_MAX_HEIGHT.
- */
-export const IMAGE_MAX_WIDTH = 2000;
-export const IMAGE_MAX_HEIGHT = 2000;
 /**
  * Target raw (pre-base64) byte size for an encoded image: base64 inflates by 4/3,
  * so the raw budget is 3/4 of the 5 MB base64 API ceiling. Mirrors the reference's
  * IMAGE_TARGET_RAW_SIZE.
  */
 export const IMAGE_TARGET_RAW_SIZE = Math.floor((API_IMAGE_MAX_BASE64_SIZE * 3) / 4);
-
-/** Original vs. displayed pixel dimensions, used for coordinate mapping. */
-export interface ImageDimensions {
-  originalWidth?: number;
-  originalHeight?: number;
-  displayWidth?: number;
-  displayHeight?: number;
-}
-
-/** Result of compressing/encoding an image buffer. */
-export interface CompressedImage {
-  /** Base64-encoded payload. */
-  base64: string;
-  /** Canonical `image/*` media type of the returned payload. */
-  mediaType: string;
-  /** Raw byte length of the returned (possibly compressed) buffer. */
-  originalSize: number;
-  /** Pixel dimensions (original + displayed), when sharp could read them. */
-  dimensions?: ImageDimensions;
-}
-
-/**
- * Thrown when an image cannot be reduced below the provider's size/pixel limits
- * and compression itself failed — the caller surfaces this as an actionable error
- * instead of emitting an unusable image block. Mirrors the reference's ImageResizeError.
- */
-export class ImageResizeError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'ImageResizeError';
-  }
-}
-
-/** Read a big-endian PNG's IHDR width/height without decoding the image. */
-function readPngDimensions(buf: Buffer): { width: number; height: number } | null {
-  if (buf.length >= 24
-      && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) {
-    return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
-  }
-  return null;
-}
 
 /**
  * Compress an image buffer to fit within `maxBytes`, preserving the original
@@ -651,29 +321,6 @@ export async function compressImageBufferWithTokenLimit(
 }
 
 /**
- * Build a short metadata note describing an image's source and (when it was
- * downscaled) the coordinate scale factor from displayed → original pixels, so a
- * model reasoning about pixel coordinates can map them back. Returns null when no
- * useful metadata is available. Mirrors the reference's createImageMetadataText.
- */
-export function createImageMetadataText(dims: ImageDimensions, sourcePath?: string): string | null {
-  const { originalWidth, originalHeight, displayWidth, displayHeight } = dims;
-  if (!originalWidth || !originalHeight || !displayWidth || !displayHeight
-      || displayWidth <= 0 || displayHeight <= 0) {
-    return sourcePath ? `[Image source: ${sourcePath}]` : null;
-  }
-  const wasResized = originalWidth !== displayWidth || originalHeight !== displayHeight;
-  if (!wasResized && !sourcePath) return null;
-  const parts: string[] = [];
-  if (sourcePath) parts.push(`source: ${sourcePath}`);
-  if (wasResized) {
-    const scaleFactor = originalWidth / displayWidth;
-    parts.push(`original ${originalWidth}x${originalHeight}, displayed at ${displayWidth}x${displayHeight}. Multiply coordinates by ${scaleFactor.toFixed(2)} to map to original image.`);
-  }
-  return `[Image: ${parts.join(', ')}]`;
-}
-
-/**
  * Read an image file and return a base64 payload, downscaling/compressing large
  * images with sharp when available (same policy file_read uses). Shared so the
  * TUI/detached attach path encodes images identically to the file_read tool.
@@ -720,269 +367,6 @@ export async function encodeImageFile(
     // any other failure re-surfaces the raw bytes so a missing sharp never blocks a read.
     return { media_type: mediaType, data: buffer.toString('base64') };
   }
-}
-
-/**
- * Parse a tool-result output string into ImageContent block(s) when it is the
- * image JSON that file_read emits ({type:'image',source:{type:'base64',...}}),
- * else null. Fast-guarded so ordinary text outputs are never JSON.parsed.
- */
-export function parseImageToolOutput(output: string): ImageContent[] | null {
-  if (typeof output !== 'string') return null;
-  const t = output.trimStart();
-  if (!t.startsWith('{')) return null;
-  if (!t.includes('"type":"image"') && !t.includes('"type": "image"')) return null;
-  try {
-    const parsed = JSON.parse(output);
-    if (parsed && parsed.type === 'image' && parsed.source && parsed.source.type === 'base64'
-        && typeof parsed.source.media_type === 'string' && typeof parsed.source.data === 'string') {
-      // Normalize an untrusted image block: trust the actual magic bytes over the
-      // declared media_type so a mislabeled block (e.g. JPEG tagged image/png) is
-      // corrected before it reaches the provider, which would otherwise reject it.
-      const sniffed = detectImageFormatFromBase64(parsed.source.data);
-      if (sniffed && sniffed !== parsed.source.media_type) {
-        parsed.source.media_type = sniffed;
-      }
-      return [parsed as ImageContent];
-    }
-  } catch {}
-  return null;
-}
-
-/** Kind of tool output that carried extracted images (drives the engine's note).
- *  `notebook`/`pdf` are file reads; `mcp` is an MCP tool result whose image content
- *  blocks are forwarded as first-class multimodal content (see mcp-tool.ts). */
-export const FILE_IMAGES_KINDS = ['notebook', 'pdf', 'mcp'] as const;
-export type FileImagesKind = (typeof FILE_IMAGES_KINDS)[number];
-
-/**
- * Build a file_read output that carries extracted images (notebook cell outputs,
- * rendered PDF pages) alongside the text. The engine renders `text` as the tool
- * result and queues `images` as multimodal blocks. Single canonical shape so each
- * image-bearing reader (notebook, PDF) reuses the same protocol.
- */
-export function buildFileImagesOutput(kind: FileImagesKind, text: string, images: ImageContent[]): string {
-  return JSON.stringify({ type: 'file_images', kind, text, images });
-}
-
-/**
- * Parse a file_read output that carries extracted images, returning the kind, the
- * text, and the image blocks. Returns null for any other output. Mirrors the reference
- * Code's notebook/PDF image-output extraction.
- */
-export function parseFileImagesOutput(output: string): { kind: FileImagesKind; text: string; images: ImageContent[] } | null {
-  if (typeof output !== 'string') return null;
-  const t = output.trimStart();
-  if (!t.startsWith('{') || !t.includes('"type":"file_images"')) return null;
-  try {
-    const parsed = JSON.parse(output);
-    if (parsed && parsed.type === 'file_images' && (FILE_IMAGES_KINDS as readonly string[]).includes(parsed.kind)
-        && typeof parsed.text === 'string' && Array.isArray(parsed.images)) {
-      const images = (parsed.images as unknown[]).filter((i): i is ImageContent =>
-        !!i && typeof i === 'object'
-        && (i as ImageContent).type === 'image'
-        && !!(i as ImageContent).source
-        && (i as ImageContent).source.type === 'base64'
-        && typeof (i as ImageContent).source.media_type === 'string'
-        && typeof (i as ImageContent).source.data === 'string');
-      if (images.length > 0) return { kind: parsed.kind, text: parsed.text, images };
-    }
-  } catch {}
-  return null;
-}
-
-/**
- * Extract the coordinate-mapping metadata note from a file_read image output, if
- * present, so the engine can surface it to the model alongside the image block.
- * Returns null for non-image outputs or images with no metadata.
- */
-export function parseImageToolMetadata(output: string): string | null {
-  if (typeof output !== 'string') return null;
-  const t = output.trimStart();
-  if (!t.startsWith('{') || !t.includes('"metadata"')) return null;
-  try {
-    const parsed = JSON.parse(output);
-    if (parsed && parsed.type === 'image' && typeof parsed.metadata === 'string') {
-      return parsed.metadata;
-    }
-  } catch {}
-  return null;
-}
-
-/**
- * Actionable stub returned when a FULL re-read hits the unchanged-file cache.
- * Beyond stating the fact, it tells the model what to DO — reuse the earlier
- * Read tool_result instead of looping on re-reads — so a model does not re-issue
- * the read or stall. Mirrors the reference's FILE_UNCHANGED_STUB (FileReadTool/prompt.ts).
- */
-export const FILE_UNCHANGED_STUB =
-  'File unchanged since last read. The content from the earlier Read tool_result in this conversation is still current — refer to that instead of re-reading.';
-
-/**
- * Marker prefixing the current working directory in a file-not-found error, so
- * the model (and any UI renderer keying off the marker) can self-correct a wrong
- * relative/absolute path assumption. Mirrors the reference's FILE_NOT_FOUND_CWD_NOTE
- * (utils/file.ts).
- */
-export const FILE_NOT_FOUND_CWD_NOTE = 'Note: your current working directory is';
-
-/**
- * Replace each run of leading tabs on every line with 2 spaces per tab so
- * rendered file content has consistent, tab-width-independent indentation — a
- * terminal expands a raw `\t` to a variable number of cells (commonly 8), which
- * misaligns the line-number gutter. Fast-paths the common tab-free case to avoid
- * the per-line scan. Mirrors the reference's convertLeadingTabsToSpaces (utils/file.ts).
- */
-export function convertLeadingTabsToSpaces(content: string): string {
-  if (!content.includes('\t')) return content;
-  // eslint-disable-next-line security/detect-unsafe-regex -- anchored ^\t+ per line via /m; linear
-  return content.replace(/^\t+/gm, (tabs) => '  '.repeat(tabs.length));
-}
-
-/** Pad width used for the arrow line-number style (`     N→`), matching the reference. */
-const ARROW_PREFIX_WIDTH = 6;
-
-/**
- * Prefix a single already-tab-normalized source line with its 1-based line number
- * in the active {@link LineNumberStyle}:
- *   - `compact` → `${num}\t${line}` (num right-padded to `compactWidth`, default 1
- *     i.e. no padding — matches the historical per-site output exactly);
- *   - `arrow`   → `${num.padStart(6)}→${line}` (or the bare number when it is
- *     already ≥6 digits), the legacy padded-arrow format.
- * The inverse (stripping EITHER prefix) is {@link stripLineNumberPrefix} in
- * file-cache-seed.ts, so a transcript-seeded re-read round-trips regardless of the
- * style the output was produced in. Mirrors the reference's addLineNumbers()
- * (utils/file.ts) compact/padded-arrow branches.
- */
-export function formatLineNumber(
-  lineNumber: number,
-  line: string,
-  style: LineNumberStyle,
-  compactWidth = 1,
-): string {
-  if (style === 'arrow') {
-    const s = String(lineNumber);
-    return `${s.length >= ARROW_PREFIX_WIDTH ? s : s.padStart(ARROW_PREFIX_WIDTH)}→${line}`;
-  }
-  return `${String(lineNumber).padStart(compactWidth)}\t${line}`;
-}
-
-/**
- * Apply the per-read token budget to an assembled Read output, in ONE place so
- * the two over-budget behaviors never drift across the four read paths (full,
- * range, tail, notebook):
- *   - within budget → the output unchanged;
- *   - over budget + `errorOnBudget` → a hard {@link ToolResult} error carrying the
- *     actionable {@link fileReadTokenBudgetMessage} (the reference parity), so the model
- *     gets a targeted-re-read nudge instead of a file silently cut mid-structure;
- *   - over budget + default → the content truncated to the budget via
- *     {@link sliceToReadTokenBudget} with the caller's `truncationNote` appended
- *     (AMI's partial-content differentiator).
- * The caller must RETURN the result when `isError` is set (the error short-circuits
- * any later appends like the cyber-risk reminder).
- */
-export function applyReadTokenBudget(
-  output: string,
-  estimatedTokens: number,
-  maxTokens: number,
-  ext: string,
-  errorOnBudget: boolean,
-  truncationNote: string,
-): ToolResult {
-  if (estimatedTokens <= maxTokens) return { output };
-  if (errorOnBudget) {
-    return { output: `Error: ${fileReadTokenBudgetMessage(estimatedTokens, maxTokens)}`, isError: true };
-  }
-  return { output: sliceToReadTokenBudget(output, maxTokens, ext) + truncationNote };
-}
-
-/**
- * Options that shape the Read tool's self-description/schema so it HONESTLY
- * reflects the runtime's real capabilities and the operator's prompt-shaping
- * knobs. Defaults mirror a fully-capable runtime with all guidance on, so the
- * advertised description equals the historical static string. Mirrors the reference
- * Code's prompt.ts (isPDFSupported) + limits.ts (includeMaxSizeInPrompt /
- * targetedRangeNudge) description gating.
- */
-export interface FileReadDescriptionOptions extends FileReadPromptFlags {
-  /** Whether the runtime can extract PDF text (see {@link isPDFSupported}). */
-  pdfSupported: boolean;
-}
-
-/** Resolve the description options from the live runtime + environment. */
-export function resolveFileReadDescriptionOptions(
-  env: NodeJS.ProcessEnv = process.env,
-): FileReadDescriptionOptions {
-  return { pdfSupported: isPDFSupported(), ...getFileReadPromptFlags(env) };
-}
-
-/**
- * Build the Read tool's description. The PDF clause is included ONLY when the
- * runtime can actually read PDFs, so the tool never advertises a capability that
- * would fail with "Error reading PDF". Mirrors the reference's isPDFSupported()
- * gating of the PDF instruction block.
- */
-export function buildFileReadDescription(opts: FileReadDescriptionOptions): string {
-  const pdfClause = opts.pdfSupported
-    ? 'Can read PDF files (.pdf) — for large PDFs (more than 10 pages) you MUST provide the pages parameter to read a specific page range (e.g. pages: "1-5"); maximum 20 pages per request. '
-    : '';
-  return 'Read a file from the filesystem. Returns file content with line numbers (cat -n format). '
-    + 'For image files (.png, .jpg, .jpeg, .gif, .webp) returns base64-encoded content presented visually. '
-    + pdfClause
-    + 'Can read Jupyter notebooks (.ipynb) and returns all cells with their outputs, combining code, text, and visualizations. '
-    + 'This tool reads files only, not directories — to list a directory, use an ls command via the bash tool.';
-}
-
-/**
- * Build the Read tool's inputSchema. The offset/limit targeted-range-read nudge
- * (gated by {@link FileReadPromptFlags.targetedRangeNudge}) and the concrete
- * 256KB size-cap figure in `allow_large` (gated by
- * {@link FileReadPromptFlags.includeMaxSizeInPrompt}) are surfaced only when the
- * corresponding knob is on. Mirrors the reference's limits.ts prompt toggles.
- */
-export function buildFileReadInputSchema(opts: FileReadDescriptionOptions): ToolDefinition['inputSchema'] {
-  const offsetNudge = opts.targetedRangeNudge
-    ? ' Prefer reading the whole file by omitting offset/limit; use offset/limit only when you already know which part of the file you need (important for large files).'
-    : '';
-  const limitNudge = opts.targetedRangeNudge
-    ? ' When you know the exact region you need, pass offset+limit to read just that part instead of the whole file — this matters most for large files.'
-    : '';
-  const sizeCap = opts.includeMaxSizeInPrompt ? ' 256KB' : '';
-  return {
-    type: 'object',
-    properties: {
-      file_path: {
-        type: 'string',
-        description: 'The absolute or relative path to the file to read.',
-      },
-      offset: {
-        type: 'number',
-        description: `Line number to start reading from (0-based, non-negative integer). Defaults to 0.${offsetNudge}`,
-      },
-      limit: {
-        type: 'number',
-        description:
-          `Maximum number of lines to read (positive integer). Defaults to 2000.${limitNudge}`,
-      },
-      tail: {
-        type: 'number',
-        description: 'Read the LAST N lines of the file instead of from the start (positive integer) — use for logs or appended files when only the end matters. Mutually exclusive with offset/limit. Only the final portion of a very large file is scanned, so tailing a huge log does not load the whole file.',
-      },
-      pages: {
-        type: 'string',
-        description: 'Page range for PDF files (e.g. "1-5", "3", "10-20", or open-ended "3-" for page 3 onward). Only applicable to PDF files. Max 20 pages per request.',
-      },
-      allow_large: {
-        type: 'boolean',
-        description: `Read a text file past the usual${sizeCap} size limit in one call. Still subject to the token budget.`,
-      },
-      cell_id: {
-        type: 'string',
-        description: 'For Jupyter notebooks (.ipynb) only: read just the single cell whose id matches (either the cell\'s own id or its synthetic "cell-N" index id). Overrides offset/limit cell windowing and includes that cell\'s full outputs.',
-      },
-    },
-    required: ['file_path'],
-  };
 }
 
 export const fileReadTool: ToolDefinition = {
@@ -1753,7 +1137,6 @@ export const fileReadTool: ToolDefinition = {
 };
 
 const SUITE_LOG_EXTENSIONS = new Set(['.json', '.jsonl', '.log', '.txt', '.out']);
-const SUITE_LOG_MAX_BYTES = 8_000_000;
 
 async function loadSuiteLog(resolved: string, size: number, ext: string): Promise<string | null> {
   if (size < 512 || size > 32_000_000) return null;
@@ -1771,144 +1154,6 @@ async function loadSuiteLog(resolved: string, size: number, ext: string): Promis
     : await readSuiteHeadAndTail(resolved);
   if (!looksLikeSuiteLog(content)) return null;
   return `File: ${resolved}\nPassing tests were omitted so this suite log does not enter the prompt.\n\n${compactTestLog(content)}`;
-}
-
-/**
- * For an oversize suite log, keep only the first 6 MB and the last 1 MB via the
- * shared byte-bounded readers ({@link readFileRange} / {@link tailFile}) so the
- * whole (possibly 32 MB) file is never loaded into memory. Both readers decode
- * exactly the bytes they read (no trailing-NUL padding from an over-allocated
- * buffer) and loop across short reads.
- */
-async function readSuiteHeadAndTail(resolved: string): Promise<string> {
-  const head = await readFileRange(resolved, 0, 6_000_000);
-  const tail = await tailFile(resolved, 1_000_000);
-  return `${head?.content ?? ''}\n${tail.content}`;
-}
-
-export function parsePageRange(pages: string): { start: number; end: number; error?: string; openEnded?: boolean } {
-  const trimmed = pages.trim();
-  // eslint-disable-next-line security/detect-unsafe-regex
-  if (/,/.test(trimmed)) {
-    return { start: 0, end: 0, error: `Page lists like "${pages}" are not supported. Read each page or range separately (e.g. pages: "6", then pages: "9", then pages: "15").` };
-  }
-  // Open-ended "N-": read from page N onward. We cannot know the document's last
-  // page until it is parsed, and every request is bounded by the 20-page window,
-  // so interpret "N-" as a 20-page window starting at N (page N through N+19).
-  // Mirrors the reference's open-ended parsePDFPageRange (firstPage N, lastPage ∞),
-  // clamped to AMI's per-request page cap.
-  // eslint-disable-next-line security/detect-unsafe-regex -- anchored, single \d group + literal '-'
-  const openMatch = trimmed.match(/^(\d+)-$/);
-  if (openMatch) {
-    const openStart = parseInt(openMatch[1], 10);
-    if (openStart < 1) {
-      return { start: 0, end: 0, error: `Invalid page range: start must be >= 1 and end >= start.` };
-    }
-    return { start: openStart, end: openStart + 19, openEnded: true };
-  }
-  // eslint-disable-next-line security/detect-unsafe-regex -- anchored, disjoint \d and literal '-'
-  const match = trimmed.match(/^(\d+)(?:-(\d+))?$/);
-  if (!match) {
-    return { start: 0, end: 0, error: `Invalid page range "${pages}". Use "3" or "1-5".` };
-  }
-  const start = parseInt(match[1], 10);
-  const end = match[2] ? parseInt(match[2], 10) : start;
-  if (start < 1 || end < start) {
-    return { start: 0, end: 0, error: `Invalid page range: start must be >= 1 and end >= start.` };
-  }
-  if (end - start + 1 > 20) {
-    return { start: 0, end: 0, error: `Page range too large (max 20 pages per request).` };
-  }
-  return { start, end };
-}
-
-/**
- * Validate and coerce a model-supplied `offset`/`limit` line parameter. Accepts a
- * real number or a numeric string (several providers serialize numbers as strings)
- * and rejects non-numeric, fractional, or out-of-range values with an actionable
- * error instead of silently casting them into arithmetic (which produced empty or
- * garbage windows). Returns `{}` (use the default) when the param is omitted.
- * Mirrors the reference's semanticNumber(z.number().int()...) schema coercion.
- */
-export function coerceReadLineParam(
-  value: unknown,
-  opts: { name: string; min: number },
-): { value?: number; error?: string } {
-  if (value === undefined || value === null) return {};
-  let n: number;
-  if (typeof value === 'number') {
-    n = value;
-  } else if (typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value))) {
-    n = Number(value);
-  } else {
-    return { error: `Error: ${opts.name} must be a number, got ${JSON.stringify(value)}.` };
-  }
-  if (!Number.isInteger(n)) {
-    return { error: `Error: ${opts.name} must be an integer, got ${n}.` };
-  }
-  if (n < opts.min) {
-    return { error: `Error: ${opts.name} must be >= ${opts.min}, got ${n}.` };
-  }
-  return { value: n };
-}
-
-/**
- * Machine-readable taxonomy of why a PDF read failed. Mirrors the reference's
- * `PDFError.reason` discriminated union (utils/pdf.ts) so a failure can be
- * classified by cause (empty 0-byte file, over-size, password/encryption,
- * corrupted bytes, renderer unavailable) rather than collapsed into one opaque
- * string. The reason drives the actionable message in {@link classifyPdfError}.
- */
-export const PDF_ERROR_REASONS = ['empty', 'too_large', 'password_protected', 'corrupted', 'unavailable', 'unknown'] as const;
-export type PdfErrorReason = (typeof PDF_ERROR_REASONS)[number];
-
-/**
- * Classify a PDF-parse failure message into a {@link PdfErrorReason}. The reason
- * is the single source of truth the user-facing message in {@link classifyPdfError}
- * switches on, so the two never drift. Mirrors the reference's pdf.ts stderr-regex
- * branches: `/password/i` → password_protected, `/damaged|corrupt/i` → corrupted,
- * plus empty/too-large/unavailable detection; anything else → unknown.
- */
-export function classifyPdfErrorReason(message: string): PdfErrorReason {
-  if (/password|encrypt(ed|ion)?|\bdecrypt/i.test(message)) return 'password_protected';
-  // A damaged/corrupt PDF gets its own actionable classification so the model/
-  // user knows the bytes themselves are bad and a re-download/regeneration is
-  // needed. Matches `damaged`/`corrupt` (incl. corrupted/corruption); bare
-  // "invalid" is intentionally excluded so a benign parser message like
-  // "Invalid xref table" stays the generic unknown error. Mirrors the reference's
-  // pdf.ts corrupted branch.
-  if (/damaged|corrupt(ed|ion)?/i.test(message)) return 'corrupted';
-  // A 0-byte / empty document, surfaced distinctly so the model knows the file
-  // itself carries no content (not a parser fault). Mirrors the reference's `empty` reason.
-  if (/\bempty\b|0 bytes|zero[- ]?length/i.test(message)) return 'empty';
-  if (/too large|exceeds the|maximum.*size|size limit/i.test(message)) return 'too_large';
-  // The optional renderer/parser dependency is missing. Mirrors the reference's `unavailable`.
-  if (/not installed|unavailable|cannot find module|poppler|pdftoppm/i.test(message)) return 'unavailable';
-  return 'unknown';
-}
-
-/**
- * Classify a PDF-parse failure into an actionable, model-facing error string via
- * the typed {@link classifyPdfErrorReason} taxonomy. Each reason yields a distinct
- * message (e.g. password-protected → "provide an unprotected version") instead of
- * being buried in a generic "Error reading PDF" string. Mirrors the reference's
- * per-reason PDF error messages (utils/pdf.ts).
- */
-export function classifyPdfError(message: string): string {
-  switch (classifyPdfErrorReason(message)) {
-    case 'password_protected':
-      return 'Error: PDF is password-protected or encrypted. Please provide an unprotected version.';
-    case 'corrupted':
-      return 'Error: PDF file is corrupted or invalid. Please provide a valid PDF.';
-    case 'empty':
-      return 'Error: PDF file is empty (0 bytes).';
-    case 'too_large':
-      return `Error: ${message}`;
-    case 'unavailable':
-      return `Error: PDF support is unavailable: ${message}`;
-    default:
-      return `Error reading PDF: ${message}`;
-  }
 }
 
 // checkBinaryContent now lives in `utils/binary` (canonical heuristic) and is

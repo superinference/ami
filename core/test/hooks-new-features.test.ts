@@ -10,6 +10,7 @@
 import { describe, it, beforeEach } from 'node:test';
 import * as assert from 'node:assert/strict';
 import { HookManager } from '../src/hooks';
+import { readModuleSource } from './_module-source';
 
 let hookManager: HookManager;
 
@@ -220,9 +221,7 @@ describe('HookManager — PostToolUse updatedToolOutput', () => {
   });
 
   it('command handler extracts updatedToolOutput from hook JSON output', () => {
-    const src = require('fs').readFileSync(
-      require('path').resolve(__dirname, '..', 'src', 'hooks.ts'), 'utf-8',
-    );
+    const src = readModuleSource(require('path').resolve(__dirname, '..', 'src', 'hooks.ts'));
     const postToolUseCase = src.slice(
       src.indexOf("case 'postToolUse':"),
       src.indexOf("case 'preSampling':"),

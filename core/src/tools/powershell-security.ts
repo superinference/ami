@@ -1,14 +1,4 @@
-import {
-  COMMON_ALIASES,
-  getAllCommands,
-  hasCommandNamed,
-  getVariablesByScope,
-  deriveSecurityFlags,
-  commandHasArgAbbreviation,
-  resolveToCanonical,
-  stripModulePrefix,
-  isPowerShellParameter,
-} from './powershell-parser';
+import { COMMON_ALIASES, getAllCommands, hasCommandNamed, getVariablesByScope, deriveSecurityFlags, resolveToCanonical, isPowerShellParameter } from './powershell-parser';
 import type {
   ParsedPowerShellCommand,
   ParsedCommandElement,
@@ -17,6 +7,17 @@ import type {
 // Reuse the canonical filesystem-operation discriminant (no duplicate type).
 import type { FileOperationType } from '../permissions';
 import { escapeRegExp } from '../utils/string';
+import { COMMON_SWITCHES, COMMON_VALUE_PARAMS, PS_PASS, PS_SPAWNERS_AND_LOADERS, PS_TYPE_CAST_RE, aliasesOf, argMatchesParam, argTokensAfter, detectDynamicCommandName, detectStopParsingToken, hasPositionalStringArg, normalizeParamToken, normalizeTypeName } from './powershell-security-power-shell-read-only-config';
+import type { PsDetection } from './powershell-security-power-shell-read-only-config';
+import { POWERSHELL_READONLY_CONFIG, PS_READONLY_DISQUALIFY_RE } from './powershell-security-powershell-readonly-config';
+import { CMDLET_PATH_CONFIG, PS_SAFE_RESULT, askResult, hasComplexColonValue, hasPositionalStringArgAst, matchesCmdletParam, psParamAbbrevAltAware, startProcessColonVerbRunAs } from './powershell-security-cmdlet-path-config';
+import type { PowerShellSecurityResult } from './powershell-security-cmdlet-path-config';
+export { COMMON_SWITCHES, COMMON_VALUE_PARAMS, detectDynamicCommandName, detectStopParsingToken, normalizeTypeName } from './powershell-security-power-shell-read-only-config';
+export type { PowerShellReadOnlyConfig } from './powershell-security-power-shell-read-only-config';
+export { POWERSHELL_READONLY_CONFIG, canonicalizePowerShellCommandName } from './powershell-security-powershell-readonly-config';
+export type { CmdletPathConfig } from './powershell-security-powershell-readonly-config';
+export { CMDLET_PATH_CONFIG } from './powershell-security-cmdlet-path-config';
+export type { PowerShellSecurityResult } from './powershell-security-cmdlet-path-config';
 
 /**
  * PowerShell Constrained Language Mode (CLM) type-cast security boundary.
@@ -213,20 +214,6 @@ export const CLM_ALLOWED_TYPES: ReadonlySet<string> = new Set(
 );
 
 /**
- * Normalize a type name as it appears in a PowerShell cast literal.
- * Handles: case folding, array suffix (`String[]` → `string`), and generic
- * brackets (`List[int]` → `list`, conservative — the outer generic wrapper may
- * be unsafe even when the type argument is safe, so we check the outer type).
- */
-export function normalizeTypeName(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/\[\]$/, '')
-    .replace(/\[.*\]$/, '')
-    .trim();
-}
-
-/**
  * True if `typeName` (as written in a cast literal) is in Microsoft's CLM
  * allowlist. Types NOT in this set trigger an ask — they reach system APIs CLM
  * blocks (reflection, P/Invoke, network binds, process spawning).
@@ -234,14 +221,6 @@ export function normalizeTypeName(name: string): string {
 export function isClmAllowedType(typeName: string): boolean {
   return CLM_ALLOWED_TYPES.has(normalizeTypeName(typeName));
 }
-
-// A PowerShell type literal applied as a cast or static-member access: `[Type]`
-// immediately followed (modulo whitespace) by a value token (`'`, `"`, `$`, `@`,
-// `(`) or a static-member accessor (`::`). The type name starts with a letter,
-// may contain dots (FQ names) and a trailing `[]` (array). Requiring the literal
-// to be *applied* (a value/`::` follows) means bash array/glob/test-bracket
-// syntax (`[0]`, `[a-z]*`, `[ -f x ]`, `${a[i]}`) does not match.
-const PS_TYPE_CAST_RE = /\[([A-Za-z_][A-Za-z0-9_.]*(?:\[\])?)\]\s*(?=['"$@(]|::)/g;
 
 /**
  * Scan a command for PowerShell type-cast / static-member literals whose target
@@ -430,28 +409,6 @@ export const ARG_GATED_CMDLETS: ReadonlySet<string> = new Set([
   'route',
 ]);
 
-// PowerShell shells / process spawners / code loaders that must never be
-// offered as a bare wildcard prefix. The bare shell names (pwsh/powershell/cmd/
-// bash/…) are already covered by permissions.ts's BARE_SHELL_PREFIXES, so this
-// list holds only the PowerShell-cmdlet spawners/loaders not represented there.
-const PS_SPAWNERS_AND_LOADERS: readonly string[] = [
-  'start-process',
-  'add-type',
-  'new-object',
-];
-
-/**
- * Alias forms (from the shared {@link COMMON_ALIASES} map) whose canonical
- * cmdlet is in `canonical` — so `invoke-expression` in the set automatically
- * pulls in `iex`. Mirrors the reference's `aliasesOf()` derivation: add a cmdlet
- * to one validator list and its aliases follow, no separate maintenance.
- */
-function aliasesOf(canonical: ReadonlySet<string>): string[] {
-  return Object.entries(COMMON_ALIASES)
-    .filter(([, target]) => canonical.has(target.toLowerCase()))
-    .map(([alias]) => alias.toLowerCase());
-}
-
 /**
  * Commands never offered as a reusable wildcard-prefix ("allow always") rule in
  * the permission dialog. Derived from EVERY dangerous-cmdlet category above plus
@@ -493,10 +450,6 @@ export function isPowerShellNeverSuggest(name: string): boolean {
   const lower = name.toLowerCase().replace(/\.(exe|cmd|bat|com)$/, '');
   return POWERSHELL_NEVER_SUGGEST.has(lower);
 }
-
-type PsDetection = { blocked: boolean; reason?: string };
-const PS_PASS: PsDetection = { blocked: false };
-
 
 const POWERSHELL_EXECUTABLES: ReadonlySet<string> = new Set([
   'pwsh',
@@ -558,24 +511,6 @@ function cmdletInCommandPosition(
     }
   }
   return undefined;
-}
-
-/**
- * Split a command into the whitespace-separated tokens that follow the first
- * command-position match of `cmdletRe`, up to the next statement/pipeline
- * separator. Quoted runs are preserved as single tokens (quotes stripped).
- * Used by the New-Object / Start-Process argument scanners below.
- */
-function argTokensAfter(command: string, cmdletRe: RegExp): string[] | undefined {
-  const m = cmdletRe.exec(command);
-  if (!m) {
-    return undefined;
-  }
-  const rest = command.slice(m.index + m[0].length);
-  // Stop at the next top-level statement or pipeline boundary.
-  const segment = rest.split(/[;|\n\r]/)[0] ?? '';
-  const raw = segment.match(/'[^']*'|"[^"]*"|\S+/g) ?? [];
-  return raw.map((t) => t.replace(/^['"]|['"]$/g, ''));
 }
 
 /**
@@ -779,60 +714,6 @@ export function detectDangerousPsCmdlets(command: string): PsDetection {
   return PS_PASS;
 }
 
-/**
- * Stop-parsing token (`--%`) detection. PowerShell's `--%` tells the parser to
- * stop interpreting everything that follows and pass the remainder verbatim to
- * the target command — defeating any structural/token analysis of the tail
- * (a documented analysis-evasion / obfuscation technique). Like
- * `-EncodedCommand`, the remainder is opaque to the security checks, so its
- * presence is surfaced for approval (fail-safe: an un-analyzable command is
- * never silently allowed).
- *
- * PowerShell's tokenizer (SpecialCharacters.IsDash) treats en-dash (U+2013),
- * em-dash (U+2014) and horizontal-bar (U+2015) as dash-equivalents, so those
- * variants are normalized to ASCII `-` before matching — mirroring the reference's
- * parser token check `($tok.Text -replace '[–—―]','-') -eq '--%'`.
- * The token must stand alone (bounded by start/whitespace/statement separators)
- * so substrings like `git log --%H` or `sed 's/--%/x/'` do not match.
- */
-export function detectStopParsingToken(command: string): PsDetection {
-  const normalized = command.replace(/[–—―]/g, '-');
-  if (/(?:^|[\s;|&(){}])--%(?=$|[\s;|&(){}])/.test(normalized)) {
-    return {
-      blocked: true,
-      reason:
-        'PowerShell stop-parsing token (--%) passes everything after it verbatim to the command — opaque to security analysis',
-    };
-  }
-  return PS_PASS;
-}
-
-// ---------------------------------------------------------------------------
-// PowerShell common parameters.
-//
-// Mirrors the reference's PowerShellTool/commonParameters.ts: the switches and
-// value-taking parameters that [CmdletBinding()] adds to EVERY advanced cmdlet.
-// A value-param consumes the token after it, so a positional-argument scanner
-// must skip those values — otherwise `Start-Job -ErrorAction Stop` would
-// mistake `Stop` for a positional -FilePath. Stored lowercase with a leading
-// dash; callers lowercase their input. Source: about_CommonParameters.
-// ---------------------------------------------------------------------------
-
-export const COMMON_SWITCHES: readonly string[] = ['-verbose', '-debug'];
-
-export const COMMON_VALUE_PARAMS: readonly string[] = [
-  '-erroraction',
-  '-warningaction',
-  '-informationaction',
-  '-progressaction',
-  '-errorvariable',
-  '-warningvariable',
-  '-informationvariable',
-  '-outvariable',
-  '-outbuffer',
-  '-pipelinevariable',
-];
-
 export const COMMON_PARAMETERS: ReadonlySet<string> = new Set([
   ...COMMON_SWITCHES,
   ...COMMON_VALUE_PARAMS,
@@ -868,61 +749,6 @@ export const SCHEDULED_TASK_CMDLETS: ReadonlySet<string> = new Set([
   'new-scheduledtaskaction',
   'set-scheduledtask',
 ]);
-
-// Alt parameter-prefix characters PowerShell's tokenizer (SpecialCharacters.
-// IsDash) accepts as equivalent to ASCII '-': '/', en-dash, em-dash, horizontal
-// bar. Normalized to '-' before any parameter-abbreviation test so
-// `Start-Job –FilePath x` (en-dash) cannot bypass the check.
-const PS_ALT_PARAM_PREFIX_RE = /^[/–—―]/;
-
-function normalizeParamToken(token: string): string {
-  return token.replace(/`/g, '').replace(PS_ALT_PARAM_PREFIX_RE, '-').toLowerCase();
-}
-
-/**
- * True if `arg` is an abbreviation of `fullParam` at least as long as
- * `minPrefix` (e.g. matches `-f`, `-fi`, … `-filepath` for fullParam
- * `-filepath`, minPrefix `-f`). Tolerant of alt dash prefixes and colon-bound
- * values (`-FilePath:x`). Mirrors the reference's psExeHasParamAbbreviation.
- */
-function argMatchesParam(arg: string, fullParam: string, minPrefix: string): boolean {
-  const name = normalizeParamToken(arg).split(':')[0]!;
-  return (
-    name.startsWith('-') &&
-    name.length >= minPrefix.length &&
-    fullParam.startsWith(name)
-  );
-}
-
-/**
- * True if the token list contains a non-dash positional string argument, after
- * accounting for common value-parameters (which consume the following token).
- * Over-flagging any positional string is fail-safe — the reference does the same
- * for -FilePath / -MemberName positional binding.
- */
-function hasPositionalStringArg(args: string[]): boolean {
-  for (let i = 0; i < args.length; i++) {
-    const norm = normalizeParamToken(args[i]!);
-    // A script-block argument (`{ … }`) selects the ScriptBlock parameter-set,
-    // not -FilePath/-MemberName, so a positional path/member cannot bind. Stop
-    // scanning — the script-block hazard is covered by detectScriptBlockInjection.
-    if (args[i]!.startsWith('{')) {
-      return false;
-    }
-    if (norm.startsWith('-')) {
-      const name = norm.split(':')[0]!;
-      if (
-        !norm.includes(':') &&
-        COMMON_VALUE_PARAMS.some((p) => name.length >= 3 && p.startsWith(name))
-      ) {
-        i++; // value-param consumes its following value
-      }
-      continue;
-    }
-    return true;
-  }
-  return false;
-}
 
 /**
  * `-FilePath`/positional script execution on the FILEPATH_EXECUTION_CMDLETS
@@ -1081,26 +907,6 @@ export function detectScriptBlockInjection(command: string): PsDetection {
 }
 
 /**
- * Dynamic command-name invocation (mirrors the reference's checkDynamicCommandName):
- * the call operator `&` applied to a runtime expression rather than a literal
- * command name — `& ('i'+'ex')`, `& ('iex','x')[0]`, `& ${function:Invoke-Expression}`,
- * `& @(...)`. The command name is computed at runtime and cannot be statically
- * validated, so it is surfaced for approval. Only the PowerShell-distinctive
- * forms (`& (` quoted/concat expr, `& ${…}`, `& @(`) are matched so the check
- * cannot misfire on a POSIX background `cmd &` + subshell.
- */
-export function detectDynamicCommandName(command: string): PsDetection {
-  if (/&\s*(?:\$\{|\(\s*['"]|@\()/.test(command)) {
-    return {
-      blocked: true,
-      reason:
-        'PowerShell invokes a command whose name is a dynamic expression (call operator &) which cannot be statically validated',
-    };
-  }
-  return PS_PASS;
-}
-
-/**
  * Aggregate of the PowerShell dangerous-pattern detectors added on top of the
  * download-cradle / encoded-command / CLM-cast checks already in
  * detectPowerShellExecution. Runs in a fixed order and returns the first block.
@@ -1134,256 +940,9 @@ export function detectDangerousPowerShellCommand(command: string): PsDetection {
   return PS_PASS;
 }
 
-// ---------------------------------------------------------------------------
-// PowerShell read-only cmdlet allowlist (auto-allow).
-//
-// Mirrors the reference's PowerShellTool/readOnlyValidation.ts CMDLET_ALLOWLIST /
-// isReadOnlyCommand: the Windows counterpart of the POSIX read-only SAFE_COMMANDS
-// set in permissions.ts. A command composed solely of these side-effect-free
-// cmdlets (Get-ChildItem, Get-Content, Select-String, …) is auto-allowed in
-// `ask` mode so a user is not prompted for a plain read on Windows (where
-// PowerShell is AMI's default shell).
-//
-// Only the hyphenated Verb-Noun cmdlet names are listed — never a bare alias
-// (`cat`, `ls`, `sort`, `echo`, `cd`): those collide with POSIX commands already
-// classified by SAFE_COMMANDS, and resolving them here could auto-allow a bash
-// command that the bash classifier would gate. Hyphenated cmdlet names cannot
-// collide with a POSIX command, so this set is PowerShell-only by construction.
-//
-// Every listed cmdlet is a pure reader/formatter/transformer with no filesystem
-// or state write: Get-* (read), Format-*/Out-*/ConvertTo-*/ConvertFrom-*/
-// Join-*/Split-*/Measure-*/Group-*/Sort-*/Select-*/Compare-* (pipeline shaping,
-// output only), Test-Path/Resolve-Path/Convert-Path (path probes), and the cwd
-// movers (Set/Push/Pop-Location — a bare cwd change is inert; the cd+write and
-// multi-cd desync guards in the classifier run BEFORE this check). Writers
-// (Set-/Add-/Out-File/Export-/Tee-Object/New-/Remove-Item, Invoke-*) are
-// deliberately absent.
-// ---------------------------------------------------------------------------
-
-/**
- * Per-cmdlet read-only flag configuration. Mirrors the reference's
- * readOnlyValidation.ts CMDLET_ALLOWLIST `CommandConfig`:
- *   - `safeFlags` — the ONLY flags the cmdlet may carry and still be a pure read
- *     (lowercase, leading dash — the runtime comparison form). A flag outside
- *     this set ∪ {@link COMMON_PARAMETERS} makes the command non-read-only (→ a
- *     prompt). Side-effecting / remote / external-entity flags (-ComputerName,
- *     -CimSession, Get-WinEvent -FilterXml/-FilterHashtable) are deliberately
- *     omitted so they are NOT auto-allowed.
- *   - `allowAllFlags` — the cmdlet's entire flag surface is display/selection
- *     only (Format-*, Select-Object, Get-ComputerInfo, …); every flag is
- *     accepted. The dangerous-arg VALUE vectors those cmdlets have in the reference
- *     (calculated-property hashtables, `$env:` leaks, script blocks) are already
- *     rejected wholesale by {@link PS_READONLY_DISQUALIFY_RE} — strictly more
- *     conservative than the reference's per-arg `argLeaksValue` element-type whitelist.
- *
- * COMMON_PARAMETERS (-Verbose/-ErrorAction/-ErrorVariable/…) are merged in at
- * check time, so they are never restated here.
- */
-export type PowerShellReadOnlyConfig = {
-  /** Flags this read-only cmdlet accepts (lowercase, leading dash). */
-  safeFlags?: readonly string[];
-  /** When true, every flag is accepted (whole flag surface is read-only). */
-  allowAllFlags?: boolean;
-};
-
-/**
- * PowerShell read-only cmdlet allowlist keyed by canonical (lowercase) cmdlet
- * name → its {@link PowerShellReadOnlyConfig}. Single source of truth for both
- * membership ({@link POWERSHELL_READONLY_CMDLETS}) and the per-cmdlet safe-flag
- * gate in {@link isReadOnlyPowerShellCommand}.
- */
-export const POWERSHELL_READONLY_CONFIG: Record<string, PowerShellReadOnlyConfig> = {
-  // Filesystem / item inspection (read).
-  'get-childitem': {
-    safeFlags: [
-      '-path', '-literalpath', '-filter', '-include', '-exclude', '-recurse',
-      '-depth', '-name', '-force', '-attributes', '-directory', '-file',
-      '-hidden', '-readonly', '-system',
-    ],
-  },
-  'get-content': {
-    safeFlags: [
-      '-path', '-literalpath', '-totalcount', '-head', '-tail', '-raw',
-      '-encoding', '-delimiter', '-readcount',
-    ],
-  },
-  'get-item': { safeFlags: ['-path', '-literalpath', '-force', '-stream'] },
-  'get-itemproperty': { safeFlags: ['-path', '-literalpath', '-name'] },
-  'get-itempropertyvalue': { safeFlags: ['-path', '-literalpath', '-name'] },
-  'get-acl': {
-    safeFlags: ['-path', '-literalpath', '-audit', '-filter', '-include', '-exclude'],
-  },
-  'get-filehash': {
-    safeFlags: ['-path', '-literalpath', '-algorithm', '-inputstream'],
-  },
-  // Navigation (cwd change only — inert; compound write/multi-cd caught earlier).
-  'get-location': { safeFlags: ['-psprovider', '-psdrive', '-stack', '-stackname'] },
-  'set-location': { safeFlags: ['-path', '-literalpath', '-passthru', '-stackname'] },
-  'push-location': { safeFlags: ['-path', '-literalpath', '-passthru', '-stackname'] },
-  'pop-location': { safeFlags: ['-passthru', '-stackname'] },
-  // Text searching / filtering (read).
-  'select-string': {
-    safeFlags: [
-      '-path', '-literalpath', '-pattern', '-inputobject', '-simplematch',
-      '-casesensitive', '-quiet', '-list', '-notmatch', '-allmatches',
-      '-encoding', '-context', '-raw', '-noemphasis',
-    ],
-  },
-  'compare-object': {
-    safeFlags: [
-      '-referenceobject', '-differenceobject', '-property', '-syncwindow',
-      '-casesensitive', '-culture', '-excludedifferent', '-includeequal', '-passthru',
-    ],
-  },
-  // Object inspection / pipeline shaping (output only). Selection/ordering flags
-  // are harmless; dangerous arg VALUES are caught by PS_READONLY_DISQUALIFY_RE.
-  'select-object': { allowAllFlags: true },
-  'sort-object': { allowAllFlags: true },
-  'group-object': { allowAllFlags: true },
-  'where-object': { allowAllFlags: true },
-  'measure-object': { allowAllFlags: true },
-  'get-member': {
-    safeFlags: ['-inputobject', '-membertype', '-name', '-static', '-view', '-force'],
-  },
-  'get-unique': { safeFlags: ['-inputobject', '-asstring', '-caseinsensitive', '-ontype'] },
-  'get-random': {
-    safeFlags: ['-inputobject', '-minimum', '-maximum', '-count', '-setseed', '-shuffle'],
-  },
-  // Formatters / output (pipeline → host/string, no write).
-  'format-table': { allowAllFlags: true },
-  'format-list': { allowAllFlags: true },
-  'format-wide': { allowAllFlags: true },
-  'format-custom': { allowAllFlags: true },
-  'format-hex': {
-    safeFlags: ['-path', '-literalpath', '-inputobject', '-encoding', '-count', '-offset'],
-  },
-  'out-string': { allowAllFlags: true },
-  'out-host': { allowAllFlags: true },
-  'write-output': { safeFlags: ['-inputobject', '-noenumerate'] },
-  'write-host': {
-    safeFlags: ['-object', '-nonewline', '-separator', '-foregroundcolor', '-backgroundcolor'],
-  },
-  // Converters (pipeline → object/string, no file write).
-  'convertfrom-csv': { safeFlags: ['-inputobject', '-delimiter', '-header', '-useculture'] },
-  'convertto-csv': {
-    safeFlags: ['-inputobject', '-delimiter', '-notypeinformation', '-noheader', '-usequotes'],
-  },
-  'convertfrom-json': { safeFlags: ['-inputobject', '-depth', '-ashashtable', '-noenumerate'] },
-  'convertto-json': {
-    safeFlags: ['-inputobject', '-depth', '-compress', '-enumsasstrings', '-asarray'],
-  },
-  'convertto-html': {
-    safeFlags: [
-      '-inputobject', '-property', '-head', '-title', '-body', '-pre', '-post',
-      '-as', '-fragment',
-    ],
-  },
-  'convertto-xml': { safeFlags: ['-inputobject', '-depth', '-as', '-notypeinformation'] },
-  // Path utilities (read / compute). -Resolve omitted (touches the filesystem).
-  'join-path': { safeFlags: ['-path', '-childpath', '-additionalchildpath'] },
-  'join-string': {
-    safeFlags: [
-      '-inputobject', '-property', '-separator', '-outputprefix', '-outputsuffix',
-      '-singlequote', '-doublequote', '-formatstring',
-    ],
-  },
-  'split-path': {
-    safeFlags: [
-      '-path', '-literalpath', '-qualifier', '-noqualifier', '-parent', '-leaf',
-      '-leafbase', '-extension', '-isabsolute',
-    ],
-  },
-  'resolve-path': { safeFlags: ['-path', '-literalpath', '-relative'] },
-  'convert-path': { safeFlags: ['-path', '-literalpath'] },
-  'test-path': {
-    safeFlags: [
-      '-path', '-literalpath', '-pathtype', '-filter', '-include', '-exclude',
-      '-isvalid', '-newerthan', '-olderthan',
-    ],
-  },
-  // System / environment info (read).
-  'get-date': { safeFlags: ['-date', '-format', '-uformat', '-displayhint', '-asutc'] },
-  'get-alias': { safeFlags: ['-name', '-definition', '-scope', '-exclude'] },
-  // NOTE (intentional AMI superset divergence): the reference removed Get-Help from its
-  // allowlist (module-autoload hazard via pipelined -Name). AMI keeps it
-  // read-only (allowAllFlags) to preserve the long-standing `Get-Help` auto-allow
-  // perk; the autoload attack still requires a $-bearing form rejected by
-  // PS_READONLY_DISQUALIFY_RE.
-  'get-help': { allowAllFlags: true },
-  'get-history': { safeFlags: ['-id', '-count'] },
-  'get-host': { allowAllFlags: true },
-  'get-culture': { allowAllFlags: true },
-  'get-uiculture': { allowAllFlags: true },
-  'get-timezone': { safeFlags: ['-name', '-id', '-listavailable'] },
-  'get-uptime': { allowAllFlags: true },
-  'get-computerinfo': { allowAllFlags: true },
-  'get-hotfix': { safeFlags: ['-id', '-description'] },
-  'get-process': {
-    safeFlags: ['-name', '-id', '-module', '-fileversioninfo', '-includeusername'],
-  },
-  'get-service': {
-    safeFlags: [
-      '-name', '-displayname', '-dependentservices', '-requiredservices',
-      '-include', '-exclude',
-    ],
-  },
-  'get-module': {
-    safeFlags: ['-name', '-listavailable', '-all', '-fullyqualifiedname', '-psedition'],
-  },
-  'get-psdrive': { safeFlags: ['-name', '-psprovider', '-scope'] },
-  'get-psprovider': { safeFlags: ['-psprovider'] },
-  'get-cimclass': {
-    safeFlags: ['-classname', '-namespace', '-methodname', '-propertyname', '-qualifiername'],
-  },
-  // Network info (read). -ComputerName / -CimSession (remote) deliberately absent.
-  'get-netadapter': {
-    safeFlags: ['-name', '-interfacedescription', '-interfaceindex', '-physical'],
-  },
-  'get-netipaddress': {
-    safeFlags: ['-interfaceindex', '-interfacealias', '-addressfamily', '-type'],
-  },
-  'get-netipconfiguration': {
-    safeFlags: ['-interfaceindex', '-interfacealias', '-detailed', '-all'],
-  },
-  'get-netroute': {
-    safeFlags: ['-interfaceindex', '-interfacealias', '-addressfamily', '-destinationprefix'],
-  },
-  'get-dnsclient': { safeFlags: ['-interfaceindex', '-interfacealias'] },
-  'get-dnsclientcache': {
-    safeFlags: ['-entry', '-name', '-type', '-status', '-section', '-data'],
-  },
-  // Event log (read). -FilterXml/-FilterHashtable (XXE → SSRF) deliberately
-  // absent; -FilterXPath (plain pattern) stays.
-  'get-eventlog': {
-    safeFlags: [
-      '-logname', '-newest', '-after', '-before', '-entrytype', '-index',
-      '-instanceid', '-message', '-source', '-username', '-asbaseobject', '-list',
-    ],
-  },
-  'get-winevent': {
-    safeFlags: [
-      '-logname', '-listlog', '-listprovider', '-providername', '-path',
-      '-maxevents', '-filterxpath', '-force', '-oldest',
-    ],
-  },
-  // Timing (inert).
-  'start-sleep': { safeFlags: ['-seconds', '-milliseconds', '-duration'] },
-};
-
 export const POWERSHELL_READONLY_CMDLETS: ReadonlySet<string> = new Set(
   Object.keys(POWERSHELL_READONLY_CONFIG),
 );
-
-// Constructs that make a command un-analyzable as a pure read, so their presence
-// fails the read-only classification closed (never auto-allow): variables /
-// subexpressions / env leaks (`$`), script blocks (`{ }`), grouping /
-// subexpressions (`(`), splatting / arrays / hashtables (`@`), the call operator
-// (`&`), backtick escapes, and output redirection (`>` — a file write). Mirrors
-// readOnlyValidation.ts's fail-closed posture (argLeaksValue + the
-// SAFE_PATH_ELEMENT_TYPES whitelist) without needing the native AST: rejecting
-// these wholesale is strictly more conservative than the per-arg element-type
-// whitelist and keeps this a cheap synchronous check for the classifier.
-const PS_READONLY_DISQUALIFY_RE = /[$`{}()@&>]/;
 
 /**
  * Per-cmdlet safe-flag gate. Returns true when EVERY flag token in `segment`
@@ -1583,334 +1142,12 @@ export function isAcceptEditsPowerShellWrite(command: string): boolean {
 }
 
 /**
- * Canonicalize the FIRST (command-name) token of a shell command / permission
- * rule pattern to its canonical PowerShell cmdlet name for cross-alias rule
- * matching, leaving the remainder intact apart from normalizing the name↔args
- * separator to a single space.
- *
- * This is the engine behind cross-alias permission matching on Windows (where
- * AMI's bash tool runs PowerShell): a deny rule written for `Remove-Item` must
- * also block `rm` / `del` / `ri`, and a rule for `rm` must block `Remove-Item`,
- * because they name the same cmdlet. Mirrors the reference's PowerShell
- * `filterRulesByContentsMatchingInput` canonical substitution.
- *
- * `stripModule` encodes the deny-over-match / allow-no-over-match asymmetry:
- *  - INPUT commands and DENY/ASK rules pass `true` — a module-qualified name
- *    (`Microsoft.PowerShell.Management\Remove-Item`) is reduced to its bare
- *    cmdlet so an obfuscating module prefix cannot hide a denied command
- *    (fail-safe over-match is acceptable for deny/ask).
- *  - ALLOW rules pass `false` — the module prefix is KEPT so an allow rule
- *    scoped to `ModuleA\Get-Thing` can NEVER over-match `ModuleB\Get-Thing`
- *    (allow must never widen; fail-closed).
- *
- * The separator is normalized because prefix rule matching appends a literal
- * space (`prefix + ' '`); without it a tab-separated `rm\t./x` canonicalizes to
- * `remove-item\t./x` and misses a `Remove-Item` prefix rule while other paths
- * still match it (a deny-rule bypass). The returned name is lowercase
- * ({@link resolveToCanonical}); callers must compare case-insensitively.
- */
-export function canonicalizePowerShellCommandName(
-  input: string,
-  stripModule: boolean,
-): string {
-  const raw = input.replace(/^\s+/, '');
-  const firstToken = raw.split(/\s+/)[0] ?? '';
-  if (firstToken.length === 0) return input;
-  const nameForResolve = stripModule ? stripModulePrefix(firstToken) : firstToken;
-  const canonical = resolveToCanonical(nameForResolve);
-  const rest = raw.slice(firstToken.length).replace(/^\s+/, ' ');
-  return canonical + rest;
-}
-
-// ---------------------------------------------------------------------------
-// Per-cmdlet path-parameter configuration + path extraction.
-//
-// Mirrors the reference's PowerShellTool/pathValidation.ts CMDLET_PATH_CONFIG +
-// extractPathsFromCommand. Each config entry declares, per cmdlet, which
-// parameters carry filesystem paths (validated), which are switches (consume no
-// value), and which are value-taking non-path params (consume a value, not a
-// path). The SECURITY MODEL is fail-safe: ANY -Param the config does not
-// recognize sets `hasUnvalidatablePathArg` so the caller forces an ask — this
-// ends the "a missing switch swallows the positional path" whack-a-mole.
-//
-// Three OPTIONAL per-cmdlet knobs tune extraction (each with an explicit default
-// so an omitted knob behaves identically to the reference):
-//   - leafOnlyPathParams (default: none) — a param (e.g. New-Item -Name) that
-//     PowerShell resolves RELATIVE TO another param, not cwd. Only a simple leaf
-//     filename is extracted; any value containing `/`, `\`, `.`, or `..` forces
-//     an ask (it would resolve against the wrong base).
-//   - positionalSkip (default: 0) — number of leading positional args that are
-//     NOT filesystem paths (e.g. 1 for Invoke-WebRequest, whose positional-0 is
-//     a `-Uri` URL). Without this a URL is mis-extracted as a path.
-//   - optionalWrite (default: false) — a write cmdlet that only touches disk when
-//     a path param is present (e.g. iwr/irm without -OutFile write to the
-//     pipeline, not disk). Skips the "write with no target → ask" rule.
-// ---------------------------------------------------------------------------
-
-/**
- * Per-cmdlet parameter configuration consumed by
- * {@link extractPowerShellCommandPaths}. Common parameters (-Verbose,
- * -ErrorAction, …) are NOT listed here — they are merged in from
- * {@link COMMON_SWITCHES} / {@link COMMON_VALUE_PARAMS} at lookup time. Parameter
- * names are lowercase with a leading dash to match runtime comparison.
- */
-export type CmdletPathConfig = {
-  /** Whether this cmdlet reads or writes to the filesystem. */
-  operationType: FileOperationType;
-  /** Parameters that accept file paths (extracted + validated). */
-  pathParams: string[];
-  /** Switch parameters that take NO value (next arg is NOT consumed). */
-  knownSwitches: string[];
-  /** Value-taking params that are NOT paths (next arg consumed, not validated). */
-  knownValueParams: string[];
-  /**
-   * Params accepting a leaf filename resolved by PowerShell relative to ANOTHER
-   * param (not cwd). Safe to extract only when the value is a simple leaf (no
-   * `/`, `\`, `.`, `..`); non-leaf values force an ask. Default: none.
-   */
-  leafOnlyPathParams?: string[];
-  /**
-   * Number of leading positional args to SKIP (not extracted as paths) — used
-   * where positional-0 is a non-path value (e.g. Invoke-WebRequest's -Uri URL).
-   * Default: 0.
-   */
-  positionalSkip?: number;
-  /**
-   * When true, the cmdlet only writes to disk when a pathParam is present;
-   * without one it is effectively a read (output → pipeline). Skips the "write
-   * with no target path" forced-ask. Cmdlets that ALWAYS write must NOT set this.
-   * Default: false.
-   */
-  optionalWrite?: boolean;
-};
-
-/**
- * Per-cmdlet path-parameter table. Keyed by the canonical (alias-resolved,
- * lowercase) cmdlet name — look up with {@link resolveToCanonical}.
- */
-export const CMDLET_PATH_CONFIG: Record<string, CmdletPathConfig> = {
-  // ─── Write/create operations ──────────────────────────────────────────────
-  'set-content': {
-    operationType: 'write',
-    pathParams: ['-path', '-literalpath', '-pspath', '-lp'],
-    knownSwitches: ['-passthru', '-force', '-whatif', '-confirm', '-usetransaction', '-nonewline', '-asbytestream'],
-    knownValueParams: ['-value', '-filter', '-include', '-exclude', '-credential', '-encoding', '-stream'],
-  },
-  'add-content': {
-    operationType: 'write',
-    pathParams: ['-path', '-literalpath', '-pspath', '-lp'],
-    knownSwitches: ['-passthru', '-force', '-whatif', '-confirm', '-usetransaction', '-nonewline', '-asbytestream'],
-    knownValueParams: ['-value', '-filter', '-include', '-exclude', '-credential', '-encoding', '-stream'],
-  },
-  'remove-item': {
-    operationType: 'write',
-    pathParams: ['-path', '-literalpath', '-pspath', '-lp'],
-    knownSwitches: ['-recurse', '-force', '-whatif', '-confirm', '-usetransaction'],
-    knownValueParams: ['-filter', '-include', '-exclude', '-credential', '-stream'],
-  },
-  'clear-content': {
-    operationType: 'write',
-    pathParams: ['-path', '-literalpath', '-pspath', '-lp'],
-    knownSwitches: ['-force', '-whatif', '-confirm', '-usetransaction'],
-    knownValueParams: ['-filter', '-include', '-exclude', '-credential', '-stream'],
-  },
-  'out-file': {
-    operationType: 'write',
-    // -Path is PowerShell's documented ALIAS for -FilePath.
-    pathParams: ['-filepath', '-path', '-literalpath', '-pspath', '-lp'],
-    knownSwitches: ['-append', '-force', '-noclobber', '-nonewline', '-whatif', '-confirm'],
-    knownValueParams: ['-inputobject', '-encoding', '-width'],
-  },
-  'tee-object': {
-    operationType: 'write',
-    pathParams: ['-filepath', '-path', '-literalpath', '-pspath', '-lp'],
-    knownSwitches: ['-append'],
-    knownValueParams: ['-inputobject', '-variable', '-encoding'],
-  },
-  'export-csv': {
-    operationType: 'write',
-    pathParams: ['-path', '-literalpath', '-pspath', '-lp'],
-    knownSwitches: ['-append', '-force', '-noclobber', '-notypeinformation', '-includetypeinformation', '-useculture', '-noheader', '-whatif', '-confirm'],
-    knownValueParams: ['-inputobject', '-delimiter', '-encoding', '-quotefields', '-usequotes'],
-  },
-  'export-clixml': {
-    operationType: 'write',
-    pathParams: ['-path', '-literalpath', '-pspath', '-lp'],
-    knownSwitches: ['-force', '-noclobber', '-whatif', '-confirm'],
-    knownValueParams: ['-inputobject', '-depth', '-encoding'],
-  },
-  'new-item': {
-    operationType: 'write',
-    // -Path is position 0. -Name (leaf-only) is resolved RELATIVE TO -Path, so a
-    // non-leaf value forces an ask (it would resolve against the wrong base).
-    pathParams: ['-path', '-literalpath', '-pspath', '-lp'],
-    leafOnlyPathParams: ['-name'],
-    knownSwitches: ['-force', '-whatif', '-confirm', '-usetransaction'],
-    knownValueParams: ['-itemtype', '-value', '-credential', '-type'],
-  },
-  'copy-item': {
-    operationType: 'write',
-    // -Path (source) + -Destination (dest) both extracted + validated as write.
-    pathParams: ['-path', '-literalpath', '-pspath', '-lp', '-destination'],
-    knownSwitches: ['-container', '-force', '-passthru', '-recurse', '-whatif', '-confirm', '-usetransaction'],
-    knownValueParams: ['-filter', '-include', '-exclude', '-credential', '-fromsession', '-tosession'],
-  },
-  'move-item': {
-    operationType: 'write',
-    pathParams: ['-path', '-literalpath', '-pspath', '-lp', '-destination'],
-    knownSwitches: ['-force', '-passthru', '-whatif', '-confirm', '-usetransaction'],
-    knownValueParams: ['-filter', '-include', '-exclude', '-credential'],
-  },
-  'rename-item': {
-    operationType: 'write',
-    // -NewName is leaf-only per docs and Rename-Item rejects `..`, so it is a
-    // knownValueParam (not leafOnly) — unlike New-Item -Name which accepts it.
-    pathParams: ['-path', '-literalpath', '-pspath', '-lp'],
-    knownSwitches: ['-force', '-passthru', '-whatif', '-confirm', '-usetransaction'],
-    knownValueParams: ['-newname', '-credential', '-filter', '-include', '-exclude'],
-  },
-  'set-item': {
-    operationType: 'write',
-    pathParams: ['-path', '-literalpath', '-pspath', '-lp'],
-    knownSwitches: ['-force', '-passthru', '-whatif', '-confirm', '-usetransaction'],
-    knownValueParams: ['-value', '-credential', '-filter', '-include', '-exclude'],
-  },
-  'invoke-webrequest': {
-    operationType: 'write',
-    pathParams: ['-outfile', '-infile'],
-    positionalSkip: 1, // positional-0 is -Uri (URL), not a filesystem path
-    optionalWrite: true, // only writes with -OutFile; bare iwr is pipeline-only
-    knownSwitches: ['-allowinsecureredirect', '-allowunencryptedauthentication', '-disablekeepalive', '-nobodyprogress', '-passthru', '-preservefileauthorizationmetadata', '-resume', '-skipcertificatecheck', '-skipheadervalidation', '-skiphttperrorcheck', '-usebasicparsing', '-usedefaultcredentials'],
-    knownValueParams: ['-uri', '-method', '-body', '-contenttype', '-headers', '-maximumredirection', '-maximumretrycount', '-proxy', '-proxycredential', '-retryintervalsec', '-sessionvariable', '-timeoutsec', '-token', '-transferencoding', '-useragent', '-websession', '-credential', '-authentication', '-certificate', '-certificatethumbprint', '-form', '-httpversion'],
-  },
-  'invoke-restmethod': {
-    operationType: 'write',
-    pathParams: ['-outfile', '-infile'],
-    positionalSkip: 1,
-    optionalWrite: true,
-    knownSwitches: ['-allowinsecureredirect', '-allowunencryptedauthentication', '-disablekeepalive', '-followrellink', '-nobodyprogress', '-passthru', '-preservefileauthorizationmetadata', '-resume', '-skipcertificatecheck', '-skipheadervalidation', '-skiphttperrorcheck', '-usebasicparsing', '-usedefaultcredentials'],
-    knownValueParams: ['-uri', '-method', '-body', '-contenttype', '-headers', '-maximumfollowrellink', '-maximumredirection', '-maximumretrycount', '-proxy', '-proxycredential', '-responseheaderstvariable', '-retryintervalsec', '-sessionvariable', '-statuscodevariable', '-timeoutsec', '-token', '-transferencoding', '-useragent', '-websession', '-credential', '-authentication', '-certificate', '-certificatethumbprint', '-form', '-httpversion'],
-  },
-  'expand-archive': {
-    operationType: 'write',
-    pathParams: ['-path', '-literalpath', '-pspath', '-lp', '-destinationpath'],
-    knownSwitches: ['-force', '-passthru', '-whatif', '-confirm'],
-    knownValueParams: [],
-  },
-  'compress-archive': {
-    operationType: 'write',
-    pathParams: ['-path', '-literalpath', '-pspath', '-lp', '-destinationpath'],
-    knownSwitches: ['-force', '-update', '-passthru', '-whatif', '-confirm'],
-    knownValueParams: ['-compressionlevel'],
-  },
-  'set-itemproperty': {
-    operationType: 'write',
-    pathParams: ['-path', '-literalpath', '-pspath', '-lp'],
-    knownSwitches: ['-passthru', '-force', '-whatif', '-confirm', '-usetransaction'],
-    knownValueParams: ['-name', '-value', '-type', '-filter', '-include', '-exclude', '-credential', '-inputobject'],
-  },
-  'new-itemproperty': {
-    operationType: 'write',
-    pathParams: ['-path', '-literalpath', '-pspath', '-lp'],
-    knownSwitches: ['-force', '-whatif', '-confirm', '-usetransaction'],
-    knownValueParams: ['-name', '-value', '-propertytype', '-type', '-filter', '-include', '-exclude', '-credential'],
-  },
-  'remove-itemproperty': {
-    operationType: 'write',
-    pathParams: ['-path', '-literalpath', '-pspath', '-lp'],
-    knownSwitches: ['-force', '-whatif', '-confirm', '-usetransaction'],
-    knownValueParams: ['-name', '-filter', '-include', '-exclude', '-credential'],
-  },
-  'clear-item': {
-    operationType: 'write',
-    pathParams: ['-path', '-literalpath', '-pspath', '-lp'],
-    knownSwitches: ['-force', '-whatif', '-confirm', '-usetransaction'],
-    knownValueParams: ['-filter', '-include', '-exclude', '-credential'],
-  },
-  'export-alias': {
-    operationType: 'write',
-    pathParams: ['-path', '-literalpath', '-pspath', '-lp'],
-    knownSwitches: ['-append', '-force', '-noclobber', '-passthru', '-whatif', '-confirm'],
-    knownValueParams: ['-name', '-description', '-scope', '-as'],
-  },
-  // ─── Read operations ──────────────────────────────────────────────────────
-  'get-content': {
-    operationType: 'read',
-    pathParams: ['-path', '-literalpath', '-pspath', '-lp'],
-    knownSwitches: ['-force', '-usetransaction', '-wait', '-raw', '-asbytestream'],
-    knownValueParams: ['-readcount', '-totalcount', '-tail', '-first', '-head', '-last', '-filter', '-include', '-exclude', '-credential', '-delimiter', '-encoding', '-stream'],
-  },
-  'get-childitem': {
-    operationType: 'read',
-    pathParams: ['-path', '-literalpath', '-pspath', '-lp'],
-    knownSwitches: ['-recurse', '-force', '-name', '-usetransaction', '-followsymlink', '-directory', '-file', '-hidden', '-readonly', '-system'],
-    knownValueParams: ['-filter', '-include', '-exclude', '-depth', '-attributes', '-credential'],
-  },
-  'get-item': {
-    operationType: 'read',
-    pathParams: ['-path', '-literalpath', '-pspath', '-lp'],
-    knownSwitches: ['-force', '-usetransaction'],
-    knownValueParams: ['-filter', '-include', '-exclude', '-credential', '-stream'],
-  },
-  'get-filehash': {
-    operationType: 'read',
-    pathParams: ['-path', '-literalpath', '-pspath', '-lp'],
-    knownSwitches: [],
-    knownValueParams: ['-algorithm', '-inputstream'],
-  },
-  'test-path': {
-    operationType: 'read',
-    pathParams: ['-path', '-literalpath', '-pspath', '-lp'],
-    knownSwitches: ['-isvalid', '-usetransaction'],
-    knownValueParams: ['-filter', '-include', '-exclude', '-pathtype', '-credential', '-olderthan', '-newerthan'],
-  },
-  'select-string': {
-    operationType: 'read',
-    pathParams: ['-path', '-literalpath', '-pspath', '-lp'],
-    knownSwitches: ['-simplematch', '-casesensitive', '-quiet', '-list', '-notmatch', '-allmatches', '-noemphasis', '-raw'],
-    knownValueParams: ['-inputobject', '-pattern', '-include', '-exclude', '-encoding', '-context', '-culture'],
-  },
-};
-
-/**
  * Element types safe to treat as a static filesystem path. Anything else
  * (Variable, SubExpression, ExpandableString, ScriptBlock, …) is a
  * runtime-computed value whose path cannot be statically validated — it forces
  * an ask. Mirrors the reference's SAFE_PATH_ELEMENT_TYPES.
  */
 const SAFE_PATH_ELEMENT_TYPES: ReadonlySet<CommandElementType> = new Set<CommandElementType>(['StringConstant', 'Parameter']);
-
-/**
- * True if a lowercase parameter name (leading dash) matches any entry in
- * `paramList`, honoring PowerShell's unambiguous-prefix matching (`-Lit` matches
- * `-LiteralPath`). Mirrors the reference's `matchesParam`.
- */
-function matchesCmdletParam(paramLower: string, paramList: readonly string[]): boolean {
-  for (const p of paramList) {
-    if (p === paramLower || (paramLower.length > 1 && p.startsWith(paramLower))) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/**
- * True if a colon-syntax value (`-Path:<value>`) contains expression constructs
- * (arrays, subexpressions, variables, backtick escapes) that mask the real
- * runtime path. The outer CommandParameterAst hides these from the AST walk, so
- * they are detected textually. Mirrors the reference's `hasComplexColonValue`.
- */
-function hasComplexColonValue(rawValue: string): boolean {
-  return (
-    rawValue.includes(',') ||
-    rawValue.startsWith('(') ||
-    rawValue.startsWith('[') ||
-    rawValue.includes('`') ||
-    rawValue.includes('@(') ||
-    rawValue.startsWith('@{') ||
-    rawValue.includes('$')
-  );
-}
 
 /**
  * Extract filesystem paths from a parsed PowerShell command element using
@@ -2061,65 +1298,6 @@ export function extractPowerShellCommandPaths(cmd: ParsedCommandElement): {
     hasUnvalidatablePathArg,
     optionalWrite: config.optionalWrite ?? false,
   };
-}
-
-// ---------------------------------------------------------------------------
-// AST-based PowerShell security validator.
-//
-// Mirrors the reference's PowerShellTool/powershellSecurity.ts
-// `powershellCommandIsSafe(command, parsed)`: the ordered validator chain that
-// consumes a native-parsed `ParsedPowerShellCommand` AST (from
-// powershell-parser.ts's `parsePowerShellCommand`) and, crucially, FAILS SAFE —
-// a command whose AST could not be parsed (`valid === false`) returns `ask`,
-// never `allow`.
-//
-// This complements the textual `detectDangerousPowerShellCommand` /
-// `detectPowerShellExecution` guards used in the synchronous bash-security path:
-// those run over EVERY shell command (no pwsh spawn) and therefore must keep the
-// broad AST-only signals OFF to avoid over-flagging POSIX. When a REAL pwsh AST
-// is available, this function adds the structural checks the textual path cannot
-// safely do (dynamic command name via the StringConstant allowlist; subexpression
-// / expandable-string / splatting / member-invocation signals; positional
-// -FilePath/-MemberName binding; script-block injection triage; CLM type-literal
-// allowlist; env: scope manipulation; AST-alias-aware Invoke-Expression) and
-// DELEGATES the cmdlet/type-name hazards to the one canonical textual detector so
-// there is no second, parallel implementation of them.
-// ---------------------------------------------------------------------------
-
-/** Result of the AST-based validator (parity with the reference's shape). */
-export type PowerShellSecurityResult = {
-  behavior: 'passthrough' | 'ask';
-  message?: string;
-};
-
-const PS_SAFE_RESULT: PowerShellSecurityResult = { behavior: 'passthrough' };
-
-function askResult(message: string): PowerShellSecurityResult {
-  return { behavior: 'ask', message };
-}
-
-/**
- * Alt-dash-aware wrapper around {@link commandHasArgAbbreviation}. PowerShell's
- * tokenizer treats `/`, en-dash, em-dash and horizontal-bar as `-` equivalents,
- * so `Start-Job –FilePath x` (en-dash) must match `-filepath`. Reuses the shared
- * abbreviation helper (no re-implementation), retrying once with the alternate
- * prefixes normalized to `-`. Mirrors the reference's psExeHasParamAbbreviation.
- */
-function psParamAbbrevAltAware(
-  cmd: ParsedCommandElement,
-  fullParam: string,
-  minPrefix: string,
-): boolean {
-  if (commandHasArgAbbreviation(cmd, fullParam, minPrefix)) {
-    return true;
-  }
-  const normalized: ParsedCommandElement = {
-    ...cmd,
-    args: cmd.args.map((a) =>
-      a.length > 0 && PS_ALT_PARAM_PREFIX_RE.test(a[0]!) ? '-' + a.slice(1) : a,
-    ),
-  };
-  return commandHasArgAbbreviation(normalized, fullParam, minPrefix);
 }
 
 /**
@@ -2393,56 +1571,4 @@ export function powershellCommandIsSafe(
   }
 
   return PS_SAFE_RESULT;
-}
-
-/**
- * True if a command binds a non-dash positional StringConstant argument (which
- * parameter-set resolution would route to -FilePath / -MemberName). A script
- * block arg selects the ScriptBlock parameter set instead, so it does not count.
- * Uses the AST `elementTypes` when present; over-flagging is fail-safe. Mirrors
- * the positional-binding scan in the reference's checkDangerousFilePathExecution /
- * checkForEachMemberName.
- */
-/**
- * True if a command binds `-Verb RunAs` through a colon-bound parameter whose
- * value, after stripping quotes/backticks/whitespace, normalizes to `runas`
- * (`-Verb:RunAs`, `-Verb:'RunAs'`, `-Verb:" RunAs "`, `-V`+backtick+`erb:…`).
- * Reads the parser's structural `children[]` (the CommandParameterAst.Argument of
- * each colon-bound parameter) so an elevation verb obscured by quoting/padding
- * that the whitespace-tokenizing textual regex cannot anticipate is still
- * surfaced. Fail-open when `children` is unavailable (the textual regex layer
- * still runs). Mirrors the reference's checkStartProcess children[] layer.
- */
-function startProcessColonVerbRunAs(cmd: ParsedCommandElement): boolean {
-  if (cmd.children === undefined) {
-    return false;
-  }
-  for (let i = 0; i < cmd.args.length; i++) {
-    // Strip backticks before matching the parameter name (`-V`+backtick+`erb:`).
-    const argName = cmd.args[i]!.replace(/`/g, '');
-    if (!/^[-–—―/]v[a-z]*:/i.test(argName)) {
-      continue;
-    }
-    const kids = cmd.children[i];
-    if (kids === undefined) {
-      continue;
-    }
-    for (const child of kids) {
-      if (child.text.replace(/['"`\s]/g, '').toLowerCase() === 'runas') {
-        return true;
-      }
-    }
-  }
-  return false;
-}
-
-function hasPositionalStringArgAst(cmd: ParsedCommandElement): boolean {
-  for (let i = 0; i < cmd.args.length; i++) {
-    const arg = cmd.args[i];
-    const argType = cmd.elementTypes?.[i + 1];
-    if (argType === 'StringConstant' && arg !== undefined && !arg.startsWith('-')) {
-      return true;
-    }
-  }
-  return false;
 }

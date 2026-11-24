@@ -3,12 +3,20 @@ import { SHELL_DEBUG_ENV } from './shell-debug-env';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { resolveRipgrepConfig, type RipgrepConfig } from '../tools/ripgrep-config';
-import {
-  tmuxIsolationEnabled,
-  commandUsesTmux,
-  prepareBashTmuxOverrides,
-} from './tmux-socket';
+import '../tools/ripgrep-config';
+import './tmux-socket';
+import { DEFAULT_PROGRESS_INTERVAL_MS, DEFAULT_STALL_TIMEOUT_MS, EXIT_DRAIN_QUIET_MS, PROGRESS_TAIL_CHARS, SHELL_SEARCH_PATHS, SPAWN_FAILURE_EXIT_CODE, computeProgressSlices, createOutputBuffer, describeSignal, formatShellPrefixCommand, getShellType, isWindowsBatchFile, looksLikePrompt, quoteWindowsShellArg, resolveDefaultTimeoutMs, resolveTmpBase, rewriteWindowsNullRedirect, shQuote, slowExecThresholdMs } from './shell-compute-progress-slices';
+import type { ExecFileNoThrowOptions, ExecFileNoThrowResult, SlowCommandInfo } from './shell-compute-progress-slices';
+import { GIT_BASH_PATH_ENV, GIT_DEFAULT_LOCATIONS, POWERSHELL_PATH_ENV, POWERSHELL_PROBE_PATHS, SNAPSHOT_CREATION_TIMEOUT_MS, buildPowerShellArgs, buildSnapshotScript, describeGitBashResolutionError, getEnvironmentOverrides, resolveDefaultShell, shellSnapshotEnabled, snapshotConfigFile, withPowerShellExitCode } from './shell-build-ripgrep-shell-integration';
+import type { ShellType } from './shell-build-ripgrep-shell-integration';
+import { ANCESTOR_WALK_TIMEOUT_MS, DESCENDANT_WALK_TIMEOUT_MS, PS_TABLE_CMD, destroyStreams } from './shell-exec-command-options';
+import type { ExecCommandOptions, ExecCommandResult } from './shell-exec-command-options';
+export { DEFAULT_TIMEOUT_ENV, DEFAULT_TIMEOUT_MS, INTERACTIVE_SHELL_TYPES, SLOW_EXEC_THRESHOLD_ENV, SPAWN_FAILURE_EXIT_CODE, computeProgressSlices, formatShellPrefixCommand, getShellType, quoteWindowsShellArg, resolveDefaultTimeoutMs, resolveTmpBase, rewriteWindowsNullRedirect } from './shell-compute-progress-slices';
+export type { ExecFileNoThrowOptions, ExecFileNoThrowResult, InteractiveShellType, SlowCommandInfo } from './shell-compute-progress-slices';
+export { DEFAULT_SHELL_TYPE, SHELL_SNAPSHOT_ENV, SHELL_TYPES, buildPowerShellArgs, buildRipgrepShellIntegration, describeGitBashResolutionError, getEnvironmentOverrides, resolveDefaultShell, withPowerShellExitCode } from './shell-build-ripgrep-shell-integration';
+export type { ShellType } from './shell-build-ripgrep-shell-integration';
+export { ANCESTOR_WALK_TIMEOUT_MS, DESCENDANT_WALK_TIMEOUT_MS, PS_TABLE_CMD } from './shell-exec-command-options';
+export type { ExecCommandOptions, ExecCommandResult } from './shell-exec-command-options';
 
 /**
  * Mockable seam (ESM-safe). Tests replace these via
@@ -105,36 +113,6 @@ export const shellHooks = {
   getMaxPersistedOutputBytes: (): number => 64 * 1024 * 1024,
 };
 
-/** Payload handed to {@link shellHooks.onSlowCommand} when a command runs slow. */
-export interface SlowCommandInfo {
-  command: string;
-  durationMs: number;
-  thresholdMs: number;
-}
-
-/**
- * Env knob (ms) that turns on slow-command diagnostics. When set to a finite,
- * non-negative number, any {@link execCommand} whose wall-clock duration reaches
- * that many milliseconds is reported through {@link shellHooks.onSlowCommand}.
- * Unset / blank / non-numeric / negative disables it (no diagnostic). Mirrors
- * the reference's `slowLogging` exec wrapper (execFileNoThrowPortable.ts:L70),
- * surfacing exec calls that silently run slow — an opt-in introspection surface
- * per AMI's introspection-on-every-change invariant.
- */
-export const SLOW_EXEC_THRESHOLD_ENV = 'AMI_SLOW_EXEC_MS';
-
-/**
- * Parse {@link SLOW_EXEC_THRESHOLD_ENV} into an active threshold in ms, or `null`
- * when slow-command diagnostics are disabled (unset / blank / NaN / negative).
- */
-function slowExecThresholdMs(): number | null {
-  const raw = (process.env[SLOW_EXEC_THRESHOLD_ENV] || '').trim();
-  if (raw === '') return null;
-  const ms = Number(raw);
-  if (!Number.isFinite(ms) || ms < 0) return null;
-  return ms;
-}
-
 /**
  * Single slow-command diagnostic boundary, shared by the async {@link execCommand}
  * path and the synchronous {@link execSyncWatched}/{@link execFileSyncWatched}
@@ -219,62 +197,6 @@ export const DEFAULT_EXEC_FILE_TIMEOUT_MS = 10 * 60 * 1000;
 
 /** Default captured-output ceiling (bytes) for {@link execFileNoThrow}. */
 export const DEFAULT_EXEC_FILE_MAX_BUFFER = 10 * 1024 * 1024;
-
-/** Options for {@link execFileNoThrow}. Mirrors the reference `ExecFileWithCwdOptions`. */
-export interface ExecFileNoThrowOptions {
-  cwd?: string;
-  env?: NodeJS.ProcessEnv;
-  /** Per-call timeout (ms); defaults to {@link DEFAULT_EXEC_FILE_TIMEOUT_MS}. */
-  timeout?: number;
-  /** Abort signal; an aborted turn kills the in-flight process (result `code: 1`). */
-  abortSignal?: AbortSignal;
-  /** Captured stdout/stderr ceiling (bytes); defaults to {@link DEFAULT_EXEC_FILE_MAX_BUFFER}. */
-  maxBuffer?: number;
-  /**
-   * When `false`, a non-zero exit resolves with empty `stdout`/`stderr` (only the
-   * `code` is kept) — for noisy probe commands. Defaults to `true`. Parity with
-   * the reference `preserveOutputOnError`.
-   */
-  preserveOutputOnError?: boolean;
-  /**
-   * Run through a shell (`true`), a specific shell (string path), or not at all
-   * (`false`/omitted → direct argv execFile). Parity with the reference
-   * `shell?: boolean | string`. On Windows a `.bat`/`.cmd` target is run through a
-   * shell automatically even when this is omitted (Node cannot spawn it directly).
-   */
-  shell?: boolean | string;
-  /** Payload fed to the child's stdin, then closed. */
-  input?: string;
-}
-
-/** Structured result of {@link execFileNoThrow}. Mirrors the reference shape. */
-export interface ExecFileNoThrowResult {
-  stdout: string;
-  stderr: string;
-  /** Exit code: `0` on success, the process exit code on a non-zero exit, else `1`. */
-  code: number;
-  /** Human-readable failure reason (message / signal / code). Absent on success. */
-  error?: string;
-}
-
-/** True when `file` names a Windows batch script Node cannot `execFile` directly. */
-function isWindowsBatchFile(file: string): boolean {
-  return /\.(bat|cmd)$/i.test(file);
-}
-
-/**
- * Quote one argument for a Windows `cmd.exe` command line: wrap in double quotes
- * (doubling backslashes before a quote and escaping embedded quotes) only when it
- * contains whitespace or a cmd metacharacter, so a plain token stays untouched.
- * Used when {@link execFileNoThrow} assembles a shell command string on Windows —
- * the automatic argument escaping the reference gets from execa.
- */
-export function quoteWindowsShellArg(arg: string): string {
-  if (arg.length === 0) return '""';
-  if (!/[\s"&|<>^()%!]/.test(arg)) return arg;
-  const escaped = arg.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\*)$/, '$1$1');
-  return `"${escaped}"`;
-}
 
 /**
  * Never-throw file+args exec. Runs `file` with `args` via {@link shellHooks.execFile}
@@ -372,58 +294,6 @@ export function execFileNoThrow(
 }
 
 /**
- * Base directory for AMI's internal temp files, honoring an operator override.
- * Mirrors the reference's `CLAUDE_CODE_TMPDIR` knob (Shell.ts:L204-207): an
- * environment with custom temp requirements (read-only `/tmp`, a size-limited
- * tmpfs, a dedicated scratch volume) relocates every AMI-created temp file by
- * setting `AMI_TMPDIR` (`CLAUDE_CODE_TMPDIR` accepted as a fallback for parity).
- * When the override is unset/blank it falls back to the platform temp dir
- * ({@link os.tmpdir}), so default behavior is unchanged.
- */
-export function resolveTmpBase(): string {
-  const override = (process.env.AMI_TMPDIR || process.env.CLAUDE_CODE_TMPDIR || '').trim();
-  return override || os.tmpdir();
-}
-
-/**
- * Baseline default per-command timeout (ms) when a caller passes none AND no env
- * override is set. Overridable per call via {@link ExecCommandOptions.timeout}
- * and globally via {@link DEFAULT_TIMEOUT_ENV} (see {@link resolveDefaultTimeoutMs}).
- */
-export const DEFAULT_TIMEOUT_MS = 120_000;
-
-/**
- * Env knobs (ms) that raise/lower the default per-command timeout for commands
- * that don't pass an explicit {@link ExecCommandOptions.timeout}. AMI's baseline
- * is 2 minutes — conservative for long builds/test suites. Setting
- * `AMI_DEFAULT_TIMEOUT_MS` (or `CLAUDE_CODE_SHELL_TIMEOUT` for parity) lets an
- * operator match the reference's 30-minute default (Shell.ts:L44) or any other
- * value. An unset / blank / non-numeric / non-positive value keeps the baseline,
- * so default behavior is unchanged. An opt-in introspection surface per AMI's
- * introspection-on-every-change invariant.
- */
-export const DEFAULT_TIMEOUT_ENV = ['AMI_DEFAULT_TIMEOUT_MS', 'CLAUDE_CODE_SHELL_TIMEOUT'] as const;
-
-/**
- * Resolve the default per-command timeout (ms), honoring {@link DEFAULT_TIMEOUT_ENV}.
- * Returns {@link DEFAULT_TIMEOUT_MS} when the override is unset / blank / NaN /
- * non-positive. Used as the fallback timeout by {@link execCommand} when a call
- * supplies no explicit `timeout`.
- */
-export function resolveDefaultTimeoutMs(): number {
-  const raw = DEFAULT_TIMEOUT_ENV.map(k => (process.env[k] || '').trim()).find(Boolean) || '';
-  if (raw === '') return DEFAULT_TIMEOUT_MS;
-  const ms = Number(raw);
-  if (!Number.isFinite(ms) || ms <= 0) return DEFAULT_TIMEOUT_MS;
-  return ms;
-}
-
-/** Bound captured output. Head plus tail so a long pytest log keeps its summary. */
-const HEAD_CHARS = 670_000;
-const TAIL_CHARS = 330_000;
-const DEFAULT_STALL_TIMEOUT_MS = 45_000;
-
-/**
  * Hard ceiling (bytes) on the complete command output persisted to disk when a
  * caller opts in with {@link ExecCommandOptions.persistFullOutput}. Mirrors
  * the reference's `MAX_PERSISTED_SIZE` (BashTool.tsx:L732): the full stream is
@@ -433,238 +303,6 @@ const DEFAULT_STALL_TIMEOUT_MS = 45_000;
  */
 export const MAX_PERSISTED_OUTPUT_BYTES = 64 * 1024 * 1024;
 shellHooks.getMaxPersistedOutputBytes = (): number => MAX_PERSISTED_OUTPUT_BYTES;
-
-/**
- * After the shell process itself emits `'exit'`, how long to keep waiting for the
- * stdio pipes to emit `'close'` before concluding anyway.
- *
- * `'close'` fires only once EVERY inherited stdio fd is closed, which a detached
- * grandchild that inherited the pipes keeps open for its whole lifetime
- * (`echo done; sleep 300 &`) — so a `'close'`-only wait would block the whole
- * foreground timeout even though the command already finished. The window is a
- * QUIET period: any new output resets it, so a command still flushing a large
- * result is never truncated — only a genuinely idle-but-unclosed pipe triggers
- * the `'exit'`-based fallback.
- */
-const EXIT_DRAIN_QUIET_MS = 150;
-
-/**
- * Exit code reported when the shell/command could not be launched at all (no
- * suitable shell found, or the spawn itself failed — ENOENT/EACCES/etc.). 126 is
- * the standard Unix "command found but not executable / could not execute" code.
- * Surfacing it (instead of `null`) lets callers distinguish a launch failure
- * from a timeout or abort, both of which legitimately yield `exitCode: null`.
- */
-export const SPAWN_FAILURE_EXIT_CODE = 126;
-
-/** Candidate directories probed for a POSIX shell when resolving one. */
-const SHELL_SEARCH_PATHS = ['/bin', '/usr/bin', '/usr/local/bin', '/opt/homebrew/bin'];
-
-function createOutputBuffer(): { push: (chunk: string) => void; value: () => string; truncated: () => boolean } {
-  let head = '';
-  // Keep the retained tail as a list of chunks plus a running length instead of a
-  // single growing string. The old code did `tail += chunk; tail = tail.slice(...)`
-  // on every chunk once output exceeded TAIL_CHARS, forcing a full ~330k flatten +
-  // re-copy per chunk — O(chunks × TAIL_CHARS) for a large streamed log. Appending
-  // to an array and dropping whole leading chunks (partial-slicing only the first
-  // retained one) makes push amortized O(chunk); value() joins once. Output is
-  // byte-identical (same head + last TAIL_CHARS tail + dropped count).
-  const tailChunks: string[] = [];
-  let tailLen = 0;
-  let dropped = 0;
-  return {
-    truncated() { return dropped > 0; },
-    push(chunk: string) {
-      if (head.length < HEAD_CHARS) {
-        const room = HEAD_CHARS - head.length;
-        head += chunk.slice(0, room);
-        chunk = chunk.slice(room);
-      }
-      if (chunk.length === 0) return;
-      tailChunks.push(chunk);
-      tailLen += chunk.length;
-      if (tailLen > TAIL_CHARS) {
-        let over = tailLen - TAIL_CHARS;
-        dropped += over;
-        tailLen -= over;
-        while (over > 0) {
-          const first = tailChunks[0]!;
-          if (first.length <= over) {
-            over -= first.length;
-            tailChunks.shift();
-          } else {
-            tailChunks[0] = first.slice(over);
-            over = 0;
-          }
-        }
-      }
-    },
-    value() {
-      const tail = tailChunks.join('');
-      if (dropped === 0) return head + tail;
-      // Report the magnitude so the caller/model knows the TRUE output size and
-      // how much was kept, not just that some middle was dropped. The total is
-      // the sum of the retained head + tail and the dropped middle.
-      const total = head.length + dropped + tail.length;
-      return head + `\n[kept first ${head.length} + last ${tail.length} of ${total} chars; ${dropped} truncated]\n` + tail;
-    },
-  };
-}
-
-/**
- * Default cadence (ms) of the {@link ExecCommandOptions.onProgress} heartbeat.
- * Only armed when a caller supplies `onProgress`; a caller may override it with
- * {@link ExecCommandOptions.progressIntervalMs}. Mirrors the reference's
- * progress-poll loop that fires even on a silent command so the loop can wake
- * and decide to background a long runner (TaskOutput.ts:L119-125).
- */
-const DEFAULT_PROGRESS_INTERVAL_MS = 5_000;
-
-/**
- * How many trailing characters of combined stdout+stderr are retained to shape
- * the {@link ExecCommandOptions.onProgress} tail slices. Bounds progress memory
- * on a huge-output command; the exact total byte count is tracked separately so
- * the line count is extrapolated from this sample when the output exceeds it
- * (parity with the reference's `PROGRESS_TAIL_BYTES`, TaskOutput.ts).
- */
-const PROGRESS_TAIL_CHARS = 65_536;
-
-/**
- * Compute the last-5-lines and last-100-lines tail slices plus the total line
- * count of `text`, by walking backwards over newline characters. This is the
- * shaping that feeds {@link ExecCommandOptions.onProgress}'s structured args
- * (parity with the reference's TaskOutput poller, TaskOutput.ts:L126-149). The
- * line count is EXACT here (AMI buffers the full command output in memory),
- * which is a superset of the reference's tail-sample extrapolation — no estimation
- * error — while the caller still applies a monotone `Math.max` so the counter
- * never moves backwards between ticks.
- *
- * The backward walk counts a final "no more newline" step as the first line, so
- * `"a\nb\nc"` yields `totalLines === 3` (3 lines, 2 newlines), matching the reference's
- * loop exactly. An empty string yields `totalLines === 0` and empty slices.
- */
-export function computeProgressSlices(text: string): { last5: string; last100: string; totalLines: number } {
-  let pos = text.length;
-  let n5 = 0;
-  let n100 = 0;
-  let totalLines = 0;
-  while (pos > 0) {
-    pos = text.lastIndexOf('\n', pos - 1);
-    totalLines++;
-    if (totalLines === 5) n5 = pos <= 0 ? 0 : pos + 1;
-    if (totalLines === 100) n100 = pos <= 0 ? 0 : pos + 1;
-  }
-  return { last5: text.slice(n5), last100: text.slice(n100), totalLines };
-}
-
-const PROMPT_PATTERNS = [
-  /\(y\/n\)\s*$/i,
-  /\[y\/N\]\s*$/i,
-  /\[Y\/n\]\s*$/i,
-  /\(yes\/no\)\s*$/i,
-  /press enter/i,
-  /press any key/i,
-  /password[:\s]*$/i,
-  /passphrase[:\s]*$/i,
-  /Are you sure\?/i,
-  /Continue\?/i,
-  /Proceed\?/i,
-  // Any line ending in "?" (covers directed questions — "Do you want to
-  // continue?", "Overwrite?", "Shall I proceed?" — more broadly than the reference's
-  // enumerated prompt list, which only matches specific directed-question stems).
-  /\?\s*$/,
-  /:\s*$/,
-  />\s*$/,
-  /\$\s*$/,
-  /%\s*$/,
-  /#\s*$/,
-];
-
-function looksLikePrompt(output: string): boolean {
-  // split() always returns at least one element, so the last index is defined.
-  const lines = output.trimEnd().split('\n');
-  const lastLine = lines[lines.length - 1]!.trim();
-  if (lastLine.length === 0 || lastLine.length > 200) return false;
-  return PROMPT_PATTERNS.some(p => p.test(lastLine));
-}
-
-/**
- * POSIX single-quote a string so it survives one round of shell word-splitting
- * unchanged. Embedded single quotes are closed, escaped, and reopened
- * (`'\''`). Used by {@link formatShellPrefixCommand}.
- */
-function shQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
-}
-
-/**
- * Wrap `command` with a user-configured shell prefix (the executable and its
- * args that should run the command), quoting each component so a path with
- * spaces is safe.
- *
- * - `"bash"`            → `'bash' 'command'`
- * - `"/usr/bin/bash -c"`→ `'/usr/bin/bash' -c 'command'`
- * - `"/Program Files/bash.exe -c"` → `'/Program Files/bash.exe' -c 'command'`
- *
- * The executable (everything before the last ` -<flag>`) is quoted as one unit;
- * the flags are passed through verbatim; the command is quoted as one argument.
- * Honored from the `AMI_SHELL_PREFIX` env var by {@link execCommand}.
- */
-export function formatShellPrefixCommand(prefix: string, command: string): string {
-  const spaceBeforeDash = prefix.lastIndexOf(' -');
-  if (spaceBeforeDash > 0) {
-    const execPath = prefix.substring(0, spaceBeforeDash);
-    const args = prefix.substring(spaceBeforeDash + 1);
-    return `${shQuote(execPath)} ${args} ${shQuote(command)}`;
-  }
-  return `${shQuote(prefix)} ${shQuote(command)}`;
-}
-
-/**
- * Rewrites Windows CMD-style `>nul` redirects to the POSIX `/dev/null`.
- *
- * The model occasionally hallucinates Windows CMD syntax (e.g. `ls 2>nul`) even
- * though AMI always runs commands through a POSIX shell (bash/zsh) on
- * non-Windows hosts. When that POSIX shell sees `2>nul`, it does NOT discard the
- * output — it creates a literal file named `nul` in the working directory, a
- * stray artifact that pollutes the tree and breaks `git add .` / `git clone`.
- * Rewriting the redirect target to `/dev/null` makes the hallucinated form
- * behave as the model intended.
- *
- * Matches the redirect-target `nul`/`NUL` in `>nul`, `> NUL`, `2>nul`, `&>nul`,
- * `>>nul` (case-insensitive). Does NOT match `>null`, `>nullable`, `>nul.txt`,
- * or a bare `cat nul.txt` argument.
- *
- * Limitation: this is a lexical rewrite, not a shell parse, so a quoted literal
- * like `echo ">nul"` is also rewritten. That is extremely rare and harmless
- * (printing `/dev/null` instead of `nul`), which is why the simple regex is
- * preferred over a full tokenizer. Only applied on the POSIX spawn path.
- */
-const NUL_REDIRECT_REGEX = /(\d?&?>+\s*)[Nn][Uu][Ll](?=\s|$|[|&;)\n])/g;
-export function rewriteWindowsNullRedirect(command: string): string {
-  return command.replace(NUL_REDIRECT_REGEX, '$1/dev/null');
-}
-
-/**
- * Short human-readable description for the common POSIX termination signals so a
- * signal-killed child reports WHAT killed it (not just a bare `exitCode: null`).
- * Returns `''` for signals without a well-known cause so the caller can still
- * surface the raw signal name on its own.
- */
-function describeSignal(signal: NodeJS.Signals): string {
-  switch (signal) {
-    case 'SIGSEGV': return ' (segmentation fault)';
-    case 'SIGKILL': return ' (killed)';
-    case 'SIGTERM': return ' (terminated)';
-    case 'SIGABRT': return ' (aborted)';
-    case 'SIGINT': return ' (interrupt)';
-    case 'SIGQUIT': return ' (quit)';
-    case 'SIGFPE': return ' (arithmetic error)';
-    case 'SIGBUS': return ' (bus error)';
-    case 'SIGILL': return ' (illegal instruction)';
-    default: return '';
-  }
-}
 
 /** True when `shellPath` can be executed (X_OK, or `--version` as a fallback). */
 function isExecutable(shellPath: string): boolean {
@@ -681,27 +319,6 @@ function isExecutable(shellPath: string): boolean {
       return false;
     }
   }
-}
-
-/** The interactive login-shell families AMI can classify from `$SHELL`. */
-export const INTERACTIVE_SHELL_TYPES = ['zsh', 'bash', 'fish', 'unknown'] as const;
-export type InteractiveShellType = (typeof INTERACTIVE_SHELL_TYPES)[number];
-
-/**
- * Classify the user's interactive login shell from a shell path (defaults to
- * `process.env.SHELL`) into `'zsh' | 'bash' | 'fish' | 'unknown'`. Lets callers
- * tailor setup/affordance guidance (PATH export, alias syntax) to the user's
- * actual shell — fish's `set -x PATH` differs from bash/zsh's `export PATH`.
- * Parity with the reference's `getShellType()` (localInstaller.ts:L156-162),
- * including its `zsh → bash → fish` precedence. Also consolidates the
- * shell-family detection {@link resolveShell} needs (single source for the
- * bash-vs-zsh preference), so there is one canonical classifier.
- */
-export function getShellType(shellPath: string = process.env.SHELL || ''): InteractiveShellType {
-  if (shellPath.includes('zsh')) return 'zsh';
-  if (shellPath.includes('bash')) return 'bash';
-  if (shellPath.includes('fish')) return 'fish';
-  return 'unknown';
 }
 
 // Memoize the resolved shell per (platform, override, SHELL) tuple so probing
@@ -754,38 +371,6 @@ export function findSuitableShell(): string | null {
   return resolved;
 }
 
-// ---------------------------------------------------------------------------
-// Shell-environment snapshot (user aliases / functions / options / PATH)
-//
-// Parity with the reference's ShellSnapshot.ts + bashProvider.ts snapshot sourcing.
-// A command run through `bash -c '<cmd>'` does NOT see the user's interactive
-// aliases/functions (those live in ~/.bashrc / ~/.zshrc, which a non-login,
-// non-interactive shell never sources). the reference captures them ONCE per session
-// into a snapshot file and `source`s it before each command, so model-run
-// commands behave like the user's interactive shell WITHOUT paying a full
-// login-shell startup per command. AMI mirrors this as an OPT-IN capability
-// (env knob {@link SHELL_SNAPSHOT_ENV}) so default behavior is unchanged:
-// - enabled → create+source the snapshot, spawn WITHOUT `-l`;
-// - enabled but snapshot creation failed → gracefully fall back to a login
-//   shell (`-l`) so the profile/rc files are at least sourced;
-// - disabled → current behavior (login only when `AMI_LOGIN_SHELL` is set).
-// Aliases are re-applied via `eval` (a second parse pass) because the shell
-// parses a whole command line before executing, so an alias sourced on the same
-// line would not expand — the exact reason the reference wraps the user command in
-// `eval` after sourcing the snapshot.
-// ---------------------------------------------------------------------------
-
-/**
- * Env knob (opt-in) that turns on per-command shell-environment snapshots. When
- * truthy (`1`/`true`/`on`/`yes`), {@link execCommand}'s bash path captures the
- * user's shell config (aliases, functions, options, PATH) once per session and
- * sources it before every command so model-run commands see the user's
- * interactive environment. Unset/blank/falsey leaves the current behavior
- * unchanged. Mirrors the reference's always-on snapshot (ShellSnapshot.ts); AMI
- * makes it opt-in to keep the default command environment deterministic.
- */
-export const SHELL_SNAPSHOT_ENV = 'AMI_SHELL_SNAPSHOT';
-
 /**
  * Env knob that enables verbose shell-command-assembly debug logging through
  * {@link shellHooks.onShellDebug} (snapshot-missing login fallback, `-l` skip,
@@ -793,173 +378,6 @@ export const SHELL_SNAPSHOT_ENV = 'AMI_SHELL_SNAPSHOT';
  * `logForDebugging` tracing in bashProvider.ts.
  */
 export { SHELL_DEBUG_ENV } from './shell-debug-env';
-
-/** True when {@link SHELL_SNAPSHOT_ENV} names an enabled value. */
-function shellSnapshotEnabled(): boolean {
-  const raw = (process.env[SHELL_SNAPSHOT_ENV] || '').trim().toLowerCase();
-  return raw === '1' || raw === 'true' || raw === 'on' || raw === 'yes';
-}
-
-/** How long the one-shot snapshot-capture shell may run before giving up (ms). */
-const SNAPSHOT_CREATION_TIMEOUT_MS = 10_000;
-
-/**
- * The user shell config file a snapshot sources, chosen from the shell family:
- * zsh → `~/.zshrc`, bash → `~/.bashrc`, anything else → `~/.profile`. Parity
- * with the reference's `getConfigFile` (ShellSnapshot.ts).
- */
-function snapshotConfigFile(shellPath: string): string {
-  const fileName = shellPath.includes('zsh')
-    ? '.zshrc'
-    : shellPath.includes('bash')
-      ? '.bashrc'
-      : '.profile';
-  return path.join(os.homedir(), fileName);
-}
-
-/**
- * Build a shell function that invokes `binaryPath` with an explicit `argv[0]`
- * (`argv0`), prepending `prependArgs` before the caller's `"$@"`. This is the
- * ARGV0-dispatch trick for multi-call / busybox-style binaries (one executable
- * that dispatches on `argv[0]`): to behave as ripgrep, such a binary must see
- * `argv[0] === 'rg'` even when spawned from a wrapper path. The four ordered
- * branches mirror the reference's `createArgv0ShellFunction` (ShellSnapshot.ts):
- *   1. zsh sets `argv[0]` via the `ARGV0` env var;
- *   2. Windows/msys/cygwin bash where `exec -a` is unavailable → `ARGV0` env var;
- *   3. a subshell (`$BASHPID != $$`) can `exec -a` directly;
- *   4. otherwise wrap `exec -a` in its own subshell so the parent shell survives.
- * `binaryPath` is POSIX-quoted; each `prependArgs` element must already be a safe
- * shell word (no spaces/metacharacters) — it is injected literally.
- */
-function createArgv0ShellFunction(
-  funcName: string,
-  argv0: string,
-  binaryPath: string,
-  prependArgs: string[] = [],
-): string {
-  const quotedPath = shQuote(binaryPath);
-  const argSuffix = prependArgs.length > 0 ? `${prependArgs.join(' ')} "$@"` : '"$@"';
-  return [
-    `function ${funcName} {`,
-    '  if [[ -n $ZSH_VERSION ]]; then',
-    `    ARGV0=${argv0} ${quotedPath} ${argSuffix}`,
-    '  elif [[ "$OSTYPE" == "msys" ]] || [[ "$OSTYPE" == "cygwin" ]] || [[ "$OSTYPE" == "win32" ]]; then',
-    `    ARGV0=${argv0} ${quotedPath} ${argSuffix}`,
-    '  elif [[ $BASHPID != $$ ]]; then',
-    `    exec -a ${argv0} ${quotedPath} ${argSuffix}`,
-    '  else',
-    `    (exec -a ${argv0} ${quotedPath} ${argSuffix})`,
-    '  fi',
-    '}',
-  ].join('\n');
-}
-
-/**
- * Build the shell snippet that makes a model-typed `rg` in a bash/zsh command
- * dispatch to the SAME ripgrep binary AMI's grep/glob tools use, so interactive
- * `rg` and tool `rg` behave identically. Parity with the reference's
- * `createRipgrepShellIntegration` (ShellSnapshot.ts), adapted to AMI:
- *
- * - **system mode** (bare PATH `rg`, the default) → `null`: the model's typed
- *   `rg` already resolves the same PATH binary, so there is nothing to dispatch
- *   and no snippet is emitted (the reference likewise only integrates when it has its
- *   own binary / ARGV0 dispatch).
- * - **config/builtin mode with `argv0`** (a multi-call ripgrep binary) → an
- *   {@link createArgv0ShellFunction} ARGV0-dispatch function.
- * - **config/builtin mode without `argv0`** → a plain function that execs the
- *   configured path (plus any config-level `args`), each component POSIX-quoted.
- *
- * The definition is guarded by a `command -v rg` probe (run in a subshell after
- * `unalias rg` so a user alias cannot shadow the probe — parity with the reference's
- * `(unalias rg 2>/dev/null; command -v rg)`): a real system `rg` on PATH wins,
- * matching the user's interactive shell. AMI emits a function (not an alias) for
- * both cases so dispatch works without relying on `expand_aliases` ordering —
- * an intentional, more-robust superset of the reference's alias form.
- *
- * Returns `null` when no integration is needed (system mode), so callers can
- * skip embedding it. Consumed by {@link buildSnapshotScript}, which appends the
- * snippet to the sourceable snapshot file.
- */
-export function buildRipgrepShellIntegration(config: RipgrepConfig = resolveRipgrepConfig()): string | null {
-  if (config.mode === 'system') return null;
-  const definition = config.argv0
-    ? createArgv0ShellFunction('rg', config.argv0, config.command, config.args ?? [])
-    : (() => {
-        const target = config.args && config.args.length
-          ? `${shQuote(config.command)} ${config.args.map(shQuote).join(' ')}`
-          : shQuote(config.command);
-        return `function rg {\n  ${target} "$@"\n}`;
-      })();
-  const indented = definition.split('\n').map((line) => (line ? `  ${line}` : line)).join('\n');
-  return [
-    '# AMI ripgrep shell integration',
-    'if ! (unalias rg 2>/dev/null; command -v rg) >/dev/null 2>&1; then',
-    indented,
-    'fi',
-  ].join('\n');
-}
-
-/**
- * The capture script that, when run by the user's shell as a login shell, writes
- * a sourceable snapshot of their functions, shell options, aliases and PATH to
- * `$SNAPSHOT_FILE`. Faithful to the reference's `getSnapshotScript` /
- * `getUserSnapshotContent`: zsh and bash use their respective introspection
- * (`typeset` vs `declare`, `setopt` vs `shopt`), completion functions
- * (single-underscore prefix) are filtered out while `__`-prefixed helpers are
- * kept, each capture is head-capped at 1000 lines, and `expand_aliases` is
- * force-enabled so a sourced alias expands in the subsequent `eval` pass.
- */
-function buildSnapshotScript(shellPath: string, configFileExists: boolean): string {
-  const isZsh = shellPath.includes('zsh');
-  // zsh function bodies are written verbatim; bash function bodies are base64-encoded
-  // and wrapped in `eval "$(… base64 -d)"` so special characters survive the capture
-  // intact — parity with the reference's `getUserSnapshotContent` (ShellSnapshot.ts:L203-232).
-  // `declare -f`/`typeset -f >/dev/null` runs first to force-autoload lazy functions;
-  // single-underscore completion funcs are filtered (`grep -vE '^_[^_]'`) while
-  // double-underscore helpers (e.g. __pyenv_init) are kept.
-  const functions = isZsh
-    ? `typeset -f > /dev/null 2>&1
-typeset +f | grep -vE '^_[^_]' | while read func; do typeset -f "$func" >> "$SNAPSHOT_FILE"; done`
-    : `declare -f > /dev/null 2>&1
-declare -F | cut -d' ' -f3 | grep -vE '^_[^_]' | while read func; do
-  encoded_func=$(declare -f "$func" | base64)
-  echo "eval \\"\\$(echo '$encoded_func' | base64 -d)\\" > /dev/null 2>&1" >> "$SNAPSHOT_FILE"
-done`;
-  const options = isZsh
-    ? `setopt | sed 's/^/setopt /' | head -n 1000 >> "$SNAPSHOT_FILE"
-echo "setopt aliases" >> "$SNAPSHOT_FILE"`
-    : `shopt -p | head -n 1000 >> "$SNAPSHOT_FILE"
-echo "shopt -s expand_aliases" >> "$SNAPSHOT_FILE"`;
-  const userContent = configFileExists
-    ? `echo "# Functions" >> "$SNAPSHOT_FILE"
-${functions}
-echo "# Shell Options" >> "$SNAPSHOT_FILE"
-${options}
-echo "# Aliases" >> "$SNAPSHOT_FILE"
-alias | sed 's/^alias //g' | sed 's/^/alias -- /' | head -n 1000 >> "$SNAPSHOT_FILE"`
-    : isZsh
-      ? '# No user config file to source'
-      : 'echo "shopt -s expand_aliases" >> "$SNAPSHOT_FILE"';
-  const configFile = snapshotConfigFile(shellPath);
-  // Append the ripgrep shell integration (when AMI has a non-system ripgrep
-  // configured) so a model-typed `rg` in the sourced snapshot dispatches to the
-  // same binary the grep/glob tools use. A quoted heredoc delimiter keeps the
-  // snippet (which contains `$@`, `$$`, `$BASHPID`) literal in the capture pass.
-  const ripgrepIntegration = buildRipgrepShellIntegration();
-  const ripgrepBlock = ripgrepIntegration
-    ? `cat >> "$SNAPSHOT_FILE" <<'AMI_RG_SNIPPET_EOF'
-${ripgrepIntegration}
-AMI_RG_SNIPPET_EOF`
-    : '# No ripgrep shell integration (system ripgrep)';
-  return `SNAPSHOT_FILE="$AMI_SNAPSHOT_FILE"
-${configFileExists ? `source ${shQuote(configFile)} < /dev/null` : '# No user config file to source'}
-echo "# Snapshot file" >| "$SNAPSHOT_FILE"
-echo "unalias -a 2>/dev/null || true" >> "$SNAPSHOT_FILE"
-${userContent}
-echo "export PATH=${shQuote(process.env.PATH || '')}" >> "$SNAPSHOT_FILE"
-${ripgrepBlock}
-if [ ! -f "$SNAPSHOT_FILE" ]; then echo "snapshot not created" >&2; exit 1; fi`;
-}
 
 /**
  * Capture a shell-environment snapshot for `shellPath` and return the path to
@@ -1042,121 +460,6 @@ export function getCachedShellSnapshot(shellPath: string): string | null {
 export function resetShellSnapshotCache(): void {
   shellSnapshotCache.clear();
 }
-
-// ---------------------------------------------------------------------------
-// Cross-shell provider abstraction (PowerShell as a first-class shell type)
-//
-// Mirrors the reference's `src/utils/shell/*` provider split (shellProvider.ts
-// SHELL_TYPES/ShellType, powershellProvider.ts invocation flags + exit-code
-// normalization, powershellDetection.ts pwsh-over-powershell preference + snap
-// avoidance + memoized cache, resolveDefaultShell.ts safe default). AMI keeps
-// bash/zsh as the POSIX default and treats PowerShell as an OPT-IN shell family
-// selected per call ({@link ExecCommandOptions.shellType}) or globally via the
-// `AMI_DEFAULT_SHELL` / `CLAUDE_CODE_SHELL_TYPE` env knob — never auto-flipping
-// Windows to PowerShell (parity with the reference's resolveDefaultShell, which does
-// not auto-flip either).
-// ---------------------------------------------------------------------------
-
-/** The shell families AMI can spawn a command through. */
-export const SHELL_TYPES = ['bash', 'powershell'] as const;
-export type ShellType = (typeof SHELL_TYPES)[number];
-
-/** Platform-independent default shell family (parity: the reference never auto-flips to PowerShell). */
-export const DEFAULT_SHELL_TYPE: ShellType = 'bash';
-
-/**
- * Resolve the default shell family for commands that do not name one, from the
- * `AMI_DEFAULT_SHELL` (or `CLAUDE_CODE_SHELL_TYPE` for parity) env knob. An
- * unset / blank / unrecognized value safely falls back to {@link DEFAULT_SHELL_TYPE}
- * (`'bash'`) — mirrors the reference's `resolveDefaultShell()` safe fallback.
- */
-export function resolveDefaultShell(): ShellType {
-  const raw = (process.env.AMI_DEFAULT_SHELL || process.env.CLAUDE_CODE_SHELL_TYPE || '').trim().toLowerCase();
-  return (SHELL_TYPES as readonly string[]).includes(raw) ? (raw as ShellType) : DEFAULT_SHELL_TYPE;
-}
-
-// ---------------------------------------------------------------------------
-// Per-shell async environment overrides (getEnvironmentOverrides)
-//
-// Parity with the reference's `ShellProvider.getEnvironmentOverrides(command)`
-// (shellProvider.ts:L28-32): an async hook that computes extra env vars for the
-// resolved shell family just before spawn and MAY perform async initialization.
-// The reference cites tmux socket setup for bash — deferring the cost until a
-// command actually uses tmux, then pointing tmux at an isolated socket so AMI-run
-// tmux servers do not collide with the user's default socket.
-//
-// AMI adaptation:
-//  - The seam is OPT-IN (env knob {@link TMUX_ISOLATION_ENV}) so default behavior
-//    is unchanged; a command that doesn't use tmux (or has isolation off) gets an
-//    empty override and the executor's deterministic same-tick spawn is preserved.
-//  - Isolation is achieved via `TMUX_TMPDIR` (the dir tmux uses for its default
-//    server socket), NOT by overriding `TMUX` — so tmux still auto-starts/connects
-//    its server on demand instead of mistaking the value for a nested session.
-//  - /env session vars are applied at the bash-tool env-build layer
-//    (buildSubprocessEnv → options.env), NOT here, so there is no double-apply —
-//    this seam only adds the orthogonal per-shell async init the reference does.
-// ---------------------------------------------------------------------------
-
-/**
- * Per-shell environment overrides merged into the spawn env by {@link execCommand}
- * just before launch. Parity with the reference's
- * `ShellProvider.getEnvironmentOverrides(command)`.
- *
- * Returns a plain record synchronously for the common case (so the executor's
- * deterministic same-tick spawn is preserved), and a `Promise` only when a shell
- * genuinely needs async init — currently the bash tmux-socket isolation path
- * ({@link TMUX_ISOLATION_ENV} enabled AND the command {@link commandUsesTmux}).
- * The tmux-socket state machine (cached availability probe, concurrent-init
- * dedup, graceful degradation, on-exit teardown) lives in {@link ./tmux-socket}.
- * PowerShell and the non-tmux bash path return an empty record.
- */
-export function getEnvironmentOverrides(
-  shellType: ShellType,
-  command: string,
-): Record<string, string> | Promise<Record<string, string>> {
-  if (shellType === 'bash' && tmuxIsolationEnabled() && commandUsesTmux(command)) {
-    return prepareBashTmuxOverrides(resolveTmpBase());
-  }
-  return {};
-}
-
-/**
- * The hardened, non-interactive PowerShell invocation flags + command. Shared so
- * the flag set lives in exactly one place (parity with the reference's
- * `buildPowerShellArgs` in powershellProvider.ts):
- * - `-NoProfile` skips the user/system profile scripts (deterministic env, no
- *   slow or side-effecting startup), and
- * - `-NonInteractive` makes PowerShell fail fast instead of prompting, so a
- *   command that would block on a `Read-Host` returns rather than hanging.
- */
-export function buildPowerShellArgs(command: string): string[] {
-  return ['-NoProfile', '-NonInteractive', '-Command', command];
-}
-
-/**
- * Append PowerShell exit-code normalization to a command so the spawned process
- * exits with the correct code (parity with the reference's powershellProvider.ts
- * cwd-tracking `exit $_ec`).
- *
- * On Windows PowerShell 5.1 a native exe that merely writes to a PS-redirected
- * stderr (e.g. `git push 2>&1`) sets `$?` to `$false` even when the exe returned
- * exit 0, so a naive `if (!$?)` reports a false-positive failure. `$LASTEXITCODE`
- * holds the real native exit code and is `$null` only when no native exe has run
- * yet — so we prefer it and fall back to `$?` for cmdlet-only pipelines.
- */
-export function withPowerShellExitCode(command: string): string {
-  return `${command}\n$_ec = if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } elseif ($?) { 0 } else { 1 }\nexit $_ec`;
-}
-
-/** Env knob naming an explicit PowerShell executable path (overrides detection). */
-const POWERSHELL_PATH_ENV = ['AMI_POWERSHELL_PATH', 'CLAUDE_CODE_POWERSHELL_PATH'] as const;
-
-/**
- * Known non-snap PowerShell install locations probed when PATH resolves `pwsh`
- * to a snap launcher (which can hang in subprocesses while snapd initializes
- * confinement). The underlying apt/rpm binary is reliable.
- */
-const POWERSHELL_PROBE_PATHS = ['/opt/microsoft/powershell/7/pwsh', '/usr/bin/pwsh', '/usr/local/bin/pwsh'];
 
 /** Best-effort symlink resolution; returns the input unchanged if it can't be resolved. */
 function realpathSafe(p: string): string {
@@ -1251,34 +554,6 @@ export function resetPowerShellCache(): void {
   cachedPowerShellPath = undefined;
 }
 
-// ---------------------------------------------------------------------------
-// Windows git-bash resolution (trusted bash.exe discovery)
-//
-// On Windows AMI runs user bash commands through git-bash's `bash.exe` — the
-// same POSIX semantics the bash security guards assume — NOT `cmd`. Parity with
-// the reference's windowsPaths.ts (findExecutable + findGitBashPath): an explicit
-// AMI_GIT_BASH_PATH / CLAUDE_CODE_GIT_BASH_PATH override wins, else git's default
-// install locations are probed, else `where.exe` resolves `git` with a
-// cwd-shadow security filter and `bash.exe` is derived from it. Unlike the reference
-// (which `process.exit(1)`s when none is found), AMI returns `null` so
-// {@link execCommand} surfaces an actionable launch failure instead of killing
-// the whole process — a library-safe divergence.
-// ---------------------------------------------------------------------------
-
-/** Env knobs naming an explicit git-bash `bash.exe` path (overrides discovery). */
-const GIT_BASH_PATH_ENV = ['AMI_GIT_BASH_PATH', 'CLAUDE_CODE_GIT_BASH_PATH'] as const;
-
-/**
- * Default git-for-Windows install locations probed before `where.exe` (64-bit
- * before 32-bit). The `cmd\git.exe` entry is used — not `mingw64\bin\git.exe`,
- * whose directory is the "raw" tools without the environment setup git-bash
- * expects. Parity with the reference's `findExecutable` default locations.
- */
-const GIT_DEFAULT_LOCATIONS = [
-  'C:\\Program Files\\Git\\cmd\\git.exe',
-  'C:\\Program Files (x86)\\Git\\cmd\\git.exe',
-];
-
 /**
  * Resolve a TRUSTED executable path on Windows. For `git`, well-known install
  * locations are probed first; otherwise `where.exe` is consulted and every
@@ -1353,24 +628,6 @@ export function findGitBashPath(): string | null {
   return null;
 }
 
-/**
- * Build the user-facing launch-failure message when git-bash cannot be resolved
- * on Windows. When the user set an explicit git-bash path env var
- * ({@link GIT_BASH_PATH_ENV}) the bad value is echoed back so a typo is obvious —
- * a message distinct from the "no git-bash installed at all" case. Parity with
- * the reference distinguishing the explicitly-configured-but-missing path
- * (windowsPaths.ts:L104-106) from git-bash-not-found (L120-122). Used by
- * {@link execCommand} to surface an actionable exit-126 launch failure instead of
- * exiting the process.
- */
-export function describeGitBashResolutionError(): string {
-  const override = GIT_BASH_PATH_ENV.map(k => (process.env[k] || '').trim()).find(Boolean);
-  if (override) {
-    return `The configured git-bash path "${override}" does not exist. AMI runs commands through bash on Windows: fix AMI_GIT_BASH_PATH to point at your bash.exe, or install git-bash (https://git-scm.com/downloads/win).`;
-  }
-  return 'No git-bash found. AMI runs commands through bash on Windows: install git-bash (https://git-scm.com/downloads/win), or set AMI_GIT_BASH_PATH to its bash.exe.';
-}
-
 let cachedGitBashPath: string | null | undefined;
 
 /**
@@ -1385,153 +642,6 @@ export function getCachedGitBashPath(): string | null {
 /** Reset the memoized git-bash path (tests / after a PATH or env change). */
 export function resetGitBashCache(): void {
   cachedGitBashPath = undefined;
-}
-
-export interface ExecCommandOptions {
-  cwd: string;
-  timeout?: number;
-  abortSignal?: AbortSignal;
-  onData?: (chunk: string) => void;
-  env?: NodeJS.ProcessEnv;
-  stallTimeoutMs?: number;
-  /**
-   * Optional string fed to the child process's stdin (then closed). When
-   * omitted, stdin is `'ignore'`d as before. Lets callers pipe a payload into a
-   * command (e.g. `git apply`, `patch`, `gpg`) without shell interpolation.
-   */
-  input?: string;
-  /**
-   * stdin mode for the child when no {@link input} payload is supplied
-   * (`'ignore'` by default so interactive prompts are detected-and-killed by
-   * stall detection). `'inherit'` connects the parent terminal's stdin; `'pipe'`
-   * opens a pipe the caller drives. Ignored when `input` is set (that path always
-   * pipes). Parity with the reference's exec wrapper `stdin` option
-   * (execFileNoThrow.ts:L22).
-   */
-  stdin?: 'ignore' | 'inherit' | 'pipe';
-  /**
-   * When `false`, a command that exits with a non-zero code resolves with empty
-   * `stdout`/`stderr` (only the exit code/signal are kept). Useful for
-   * probe/detection commands whose noisy output on failure should be discarded.
-   * Defaults to `true` (output always preserved). Parity with the reference's
-   * `preserveOutputOnError` (execFileNoThrow.ts:L17). A timeout/abort/launch
-   * failure (`exitCode === null`) always keeps its output so the caller can see
-   * why it failed.
-   */
-  preserveOutputOnError?: boolean;
-  /**
-   * Shell family to run the command through (`'bash'` | `'powershell'`). When
-   * omitted, {@link resolveDefaultShell} picks it from the `AMI_DEFAULT_SHELL`
-   * env knob (default `'bash'`). Parity with the reference's `exec({ shellType })`
-   * (Shell.ts). PowerShell is spawned with hardened, non-interactive flags and
-   * exit-code normalization (see {@link buildPowerShellArgs} /
-   * {@link withPowerShellExitCode}).
-   */
-  shellType?: ShellType;
-  /**
-   * Explicit shell executable path, overriding auto-resolution for this call.
-   * For `'bash'` it replaces {@link findSuitableShell}; for `'powershell'` it
-   * replaces {@link getCachedPowerShellPath}. Parity with the reference's
-   * configurable `shellPath` provider parameter (shellProvider.ts). When blank,
-   * the resolver / env override is used.
-   */
-  shellPath?: string;
-  /**
-   * When `true`, skip shell-environment snapshot sourcing for this call even if
-   * {@link SHELL_SNAPSHOT_ENV} is enabled (the command runs with a plain
-   * non-login shell). Used for probe/internal commands that must not inherit the
-   * user's aliases/functions. Parity with the reference's `createBashShellProvider({
-   * skipSnapshot })` (bashProvider.ts). No effect when snapshots are disabled.
-   */
-  skipSnapshot?: boolean;
-  /**
-   * Structured progress callback, distinct from {@link onData}'s raw-chunk pipe.
-   * Fires on a cadence ({@link progressIntervalMs}) with, positionally:
-   *   `(lastLines, allLines, totalLines, totalBytes, isIncomplete)`
-   * — the last 5 lines, the last 100 lines, the running (monotone) total line
-   * count, total bytes seen, and whether the delivered sample omits earlier
-   * output (`totalLines > 100`). It fires EVEN when no new output arrived since
-   * the last tick (empty `lastLines`/`allLines`) so a caller's progress loop
-   * wakes on a silent long-running command and can decide to background it.
-   * Parity with the reference's `ExecOptions.onProgress` (Shell.ts:L161-169) +
-   * the always-tick poller (TaskOutput.ts:L119-149). `onData` still streams raw
-   * chunks for callers that only want the bytes.
-   */
-  onProgress?: (lastLines: string, allLines: string, totalLines: number, totalBytes: number, isIncomplete: boolean) => void;
-  /**
-   * Heartbeat cadence (ms) for {@link onProgress}. Only used when `onProgress`
-   * is set; defaults to {@link DEFAULT_PROGRESS_INTERVAL_MS}. A value `<= 0`
-   * disables the heartbeat entirely (no progress ticks).
-   */
-  progressIntervalMs?: number;
-  /**
-   * When `false`, the command's final working directory (captured via `pwd -P`
-   * on the bash path) is written into {@link ExecCommandResult.cwd} so a caller
-   * can persist a `cd` across invocations (parity with the reference's
-   * `ExecOptions.preventCwdChanges` / `nativeCwdFilePath`, Shell.ts:L170,
-   * L385-414). Defaults to NOT tracking (undefined/`true`) so AMI's existing
-   * per-call `cwd` contract and all current callers are unchanged — a caller
-   * opts in by passing `preventCwdChanges: false`. No-op for the PowerShell
-   * shell family.
-   */
-  preventCwdChanges?: boolean;
-  /**
-   * When `true`, stream the command's COMPLETE stdout to a temp file (capped at
-   * {@link MAX_PERSISTED_OUTPUT_BYTES} = 64MB) so the model can retrieve the whole
-   * output — including the middle that the in-memory head+tail window
-   * ({@link HEAD_CHARS}/{@link TAIL_CHARS}) drops — via `file_read`. The path +
-   * byte size are returned in {@link ExecCommandResult.fullOutputPath} /
-   * {@link ExecCommandResult.fullOutputSize}, but ONLY when the captured output
-   * actually overflowed the in-memory window (otherwise the inline result is
-   * already complete and the temp file is discarded, so small commands pay no
-   * retrieval surface). Defaults to off. Parity with the reference's
-   * persist-complete-output-to-disk model (BashTool.tsx:L725-753).
-   */
-  persistFullOutput?: boolean;
-}
-
-export interface ExecCommandResult {
-  stdout: string;
-  stderr: string;
-  exitCode: number | null;
-  /**
-   * The terminating signal (e.g. `'SIGSEGV'`, `'SIGKILL'`) when the process was
-   * killed by one, else `null`. Lets callers distinguish a signal-kill / crash
-   * from a timeout or clean exit, both of which otherwise surface as
-   * `exitCode: null`.
-   */
-  signal: NodeJS.Signals | null;
-  /**
-   * `true` when a SOFT `'interrupt'` abort (the caller submitted a new message
-   * mid-command, i.e. `abortSignal.reason === 'interrupt'`) resolved this call
-   * WITHOUT killing the process — it is left running so the caller can background
-   * it and keep its in-flight/partial work. A hard abort (any other reason)
-   * still kills the process tree and leaves this unset. Parity with the reference
-   * Code's `#abortHandler` interrupt branch (ShellCommand.ts:L186-193).
-   */
-  backgrounded?: boolean;
-  /**
-   * The command's final working directory, captured via `pwd -P` on the bash
-   * path, present ONLY when the caller opted in with
-   * {@link ExecCommandOptions.preventCwdChanges} `=== false`. Lets a caller
-   * persist a `cd` across invocations. Absent when tracking is off, on the
-   * PowerShell path, or when the command exited before `pwd -P` ran.
-   */
-  cwd?: string;
-  /**
-   * Path to the temp file holding the command's COMPLETE stdout, present ONLY
-   * when the caller set {@link ExecCommandOptions.persistFullOutput} AND the
-   * captured stdout overflowed the in-memory head+tail window (so the complete
-   * output — including the dropped middle — is on disk for `file_read`). Absent
-   * when persistence was off, the output fit in memory, or the command was
-   * backgrounded / its output was suppressed.
-   */
-  fullOutputPath?: string;
-  /**
-   * Byte size of the persisted complete stdout ({@link fullOutputPath}), capped
-   * at {@link MAX_PERSISTED_OUTPUT_BYTES}. Present iff {@link fullOutputPath} is.
-   */
-  fullOutputSize?: number;
 }
 
 /**
@@ -2067,45 +1177,6 @@ export function execCommand(
   }
   return run(overridesResult as Record<string, string>);
 }
-
-/**
- * Destroy stdout/stderr/stdin streams before killing a process to prevent
- * EBADF errors. When the child process is killed, the OS closes its pipe
- * ends; if the parent-side streams are still open, Node.js may throw EBADF
- * when it later tries to close the now-invalid file descriptors.
- */
-function destroyStreams(proc: child_process.ChildProcess): void {
-  for (const stream of [proc.stdout, proc.stderr, proc.stdin]) {
-    if (stream && !stream.destroyed) {
-      try { stream.destroy(); } catch { /* EBADF is expected here */ }
-    }
-  }
-}
-
-/**
- * The POSIX `ps` invocation that dumps the whole process table as `pid ppid`
- * rows. Shared by the descendant ({@link collectProcessTree}) and ancestor
- * ({@link collectAncestorPids}) process-tree walks so the table-read command has
- * ONE definition (No-Duplication rule).
- */
-export const PS_TABLE_CMD = 'ps -A -o pid=,ppid=';
-
-/**
- * Default hard timeout (ms) for the single process-table read backing the
- * ancestor walk (parity with the reference's getAncestorPidsAsync 3000ms cap), so a
- * hung `ps`/`wmic` can never stall the caller.
- */
-export const ANCESTOR_WALK_TIMEOUT_MS = 3000;
-
-/**
- * Default hard timeout (ms) for the single process-table read backing the
- * DESCENDANT walk ({@link collectProcessTree}) used by {@link killTree} (parity
- * with the reference's getChildPids 1000ms cap), so a hung `ps` during a
- * kill/cleanup/shutdown can never stall the kill path. On timeout the read
- * throws and collectProcessTree degrades to `[rootPid]` — the same empty-result
- * fallback the reference's getChildPids applies.
- */
-export const DESCENDANT_WALK_TIMEOUT_MS = 1000;
 
 /**
  * Read the system process table once as a child-pid → parent-pid (ppid) map,

@@ -1,12 +1,12 @@
 import * as fs from 'fs';
-import * as os from 'os';
+
 import * as path from 'path';
 import { ToolDefinition, ToolContext, ToolResult, ImageContent, ToolInputSchema } from '../types';
 import { detectCommandChaining } from '../permissions';
 import { getSessionEnvironmentScript } from '../session-environment';
 import { sessionEnvOverrides } from '../session-env-vars';
 import { execCommand, resolveTmpBase, SPAWN_FAILURE_EXIT_CODE } from '../utils/shell';
-import { windowsPathToPosixPath } from '../utils/windows-paths';
+import '../utils/windows-paths';
 import { coerceBool, coerceNumber, parseOptionalBool } from '../utils/coerce';
 import { validateBashSecurity, detectCredentialPathWrite, detectSessionTranscriptWrite, detectDataExfiltration, detectCodeLoadingEnvSet, detectNuclearCommand, detectBashArgv0Assignment, detectBashpidAssignment, sanitizeToolOutput, joinLineContinuations, commandInvokesGit } from './bash-security';
 import { shouldUseSandbox, wrapWithSandbox, hostSandboxConfigFromPolicy, isSandboxPlatformEnabled, validateSandboxEnabled, describeSandboxFallbackWarning, sandboxBashDisplayName, commandWillBeHostSandboxed } from './bash-sandbox';
@@ -19,33 +19,25 @@ import {
   DEFAULT_DOCKER_IMAGE,
 } from './docker-sandbox';
 import { spillToolTextWithMeta } from './spill-output';
-import { compactTestLog, isTestRunnerCommand, looksLikeSuiteLog } from './test-log';
+import './test-log';
 import { isReadOnlyBashCommand as isCacheableReadOnly, BashResultCache } from './bash-cache';
 import { classifyBashAccess, describeToolActivity } from './tool-activity-class';
 import { compressImageBuffer, detectImageFormatFromBase64, createImageMetadataText, ImageResizeError, IMAGE_TARGET_RAW_SIZE } from './file-read';
 import { isBackgroundTasksDisabled, isGitInstructionsDisabled, isSandboxEscapeDisabled } from './tool-gates';
 import { parsePluginHintTags, stripPluginHintTags, evaluatePluginHint, formatPluginHintNote, type PluginRecommendationHint } from '../plugins';
 import { applySimulatedSedEdit } from './bash-sed-parser';
-import { findOnPath } from '../utils/which';
-import {
-  foldBashControlOutput,
-  resolveHeadlessRenderMode,
-  type BashHeadlessFold,
-} from './bash/headless-output';
-
-const MAX_OUTPUT_LENGTH = 200_000;
-// Floor for the resolved output cap: the head+tail truncation math in
-// truncateBashText/formatOutput needs room for a head slice, a tail slice, and
-// the "[truncated …]" banner, so an absurdly small BASH_MAX_OUTPUT_LENGTH is
-// clamped up to this minimum rather than producing a degenerate slice.
-const MIN_OUTPUT_LENGTH = 1_000;
-// Absolute ceiling for the resolved output cap. A mistaken or hostile
-// BASH_MAX_OUTPUT_LENGTH=999999999 would otherwise force the tool to buffer and
-// serialize ~1GB of command output per call (memory-exhaustion DoS). Parity with
-// the reference's validateBoundedIntEnvVar upper-limit cap: a value above this is
-// clamped down to it (and the capped status is debug-logged) rather than honored.
-const DEFAULT_TIMEOUT_MS = 120000;
-const HARD_MAX_TIMEOUT_MS = 3_600_000; // 1 hour
+import '../utils/which';
+import './bash/headless-output';
+import { FORK_RETRY_BASE_MS, FORK_RETRY_MAX, MAX_OUTPUT_LENGTH, MIN_OUTPUT_LENGTH, buildSearchShadowPreamble, extractBashCommentLabel, extractBashReadPaths, injectFindMaxdepth, isBashForkExhaustion, isBashOutputFileModeEnabled, isPluginHintsEnabled, isSearchShadowEnabled, looksLikeHungPrompt, normalizeBashInput, parseEnvMs, resolveAssistantBlockingBudget, resolveBashTimeout, resolveOfficialMarketplaces, rewritePwshInvocation } from './bash-strip-redundant-cd-prefix';
+import type { GitCommitKind } from './bash-strip-redundant-cd-prefix';
+import { BASH_DESCRIPTION_TAIL, DETACHED_GIT_DISCARD_MSG, PROXY_FANOUT_GROUPS, SAFE_PREFIX_PATTERNS, SAFE_PREFIX_RE, SENSITIVE_SUFFIX_PATTERNS, SHELL_IMAGE_DATA_URI_RE, applyCaBundleFanout, applyProxyFanout, buildBashInputSchema, detectBlockedSleep, detectCompoundCdGit, detectForcePushAdvisory, detectForcePushToProtected, detectSelfKill, isExecutableOnPath, isSafeEnvVar, isShellMeta, presentCommandOutput, tokenizeShell } from './bash-build-bash-input-schema';
+import type { GitInvocation } from './bash-build-bash-input-schema';
+import { diagnoseError, formatDuration, interpretExitCode, normalizeBaseCommand, truncateBashText } from './bash-interpret-exit-code';
+import type { ExitCodeInfo } from './bash-interpret-exit-code';
+export { BASH_OUTPUT_FILE_MODE_ENV, FORK_RETRY_BASE_MS, FORK_RETRY_MAX, GIT_COMMIT_KINDS, HARDENED_PWSH_FLAGS, PLUGIN_HINTS_ENV, PLUGIN_HINT_MARKETPLACES_ENV, SEARCH_SHADOW_ENV, buildSearchShadowPreamble, collapseFindExecEscape, encodeUtf16LeBase64, extractBashCommentLabel, extractBashReadPathRefs, extractBashReadPaths, injectFindMaxdepth, isBashForkExhaustion, isBashOutputFileModeEnabled, isPluginHintsEnabled, isSearchShadowEnabled, normalizeBashInput, resolveAssistantBlockingBudget, resolveBashTimeout, resolveOfficialMarketplaces, rewritePwshInvocation, rewriteWindowsNullRedirect, stripEmptyLines, stripRedundantCdPrefix } from './bash-strip-redundant-cd-prefix';
+export type { BashReadPathRef, GitCommitKind } from './bash-strip-redundant-cd-prefix';
+export { applyCaBundleFanout, applyProxyFanout, buildBashInputSchema, detectBlockedSleep, detectCompoundCdGit, detectForcePushAdvisory, detectForcePushToProtected, detectSelfKill, parseSleepSeconds } from './bash-build-bash-input-schema';
+export { diagnoseError, formatDuration, interpretExitCode, normalizeBaseCommand, truncateBashText } from './bash-interpret-exit-code';
 const _bashCache = new BashResultCache();
 
 /**
@@ -67,25 +59,6 @@ const _pluginHintSession = new Set<string>();
  */
 export function _resetPluginHintSessionForTest(): void {
   _pluginHintSession.clear();
-}
-
-/**
- * Resolve a millisecond env knob to a bounded positive integer, or `undefined`
- * when absent/blank/invalid so the caller applies its own default. Routed through
- * the single canonical {@link validateBoundedIntEnvVar} so every bash timeout
- * knob gets the SAME defensive treatment the rest of the tree uses: NaN /
- * non-positive values are rejected AND a value above `maxMs` is CAPPED (with the
- * capped/invalid status debug-logged) rather than flowing through verbatim — a
- * mistaken or hostile `BASH_MAX_TIMEOUT_MS=999999999` can no longer hang the
- * agent for ~11 days. Parity: the reference's `validateBoundedIntEnvVar`
- * upper-limit cap + invalid/capped reporting (envValidation.ts).
- */
-function parseEnvMs(name: string, maxMs: number): number | undefined {
-  const raw = process.env[name];
-  if (!raw) return undefined;
-  const r = validateBoundedIntEnvVar(name, raw, { default: 0, min: 1, max: maxMs });
-  // 'default' (blank) and 'invalid' (NaN / < 1) both mean "let the caller decide".
-  return r.status === 'default' || r.status === 'invalid' ? undefined : r.effective;
 }
 
 /**
@@ -124,40 +97,6 @@ export function resolveBashMaxOutput(): number {
     max: BASH_MAX_OUTPUT_UPPER_LIMIT,
   });
   return Math.max(MIN_OUTPUT_LENGTH, r.effective);
-}
-
-/**
- * Resolve the effective bash timeout. Honors BASH_DEFAULT_TIMEOUT_MS (default
- * when no per-call timeout) and BASH_MAX_TIMEOUT_MS (ceiling), matching the reference
- * Code. A per-call `timeout` still wins but is clamped to the max.
- */
-export function resolveBashTimeout(inputTimeout?: unknown): number {
-  const def = parseEnvMs('BASH_DEFAULT_TIMEOUT_MS', HARD_MAX_TIMEOUT_MS) ?? DEFAULT_TIMEOUT_MS;
-  // [functional parity] The effective ceiling must never be below the configured
-  // default. Mirror the reference's getMaxBashTimeoutMs, which floors the max UP to
-  // the default via Math.max — a BASH_MAX_TIMEOUT_MS misconfigured below the
-  // default is raised to the default rather than silently shrinking every
-  // command's timeout below the operator's chosen default.
-  const max = Math.max(parseEnvMs('BASH_MAX_TIMEOUT_MS', HARD_MAX_TIMEOUT_MS) ?? HARD_MAX_TIMEOUT_MS, def);
-  // [functional parity] semanticNumber coercion: providers routinely serialize a
-  // numeric `timeout` as a STRING ("5000"). Coerce it so a numeric string is
-  // honored and any non-numeric/garbage shape falls back to the default.
-  const requested = coerceNumber(inputTimeout, 0);
-  return Math.min(requested > 0 ? requested : def, max);
-}
-
-/**
- * Resolve the assistant/detached-mode blocking budget: the wall-clock ceiling
- * after which a still-running FOREGROUND command is auto-moved to the background
- * so the main agent stays responsive. Honors BASH_ASSISTANT_BLOCKING_BUDGET_MS
- * (parity: the reference's ASSISTANT_BLOCKING_BUDGET_MS, advertised at ~15s). Only
- * applied when running in detached/assistant mode; returns `undefined` when the
- * knob is unset so the normal per-call/default timeout governs (preserving AMI's
- * existing behavior unless an operator opts in). A value at/above the effective
- * timeout is a no-op (the timeout already bounds the run).
- */
-export function resolveAssistantBlockingBudget(): number | undefined {
-  return parseEnvMs('BASH_ASSISTANT_BLOCKING_BUDGET_MS', HARD_MAX_TIMEOUT_MS);
 }
 
 /** Ceiling / default for a backgrounded (run_in_background) command's own timeout. */
@@ -285,16 +224,6 @@ export function isCurrentDirectoryBareGitRepo(cwd: string | undefined): boolean 
   return false;
 }
 
-export function isBashForkExhaustion(stdout: string, stderr: string): boolean {
-  const combined = `${stdout}\n${stderr}`;
-  return /fork:\s*Resource temporarily unavailable/i.test(combined)
-    || /Cannot fork/i.test(combined)
-    || /\bEAGAIN\b/i.test(combined);
-}
-
-export const FORK_RETRY_MAX = 5;
-export const FORK_RETRY_BASE_MS = 500;
-
 async function execCommandWithForkRetry(
   command: string,
   options: Parameters<typeof execCommand>[1],
@@ -310,224 +239,6 @@ async function execCommandWithForkRetry(
     last.stderr += '\n[fork exhaustion: all retries failed — too many concurrent processes. Try closing other sessions.]';
   }
   return last;
-}
-
-const DEFAULT_FIND_MAXDEPTH = 20;
-
-export function injectFindMaxdepth(command: string): string {
-  if (!/\bfind\b/.test(command)) return command;
-  const segments = command.split(/(\s*(?:&&|\|\||;|\|)\s*)/);
-  return segments.map(seg => {
-    const trimmed = seg.trim();
-    const isFindCmd = trimmed.startsWith('find ') || trimmed.startsWith('find\t') || trimmed === 'find' ||
-      trimmed.startsWith('sudo find ') || trimmed.startsWith('sudo find\t');
-    if (!isFindCmd) return seg;
-    if (/-maxdepth\b/.test(trimmed)) return seg;
-    // Bounded: reject NaN/non-positive (→ default) and cap the depth so a
-    // mistaken/hostile AMI_FIND_MAX_DEPTH=99999999 cannot turn an injected
-    // -maxdepth into an unbounded filesystem traversal (resource exhaustion).
-    const maxDepth = validateBoundedIntEnvVar('AMI_FIND_MAX_DEPTH', process.env.AMI_FIND_MAX_DEPTH, {
-      default: DEFAULT_FIND_MAXDEPTH,
-      max: 100,
-    }).effective;
-    const tokens = trimmed.split(/\s+/);
-    let insertIdx = 1;
-    for (let i = 1; i < tokens.length; i++) {
-      if (tokens[i] === 'sudo') { insertIdx = i + 1; continue; }
-      if (!tokens[i].startsWith('-') && tokens[i] !== '(') { insertIdx = i + 1; continue; }
-      break;
-    }
-    tokens.splice(insertIdx, 0, `-maxdepth`, `${maxDepth}`);
-    return tokens.join(' ');
-  }).join('');
-}
-
-/**
- * Strip a redundant leading `cd <cwd> && ` prefix from a command. Models often
- * prefix a command with `cd` to the directory the shell is already in; since the
- * command already executes with `cwd` as its working directory, that prefix is a
- * no-op. Removing it keeps the downstream advisories/caching keyed on the real
- * work (e.g. a `cd <cwd> && git …` won't be mistaken for a relocation) and
- * matches the executed command the model sees. Only the literal current-cwd
- * prefix is stripped — a `cd` into any OTHER directory is preserved.
- *
- * On Windows the session cwd is a native path (`C:\proj`) but a model running
- * under Git Bash routinely emits the POSIX drive form (`cd /c/proj && …`); both
- * variants are stripped. `platform` is injectable so the Windows branch is
- * testable off-Windows.
- * Parity: the reference api.ts BashTool normalizeToolInput (L586-592).
- */
-export function stripRedundantCdPrefix(
-  command: string,
-  cwd: string | undefined,
-  platform: NodeJS.Platform = process.platform,
-): string {
-  if (!cwd) return command;
-  // String.replace with a string pattern replaces only the FIRST occurrence and
-  // treats the pattern literally (no regex metachar surprises in the path).
-  let out = command.replace(`cd ${cwd} && `, '');
-  if (platform === 'win32') {
-    out = out.replace(`cd ${windowsPathToPosixPath(cwd)} && `, '');
-  }
-  return out;
-}
-
-/**
- * Rewrite Windows CMD-style `>nul` redirects to POSIX `/dev/null`. The model
- * occasionally hallucinates Windows CMD syntax (e.g. `ls 2>nul`) even though the
- * shell is always POSIX; a literal `>nul` makes bash create a file named `nul`,
- * a reserved device name that is extremely hard to delete and breaks `git add .`
- * / `git clone`. Matches `>nul`, `> NUL`, `2>nul`, `&>nul`, `>>nul`
- * (case-insensitive); does NOT match `>null`, `>nul.txt`, or `cat nul.txt`.
- * Parity: the reference utils/bash/shellQuoting.ts rewriteWindowsNullRedirect.
- */
-const NUL_REDIRECT_RE = /(\d?&?>+\s*)[Nn][Uu][Ll](?=\s|$|[|&;)\n])/g;
-export function rewriteWindowsNullRedirect(command: string): string {
-  return command.replace(NUL_REDIRECT_RE, '$1/dev/null');
-}
-
-/**
- * Collapse an over-escaped `find -exec … \\;` terminator to `\;`. Models
- * frequently double-escape the terminator through JSON, emitting
- * `find … -exec rm {} \\;` (literal backslash-backslash-semicolon) which breaks
- * `find` at the shell boundary. Parity: the reference api.ts normalizeToolInput
- * (`normalizedCommand.replace(/\\\\;/g, '\\;')`, L594-595).
- */
-export function collapseFindExecEscape(command: string): string {
-  return command.replace(/\\\\;/g, '\\;');
-}
-
-/**
- * Pre-execution normalization applied to every bash command before security
- * checks and execution: drop a redundant `cd <cwd> && ` prefix (native + Windows
- * POSIX variant), rewrite Windows `>nul` redirects to `/dev/null`, and collapse
- * the double-escaped `find -exec … \\;` terminator. Behavior-preserving
- * transforms that make the command the model actually wrote run correctly on the
- * POSIX shell.
- */
-export function normalizeBashInput(command: string, cwd: string | undefined): string {
-  let out = stripRedundantCdPrefix(command, cwd);
-  out = rewriteWindowsNullRedirect(out);
-  out = collapseFindExecEscape(out);
-  return out;
-}
-
-/**
- * The hardened pwsh flag set (parity: the reference powershell/parser.ts L1171-1179)
- * prepended to a PowerShell invocation: `-NoProfile` skips profile code,
- * `-NonInteractive` avoids prompts/ANSI, `-NoLogo` suppresses the banner. Paired
- * with `-EncodedCommand` (UTF-16LE base64) to run the script without any shell
- * escaping/injection/temp-file issues.
- */
-export const HARDENED_PWSH_FLAGS = ['-NoProfile', '-NonInteractive', '-NoLogo'] as const;
-
-/**
- * Encode a PowerShell script as the UTF-16LE base64 string pwsh's `-EncodedCommand`
- * expects (parity: the reference powershell/parser.ts `toUtf16LeBase64`). A base64
- * payload survives any surrounding shell-quoting layer intact.
- */
-export function encodeUtf16LeBase64(script: string): string {
-  return Buffer.from(script, 'utf16le').toString('base64');
-}
-
-// A SIMPLE `pwsh|powershell[.exe] -Command|-c "<script>"` invocation whose single
-// quoted script spans to the end of the command. Deliberately conservative: a
-// compound/piped command, pre-flag ordering, or an already-`-EncodedCommand` form
-// does NOT match, so only the unambiguous common case is rewritten.
-const PWSH_SIMPLE_INVOCATION_RE = /^(\s*)(pwsh|powershell(?:\.exe)?)\s+(?:-Command|-c)\s+(["'])([\s\S]*)\3\s*$/i;
-
-/**
- * Harden a simple PowerShell invocation to pwsh's safe, deterministic form
- * (parity: the reference powershell/parser.ts L1167-1180): rewrite
- * `powershell -Command "<script>"` to
- * `powershell -NoProfile -NonInteractive -NoLogo -EncodedCommand <utf16le-base64>`.
- * The encoded form avoids command-line escaping/injection and interactive-mode
- * ANSI/prompt noise. Non-matching commands (compound, already encoded, other
- * shells) are returned unchanged.
- */
-export function rewritePwshInvocation(command: string): string {
-  const m = command.match(PWSH_SIMPLE_INVOCATION_RE);
-  if (!m) return command;
-  const [, lead, exe, , script] = m;
-  return `${lead}${exe} ${HARDENED_PWSH_FLAGS.join(' ')} -EncodedCommand ${encodeUtf16LeBase64(script)}`;
-}
-
-/**
- * The env gate `AMI_SEARCH_SHADOW` that opts bare `grep`/`find` run through the
- * bash tool into GrepTool-matching default flags (parity: the reference
- * ShellSnapshot.createFindGrepShellIntegration). Default OFF so command behavior is
- * unchanged unless explicitly enabled. Truthy = `1`/`true`/`yes`/`on`.
- */
-export const SEARCH_SHADOW_ENV = 'AMI_SEARCH_SHADOW';
-export function isSearchShadowEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  const v = (env[SEARCH_SHADOW_ENV] ?? '').trim().toLowerCase();
-  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
-}
-
-/** VCS metadata dirs excluded from a shadowed `grep` (parity: ShellSnapshot VCS_DIRECTORIES_TO_EXCLUDE). */
-const SEARCH_SHADOW_VCS_DIRS = ['.git', '.svn', '.hg', '.bzr', '.jj', '.sl'] as const;
-
-/**
- * Build the shell preamble that shadows bare `grep`/`find` with GrepTool-matching
- * defaults (parity: the reference ShellSnapshot.createFindGrepShellIntegration — the
- * PORTABLE subset, since AMI ships no embedded bfs/ugrep). First clears any
- * renaming alias (`alias grep=ggrep`) so the function — not the alias — handles the
- * call, then shadows `grep` with the GNU flags GrepTool relies on: `-I` (skip
- * binary files) and `--exclude-dir` for each VCS dir. A later user flag (`-a`,
- * `-E`, `-r`, …) still wins since it appears after these in argv. `find` is left to
- * GNU's default regextype (which already matches GlobTool) — only its alias is
- * cleared, as bfs/ugrep-specific flags don't apply without those binaries.
- */
-export function buildSearchShadowPreamble(): string {
-  const excludeDirs = SEARCH_SHADOW_VCS_DIRS.map(d => `--exclude-dir=${d}`).join(' ');
-  return [
-    'unalias grep 2>/dev/null || true',
-    'unalias find 2>/dev/null || true',
-    `grep() { command grep -I ${excludeDirs} "$@"; }`,
-  ].join('\n');
-}
-
-/**
- * The env gate `AMI_PLUGIN_HINTS` that opts into surfacing a plugin-install
- * suggestion when a tool emits an `<ami-hint type="plugin" …/>` tag on stderr
- * (parity: the reference's stderr-hint plugin recommendation). Default OFF — the hint
- * TAG is always stripped from output regardless, only the user-facing suggestion is
- * gated. Truthy = `1`/`true`/`yes`/`on`.
- */
-export const PLUGIN_HINTS_ENV = 'AMI_PLUGIN_HINTS';
-export function isPluginHintsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  const v = (env[PLUGIN_HINTS_ENV] ?? '').trim().toLowerCase();
-  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
-}
-
-/**
- * The env gate `AMI_BASH_OUTPUT_FILE_MODE` that opts a BACKGROUND bash command into
- * "file mode": its stdout+stderr are wired STRAIGHT to the task output-file fd so
- * neither stream enters the JS heap/event loop (parity with the reference's TaskOutput
- * `stdoutToFile`, which routes a bash command's output to a file fd so "neither enters
- * JS"). On a very large/fast firehose this keeps V8 out of the hot path — lower CPU/GC
- * and no pipe backpressure — at the cost of the separable in-memory stderr tail (stderr
- * is interleaved in the merged file, exactly as the reference's file mode does). Default OFF
- * (truthy = `1`/`true`/`yes`/`on`) so the normal pipe path — which keeps the distinct
- * `--- stderr ---` task_output section — is unchanged unless an operator opts in.
- */
-export const BASH_OUTPUT_FILE_MODE_ENV = 'AMI_BASH_OUTPUT_FILE_MODE';
-export function isBashOutputFileModeEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  const v = (env[BASH_OUTPUT_FILE_MODE_ENV] ?? '').trim().toLowerCase();
-  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
-}
-
-/**
- * Resolve the official-marketplace allowlist (`AMI_PLUGIN_HINT_MARKETPLACES`, a
- * comma list) for the plugin-hint sync gate (parity: the reference's official-marketplace
- * filter). Returns `undefined` when unset — no marketplace restriction is applied.
- */
-export const PLUGIN_HINT_MARKETPLACES_ENV = 'AMI_PLUGIN_HINT_MARKETPLACES';
-export function resolveOfficialMarketplaces(env: NodeJS.ProcessEnv = process.env): ReadonlySet<string> | undefined {
-  const raw = (env[PLUGIN_HINT_MARKETPLACES_ENV] ?? '').trim();
-  if (!raw) return undefined;
-  const set = new Set(raw.split(',').map(s => s.trim()).filter(Boolean));
-  return set.size ? set : undefined;
 }
 
 /**
@@ -601,23 +312,6 @@ export function resolveWorkingDirectory(
 }
 
 /**
- * Strip leading and trailing lines that contain only whitespace while preserving
- * interior blank lines and in-line indentation. Unlike `String.prototype.trim()`
- * — which also strips meaningful leading indentation of the first content line
- * and trailing spaces of the last — this removes only whole empty boundary lines.
- * Parity: the reference tools/BashTool/utils.ts stripEmptyLines.
- */
-export function stripEmptyLines(content: string): string {
-  const lines = content.split('\n');
-  let start = 0;
-  while (start < lines.length && lines[start]?.trim() === '') start++;
-  let end = lines.length - 1;
-  while (end >= 0 && lines[end]?.trim() === '') end--;
-  if (start > end) return '';
-  return lines.slice(start, end + 1).join('\n');
-}
-
-/**
  * Base commands that normally produce NO stdout on success (`mkdir`, `mv`, …).
  * When a command is composed entirely of these, an empty stdout is expected, so
  * the UI shows a success affordance instead of a misleading "(no output)".
@@ -672,79 +366,12 @@ export function isSilentBashCommand(command: string): boolean {
   return hasNonFallbackCommand;
 }
 
-const FILE_READ_COMMANDS = /^\s*(?:cat|head|tail|less|more|bat|batcat|grep|egrep|fgrep|sed\s+-n)\b/;
-const GREP_COMMANDS = /^\s*(?:grep|egrep|fgrep)\b/;
-
-/**
- * A single filesystem path a bash read command targets, carrying whether the
- * ORIGINAL token was relative. Relativeness matters for the compound-`cd`
- * read-boundary guard: a relative path after a `cd` in a compound command
- * (`cd ../../other && cat secret`) resolves against the STATIC launch cwd here
- * but at runtime resolves against the NEW cwd, so an "inside workspace" verdict
- * for a relative token can't be trusted and must be re-gated. Absolute tokens are
- * cwd-immune, so they stay trustworthy. Parity: the reference's compoundCommandHasCd
- * forces approval for cwd-relative paths in a cd-bearing compound command.
- */
-export interface BashReadPathRef {
-  /** The resolved absolute path (relative tokens resolved against `cwd`). */
-  resolved: string;
-  /** True when the original command token was a relative (non-absolute) path. */
-  relative: boolean;
-}
-
-/**
- * Extract every filesystem path a bash read command (`cat`/`head`/`tail`/`grep`/
- * `sed -n`/…) targets, together with whether each was a relative token (see
- * {@link BashReadPathRef}). This is the canonical extractor; {@link
- * extractBashReadPaths} is a thin resolved-paths-only wrapper over it.
- */
-export function extractBashReadPathRefs(command: string, cwd: string): BashReadPathRef[] {
-  const refs: BashReadPathRef[] = [];
-  const segments = command.split(/[;&|]+/).map(s => s.trim());
-  for (const seg of segments) {
-    if (!FILE_READ_COMMANDS.test(seg)) continue;
-    const isGrep = GREP_COMMANDS.test(seg);
-    const isSed = /^\s*sed\b/.test(seg);
-    const rawTokens = seg.match(/[^\s"']+|"[^"]*"|'[^']*'/g) ?? [];
-    const tokens = rawTokens.map(t => t.replace(/^["']|["']$/g, ''));
-    let patternSkipped = false;
-    for (let i = 1; i < tokens.length; i++) {
-      const t = tokens[i];
-      if (t.startsWith('-')) continue;
-      if ((isGrep || isSed) && !patternSkipped) { patternSkipped = true; continue; }
-      const relative = !path.isAbsolute(t);
-      const resolved = relative ? path.resolve(cwd, t) : t;
-      refs.push({ resolved, relative });
-    }
-  }
-  return refs;
-}
-
-export function extractBashReadPaths(command: string, cwd: string): string[] {
-  return extractBashReadPathRefs(command, cwd).map(r => r.resolved);
-}
-
-function looksLikeHungPrompt(output: string): boolean {
-  const lastLine = output.trim().split('\n').pop() ?? '';
-  return /\(y\/n\)|\[y\/n\]|\(yes\/no\)|password:|passphrase:|Press Enter|Continue\?|Overwrite\?|Are you sure/i.test(lastLine);
-}
-
 /** Global git options that take a separate value token (so the token after them
  *  is a value, not the subcommand). */
 export const GIT_VALUE_OPTS = new Set([
   '-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path',
   '--super-prefix', '--config-env',
 ]);
-
-/**
- * Classification of a `git commit` invocation. Parity: the reference's
- * gitOperationTracking `CommitKind` distinguishes an amend (history rewrite)
- * from a plain commit, so the two can be surfaced/advised differently. A
- * cherry-pick is a separate git subcommand (not `commit`) and is intentionally
- * NOT classified here — AMI only gates the `commit` subcommand via bash.
- */
-export const GIT_COMMIT_KINDS = ['amended', 'committed'] as const;
-export type GitCommitKind = (typeof GIT_COMMIT_KINDS)[number];
 
 /**
  * Classify a bash command that runs `git commit`, or `null` when it does not.
@@ -792,24 +419,6 @@ export function detectGitCommit(command: string): boolean {
   return detectGitCommitKind(command) !== null;
 }
 
-/**
- * If the first line of a bash command is a `# comment` (not a `#!` shebang),
- * return the comment text with its leading `#`(s) and surrounding whitespace
- * stripped; otherwise `undefined`. Parity: the reference's
- * BashTool/commentLabel `extractBashCommentLabel` — the leading comment a model
- * writes is a human-readable label for the command, used as the tool-use /
- * background-task description before falling back to the raw command text.
- */
-export function extractBashCommentLabel(command: string): string | undefined {
-  const nl = command.indexOf('\n');
-  const firstLine = (nl === -1 ? command : command.slice(0, nl)).trim();
-  if (!firstLine.startsWith('#') || firstLine.startsWith('#!')) return undefined;
-  return firstLine.replace(/^#+\s*/, '') || undefined;
-}
-
-const DETACHED_GIT_DISCARD_MSG =
-  'git stash/reset/restore is not allowed in non-interactive eval; it discards the patch.';
-
 const STASH_POP_APPLY = new Set(['pop', 'apply']);
 const STASH_PUSH_SAVE = new Set(['push', 'save', '']);
 const STASH_DROP_CLEAR = new Set(['drop', 'clear']);
@@ -817,67 +426,6 @@ const STASH_SUBCOMMANDS = new Set([
   'push', 'save', 'pop', 'apply', 'list', 'show', 'drop', 'clear',
   'branch', 'create', 'store', 'export', 'import',
 ]);
-
-function isShellMeta(t: string): boolean {
-  return t === '&&' || t === '||' || t === ';' || t === '|' || t === '|&' || t === '&' || t === '\n' || t === '(' || t === ')';
-}
-
-/**
- * Tokenize a shell command for the git guards. Unlike a naive
- * `replace(quotes).split(/\s+/)`, this removes the quote characters while
- * keeping their content as live tokens (bash does the same), so a quoted flag
- * or subcommand (`git reset "--hard"`, `git "stash"`) stays visible to the
- * guard — and quoted whitespace does not split a token, so `echo "git stash"`
- * stays a single argument rather than being parsed as a git invocation.
- * Unquoted newlines/CRs become `\n` separator tokens so a command boundary is
- * never silently swallowed into the next invocation's positionals.
- */
-function tokenizeShell(command: string): string[] {
-  const tokens: string[] = [];
-  let cur = '';
-  let quote: '"' | "'" | null = null;
-  const flush = () => {
-    if (cur.length > 0) {
-      tokens.push(cur);
-      cur = '';
-    }
-  };
-  for (let i = 0; i < command.length; i++) {
-    const c = command[i];
-    if (quote) {
-      if (c === quote) quote = null;
-      else cur += c;
-      continue;
-    }
-    if (c === '"' || c === "'") { quote = c; continue; }
-    if (c === '\n' || c === '\r') { flush(); tokens.push('\n'); continue; }
-    if (c === ' ' || c === '\t') { flush(); continue; }
-    // Shell metacharacters: flush current token, emit as separators.
-    // Compound operators (&&, ||, |&) peek ahead and emit as two-char tokens.
-    if (c === '(' || c === ')' || c === ';') { flush(); tokens.push(c); continue; }
-    if (c === '&') {
-      flush();
-      if (command[i + 1] === '&') { tokens.push('&&'); i++; } else { tokens.push('&'); }
-      continue;
-    }
-    if (c === '|') {
-      flush();
-      if (command[i + 1] === '|') { tokens.push('||'); i++; }
-      else if (command[i + 1] === '&') { tokens.push('|&'); i++; }
-      else { tokens.push('|'); }
-      continue;
-    }
-    cur += c;
-  }
-  flush();
-  return tokens;
-}
-
-interface GitInvocation {
-  sub: string;
-  rest: string[];
-  stashSub: string;
-}
 
 function parseStashSubcommand(rest: string[]): string {
   for (let i = 0; i < rest.length; i++) {
@@ -984,128 +532,6 @@ export function detectDetachedGitDiscard(command: string, cwd?: string): string 
   return null;
 }
 
-const PROTECTED_BRANCHES = /\b(main|master|production|release|develop)\b/;
-
-export function detectForcePushToProtected(command: string): string | null {
-  const norm = command.replace(/\s+/g, ' ').trim();
-  if (!/\bgit\s+push\b/.test(norm)) return null;
-  if (!/--force\b|-f\b|--force-with-lease\b/.test(norm)) return null;
-  // Don't match inside echo, printf, or quoted strings used as args to other cmds
-  if (/^\s*(echo|printf)\b/.test(norm)) return null;
-  const args = norm.split(/\s+/);
-  const gitIdx = args.indexOf('git');
-  if (gitIdx < 0) return null;
-  const pushIdx = args.indexOf('push', gitIdx);
-  if (pushIdx < 0) return null;
-  const afterPush = args.slice(pushIdx + 1).filter(a => !a.startsWith('-'));
-  for (const a of afterPush) {
-    if (PROTECTED_BRANCHES.test(a)) {
-      return `Force push to protected branch "${a}" is blocked. Use a feature branch instead.`;
-    }
-  }
-  return null;
-}
-
-/**
- * Non-blocking advisory for ANY force push, independent of branch name.
- * `detectForcePushToProtected` hard-blocks force pushes to protected branches
- * (main/master/…); this surfaces the reference's destructiveCommandWarning
- * "may overwrite remote history" notice for every OTHER force push (feature
- * branches, no explicit branch arg, `--force-with-lease`, bare `-f`) so the
- * model is warned before trusting the result. Returns null when the command is
- * not a force push. Parity: destructiveCommandWarning.ts flags any
- * `git push --force/--force-with-lease/-f` regardless of the target branch.
- */
-export function detectForcePushAdvisory(command: string): string | null {
-  const norm = command.replace(/\s+/g, ' ').trim();
-  // Don't match inside echo/printf or quoted strings used as args to other cmds.
-  if (/^\s*(echo|printf)\b/.test(norm)) return null;
-  if (!/\bgit\s+push\b/.test(norm)) return null;
-  if (!/--force\b|-f\b|--force-with-lease\b/.test(norm)) return null;
-  return 'git push --force/--force-with-lease may overwrite remote history. '
-    + 'Confirm the push is intended and that no collaborator has pushed to the branch.';
-}
-
-/**
- * Non-blocking advisory for a compound command that both changes directory
- * (`cd <dir>`) and invokes `git`. Entering an attacker-controlled repository and
- * then running git lets that repo's on-disk `.git/config`
- * (core.fsmonitor / core.hooksPath / a `!`-prefixed alias) execute arbitrary
- * code — the documented "bare repository" attack. AMI's git-config-RCE guard
- * (bash-security `detectGitConfigRce`) only catches the agent *setting* such keys,
- * not *reading* a repo that already carries them, so a `cd evil && git status`
- * slips through. This warns the model to treat the output as untrusted.
- * Parity: bashCommandHelpers.ts forces approval for compound cd+git commands.
- */
-export function detectCompoundCdGit(command: string): string | null {
-  const segments = command.split(/(?:&&|\|\||[;|])/).map(s => s.trim()).filter(Boolean);
-  if (segments.length < 2) return null;
-  // `cd <arg>`: a bare `cd`/`cd -`/`cd ~` goes to a known-safe place; only a
-  // directory argument can move git into an attacker-controlled tree.
-  const hasCd = segments.some(s => /^cd\s+(?![-~](?:\s|$))\S/.test(s));
-  if (!hasCd) return null;
-  const hasGit = segments.some(s => {
-    const first = s.replace(/^sudo\s+/, '').split(/\s+/)[0] ?? '';
-    return (first.split('/').pop() ?? '') === 'git';
-  });
-  if (!hasGit) return null;
-  return 'This command runs `git` after `cd` into another directory. A '
-    + 'malicious `.git/config` (core.fsmonitor/hooksPath/alias) in that repo can '
-    + 'execute arbitrary code — treat the output as untrusted if the directory is not yours.';
-}
-
-export function detectSelfKill(command: string): string | null {
-  const stripped = command.replace(/"[^"]*"|'[^']*'/g, '');
-  const pid = process.pid;
-  const ppid = process.ppid;
-  if (new RegExp(`\\bkill\\s+(-\\w+\\s+)*${pid}\\b`).test(stripped))
-    return 'This would kill AMI itself (PID match).';
-  if (new RegExp(`\\bkill\\s+(-\\w+\\s+)*${ppid}\\b`).test(stripped))
-    return 'This would kill AMI\'s parent process.';
-  return null;
-}
-
-const SLEEP_SUFFIX_SECONDS: Record<string, number> = { s: 1, m: 60, h: 3600, d: 86400 };
-
-/**
- * Total duration (seconds) of a leading `sleep` command, or null if the command
- * is not a bare `sleep`. Mirrors GNU coreutils grammar: `sleep NUMBER[SUFFIX]...`
- * where SUFFIX ∈ {s,m,h,d} (default seconds), NUMBER may be a decimal, and
- * multiple arguments are summed (`sleep 1m 30` = 90s).
- */
-export function parseSleepSeconds(command: string): number | null {
-  const m = command.match(/^\s*sleep\s+(.+?)\s*$/i);
-  if (!m) return null;
-  const args = m[1].split(/\s+/);
-  let total = 0;
-  for (const arg of args) {
-    const a = arg.match(/^(\d*\.?\d+)([smhd]?)$/i);
-    if (!a) return null; // not a plain sleep duration (var, expr, flag, …) — don't guess
-    total += parseFloat(a[1]) * SLEEP_SUFFIX_SECONDS[(a[2] || 's').toLowerCase()];
-  }
-  return total;
-}
-
-export function detectBlockedSleep(command: string, runInBackground: boolean, hasCustomTimeout: boolean): string | null {
-  if (runInBackground || hasCustomTimeout) return null;
-  // A blocking sleep can hide inside a compound foreground command
-  // (`build && sleep 600`, `a; sleep 300`), so scan each sequencing segment, not
-  // just the whole string. Split only on FOREGROUND separators (&&, ||, ;, |) —
-  // a trailing single `&` backgrounds the sleep, which is not blocking, so it is
-  // deliberately NOT a split point. parseSleepSeconds stays strict, so a segment
-  // with any non-duration token (quotes, flags, extra args) is skipped.
-  let seconds: number | null = null;
-  for (const seg of command.split(/(?:&&|\|\||[;|])/)) {
-    const s = parseSleepSeconds(seg);
-    if (s !== null && (seconds === null || s > seconds)) seconds = s;
-  }
-  if (seconds !== null && seconds > 10) {
-    const pretty = Number.isInteger(seconds) ? `${seconds}` : seconds.toFixed(2).replace(/\.?0+$/, '');
-    return `Blocking sleep for ${pretty}s detected. Use run_in_background: true for long waits, or schedule_wakeup for timed delays.`;
-  }
-  return null;
-}
-
 /**
  * Leading tokens that must NOT be auto-moved to the background when a foreground
  * command overruns its timeout. A `sleep` that times out is a pointless process
@@ -1168,25 +594,6 @@ export const SENSITIVE_ENV_SET = new Set([
   // action-specific duplicates — ALL_INPUTS contains anthropic_api_key as JSON.
   'ALL_INPUTS', 'OVERRIDE_GITHUB_TOKEN', 'DEFAULT_WORKFLOW_TOKEN', 'SSH_SIGNING_KEY',
 ]);
-
-const SENSITIVE_SUFFIX_PATTERNS = [
-  /_KEY$/i, /_SECRET$/i, /_TOKEN$/i, /_PASSWORD$/i,
-  /_CREDENTIALS$/i, /_PRIVATE_KEY$/i, /_API_KEY$/i,
-  // Any *_HEADERS var — header values commonly carry Authorization=Bearer tokens.
-  /_HEADERS$/i,
-];
-
-const SAFE_PREFIX_RE = /^(PATH|HOME|USER|SHELL|TERM|LANG|DISPLAY|TMPDIR|PWD|OLDPWD|HOSTNAME|LOGNAME|SHLVL|_)$/i;
-const SAFE_PREFIX_PATTERNS = [
-  /^LC_/i, /^XDG_/i, /^SUPERINFERENCE_/i, /^NODE_/i,
-  /^COLORTERM$/i, /^COLUMNS$/i, /^LINES$/i,
-  /^NO_COLOR$/i, /^FORCE_COLOR$/i,
-];
-
-function isSafeEnvVar(key: string): boolean {
-  if (SAFE_PREFIX_RE.test(key)) return true;
-  return SAFE_PREFIX_PATTERNS.some(p => p.test(key));
-}
 
 // NOTE: distinct from the exported env-access-guard `isSensitiveEnvVar` (which is a coarse
 // substring gate for whether a plugin may READ an env value). THIS policy decides what to
@@ -1257,18 +664,6 @@ export function describeSubprocessEnvIsolation(): {
   };
 }
 
-/**
- * True if `name` resolves to an executable file on any dir of `pathValue`.
- * Delegates to the canonical no-spawn {@link findOnPath} PATH resolver (which
- * handles POSIX `X_OK`, win32 `PATHEXT`, and an injectable env) instead of
- * re-implementing a second PATH scan here (No-Duplication: one `which`-style
- * probe for the whole tree). `pathValue` is threaded through as the probed
- * `PATH` so the python-shim decision stays deterministic/testable.
- */
-function isExecutableOnPath(name: string, pathValue: string | undefined): boolean {
-  return findOnPath(name, { PATH: pathValue }) !== null;
-}
-
 // Cache the resolved shim dir for the process (undefined = not yet computed, null = not applicable).
 let cachedPythonShimDir: string | null | undefined;
 /** Test seam: forget the memoized python-shim decision. */
@@ -1311,64 +706,6 @@ export function ensurePythonShimDir(pathValue: string | undefined = process.env.
     cachedPythonShimDir = null;
   }
   return cachedPythonShimDir;
-}
-
-/**
- * Fan a single configured CA bundle out to every runtime-specific trust-store env
- * var so an operator behind a corporate MITM proxy can point AMI at one custom CA
- * and have the agent's spawned `curl`, `python`/`pip` (requests) and other tools
- * trust it — not just AMI's own Node process. The source of truth is
- * `NODE_EXTRA_CA_CERTS` (the one knob AMI already documents/honors); when it is
- * set, `SSL_CERT_FILE` (OpenSSL/curl), `REQUESTS_CA_BUNDLE` (python-requests) and
- * `CURL_CA_BUNDLE` (curl) are each populated with the same path — but ONLY when
- * the user has not already set that specific var, so an explicit per-runtime
- * override always wins. Parity: the reference's upstreamproxy `getUpstreamProxyEnv`
- * CA-bundle fan-out. Mutates and returns `env`.
- */
-export function applyCaBundleFanout(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const caBundle = env.NODE_EXTRA_CA_CERTS;
-  if (caBundle) {
-    for (const key of ['SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE'] as const) {
-      if (!env[key]) env[key] = caBundle;
-    }
-  }
-  return env;
-}
-
-/**
- * Proxy concepts a spawned child honors, each with the case/name variants
- * different runtimes read. curl/wget/git honor LOWER-case (`https_proxy`,
- * `http_proxy`, `all_proxy`, `no_proxy`) first; Go/gh, python-requests and many
- * JS clients read UPPER-case (`HTTPS_PROXY`, …). A relay/MITM-proxy operator who
- * exports only one case therefore silently loses the other half of the toolchain.
- */
-const PROXY_FANOUT_GROUPS: ReadonlyArray<readonly [string, string]> = [
-  ['HTTPS_PROXY', 'https_proxy'],
-  ['HTTP_PROXY', 'http_proxy'],
-  ['ALL_PROXY', 'all_proxy'],
-  ['NO_PROXY', 'no_proxy'],
-] as const;
-
-/**
- * Fan each configured proxy var out to its other-case sibling so a child
- * `curl`/`gh`/`python`/`git` all route through the SAME relay regardless of which
- * case the operator (or an upstream relay launcher) exported. For each group the
- * first set variant is the source of truth; the unset sibling is populated with
- * it, but an explicitly-set sibling is never overwritten (explicit per-runtime
- * override always wins). Parity: the reference's upstreamproxy `getUpstreamProxyEnv`
- * injects `HTTPS_PROXY` + friends into every subprocess so relayed sessions work;
- * AMI has no relay process but honors whatever proxy the environment provides and
- * makes it consistent across tools. Mirrors {@link applyCaBundleFanout}. Mutates
- * and returns `env`.
- */
-export function applyProxyFanout(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  for (const [upper, lower] of PROXY_FANOUT_GROUPS) {
-    const source = env[upper] ?? env[lower];
-    if (source === undefined) continue;
-    if (env[upper] === undefined) env[upper] = source;
-    if (env[lower] === undefined) env[lower] = source;
-  }
-  return env;
 }
 
 function scrubEnv(extra?: Record<string, string>): NodeJS.ProcessEnv {
@@ -1476,15 +813,6 @@ const BASH_DESCRIPTION_GIT =
   'Git: `git commit` via bash is blocked — use the git_commit tool to commit. Never amend/--no-verify/force-push, and never '
   + 'commit unless explicitly asked. ';
 
-// Closing sleep guidance, always present (it is not git- or background-specific).
-// [functional parity] Anti-retry-loop / anti-poll guidance (the reference prompt.ts:L310-L328):
-// never retry a failing command inside a sleep loop — diagnose the root cause
-// instead of polling. (The companion "you'll be notified, don't poll a background
-// task" line lives in BASH_DESCRIPTION_BACKGROUND so it is dropped with the
-// run_in_background capability when background tasks are disabled.)
-const BASH_DESCRIPTION_TAIL =
-  'Do not sleep between commands. Do not retry a failing command in a sleep loop — diagnose the root cause instead of polling.';
-
 // Background-task guidance, suppressed when background tasks are disabled so the
 // model is never told about a capability that is turned off for this deployment.
 const BASH_DESCRIPTION_BACKGROUND =
@@ -1516,89 +844,6 @@ export function buildBashDescription(backgroundDisabled: boolean, gitDisabled = 
   const withBg = backgroundDisabled ? head : head + BASH_DESCRIPTION_BACKGROUND;
   // Always surface the output-truncation threshold so the model can plan around it.
   return withBg + describeOutputTruncation();
-}
-
-/**
- * Model-facing bash input schema. When background tasks are disabled the
- * `run_in_background` property is omitted entirely from the advertised schema
- * (parity: the reference's BashTool lazySchema omit behind CLAUDE_CODE_DISABLE_BACKGROUND_TASKS)
- * so the model cannot request a background run in a locked-down deployment.
- */
-export function buildBashInputSchema(backgroundDisabled: boolean, sandboxEscapeDisabled = false): ToolInputSchema {
-  const schema: ToolInputSchema = {
-    type: 'object',
-    properties: {
-      command: {
-        type: 'string',
-        description: 'The bash command to execute.',
-      },
-      timeout: {
-        type: 'number',
-        description:
-          'Optional timeout in milliseconds. Defaults to 120000 (2 minutes), or BASH_DEFAULT_TIMEOUT_MS if set; capped at BASH_MAX_TIMEOUT_MS (default 1 hour).',
-      },
-      run_in_background: {
-        type: 'boolean',
-        description:
-          'Run this command in the background. Returns immediately with a task ID; you do NOT need to append `&`. ' +
-          'You will be notified when it completes — do not poll. Use task_output to inspect results, task_kill to stop it, ' +
-          'or task_list to see all background tasks.',
-      },
-      background_kind: {
-        type: 'string',
-        enum: ['bash', 'monitor'],
-        description:
-          'Kind of background task (only meaningful with run_in_background). Defaults to "bash". ' +
-          'Use "monitor" for a long-lived STREAMING command that is EXPECTED to idle between bursts of output ' +
-          '(e.g. `tail -f`, a dev server, a log follower): the stall watchdog is disabled for it, so a healthy ' +
-          'monitor is not mis-flagged as blocked on an interactive prompt, and its termination is reported as a ' +
-          'stream ending rather than a command succeeding or failing.',
-      },
-      description: {
-        type: 'string',
-        description:
-          'Clear, concise description of what this command does, in active voice (5-10 words for simple commands). ' +
-          'Examples: `ls` -> "List files in current directory"; `git status` -> "Show working tree status"; ' +
-          '`npm install` -> "Install project dependencies". Avoid vague words like "complex" or "risk".',
-      },
-      dangerouslyDisableSandbox: {
-        type: 'boolean',
-        description:
-          'Run this command outside the sandbox (no filesystem/network/resource restrictions). ' +
-          'When a command fails with evidence of a sandbox restriction — "Operation not permitted", access denied to paths ' +
-          'outside the project, or a network/unix-socket connection error — retry that SAME command with ' +
-          'dangerouslyDisableSandbox: true. Scope the override to the individual command that needs it; do not disable the ' +
-          'sandbox pre-emptively. ' +
-          // [functional parity] dangerouslyDisableSandbox guardrails (the reference
-          // prompt.ts:L228-L257): prefer the sandbox-writable $TMPDIR for temp
-          // files, and never weaken the sandbox to reach credential paths.
-          'Prefer $TMPDIR (sandbox-writable) over /tmp for temporary files, and never weaken the sandbox to reach ' +
-          'credential paths such as ~/.bashrc, ~/.zshrc, ~/.ssh/*, or other secret files. ' +
-          // [functional parity] Unsandboxed-override policy gate wording (the reference
-          // sandboxTypes.ts): the flag is NOT a free escape — in enforced
-          // container-sandbox mode it is ignored (the command still runs inside
-          // the container), and whenever it is honoured it always requires
-          // explicit confirmation before the command runs unsandboxed.
-          'This flag is ignored in enforced container-sandbox mode (the command still runs inside the container), and ' +
-          'when it is honoured running unsandboxed always requires explicit confirmation.',
-      },
-    },
-    required: ['command'],
-  };
-  if (backgroundDisabled) {
-    delete schema.properties.run_in_background;
-    // background_kind only gates a background run, so it is meaningless — and must
-    // not be advertised — when background tasks are disabled by policy.
-    delete schema.properties.background_kind;
-  }
-  // When policy forbids the escape hatch, omit it from the advertised schema so
-  // the model cannot even request it (parity: the reference's prompt states the
-  // parameter is 'disabled by policy' and drops it). The runtime also ignores a
-  // smuggled flag — see the execute() sandbox branch.
-  if (sandboxEscapeDisabled) {
-    delete schema.properties.dangerouslyDisableSandbox;
-  }
-  return schema;
 }
 
 export const bashTool: ToolDefinition = {
@@ -2270,34 +1515,6 @@ export const bashTool: ToolDefinition = {
   },
 };
 
-function presentCommandOutput(
-  command: string,
-  stdout: string,
-  stderr: string,
-): { stdout: string; stderr: string; headless: BashHeadlessFold } {
-  // Headless terminal fold FIRST: collapse `\r` progress-bar overwrites, cursor-
-  // addressed redraws and curses alt-screen frames into the final rendered screen
-  // so the model sees what a human would, not raw ANSI soup. Heuristic-gated, so
-  // plain `\n`-delimited logs (the common case) pass through byte-for-byte; a hard
-  // AMI_BASH_HEADLESS_RENDER=off env kill switch disables it entirely. This runs
-  // before compactTestLog/stripEmptyLines so those line-oriented passes operate on
-  // the already-flattened text.
-  const headless = foldBashControlOutput(stdout, stderr, resolveHeadlessRenderMode());
-  const foldOut = isTestRunnerCommand(command) || looksLikeSuiteLog(headless.stdout);
-  const foldErr = isTestRunnerCommand(command) || looksLikeSuiteLog(headless.stderr);
-  // Strip only whole leading/trailing empty lines (a trailing newline from most
-  // commands, or a leading blank from a banner) while preserving interior blank
-  // lines and indentation, so the model sees clean output without losing layout.
-  return {
-    stdout: stripEmptyLines(foldOut ? compactTestLog(headless.stdout) : headless.stdout),
-    stderr: stripEmptyLines(foldErr ? compactTestLog(headless.stderr) : headless.stderr),
-    headless,
-  };
-}
-
-/** A bare base64 image data URI occupying the whole of a command's stdout. */
-const SHELL_IMAGE_DATA_URI_RE = /^data:(image\/[a-z0-9.+_-]+);base64,([A-Za-z0-9+/=\s]+)$/i;
-
 /** Raw-byte ceiling for a shell-produced image before we refuse to decode it
  *  (parity: the reference's MAX_IMAGE_FILE_SIZE = 20MB). Estimated from the base64
  *  length BEFORE allocating the buffer, so a pathological data URI can't OOM us. */
@@ -2345,144 +1562,6 @@ export async function maybeBuildShellImageOutput(stdout: string): Promise<string
     }
     return null;
   }
-}
-
-const ERROR_HINTS: Array<{ pattern: RegExp; hint: string }> = [
-  { pattern: /ENOSPC|No space left on device/i, hint: 'Disk is full. Free up space in the working directory or /tmp. Check usage with `df -h` and find large files with `du -sh * | sort -rh | head`.' },
-  { pattern: /Transform failed|SyntaxError:.*Unexpected/i, hint: 'Your code has a syntax error (missing bracket, semicolon, or mismatched quotes). Use file_read to check the file you last edited.' },
-  { pattern: /Cannot find module|ERR_MODULE_NOT_FOUND/i, hint: 'Module not found. Check the import path with list_dir or glob, and try running via npm test instead of raw node commands.' },
-  { pattern: /ENOENT.*no such file/i, hint: 'File or directory does not exist. Use list_dir to check what files are available.' },
-  { pattern: /TypeError:.*is not a function/i, hint: 'A function call is wrong. Use file_read to check the export names and signatures in the imported module.' },
-  { pattern: /ReferenceError:.*is not defined/i, hint: 'A variable or import is missing. Check your imports and variable declarations with file_read.' },
-  { pattern: /Operation not permitted|\bEPERM\b/i, hint: 'This can be a sandbox restriction — the command ran in an isolated sandbox that blocks writes outside the project, network access, or certain syscalls. If the operation is legitimate, retry the SAME command with dangerouslyDisableSandbox: true.' },
-  { pattern: /EACCES.*permission denied/i, hint: 'Permission denied. Check file permissions with ls -la, or use a different directory.' },
-  { pattern: /EADDRINUSE/i, hint: 'Port already in use. Try a different port or find and kill the process using it (lsof -i :PORT).' },
-  { pattern: /ENOMEM|Cannot allocate memory|out of memory/i, hint: 'Out of memory. Try reducing the workload, closing other processes, or increasing available memory.' },
-  { pattern: /ETIMEDOUT|ECONNREFUSED|ECONNRESET/i, hint: 'Network error. Check if the target service is running and reachable.' },
-  { pattern: /EPIPE|broken pipe/i, hint: 'Broken pipe. The receiving process terminated before all input was consumed.' },
-  { pattern: /EMFILE|ENFILE|too many open files/i, hint: 'Too many open files. Close unused file handles or increase the ulimit (ulimit -n).' },
-  { pattern: /TS\d+:/i, hint: 'TypeScript compilation error. Use file_read to check the file at the reported line number.' },
-  { pattern: /error\[E\d+\]/i, hint: 'Rust compilation error. Check the file and line number in the error message.' },
-  { pattern: /npm ERR!.*ERESOLVE/i, hint: 'NPM dependency resolution conflict. Try npm install --legacy-peer-deps or check package.json version constraints.' },
-  { pattern: /fatal: not a git repository/i, hint: 'Not inside a git repository. Check the current directory.' },
-  { pattern: /API rate limit exceeded|gh: api rate limit|403.*rate limit/i, hint: 'GitHub API rate limit exceeded. Wait a few minutes before retrying, or authenticate with `gh auth login` for higher limits.' },
-  { pattern: /secondary rate limit|abuse detection/i, hint: 'GitHub secondary rate limit triggered. Slow down requests — wait at least 60 seconds before retrying.' },
-  { pattern: /missing required scopes|not been granted the required scopes|Resource not accessible by (?:integration|personal access token)|HTTP 403:.*(?:scope|admin)/i, hint: 'GitHub CLI token is missing required scopes. Run `gh auth refresh -h github.com -s repo,workflow` to grant them, or `gh auth login` to re-authenticate.' },
-];
-
-export function diagnoseError(output: string): string | null {
-  for (const { pattern, hint } of ERROR_HINTS) {
-    if (pattern.test(output)) return hint;
-  }
-  return null;
-}
-
-interface ExitCodeInfo {
-  message: string;
-  isNonError?: boolean;
-}
-
-/**
- * Reduce a raw command token to its base command name for exit-code semantics:
- * strip a PowerShell call operator (`&`/`.`) prefix, surrounding quotes, the
- * directory portion of a path (`/usr/bin/grep` → `grep`, Windows `\` too), and a
- * trailing `.exe` (case-insensitive). Without this, a path-qualified or quoted
- * command (`/usr/bin/grep`, `"grep"`, `grep.exe`) would miss its exit-code rule.
- */
-export function normalizeBaseCommand(raw: string): string {
-  let b = (raw || '').trim();
-  b = b.replace(/^[&.]+\s*/, ''); // PowerShell call/dot-source operator
-  if (b.length >= 2 && ((b[0] === '"' && b[b.length - 1] === '"') || (b[0] === "'" && b[b.length - 1] === "'"))) {
-    b = b.slice(1, -1);
-  }
-  const slash = Math.max(b.lastIndexOf('/'), b.lastIndexOf('\\'));
-  if (slash >= 0) b = b.slice(slash + 1);
-  b = b.replace(/\.exe$/i, '');
-  return b;
-}
-
-export function interpretExitCode(command: string, exitCode: number): ExitCodeInfo | null {
-  const parts = command.trim().split(/[|;&]\s*/);
-  const lastCmd = parts[parts.length - 1].trim().split(/\s+/)[0];
-  const base = normalizeBaseCommand(lastCmd || command.trim().split(/\s+/)[0]);
-  // robocopy uses a bitfield exit code: bits 0-2 (values 1/2/4) are informational
-  // success states, bit 3 (8) = mismatched/failed files, bit 4 (16) = fatal. So an
-  // exit code < 8 is success, not an error.
-  if (base.toLowerCase() === 'robocopy' && exitCode >= 0 && exitCode < 8) {
-    const notes: string[] = [];
-    if (exitCode & 1) notes.push('files copied');
-    if (exitCode & 2) notes.push('extra files/dirs present');
-    if (exitCode & 4) notes.push('mismatched files/dirs present');
-    const detail = notes.length ? notes.join(', ') : 'no files needed copying';
-    return { message: `(robocopy success — exit ${exitCode}: ${detail})`, isNonError: true };
-  }
-  // grep family: grep/egrep/fgrep/rg (POSIX + ripgrep) and findstr (Windows
-  // native text search) all exit 1 on no-match and >=2 on a real error.
-  const isGrepFamily = base === 'grep' || base === 'egrep' || base === 'fgrep' || base === 'rg' || base.toLowerCase() === 'findstr';
-  if (exitCode === 1 && isGrepFamily) return { message: '(no matches found — not an error)', isNonError: true };
-  if (exitCode === 1 && base === 'diff') return { message: '(files differ — not an error)', isNonError: true };
-  if (exitCode === 1 && base === 'git') {
-    const args = command.trim().split(/\s+/).slice(1);
-    if (args[0] === 'grep' || args[0] === 'diff') return { message: '(no matches/differences found — not an error)', isNonError: true };
-  }
-  if (exitCode === 1 && (base === 'test' || base === '[')) return { message: '(condition is false)', isNonError: true };
-  if (exitCode === 1 && base === 'find') return { message: '(some paths were inaccessible)', isNonError: true };
-  if (exitCode === 2 && isGrepFamily) return { message: '(error in grep pattern or file access)' };
-  if (exitCode === 126) return { message: '(permission denied — command not executable)' };
-  if (exitCode === 127) return { message: '(command not found)' };
-  if (exitCode === 128 + 9) return { message: '(killed by SIGKILL)' };
-  if (exitCode === 128 + 15) return { message: '(killed by SIGTERM)' };
-  return null;
-}
-
-/**
- * Render a millisecond duration as a compact human-readable string for
- * model/user-facing messages (timeouts). Parity: the reference
- * ShellCommand `Command timed out after ${formatDuration(timeout)}` — e.g.
- * 120000 → "2m", 90000 → "1m 30s", 3661000 → "1h 1m 1s". As a superset over
- * the reference's whole-second rendering, a sub-second value keeps ms precision
- * ("400ms") rather than collapsing to "0s". Non-finite/negative input falls back
- * to the raw `${ms}ms` form so the message is never silently wrong.
- */
-export function formatDuration(ms: number): string {
-  if (!Number.isFinite(ms) || ms < 1000) return `${ms}ms`;
-  const totalSeconds = Math.floor(ms / 1000);
-  const days = Math.floor(totalSeconds / 86400);
-  const hours = Math.floor((totalSeconds % 86400) / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-  const parts: string[] = [];
-  if (days) parts.push(`${days}d`);
-  if (hours) parts.push(`${hours}h`);
-  if (minutes) parts.push(`${minutes}m`);
-  if (seconds || parts.length === 0) parts.push(`${seconds}s`);
-  return parts.join(' ');
-}
-
-export function truncateBashText(text: string, maxLength: number): string {
-  if (text.length <= maxLength) {
-    return text;
-  }
-  let half = Math.floor((maxLength - 100) / 2);
-
-  // Avoid splitting a UTF-16 surrogate pair at the head boundary.
-  if (half > 0 && half < text.length) {
-    const code = text.charCodeAt(half - 1);
-    if (code >= 0xD800 && code <= 0xDBFF) half--; // back off lone high surrogate
-  }
-
-  // Avoid splitting a UTF-16 surrogate pair at the tail boundary.
-  let tailStart = text.length - half;
-  if (tailStart > 0 && tailStart < text.length) {
-    const code = text.charCodeAt(tailStart);
-    if (code >= 0xDC00 && code <= 0xDFFF) tailStart++; // skip lone low surrogate
-  }
-
-  return (
-    text.slice(0, half) +
-    `\n\n... [truncated ${text.length - maxLength + 100} characters] ...\n\n` +
-    text.slice(tailStart)
-  );
 }
 
 function formatOutput(
