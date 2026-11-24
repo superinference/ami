@@ -97,6 +97,9 @@ export async function buildLayerTree(layerName, opts = {}) {
   const REL = /(\bfrom\s*['"])(\.\.?\/[^'"]+?)(['"])/g;
   const DYN = /(\bimport\s*\(\s*['"])(\.\.?\/[^'"]+?)(['"]\s*\))/g;
   const REQ = /(\brequire\s*\(\s*['"])(\.\.?\/[^'"]+?)(['"]\s*\))/g;
+  // Bare side-effect imports (`import './x';`) — e.g. the evaluation-order-preserving
+  // imports a move-only module split leaves behind.
+  const SIDE = /(\bimport\s*['"])(\.\.?\/[^'"]+?)(['"])/g;
   for (const f of walk(outRoot, (n) => n.endsWith('.mjs'))) {
     const fileDir = dirname(f);
     const addExt = (m, a, spec, c) => {
@@ -109,7 +112,7 @@ export async function buildLayerTree(layerName, opts = {}) {
       return `${a}${spec}.mjs${c}`;
     };
     let s = readFileSync(f, 'utf8');
-    s = s.replace(REL, addExt).replace(DYN, addExt).replace(REQ, addExt);
+    s = s.replace(REL, addExt).replace(DYN, addExt).replace(REQ, addExt).replace(SIDE, addExt);
     writeFileSync(f, s);
   }
 

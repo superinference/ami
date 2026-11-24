@@ -15,6 +15,7 @@ import * as path from 'node:path';
 import { McpManager, findMcpConfigPaths, isTransientConnectError } from '../src/mcp/manager';
 import { McpClient } from '../src/mcp/client';
 import { DEFAULT_MCP_TOOL_TIMEOUT_MS, getMcpToolTimeout, extractMaxResultSizeChars } from '../src/tools/mcp-tool';
+import { readModuleSource } from './_module-source';
 
 let manager: McpManager;
 
@@ -267,9 +268,7 @@ describe('MCP tool call timeout', () => {
   });
 
   it('source code uses Promise.race with timeout for tool calls', () => {
-    const src = fs.readFileSync(
-      path.join(__dirname, '..', 'src', 'tools', 'mcp-tool.ts'), 'utf-8',
-    );
+    const src = readModuleSource(path.join(__dirname, '..', 'src', 'tools', 'mcp-tool.ts'));
     assert.ok(src.includes('Promise.race'), 'must use Promise.race for timeout');
     assert.ok(src.includes('getMcpToolTimeout()'), 'must call getMcpToolTimeout()');
     assert.ok(src.includes('timed out after'), 'must include descriptive timeout message');

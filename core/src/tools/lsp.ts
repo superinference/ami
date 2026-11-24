@@ -1,47 +1,13 @@
 import * as path from 'path';
 import { ToolDefinition, ToolResult, ToolContext } from '../types';
-import {
-  isUncPath,
-  lspFileSizeBytes,
-  uriToPath,
-  MAX_LSP_FILE_SIZE_BYTES,
-} from '../lsp/diagnostic-tracking';
+import { isUncPath, lspFileSizeBytes, MAX_LSP_FILE_SIZE_BYTES } from '../lsp/diagnostic-tracking';
 import { isLspEnabled } from './tool-gates';
 import { plural } from './tool-utils';
 import { filterGitIgnoredLocations } from './lsp-gitignore-filter';
 import { groupBy } from '../utils/group-by';
 import { errorMessage } from '../credential-guard';
-
-
-/**
- * Position-based semantic LSP tool — parity with the reference's LSPTool.
- *
- * A single `operation` enum dispatches nine language-server queries against the
- * real JSON-RPC client (which reads server responses and correlates them by id):
- * goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol,
- * goToImplementation, prepareCallHierarchy, incomingCalls, outgoingCalls.
- * Positions are 1-based (as shown in editors) and converted to the 0-based LSP
- * protocol. Unknown file types return a graceful "no server" message instead of
- * throwing, matching the reference's undefined-result fallback.
- */
-
-const OPERATIONS = [
-  'goToDefinition',
-  'findReferences',
-  'hover',
-  'documentSymbol',
-  'workspaceSymbol',
-  'goToImplementation',
-  'prepareCallHierarchy',
-  'incomingCalls',
-  'outgoingCalls',
-] as const;
-
-type LspOperation = (typeof OPERATIONS)[number];
-
-interface LspClientLike {
-  request<T = unknown>(filePath: string, cwd: string, method: string, params: unknown): Promise<T | undefined>;
-}
+import { OPERATIONS, formatUri, linePos, symbolKindToString } from './lsp-operations';
+import type { CallHierarchyItem, DocumentSymbol, IncomingCall, Location, LocationLink, LspClientLike, LspOperation, OutgoingCall, Position, SymbolInformation } from './lsp-operations';
 
 /** Indirection seam so tests can inject a fake client (mirrors lsp-diagnostics). */
 export const _lspToolHooks = {
@@ -50,46 +16,6 @@ export const _lspToolHooks = {
     return getLSPClient();
   },
 };
-
-interface Position { line: number; character: number }
-interface Range { start: Position; end: Position }
-interface Location { uri: string; range: Range }
-interface LocationLink { targetUri: string; targetRange: Range; targetSelectionRange?: Range }
-interface DocumentSymbol { name: string; kind: number; detail?: string; range: Range; children?: DocumentSymbol[] }
-interface SymbolInformation { name: string; kind: number; containerName?: string; location: Location }
-interface CallHierarchyItem { name: string; kind?: number; detail?: string; uri: string; range: Range }
-interface IncomingCall { from: CallHierarchyItem; fromRanges?: Range[] }
-interface OutgoingCall { to: CallHierarchyItem; fromRanges?: Range[] }
-
-/** LSP SymbolKind enum → readable label (1=File…26=TypeParameter). */
-const SYMBOL_KINDS: Record<number, string> = {
-  1: 'File', 2: 'Module', 3: 'Namespace', 4: 'Package', 5: 'Class',
-  6: 'Method', 7: 'Property', 8: 'Field', 9: 'Constructor', 10: 'Enum',
-  11: 'Interface', 12: 'Function', 13: 'Variable', 14: 'Constant', 15: 'String',
-  16: 'Number', 17: 'Boolean', 18: 'Array', 19: 'Object', 20: 'Key',
-  21: 'Null', 22: 'EnumMember', 23: 'Struct', 24: 'Event', 25: 'Operator',
-  26: 'TypeParameter',
-};
-function symbolKindToString(kind: number | undefined): string {
-  return SYMBOL_KINDS[kind ?? 0] ?? 'Unknown';
-}
-
-/**
- * Defensive URI render: a missing/undefined URI (malformed LSP payload) becomes
- * `<unknown location>` instead of printing "undefined"; otherwise reuse the
- * canonical `uriToPath` (handles percent-decode fallback + Windows drive-letter).
- */
-function formatUri(uri: string | undefined): string {
-  if (!uri) return '<unknown location>';
-  return uriToPath(uri);
-}
-
-/** `line:character` (1-based) from a range, with a defensive 0:0 fallback. */
-function linePos(range: Range | undefined): string {
-  const line = range ? range.start.line + 1 : 0;
-  const char = range ? range.start.character + 1 : 0;
-  return `${line}:${char}`;
-}
 
 /**
  * Normalize a Location | LocationLink into a Location shape. For a LocationLink,

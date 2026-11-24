@@ -16,108 +16,25 @@
  *  - tool names + model ids are mapped into the dashboard's own vocabulary
  */
 
-import * as os from 'os';
+import 'os';
 import * as path from 'path';
 import * as fs from 'fs';
-import * as crypto from 'crypto';
-import { execSync } from 'child_process';
+import 'crypto';
+import 'child_process';
 import { assertPathWithin } from './path-safety';
 import { atomicWriteFileSync, secureMkdirSync, OWNER_ONLY_FILE_MODE } from './utils/fs-atomic';
 import { memoizeWithLRU } from './utils/memoize';
 import { log, logError } from './logger';
 import { getGlobalConfigPath, updateConfigFile, loadConfigFileChecked, stripBom, runConfigKeyMigrations } from './config';
-import type { DiffHunk } from './types';
 
-/** Compat floor: dashboards below this treat sidechain usage as estimated. Must be semver. */
-export const COMPAT_VERSION = '2.1.307';
-
-// ---------------------------------------------------------------------------
-// Directory resolution + path building
-// ---------------------------------------------------------------------------
-
-/**
- * Resolve the user's home directory with the reference-parity precedence (parity:
- * xdg.ts `resolveOptions`): an explicit `homedir` override wins, then the `HOME`
- * env var, then the OS passwd lookup. On POSIX `os.homedir()` reads the passwd
- * entry and does NOT reflect a re-exported `$HOME`, so a sandbox / CI / `su`
- * process that redirects HOME would otherwise resolve config/cache/data under
- * the wrong home — preferring `env.HOME` fixes that. `homedir` is an injectable
- * DI/test seam so paths can be resolved against an injected home without
- * mutating `process.env` or the global home.
- */
-export function resolveHome(env: NodeJS.ProcessEnv = process.env, homedir?: string): string {
-  if (homedir) return homedir;
-  const h = env.HOME;
-  return h && h.trim() ? h : os.homedir();
-}
-
-/**
- * Expand a leading `~` in a config-dir override to the user's home directory.
- * A value supplied via settings.json `env` (as opposed to a shell) is NOT
- * tilde-expanded by the OS, so an override of `~/.ami` would otherwise create a
- * literal `~` directory in the cwd (gh-30794 / CC-212). We expand only a leading
- * `~` segment; every other value (absolute or otherwise) passes through verbatim
- * so existing precedence/behaviour is unchanged. Home is resolved via
- * {@link resolveHome} so a redirected `$HOME` is honored.
- */
-export function expandConfigDir(value: string, env: NodeJS.ProcessEnv = process.env, homedir?: string): string {
-  if (value === '~' || value.startsWith('~/') || value.startsWith('~\\')) {
-    return path.join(resolveHome(env, homedir), value.slice(1));
-  }
-  return value;
-}
-
-/**
- * Reject an externally-supplied storage root that is dangerous to trust as the
- * base for ALL per-project state (sessions, memory, checkpoints) — parity with
- * the reference's `validateMemoryPath` (memdir/paths.ts). A bad override must never
- * silently redirect every write under the cwd or near the filesystem root.
- * Rejects (after `path.normalize` + trailing-separator strip):
- *  - non-absolute ("../foo" — interpreted relative to cwd)
- *  - root / near-root (normalized length < 3: "/", "/a")
- *  - Windows drive-root ("C:")
- *  - UNC / network path ("\\\\server", "//server") — opaque trust boundary
- *  - embedded NUL (survives `normalize()`, can truncate in syscalls)
- */
-export function isDangerousStorageRoot(p: string): boolean {
-  // UNC/network prefixes and NUL are checked on the RAW value too: POSIX
-  // `path.normalize` collapses a leading `//` to `/`, which would otherwise let a
-  // UNC path slip past the normalized check.
-  if (p.startsWith('\\\\') || p.startsWith('//') || p.includes('\0')) return true;
-  const normalized = path.normalize(p).replace(/[/\\]+$/, '');
-  return (
-    !path.isAbsolute(normalized) ||
-    normalized.length < 3 ||
-    /^[A-Za-z]:$/.test(normalized) ||
-    normalized.startsWith('\\\\') ||
-    normalized.startsWith('//')
-  );
-}
-
-/**
- * Resolve the first TRUSTED, validated config-dir override from the env —
- * CLAUDE_CONFIG_DIR (lets a user point an external dashboard and us at one dir),
- * then SUPERINFERENCE_DATA_DIR. Each candidate is tilde-expanded (gh-30794),
- * boundary-validated ({@link isDangerousStorageRoot}) and NFC-normalized (so
- * decomposed-Unicode paths — common on macOS APFS/HFS — compare and join
- * consistently; parity: envUtils.ts `getClaudeConfigHomeDir`). An unset / empty
- * / dangerous override is skipped (falling through to the next source, ultimately
- * `~/.ami`) and the rejection is logged — a bad value can never silently
- * redirect state. Returns null when no trusted override is present.
- */
-function resolveStorageOverride(env: NodeJS.ProcessEnv, homedir?: string): string | null {
-  for (const key of ['CLAUDE_CONFIG_DIR', 'SUPERINFERENCE_DATA_DIR'] as const) {
-    const raw = env[key];
-    if (!raw || !raw.trim()) continue;
-    const expanded = expandConfigDir(raw, env, homedir);
-    if (isDangerousStorageRoot(expanded)) {
-      logError('resolve-config-dir', `rejecting dangerous ${key} override`, { value: raw });
-      continue;
-    }
-    return expanded.normalize('NFC');
-  }
-  return null;
-}
+import { CURRENT_MIGRATION_VERSION, GIT_ROOT_CACHE_MAX, expandConfigDir, isDangerousStorageRoot, migrateLegacyDataDir, resolveHome, resolveStorageOverride } from './reference-journal-persist-positive-capability';
+import type { ModelAliasMigration, StartupMigrationResult } from './reference-journal-persist-positive-capability';
+import { AMI_TO_CLAUDE_TOOL, projectSlug, resolveGitRootUncached, sanitizeId } from './reference-journal-build-usage-fields';
+import type { UserEntry, UserEntryArgs } from './reference-journal-build-usage-fields';
+export { COMPAT_VERSION, CURRENT_MIGRATION_VERSION, MAX_SESSION_ID_LENGTH, MAX_SLUG_LENGTH, canonicalizePath, expandConfigDir, formatStartupMigrationNotices, getUserBinDir, isDangerousStorageRoot, isDirOnPath, migrateLegacyDataDir, persistPositiveCapability, readCachedCapability, resolveHome } from './reference-journal-persist-positive-capability';
+export type { ModelAliasMigration, StartupMigrationNoticeOptions, StartupMigrationResult } from './reference-journal-persist-positive-capability';
+export { AMI_TO_CLAUDE_TOOL, AMI_TO_REFERENCE_MODEL, buildAssistantEntry, buildUsageFields, projectSlug, toReferenceModelId, toReferenceToolName } from './reference-journal-build-usage-fields';
+export type { AssistantEntry, AssistantEntryArgs, JournalContentBlock, JournalUsage, JournalUsageInput, StructuredPatchHunk, UserEntry, UserEntryArgs } from './reference-journal-build-usage-fields';
 
 /**
  * Env-keyed memo for {@link resolveConfigDir}: this is on many hot paths (every
@@ -194,157 +111,6 @@ export function resolveCacheDir(env: NodeJS.ProcessEnv = process.env, homedir?: 
 }
 
 /**
- * The conventional per-user executable directory — `~/.local/bin` — honoring the
- * same HOME-aware precedence as every other path resolver here ({@link resolveHome}:
- * an explicit `homedir` override wins, then `$HOME`, then the OS passwd entry).
- * Parity with the reference's `getUserBinDir()` (xdg.ts): "not technically XDG but
- * follows the convention", the location a native per-user installer would place (or
- * symlink) an executable so it lands on a dir that is commonly already on `PATH`.
- * AMI's own native install root is `~/.ami/bin`; this exposes the broader
- * cross-tool convention so a diagnostic (or future installer step) can reason about
- * the standard user bin dir without re-deriving it. `homedir` is a test seam.
- */
-export function getUserBinDir(env: NodeJS.ProcessEnv = process.env, homedir?: string): string {
-  return path.join(resolveHome(env, homedir), '.local', 'bin');
-}
-
-/**
- * Whether `dir` is a member of the `PATH` env var. Each entry is trimmed, empty
- * entries are skipped, and both sides are {@link path.resolve}d before comparing so
- * `~/.local/bin`, `./bin` and a trailing-slash variant all match their canonical
- * form; on Windows the comparison is case-insensitive (the filesystem is). A
- * non-string / unset `PATH` is treated as empty. Shared by the native-install PATH
- * reachability check and the `~/.local/bin` diagnostic so the membership rule lives
- * in exactly one place.
- */
-export function isDirOnPath(
-  dir: string,
-  env: NodeJS.ProcessEnv = process.env,
-  platform: NodeJS.Platform = process.platform,
-): boolean {
-  let resolvedDir: string;
-  try {
-    resolvedDir = path.resolve(dir);
-  } catch {
-    resolvedDir = dir;
-  }
-  const isWindows = platform === 'win32';
-  const rawPath = typeof env.PATH === 'string' ? env.PATH : '';
-  return rawPath.split(path.delimiter).some((entry) => {
-    const e = entry.trim();
-    if (!e) return false;
-    try {
-      const r = path.resolve(e);
-      return isWindows ? r.toLowerCase() === resolvedDir.toLowerCase() : r === resolvedDir;
-    } catch {
-      return false;
-    }
-  });
-}
-
-/**
- * Read a previously-cached machine-local capability-detection boolean from the
- * GLOBAL config, or `undefined` when it was never cached. Pure read — no probe, no
- * write — so a startup-critical path can consult a prior POSITIVE detection without
- * shelling out. The map lives under the single `cachedCapabilities` config key.
- * Best-effort: a missing / corrupt / non-boolean value yields `undefined`.
- */
-export function readCachedCapability(
-  key: string,
-  configPath: string | null = getGlobalConfigPath(),
-): boolean | undefined {
-  if (!configPath) return undefined;
-  const caps = loadConfigFileChecked(configPath).config?.cachedCapabilities;
-  if (caps && typeof caps === 'object' && typeof (caps as Record<string, unknown>)[key] === 'boolean') {
-    return (caps as Record<string, boolean>)[key];
-  }
-  return undefined;
-}
-
-/**
- * Asymmetric capability cache — persist ONLY a POSITIVE machine-local capability
- * detection into the shared GLOBAL config, NEVER a negative (parity: the reference's
- * `isChromeExtensionInstalled_CACHED_MAY_BE_STALE`, which writes only a positive
- * `cachedChromeExtensionInstalled`).
- *
- * A `~/.ami/config.json` can be shared across machines (synced home, remote-dev
- * bridge, a baked CI image), so caching a stale `false` from a machine that lacks
- * the capability — no local Docker daemon, no browser — would permanently poison
- * the detection for every session on every machine that reads that config. A stale
- * `true` costs at most one wasted live attempt, so we deliberately write `true` and
- * drop `false`. The write stores a boolean under `cachedCapabilities[key]` via the
- * canonical crash-safe, lock-guarded {@link updateConfigFile} (temp+rename, no
- * lost-update). Idempotent: a no-op when the value is already `true`. Best-effort —
- * a write failure is logged, never thrown (this is a cache, not durable state).
- * Returns true only when a write actually happened.
- */
-export function persistPositiveCapability(
-  key: string,
-  detected: boolean,
-  configPath: string | null = getGlobalConfigPath(),
-): boolean {
-  // Asymmetric by design: a negative detection is never persisted so it can never
-  // poison a config shared across machines — a `false` is a deliberate no-op.
-  if (!detected || !configPath) return false;
-  try {
-    const res = updateConfigFile(configPath, current => {
-      const caps = (current.cachedCapabilities ?? {}) as Record<string, boolean>;
-      if (caps[key] === true) return current; // already cached positive — idempotent no-op
-      return { ...current, cachedCapabilities: { ...caps, [key]: true } };
-    });
-    return res.written;
-  } catch (err) {
-    logError('persist-capability', `failed to persist capability "${key}"`, { error: String(err) });
-    return false;
-  }
-}
-
-/**
- * One-time, idempotent migration of durable config from the pre-rename `~/.superinference` into
- * `~/.ami` (issue #21 defect 1): the .superinference→.ami rename moved every plugin/skill/
- * marketplace ROOT but no on-disk data, orphaning plugins installed by a pre-rename binary. We
- * MOVE each durable subdir only when the target is absent (never clobber newer `.ami` data), and
- * only for the DEFAULT data dir (an explicit CLAUDE_CONFIG_DIR/SUPERINFERENCE_DATA_DIR opts out).
- * Best-effort; returns the names migrated. `homeDir` is injectable for tests.
- */
-export function migrateLegacyDataDir(env: NodeJS.ProcessEnv = process.env, homeDir: string = resolveHome(env)): string[] {
-  if ((env.CLAUDE_CONFIG_DIR && env.CLAUDE_CONFIG_DIR.trim()) ||
-      (env.SUPERINFERENCE_DATA_DIR && env.SUPERINFERENCE_DATA_DIR.trim())) return [];
-  const legacy = path.join(homeDir, '.superinference');
-  const target = path.join(homeDir, '.ami');
-  if (!fs.existsSync(legacy)) return [];
-  const migrated: string[] = [];
-  // Durable, user-installed config only — NOT transient runtime (sessions/analytics/etc.), which
-  // is regenerated and legitimately orphaned by the rename.
-  for (const sub of ['plugins', 'marketplaces', 'marketplaces.json', 'installed-skills', 'skills', 'agents']) {
-    try {
-      const src = path.join(legacy, sub);
-      const dst = path.join(target, sub);
-      if (fs.existsSync(src) && !fs.existsSync(dst)) {
-        fs.mkdirSync(target, { recursive: true });
-        fs.renameSync(src, dst);
-        migrated.push(sub);
-      }
-    } catch (err) {
-      // Best-effort — a failed migration must never block startup, but record it
-      // so a partial relocation is diagnosable instead of silently swallowed.
-      logError('migrate-legacy', `failed to migrate ${sub}`, { error: String(err) });
-    }
-  }
-  return migrated;
-}
-
-/** The observable outcome of a {@link migrateDeprecatedModelAlias} pass. */
-export interface ModelAliasMigration {
-  /** The deprecated/removed model id that was persisted in settings. */
-  from: string;
-  /** The current successor id it was rewritten to. */
-  to: string;
-  /** The settings file that was rewritten. */
-  path: string;
-}
-
-/**
  * One-time, idempotent startup migration of a persisted, DEPRECATED/renamed pinned
  * `model` string in the GLOBAL (user-level) settings to its current successor id —
  * so the settings file, `/model`, and downstream pricing all reflect a live model
@@ -406,34 +172,6 @@ export async function migrateDeprecatedModelAlias(
 }
 
 /**
- * The current config-migration generation. The ordered startup migration set
- * ({@link runStartupMigrations}) runs once per generation: it executes only while a
- * user's persisted `migrationVersion` lags this constant, then stamps it. Bumping this
- * number re-runs the WHOLE set for every existing user, so a NEW migration is added by
- * appending its call to {@link runStartupMigrations} and incrementing this — an
- * extensible, ordered, idempotent framework (parity: the reference's
- * CURRENT_MIGRATION_VERSION / runMigrations(), replacing the previous single ad-hoc
- * migrateLegacyDataDir() call that had no version counter or ordered dispatch).
- */
-export const CURRENT_MIGRATION_VERSION = 1;
-
-/** The observable outcome of a {@link runStartupMigrations} pass. */
-export interface StartupMigrationResult {
-  /**
-   * The generation stamped into the global config after this run (always
-   * {@link CURRENT_MIGRATION_VERSION} when the set ran), or null when the set was
-   * SKIPPED because the stored version already matched — an idempotent no-op.
-   */
-  ranVersion: number | null;
-  /** Durable subdirs relocated out of `~/.superinference` by {@link migrateLegacyDataDir}. */
-  relocatedDirs: string[];
-  /** The deprecated→successor pinned-model rewrite applied to user settings, if any. */
-  modelAlias: ModelAliasMigration | null;
-  /** Deprecated config KEYS renamed to their successor by {@link runConfigKeyMigrations}. */
-  renamedConfigKeys: string[];
-}
-
-/**
  * Versioned, ordered, run-once startup migration framework. Gates on the persisted
  * `migrationVersion` in the GLOBAL settings: when it already equals
  * {@link CURRENT_MIGRATION_VERSION} the whole set is a no-op (so steady-state startups
@@ -478,57 +216,6 @@ export async function runStartupMigrations(
 }
 
 /**
- * Options for {@link formatStartupMigrationNotices}.
- */
-export interface StartupMigrationNoticeOptions {
-  /**
-   * Presentation-layer renderer that appends the "how to opt out" control to the
-   * model-alias notice — the model remap is an AUTOMATIC change, so (parity with
-   * the reference's useModelMigrationNotifications.tsx:L29 "Model updated … · Set
-   * CLAUDE_CODE_DISABLE_LEGACY_MODEL_REMAP=1 to opt out") the announcement also tells
-   * the user the single env var that disables it. Injected (not hard-coded here) so the
-   * canonical opt-out-control formatter stays in ONE place (the CLI's
-   * `appendOptOutControl`) rather than this core layer re-deriving the "· Set X=1 to opt
-   * out" wording. Omitted → the notice is emitted without the hint (plain data).
-   */
-  appendOptOut?: (message: string) => string;
-}
-
-/**
- * Human-readable one-time notices describing what {@link runStartupMigrations} silently
- * changed on disk, so the startup surface can tell the user (parity: the reference's
- * post-migration one-time notification driven by a persisted flag). Empty when the set
- * was skipped (version already current) or ran but changed nothing — so a caller prints
- * nothing on a steady-state startup, and the version stamp guarantees the notice shows at
- * most once per generation. When {@link StartupMigrationNoticeOptions.appendOptOut} is
- * supplied, the model-remap notice carries the opt-out control so the user learns how to
- * disable the auto-remap inline (parity with the reference's migration-notification hint).
- */
-export function formatStartupMigrationNotices(
-  result: StartupMigrationResult,
-  opts: StartupMigrationNoticeOptions = {},
-): string[] {
-  const notices: string[] = [];
-  if (result.relocatedDirs.length) {
-    notices.push(
-      `Relocated durable config (${result.relocatedDirs.join(', ')}) from ~/.superinference to ~/.ami.`,
-    );
-  }
-  if (result.modelAlias) {
-    const base =
-      `Updated your pinned model from "${result.modelAlias.from}" to "${result.modelAlias.to}" ` +
-      `(the previous id was retired) in ${result.modelAlias.path}.`;
-    notices.push(opts.appendOptOut ? opts.appendOptOut(base) : base);
-  }
-  if (result.renamedConfigKeys.length) {
-    notices.push(
-      `Migrated deprecated config key(s) (${result.renamedConfigKeys.join(', ')}) to their current name.`,
-    );
-  }
-  return notices;
-}
-
-/**
  * Every data dir the Usage/spend view should READ from — so it aggregates spend across ALL
  * agents, not just ours: our own journal, the reference's (~/.claude), and any dirs registered
  * in the dashboard config. An explicit CLAUDE_CONFIG_DIR / SUPERINFERENCE_DATA_DIR override is
@@ -558,79 +245,6 @@ export function resolveReadDirs(env: NodeJS.ProcessEnv = process.env): string[] 
 }
 
 /**
- * Longest project-slug we emit before switching to a truncated-plus-hash form.
- * A deep cwd can produce a slug that blows past the filesystem's path/segment
- * limit (ENAMETOOLONG), so a very long slug is capped and disambiguated with a
- * short deterministic hash of the raw cwd. (Mirrors the reference's slug cap.)
- */
-export const MAX_SLUG_LENGTH = 200;
-
-/**
- * Longest sanitized session/agent id we embed in a journal filename before
- * switching to a truncated-plus-hash form. A caller-supplied session id (e.g. a
- * resumed id, a workflow run id, or a hostile value) can be arbitrarily long;
- * `<id>.jsonl` / `agent-<id>.jsonl` must stay within a single filesystem path
- * component (commonly 255 bytes) or the append fails ENAMETOOLONG. Capped well
- * below 255 to leave room for the `agent-` prefix + `.jsonl` suffix.
- */
-export const MAX_SESSION_ID_LENGTH = 200;
-
-/**
- * Truncate an already-transformed path component to `maxLen`, disambiguating the
- * truncation with a short deterministic sha256 of the RAW (pre-transform) input
- * so two distinct long inputs sharing a truncated prefix never collide and the
- * mapping is stable across runs. The single canonical cap primitive — both the
- * project slug and the session-id filename route through it so the truncation /
- * hashing rule is defined exactly once (no per-site re-implementation).
- */
-function cappedComponent(transformed: string, raw: string, maxLen: number): string {
-  if (transformed.length <= maxLen) return transformed;
-  const hash = crypto.createHash('sha256').update(raw).digest('hex').slice(0, 8);
-  return transformed.slice(0, maxLen - 9) + '-' + hash;
-}
-
-/**
- * Canonicalize a filesystem path before it is used to derive a stable project
- * identity (parity: the reference's canonicalizePath). Two things make the RAW cwd an
- * unstable key: symlinks (two paths that are the same directory) and Unicode
- * normalization (the same name encoded NFC vs NFD slugs differently). We resolve
- * the deepest existing ancestor via `realpathSync` (re-joining any not-yet-existing
- * tail) and NFC-normalize the result. A path that cannot be resolved at all
- * (never existed) falls back to its NFC form so the function is total and pure for
- * non-existent inputs (keeps `projectSlug` deterministic for fabricated paths).
- */
-export function canonicalizePath(p: string): string {
-  let dir = p;
-  const tail: string[] = [];
-  // Walk up to the deepest ancestor that exists on disk, then realpath it.
-  for (let i = 0; i < 4096; i++) {
-    try {
-      const real = fs.realpathSync(dir);
-      return (tail.length ? path.join(real, ...tail.reverse()) : real).normalize('NFC');
-    } catch {
-      const parent = path.dirname(dir);
-      if (parent === dir) break; // reached the root without an existing ancestor
-      tail.push(path.basename(dir));
-      dir = parent;
-    }
-  }
-  return p.normalize('NFC');
-}
-
-/** Hard ceiling so a wedged git invocation can never hang project-path resolution. */
-const GIT_ROOT_TIMEOUT_MS = 2_000;
-
-/**
- * Upper bound on distinct cwds whose git-root resolution is cached. `projectStateDir`
- * and friends are called many times per turn (often with `dirname(file)` across many
- * directories), so the result MUST be memoized — but with a BOUNDED LRU, not an
- * unbounded Map: a long-running session editing files across hundreds of directories
- * would otherwise accumulate cache entries forever. Parity with the reference's
- * `findGitRoot`, which wraps the walk in `memoizeWithLRU(…, 50)` for the same reason.
- */
-const GIT_ROOT_CACHE_MAX = 50;
-
-/**
  * Resolve `cwd` to the canonical MAIN git-worktree root so EVERY worktree (and
  * every subdirectory) of one repository shares a single project identity —
  * memory, sessions and checkpoints follow the repo, not the exact directory you
@@ -653,55 +267,6 @@ export const canonicalGitRoot = memoizeWithLRU(
   (cwd: string) => cwd,
   GIT_ROOT_CACHE_MAX,
 );
-
-function runGit(args: string, cwd: string): string | null {
-  try {
-    const out = execSync(`git ${args}`, {
-      cwd,
-      encoding: 'utf-8',
-      timeout: GIT_ROOT_TIMEOUT_MS,
-      stdio: ['ignore', 'pipe', 'ignore'],
-      env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: '' },
-    }).trim();
-    return out || null;
-  } catch {
-    return null;
-  }
-}
-
-function resolveGitRootUncached(cwd: string): string {
-  const commonDir = runGit('rev-parse --path-format=absolute --git-common-dir', cwd);
-  if (commonDir) {
-    // `<root>/.git` for the main worktree (and the SHARED path for linked
-    // worktrees) → the repo root is its parent. A bare repo (git-common-dir is
-    // the repo dir itself, not ending in `.git`) keeps the dir as its identity.
-    const root = path.basename(commonDir) === '.git' ? path.dirname(commonDir) : commonDir;
-    return canonicalizePath(root);
-  }
-  const top = runGit('rev-parse --show-toplevel', cwd);
-  if (top) return canonicalizePath(top);
-  return canonicalizePath(cwd);
-}
-
-/** Project slug: the dashboard derives a per-cwd folder by replacing non-alphanumerics with '-'.
- *  A slug over {@link MAX_SLUG_LENGTH} is truncated and suffixed with an 8-hex-char
- *  sha256 of the raw cwd, so deep paths stay collision-resistant and within fs limits. */
-export function projectSlug(cwd: string): string {
-  const slug = cwd.replace(/[^a-zA-Z0-9]/g, '-');
-  return cappedComponent(slug, cwd, MAX_SLUG_LENGTH);
-}
-
-/**
- * Sanitize a session/agent id for use as a filename: neutralize separators /
- * traversal, then bound the length ({@link cappedComponent}) so an arbitrarily
- * long id can never overflow a filesystem path component (ENAMETOOLONG). The
- * length cap hashes the RAW id, so two long ids differing only past the cap still
- * map to distinct files.
- */
-function sanitizeId(id: string): string {
-  const safe = id.replace(/[\/\\]/g, '_').replace(/\.\./g, '_');
-  return cappedComponent(safe, id, MAX_SESSION_ID_LENGTH);
-}
 
 /**
  * The GLOBAL per-project state dir — `<configDir>/projects/<cwd-slug>/` — mirroring the reference's
@@ -748,40 +313,6 @@ export function subagentJournalPathFor(
   return file;
 }
 
-// ---------------------------------------------------------------------------
-// Vocabulary mapping (our internal ids -> the dashboard's names)
-// ---------------------------------------------------------------------------
-
-/** Our tool ids -> the dashboard's tool vocabulary (PascalCase the reference names). */
-export const AMI_TO_CLAUDE_TOOL: Record<string, string> = {
-  bash: 'Bash',
-  file_read: 'Read',
-  file_edit: 'Edit',
-  file_write: 'Write',
-  notebook_edit: 'NotebookEdit',
-  grep: 'Grep',
-  find_references: 'Grep',
-  search_symbols: 'Grep',
-  glob: 'Glob',
-  list_dir: 'LS',
-  web_fetch: 'WebFetch',
-  agentic_fetch: 'WebFetch',
-  web_search: 'WebSearch',
-  skill: 'Skill',
-  task: 'Task',
-  workflow: 'Task',
-  todo_write: 'TodoWrite',
-  task_tracker: 'TodoWrite',
-  plan_mode: 'EnterPlanMode',
-  tool_search: 'ToolSearch',
-};
-
-/** Map an internal tool name to the dashboard vocabulary. MCP tools (mcp__x__y) pass through. */
-export function toReferenceToolName(name: string): string {
-  if (name.startsWith('mcp__')) return name;
-  return AMI_TO_CLAUDE_TOOL[name] ?? name;
-}
-
 /**
  * Reverse of {@link AMI_TO_CLAUDE_TOOL}: a persisted (reference-vocabulary) tool
  * name → the canonical internal name. The forward map is many-to-one
@@ -802,200 +333,6 @@ const REFERENCE_TO_AMI_TOOL: Record<string, string> = (() => {
  *  {@link toReferenceToolName}; identity for internal/unknown/MCP names. */
 export function toAmiToolName(name: string): string {
   return REFERENCE_TO_AMI_TOOL[name] ?? name;
-}
-
-/**
- * Map our model ids to ids the dashboard's pricing table can resolve. Already-dated
- * snapshot ids (…-YYYYMMDD / …-NNNNNNNN) pass through; known families map to a
- * representative priceable snapshot; everything else passes through unchanged.
- * (ALIGNMENT RISK: a model the table can't price reads $0 downstream.)
- */
-export const AMI_TO_REFERENCE_MODEL: Record<string, string> = {
-  'claude-opus-4-8': 'claude-opus-4-20250514',
-  'claude-opus-4-7': 'claude-opus-4-20250514',
-  'claude-opus-4': 'claude-opus-4-20250514',
-  'claude-sonnet-4': 'claude-sonnet-4-20250514',
-  'claude-haiku': 'claude-3-5-haiku-20241022',
-};
-
-export function toReferenceModelId(model: string): string {
-  if (!model) return model;
-  if (/\d{8}$/.test(model)) return model; // already a dated snapshot
-  if (AMI_TO_REFERENCE_MODEL[model]) return AMI_TO_REFERENCE_MODEL[model];
-  // Family fallbacks for forward-compat variants (claude-opus-*, claude-sonnet-*, …).
-  if (/^claude-opus/.test(model)) return 'claude-opus-4-20250514';
-  if (/^claude-sonnet/.test(model)) return 'claude-sonnet-4-20250514';
-  if (/^claude-haiku|^claude-3-5-haiku/.test(model)) return 'claude-3-5-haiku-20241022';
-  return model;
-}
-
-// ---------------------------------------------------------------------------
-// Record schema
-// ---------------------------------------------------------------------------
-
-/** The subset of our per-call usage we persist (any extra fields are ignored). */
-export interface JournalUsageInput {
-  promptTokens: number;
-  completionTokens: number;
-  reasoningTokens?: number;
-  cachedPromptTokens?: number;
-  cacheCreationTokens?: number;
-  /** Cache-creation tokens written at the 5-minute ephemeral TTL. When BOTH this
-   *  and {@link cacheCreation1hTokens} are omitted the full aggregate is treated
-   *  as a 5m write (the provider surfaced no per-TTL split). */
-  cacheCreation5mTokens?: number;
-  /** Cache-creation tokens written at the 1-hour ephemeral TTL. */
-  cacheCreation1hTokens?: number;
-}
-
-export interface JournalUsage {
-  input_tokens: number;
-  output_tokens: number;
-  cache_creation_input_tokens: number;
-  cache_read_input_tokens: number;
-  cache_creation: { ephemeral_5m_input_tokens: number; ephemeral_1h_input_tokens: number };
-  output_tokens_details: { thinking_tokens: number };
-}
-
-/**
- * Map our usage into the dashboard's snake_case API usage. `input_tokens` is the FRESH
- * (uncached) prompt portion — total prompt minus cache-read and cache-creation — so the
- * dashboard's input + cache_read + cache_creation sum reconstructs the full prompt.
- * Cache-creation is split per ephemeral TTL (parity: the reference's emptyUsage
- * `cache_creation.{ephemeral_5m_input_tokens, ephemeral_1h_input_tokens}`): when
- * the provider surfaces an explicit 5m/1h split it is honored; otherwise the full
- * cache-creation total is attributed to the 5m TTL (the default ephemeral window),
- * which is correct for pricing and preserves prior behaviour.
- */
-export function buildUsageFields(u: JournalUsageInput): JournalUsage {
-  const cacheRead = Math.max(0, u.cachedPromptTokens ?? 0);
-  const cacheCreate = Math.max(0, u.cacheCreationTokens ?? 0);
-  const input = Math.max(0, u.promptTokens - cacheRead - cacheCreate);
-  // Honor an explicit per-TTL split when the provider supplies either arm; with
-  // neither present, the whole aggregate is a 5m write (no 1h data surfaced).
-  const hasSplit = u.cacheCreation5mTokens !== undefined || u.cacheCreation1hTokens !== undefined;
-  const ephemeral5m = hasSplit ? Math.max(0, u.cacheCreation5mTokens ?? 0) : cacheCreate;
-  const ephemeral1h = hasSplit ? Math.max(0, u.cacheCreation1hTokens ?? 0) : 0;
-  return {
-    input_tokens: input,
-    output_tokens: Math.max(0, u.completionTokens),
-    cache_creation_input_tokens: cacheCreate,
-    cache_read_input_tokens: cacheRead,
-    cache_creation: { ephemeral_5m_input_tokens: ephemeral5m, ephemeral_1h_input_tokens: ephemeral1h },
-    output_tokens_details: { thinking_tokens: Math.max(0, u.reasoningTokens ?? 0) },
-  };
-}
-
-export type JournalContentBlock =
-  | { type: 'text'; text: string }
-  | { type: 'thinking'; thinking: string }
-  | { type: 'tool_use'; id: string; name: string; input: unknown };
-
-export interface AssistantEntryArgs {
-  uuid: string;
-  parentUuid: string | null;
-  timestamp: string;
-  sessionId: string;
-  cwd: string;
-  gitBranch: string;
-  isSidechain: boolean;
-  messageId: string;
-  model: string;
-  stopReason: string | null;
-  usage: JournalUsageInput;
-  content: JournalContentBlock[];
-}
-
-export interface AssistantEntry {
-  type: 'assistant';
-  uuid: string;
-  parentUuid: string | null;
-  timestamp: string;
-  sessionId: string;
-  cwd: string;
-  version: string;
-  gitBranch: string;
-  isSidechain: boolean;
-  message: {
-    type: 'message';
-    role: 'assistant';
-    id: string;
-    model: string;
-    stop_reason: string | null;
-    usage: JournalUsage;
-    content: JournalContentBlock[];
-  };
-}
-
-/** Build an assistant journal line (one per completed API call). NEVER includes cost. */
-export function buildAssistantEntry(a: AssistantEntryArgs): AssistantEntry {
-  return {
-    type: 'assistant',
-    uuid: a.uuid,
-    parentUuid: a.parentUuid,
-    timestamp: a.timestamp,
-    sessionId: a.sessionId,
-    cwd: a.cwd,
-    version: COMPAT_VERSION,
-    gitBranch: a.gitBranch,
-    isSidechain: a.isSidechain,
-    message: {
-      type: 'message',
-      role: 'assistant',
-      id: a.messageId,
-      model: toReferenceModelId(a.model),
-      stop_reason: a.stopReason,
-      usage: buildUsageFields(a.usage),
-      content: a.content.map(b =>
-        b.type === 'tool_use' ? { ...b, name: toReferenceToolName(b.name) } : b,
-      ),
-    },
-  };
-}
-
-/**
- * A per-hunk structured diff recorded on a tool_result journal line. This is the
- * SAME shape as a file-mutating tool's {@link DiffHunk} — the journal reuses that
- * ONE canonical type (no parallel definition) so the patch a replay/introspection
- * surface reads is byte-identical to what the tool produced.
- */
-export type StructuredPatchHunk = DiffHunk;
-
-export interface UserEntryArgs {
-  uuid: string;
-  parentUuid: string | null;
-  timestamp: string;
-  sessionId: string;
-  cwd: string;
-  gitBranch: string;
-  isSidechain: boolean;
-  content: unknown;
-  toolUseResult?: {
-    structuredPatch?: StructuredPatchHunk[];
-    /**
-     * The structured patch was omitted (left empty) because the edited file
-     * exceeded the diff-scan cap — the edit happened but its location could not
-     * be rendered. Lets a replay/introspection surface distinguish "edit location
-     * not shown — file too large to scan" from a genuine no-op. Parity: the reference's
-     * readEditContext `truncated: true` signal.
-     */
-    truncated?: boolean;
-    is_error?: boolean;
-    agentId?: string;
-  };
-}
-
-export interface UserEntry {
-  type: 'user';
-  uuid: string;
-  parentUuid: string | null;
-  timestamp: string;
-  sessionId: string;
-  cwd: string;
-  gitBranch: string;
-  isSidechain: boolean;
-  message: { role: 'user'; content: unknown };
-  toolUseResult?: UserEntryArgs['toolUseResult'];
 }
 
 /** Build a user journal line (prompt submit, or a tool_result). */
