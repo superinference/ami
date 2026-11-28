@@ -140,10 +140,23 @@ describe('buildTelemetryResourceAttrs deployment/ci wiring (U058)', () => {
     assert.equal(attrs['ci'], 'true');
   });
 
+  // The host's real filesystem is a deployment signal (/.dockerenv exists on every
+  // container runner), so these cases inject the probes instead of reading it.
+  const bareHost = {
+    readFileSync: () => { throw new Error('enoent'); },
+    existsSync: () => false,
+    platform: 'linux' as const,
+  };
+
   it('elides the generic unknown-* deployment fallback (no signal)', () => {
-    const attrs = buildTelemetryResourceAttrs('sess', {});
+    const attrs = buildTelemetryResourceAttrs('sess', {}, {}, bareHost);
     assert.equal('deployment.environment' in attrs, false);
     assert.equal('ci' in attrs, false);
+  });
+
+  it('stamps docker when only the container marker is present', () => {
+    const attrs = buildTelemetryResourceAttrs('sess', {}, {}, { ...bareHost, existsSync: (p: string) => p === '/.dockerenv' });
+    assert.equal(attrs['deployment.environment'], 'docker');
   });
 
   it('honors the cardinality opt-out for deployment.environment', () => {

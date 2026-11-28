@@ -3,7 +3,7 @@ import { AMI_CLIENT_NAME, AMI_VERSION } from './version';
 import { isEnvTruthy } from './privacy-level';
 import { trySerialize } from './analytics-truncate-tool-input-value';
 import { detectTerminalType, getEnvironmentFingerprint } from './analytics-telemetry-content-dedup';
-import { detectDeploymentEnvironment, getCiContext, isCI } from './analytics-detect-deployment-environment';
+import { detectDeploymentEnvironment, getCiContext, isCI, type DeploymentEnvDeps } from './analytics-detect-deployment-environment';
 import type { TelemetryBatch, TelemetryBatchSenderOpts, TelemetryReconfigureOpts } from './analytics-failed-batch-store';
 
 export class TelemetryBatchSender {
@@ -274,6 +274,7 @@ export function buildTelemetryResourceAttrs(
   sessionId: string,
   env: NodeJS.ProcessEnv = process.env,
   extra: Record<string, string> = {},
+  deploymentDeps: DeploymentEnvDeps = {},
 ): Record<string, string> {
   const attrs: Record<string, string> = { 'service.name': AMI_CLIENT_NAME };
   if (shouldIncludeTelemetryAttr('service.version', env)) attrs['service.version'] = AMI_VERSION;
@@ -288,7 +289,7 @@ export function buildTelemetryResourceAttrs(
   // dimension so a collector can split usage by where AMI runs. The generic `unknown*`
   // fallbacks carry no signal, so they are elided to keep the attribute meaningful.
   if (shouldIncludeTelemetryAttr('deployment.environment', env)) {
-    const deployment = detectDeploymentEnvironment(env);
+    const deployment = detectDeploymentEnvironment(env, deploymentDeps);
     if (!deployment.startsWith('unknown')) attrs['deployment.environment'] = deployment;
   }
   // Generic CI flag (any CI, not just GitHub Actions) alongside the richer GitHub context.
