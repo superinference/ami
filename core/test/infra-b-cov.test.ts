@@ -19,6 +19,7 @@ import {
   ProcessManager,
   isProcessAlive,
   forceKillAfterTimeout,
+  procHooks,
 } from '../src/process-manager';
 import { HookManager, EventConcurrencyLimiter } from '../src/hooks';
 import type { ProviderConfig } from '../src/types';
@@ -290,13 +291,17 @@ describe('process-manager isProcessAlive / forceKillAfterTimeout', () => {
     assert.equal(isProcessAlive(child.pid!), false, 'SIGKILL must have terminated it');
   });
 
-  it('returns false when SIGTERM itself throws (EPERM on a non-owned pid)', async () => {
-    const uid = typeof process.getuid === 'function' ? process.getuid() : 1;
-    if (uid === 0) return; // root can signal pid 1; skip (noted in report)
-    // pid 1 is alive (process.kill(1,0) -> EPERM, non-ESRCH -> true) but we cannot
-    // signal it (EPERM) -> SIGTERM throws -> the catch returns false.
-    assert.equal(isProcessAlive(1), true);
-    assert.equal(await forceKillAfterTimeout(1, 50), false);
+  it('returns false when SIGTERM itself throws (EPERM on a non-owned pid)', async (t) => {
+    // Substitute the signal hooks: which real pids this user may signal depends on
+    // the host (in some containers PID 1 is its own), so no real signal is sent.
+    const sent: Array<NodeJS.Signals | number> = [];
+    t.mock.method(procHooks, 'isAlive', () => true);
+    t.mock.method(procHooks, 'kill', (_pid: number, signal: NodeJS.Signals | number) => {
+      sent.push(signal);
+      throw Object.assign(new Error('kill EPERM'), { code: 'EPERM' });
+    });
+    assert.equal(await forceKillAfterTimeout(4242, 50), false);
+    assert.deepEqual(sent, ['SIGTERM'], 'no escalation after a failed SIGTERM');
   });
 });
 
